@@ -1,0 +1,474 @@
+"use client";
+
+import React, { useEffect, useState, useMemo } from "react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
+import { api } from "@/lib/api";
+
+/* ── IANA timezone helpers ────────────────────────────────────────── */
+
+function getAllTimezones(): string[] {
+  try {
+    if (typeof Intl !== "undefined" && "supportedValuesOf" in Intl) {
+      return (Intl as unknown as { supportedValuesOf: (key: string) => string[] }).supportedValuesOf("timeZone");
+    }
+  } catch {
+    // fallback below
+  }
+  // Comprehensive fallback list
+  return [
+    "Africa/Abidjan", "Africa/Accra", "Africa/Addis_Ababa", "Africa/Algiers",
+    "Africa/Cairo", "Africa/Casablanca", "Africa/Dar_es_Salaam", "Africa/Johannesburg",
+    "Africa/Lagos", "Africa/Nairobi", "Africa/Tunis",
+    "America/Anchorage", "America/Argentina/Buenos_Aires", "America/Bogota",
+    "America/Chicago", "America/Denver", "America/Halifax", "America/Lima",
+    "America/Los_Angeles", "America/Mexico_City", "America/New_York",
+    "America/Phoenix", "America/Santiago", "America/Sao_Paulo", "America/Toronto",
+    "America/Vancouver",
+    "Asia/Baghdad", "Asia/Bangkok", "Asia/Colombo", "Asia/Dhaka", "Asia/Dubai",
+    "Asia/Hong_Kong", "Asia/Istanbul", "Asia/Jakarta", "Asia/Karachi",
+    "Asia/Kolkata", "Asia/Kuala_Lumpur", "Asia/Manila", "Asia/Riyadh",
+    "Asia/Seoul", "Asia/Shanghai", "Asia/Singapore", "Asia/Taipei",
+    "Asia/Tehran", "Asia/Tokyo",
+    "Atlantic/Reykjavik",
+    "Australia/Adelaide", "Australia/Brisbane", "Australia/Darwin",
+    "Australia/Melbourne", "Australia/Perth", "Australia/Sydney",
+    "Europe/Amsterdam", "Europe/Athens", "Europe/Belgrade", "Europe/Berlin",
+    "Europe/Brussels", "Europe/Bucharest", "Europe/Budapest", "Europe/Copenhagen",
+    "Europe/Dublin", "Europe/Helsinki", "Europe/Kiev", "Europe/Lisbon",
+    "Europe/London", "Europe/Madrid", "Europe/Moscow", "Europe/Oslo",
+    "Europe/Paris", "Europe/Prague", "Europe/Rome", "Europe/Stockholm",
+    "Europe/Vienna", "Europe/Warsaw", "Europe/Zurich",
+    "Indian/Maldives", "Indian/Mauritius",
+    "Pacific/Auckland", "Pacific/Fiji", "Pacific/Guam", "Pacific/Honolulu",
+    "Pacific/Tahiti", "Pacific/Tongatapu",
+    "UTC",
+  ];
+}
+
+function groupTimezones(timezones: string[]): Record<string, string[]> {
+  const groups: Record<string, string[]> = {};
+  for (const tz of timezones) {
+    const slash = tz.indexOf("/");
+    const region = slash > -1 ? tz.substring(0, slash) : "Other";
+    if (!groups[region]) groups[region] = [];
+    groups[region].push(tz);
+  }
+  // Sort regions and entries within
+  const sorted: Record<string, string[]> = {};
+  for (const region of Object.keys(groups).sort()) {
+    sorted[region] = groups[region].sort();
+  }
+  return sorted;
+}
+
+/* ── Types ────────────────────────────────────────────────────────── */
+
+interface AppSettings {
+  scheduler_timezone: string;
+  morning_schedule_hour: number;
+  morning_schedule_minute: number;
+  publish_check_interval_minutes: number;
+  engagement_pull_interval_hours: number;
+  bc_sync_interval_hours: number;
+  max_daily_posts: number;
+  auto_approve_threshold: number;
+  default_channels: string[];
+  notification_channels: string[];
+}
+
+const DEFAULTS: AppSettings = {
+  scheduler_timezone: "Indian/Mauritius",
+  morning_schedule_hour: 6,
+  morning_schedule_minute: 0,
+  publish_check_interval_minutes: 15,
+  engagement_pull_interval_hours: 6,
+  bc_sync_interval_hours: 6,
+  max_daily_posts: 3,
+  auto_approve_threshold: 90,
+  default_channels: ["instagram", "facebook", "linkedin"],
+  notification_channels: ["teams", "portal"],
+};
+
+/* ── Component ────────────────────────────────────────────────────── */
+
+export default function SettingsPage() {
+  const [settings, setSettings] = useState<AppSettings>(DEFAULTS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [tzSearch, setTzSearch] = useState("");
+
+  const allTimezones = useMemo(() => getAllTimezones(), []);
+  const groupedTimezones = useMemo(() => {
+    const filtered = tzSearch
+      ? allTimezones.filter((tz) => tz.toLowerCase().includes(tzSearch.toLowerCase()))
+      : allTimezones;
+    return groupTimezones(filtered);
+  }, [allTimezones, tzSearch]);
+
+  useEffect(() => {
+    async function fetchSettings() {
+      try {
+        const data = await api.get<Record<string, unknown>>("/api/v1/settings");
+        setSettings({
+          scheduler_timezone: (data.scheduler_timezone as string) ?? DEFAULTS.scheduler_timezone,
+          morning_schedule_hour: Number(data.morning_schedule_hour ?? DEFAULTS.morning_schedule_hour),
+          morning_schedule_minute: Number(data.morning_schedule_minute ?? DEFAULTS.morning_schedule_minute),
+          publish_check_interval_minutes: Number(data.publish_check_interval_minutes ?? DEFAULTS.publish_check_interval_minutes),
+          engagement_pull_interval_hours: Number(data.engagement_pull_interval_hours ?? DEFAULTS.engagement_pull_interval_hours),
+          bc_sync_interval_hours: Number(data.bc_sync_interval_hours ?? DEFAULTS.bc_sync_interval_hours),
+          max_daily_posts: Number(data.max_daily_posts ?? DEFAULTS.max_daily_posts),
+          auto_approve_threshold: Number(data.auto_approve_threshold ?? DEFAULTS.auto_approve_threshold),
+          default_channels: (data.default_channels as string[]) ?? DEFAULTS.default_channels,
+          notification_channels: (data.notification_channels as string[]) ?? DEFAULTS.notification_channels,
+        });
+      } catch {
+        // Use defaults on error
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchSettings();
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api.put("/api/v1/settings", settings);
+      setMessage({ type: "success", text: "Settings saved successfully." });
+      setTimeout(() => setMessage(null), 4000);
+    } catch {
+      setMessage({ type: "error", text: "Failed to save settings. Please try again." });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleChannel = (key: "default_channels" | "notification_channels", channel: string) => {
+    setSettings((s) => {
+      const current = s[key];
+      const next = current.includes(channel)
+        ? current.filter((c) => c !== channel)
+        : [...current, channel];
+      return { ...s, [key]: next };
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-3xl font-bold">Settings</h1>
+        <Skeleton className="h-96" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      <div>
+        <h1 className="text-3xl font-bold">Settings</h1>
+        <p className="text-muted-foreground">Global application configuration</p>
+      </div>
+
+      {/* ── Timezone ──────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Timezone</CardTitle>
+          <CardDescription>Select the primary timezone for scheduling</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Label htmlFor="tz-search">Search timezone</Label>
+          <input
+            id="tz-search"
+            type="text"
+            placeholder="Type to filter (e.g. Mauritius, London...)"
+            value={tzSearch}
+            onChange={(e) => setTzSearch(e.target.value)}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <select
+            value={settings.scheduler_timezone}
+            onChange={(e) => setSettings((s) => ({ ...s, scheduler_timezone: e.target.value }))}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {Object.entries(groupedTimezones).map(([region, tzList]) => (
+              <optgroup key={region} label={region}>
+                {tzList.map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz.replace(/_/g, " ")}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            Current: <span className="font-medium">{settings.scheduler_timezone}</span>
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* ── Max Daily Posts ───────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Max Daily Posts Per Channel</CardTitle>
+          <CardDescription>Maximum number of posts to publish per channel per day</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-3">
+            {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+              <label
+                key={n}
+                className={`flex items-center justify-center w-14 h-10 rounded-md border cursor-pointer text-sm font-medium transition-colors ${
+                  settings.max_daily_posts === n
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-background text-foreground border-input hover:bg-accent"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="max_daily_posts"
+                  value={n}
+                  checked={settings.max_daily_posts === n}
+                  onChange={() => setSettings((s) => ({ ...s, max_daily_posts: n }))}
+                  className="sr-only"
+                />
+                {n}
+              </label>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Auto-Approve Threshold ───────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Auto-Approve Threshold</CardTitle>
+          <CardDescription>
+            Content with AI confidence score above this threshold will be auto-approved
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-4">
+            <input
+              type="range"
+              min={80}
+              max={100}
+              step={1}
+              value={settings.auto_approve_threshold}
+              onChange={(e) =>
+                setSettings((s) => ({ ...s, auto_approve_threshold: Number(e.target.value) }))
+              }
+              className="flex-1 h-2 accent-primary cursor-pointer"
+              title="Content with AI confidence score above this threshold will be auto-approved"
+            />
+            <span className="text-lg font-semibold w-14 text-right tabular-nums">
+              {settings.auto_approve_threshold}%
+            </span>
+          </div>
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>80%</span>
+            <span>100%</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Scheduler Settings ───────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Scheduler Settings</CardTitle>
+          <CardDescription>Configure scheduling intervals and morning schedule</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {/* Morning schedule hour */}
+            <div className="space-y-2">
+              <Label htmlFor="morning-hour">Morning Schedule Hour</Label>
+              <select
+                id="morning-hour"
+                value={settings.morning_schedule_hour}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, morning_schedule_hour: Number(e.target.value) }))
+                }
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={i}>
+                    {String(i).padStart(2, "0")}:00
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Morning schedule minute */}
+            <div className="space-y-2">
+              <Label htmlFor="morning-minute">Morning Schedule Minute</Label>
+              <select
+                id="morning-minute"
+                value={settings.morning_schedule_minute}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, morning_schedule_minute: Number(e.target.value) }))
+                }
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {[0, 15, 30, 45].map((m) => (
+                  <option key={m} value={m}>
+                    :{String(m).padStart(2, "0")}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {/* Publish check interval */}
+            <div className="space-y-2">
+              <Label htmlFor="publish-interval">Publish Check Interval</Label>
+              <select
+                id="publish-interval"
+                value={settings.publish_check_interval_minutes}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    publish_check_interval_minutes: Number(e.target.value),
+                  }))
+                }
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {[5, 10, 15, 30, 60].map((m) => (
+                  <option key={m} value={m}>
+                    {m} minutes
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Engagement pull interval */}
+            <div className="space-y-2">
+              <Label htmlFor="engagement-interval">Engagement Pull Interval</Label>
+              <select
+                id="engagement-interval"
+                value={settings.engagement_pull_interval_hours}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    engagement_pull_interval_hours: Number(e.target.value),
+                  }))
+                }
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {[1, 2, 4, 6, 12, 24].map((h) => (
+                  <option key={h} value={h}>
+                    {h} {h === 1 ? "hour" : "hours"}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* BC sync interval */}
+            <div className="space-y-2">
+              <Label htmlFor="bc-sync-interval">BC Sync Interval</Label>
+              <select
+                id="bc-sync-interval"
+                value={settings.bc_sync_interval_hours}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    bc_sync_interval_hours: Number(e.target.value),
+                  }))
+                }
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {[1, 2, 4, 6, 12, 24].map((h) => (
+                  <option key={h} value={h}>
+                    {h} {h === 1 ? "hour" : "hours"}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Default Channels ─────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Default Channels</CardTitle>
+          <CardDescription>Channels enabled by default for new content</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-4">
+            {[
+              { value: "instagram", label: "Instagram" },
+              { value: "facebook", label: "Facebook" },
+              { value: "linkedin", label: "LinkedIn" },
+              { value: "youtube", label: "YouTube" },
+              { value: "tiktok", label: "TikTok" },
+              { value: "x", label: "X (Twitter)" },
+              { value: "website_blog", label: "Website / Blog" },
+              { value: "teams", label: "Teams" },
+            ].map(({ value, label }) => (
+              <label key={value} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.default_channels.includes(value)}
+                  onChange={() => toggleChannel("default_channels", value)}
+                  className="h-4 w-4 rounded border-input accent-primary"
+                />
+                <span className="text-sm font-medium">{label}</span>
+              </label>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Notification Channels ────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Notification Channels</CardTitle>
+          <CardDescription>Where notifications are delivered</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-4">
+            {[
+              { value: "teams", label: "Teams" },
+              { value: "portal", label: "In-App Portal" },
+            ].map(({ value, label }) => (
+              <label key={value} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.notification_channels.includes(value)}
+                  onChange={() => toggleChannel("notification_channels", value)}
+                  className="h-4 w-4 rounded border-input accent-primary"
+                />
+                <span className="text-sm font-medium">{label}</span>
+              </label>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Save ─────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-4 justify-end">
+        {message && (
+          <p
+            className={`text-sm font-medium ${
+              message.type === "success" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+            }`}
+          >
+            {message.text}
+          </p>
+        )}
+        <Button onClick={handleSave} disabled={saving} size="lg">
+          {saving ? "Saving..." : "Save Settings"}
+        </Button>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "markai-notifications"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.135",
+    "uvicorn[standard]",
+    "httpx>=0.28",
+    "asyncpg>=0.31",
+    "sqlalchemy[asyncio]>=2.0.48",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.13",
+    "sse-starlette>=3.3",
+    "valkey>=6.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]

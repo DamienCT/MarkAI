@@ -1,0 +1,39 @@
+"""Strategy workflow LangGraph definition with human-in-the-loop interrupt."""
+
+from __future__ import annotations
+
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+
+from workflows.strategy.state import StrategyState
+from workflows.strategy.nodes import (
+    load_research,
+    generate_positioning,
+    define_pillars,
+    define_audiences,
+    plan_cadence,
+    generate_themes,
+    human_review,
+)
+
+builder = StateGraph(StrategyState)
+
+builder.add_node("load_research", load_research)
+builder.add_node("generate_positioning", generate_positioning)
+builder.add_node("define_pillars", define_pillars)
+builder.add_node("define_audiences", define_audiences)
+builder.add_node("plan_cadence", plan_cadence)
+builder.add_node("generate_themes", generate_themes)
+builder.add_node("human_review", human_review)
+
+builder.set_entry_point("load_research")
+builder.add_edge("load_research", "generate_positioning")
+builder.add_edge("generate_positioning", "define_pillars")
+builder.add_edge("define_pillars", "define_audiences")
+builder.add_edge("define_audiences", "plan_cadence")
+builder.add_edge("plan_cadence", "generate_themes")
+builder.add_edge("generate_themes", "human_review")
+builder.add_edge("human_review", END)
+
+# Compile with checkpointer to support interrupt/resume
+strategy_graph = builder.compile(checkpointer=MemorySaver())

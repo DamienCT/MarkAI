@@ -1,0 +1,328 @@
+# docker-compose.yml — MARKAI services
+
+x-common-env: &common-env
+  env_file:
+    - .env
+
+services:
+  # ── Reverse Proxy ──────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.6
+    container_name: markai-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certs:/letsencrypt
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${MARKAI_DOMAIN:-markai.example.com}`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+    networks:
+      - markai-net
+
+  # ── PostgreSQL ─────────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    container_name: markai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-markai}
+      POSTGRES_USER: ${POSTGRES_USER:-markai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-markai} -d ${POSTGRES_DB:-markai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - markai-net
+
+  # ── Qdrant (Vector DB) ────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    container_name: markai-qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+    networks:
+      - markai-net
+
+  # ── MinIO (Object Storage) ────────────────────────────────────
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: markai-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-markai-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change-me}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    networks:
+      - markai-net
+
+  # ── Valkey (Redis-compatible Cache) ────────────────────────────
+  valkey:
+    image: valkey/valkey:9.0.3-alpine
+    container_name: markai-valkey
+    restart: unless-stopped
+    ports:
+      - "6381:6379"
+    volumes:
+      - valkey_data:/data
+    networks:
+      - markai-net
+
+  # ── NATS (Message Broker) ──────────────────────────────────────
+  nats:
+    image: nats:2.12.5
+    container_name: markai-nats
+    restart: unless-stopped
+    command: "-js -m 8222"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats_data:/data
+    networks:
+      - markai-net
+
+  # ── LiteLLM (LLM Gateway) ─────────────────────────────────────
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: markai-litellm
+    restart: unless-stopped
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-markai-litellm-key}
+      VALKEY_HOST: ${VALKEY_HOST:-valkey}
+      VALKEY_PORT: ${VALKEY_PORT:-6379}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    depends_on:
+      - valkey
+    networks:
+      - markai-net
+
+  # ── n8n (Workflow Automation) ──────────────────────────────────
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:1.82.1
+    container_name: markai-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    environment:
+      N8N_HOST: n8n.${MARKAI_DOMAIN:-markai.example.com}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: ${N8N_WEBHOOK_BASE:-https://n8n.example.com/webhook}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`n8n.${MARKAI_DOMAIN:-markai.example.com}`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+    networks:
+      - markai-net
+
+  # ── Backend (FastAPI) ──────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: markai-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+      valkey:
+        condition: service_started
+      nats:
+        condition: service_started
+      litellm:
+        condition: service_started
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.${MARKAI_DOMAIN:-markai.example.com}`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+    networks:
+      - markai-net
+
+  # ── Frontend (Next.js) ─────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: markai-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`${MARKAI_DOMAIN:-markai.example.com}`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+    networks:
+      - markai-net
+
+  # ── Agents (LangGraph Workers) ─────────────────────────────────
+  agents:
+    build:
+      context: ./agents
+      dockerfile: Dockerfile
+    container_name: markai-agents
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - nats
+      - litellm
+      - postgres
+      - qdrant
+      - minio
+    networks:
+      - markai-net
+
+  # ── Browser Worker (Playwright) ────────────────────────────────
+  browser-worker:
+    build:
+      context: ./browser-worker
+      dockerfile: Dockerfile
+    container_name: markai-browser-worker
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    networks:
+      - markai-net
+
+  # ── Notifications Service ──────────────────────────────────────
+  notifications:
+    build:
+      context: ./notifications
+      dockerfile: Dockerfile
+    container_name: markai-notifications
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_started
+    networks:
+      - markai-net
+
+  # ── Grafana (Dashboards) ───────────────────────────────────────
+  grafana:
+    image: grafana/grafana:12.4.1
+    container_name: markai-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      GF_PATHS_CONFIG: /etc/grafana/grafana.ini
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - markai-net
+
+  # ── Prometheus (Metrics) ───────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.10.0
+    container_name: markai-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+    networks:
+      - markai-net
+
+  # ── Loki (Log Aggregation) ────────────────────────────────────
+  loki:
+    image: grafana/loki:3.6.7
+    container_name: markai-loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+      - ./observability/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - markai-net
+
+  # ── OpenTelemetry Collector ────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.147.0
+    container_name: markai-otel-collector
+    restart: unless-stopped
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./observability/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    networks:
+      - markai-net
+
+networks:
+  markai-net:
+    driver: bridge
+
+volumes:
+  traefik_certs:
+  pgdata:
+  qdrant_data:
+  minio_data:
+  valkey_data:
+  nats_data:
+  n8n_data:
+  grafana_data:
+  prometheus_data:
+  loki_data:

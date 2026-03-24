@@ -1,0 +1,14 @@
+You are a marketing research analyst working for the brand "{{brand_name}}".
+
+Summarize the following research on "{{research_topic}}" into an actionable brief.
+
+Research data:
+{{research_data}}
+
+Requirements:
+- Identify the 2-3 most significant findings
+- For each finding, explain why it matters for {{brand_name}} specifically
+- Suggest 1-2 concrete actions the brand could take based on each finding
+- Do NOT invent statistics or data points not present in the research data
+- Keep the summary concise (200-500 words)
+- Use clear section headers

@@ -1,0 +1,29 @@
+# LiteLLM Proxy Configuration
+# Models are resolved dynamically using the "openai/" prefix pattern.
+# No hardcoded model_list needed — the backend resolves the active model
+# per category and passes "openai/<model_id>" to LiteLLM.
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  alerting:
+    - slack
+  alert_types:
+    - llm_exceptions
+    - llm_too_slow
+    - llm_requests_hanging
+    - budget_alerts
+
+litellm_settings:
+  cache: true
+  cache_params:
+    type: redis
+    host: os.environ/VALKEY_HOST
+    port: os.environ/VALKEY_PORT
+  success_callback:
+    - prometheus
+  failure_callback:
+    - prometheus
+  num_retries: 3
+  request_timeout: 120
+  set_verbose: false
+  drop_params: true

@@ -1,0 +1,91 @@
+# MARKAI Promptfoo Evaluation Configuration
+# Runs against the LiteLLM proxy for model-agnostic evals.
+
+providers:
+  - id: openai:chat:gpt-4o
+    config:
+      apiBaseUrl: http://litellm:4000/v1
+      apiKey: "{{LITELLM_MASTER_KEY}}"
+
+prompts:
+  - file://prompts/content_generation.txt
+  - file://prompts/research_summary.txt
+
+tests:
+  # ── Content Generation ───────────────────────────────────────────
+  - description: "Generate Instagram post for skincare brand"
+    vars:
+      brand_name: "AquaGlow Skincare"
+      product_name: "Hydrating Serum SPF30"
+      platform: "instagram"
+      tone: "friendly, informative"
+      pillars: "hydration, sun protection, daily routine"
+    assert:
+      - type: contains
+        value: "AquaGlow"
+      - type: contains
+        value: "Hydrating Serum"
+      - type: javascript
+        value: "output.length > 50 && output.length < 2200"
+      - type: llm-rubric
+        value: "The content should be appropriate for Instagram, include relevant hashtags, and match a friendly informative tone."
+
+  - description: "Generate LinkedIn post for B2B SaaS brand"
+    vars:
+      brand_name: "DataSync Solutions"
+      product_name: "Enterprise ETL Platform"
+      platform: "linkedin"
+      tone: "professional, thought-leadership"
+      pillars: "data integration, enterprise scalability, real-time sync"
+    assert:
+      - type: contains
+        value: "DataSync"
+      - type: javascript
+        value: "output.length > 100 && output.length < 3000"
+      - type: llm-rubric
+        value: "The content should be professional and suitable for LinkedIn, positioning the brand as a thought leader without being overly salesy."
+
+  - description: "Generate Facebook post for local restaurant"
+    vars:
+      brand_name: "Bistro Mauricien"
+      product_name: "Weekend Brunch Menu"
+      platform: "facebook"
+      tone: "warm, inviting, local"
+      pillars: "local cuisine, fresh ingredients, community"
+    assert:
+      - type: contains
+        value: "Bistro Mauricien"
+      - type: javascript
+        value: "output.length > 50 && output.length < 1500"
+      - type: llm-rubric
+        value: "The content should feel warm and inviting, suitable for a Facebook audience, and emphasize community and local cuisine."
+
+  # ── Research Summary ─────────────────────────────────────────────
+  - description: "Summarize competitor analysis for fashion brand"
+    vars:
+      brand_name: "UrbanThread"
+      research_topic: "competitor social media strategies"
+      research_data: |
+        Competitor A: Posts 3x/week on Instagram, focuses on lifestyle imagery, avg 2.3% engagement.
+        Competitor B: Posts daily on all platforms, heavy use of Reels/Shorts, avg 4.1% engagement.
+        Competitor C: Posts 2x/week, focuses on sustainability messaging, avg 1.8% engagement.
+    assert:
+      - type: llm-rubric
+        value: "The summary should identify key patterns across competitors, highlight actionable insights, and not fabricate data beyond what was provided."
+      - type: javascript
+        value: "output.length > 200"
+
+  - description: "Summarize market trend research for electronics retailer"
+    vars:
+      brand_name: "TechIsland MU"
+      research_topic: "emerging consumer electronics trends Q1 2026"
+      research_data: |
+        AI-powered personal devices seeing 40% YoY growth in search interest.
+        Foldable phones now 12% of premium smartphone market.
+        Smart home integration is top purchase driver for 35-50 demographic.
+        Sustainability certifications influence 28% of electronics purchases.
+    assert:
+      - type: llm-rubric
+        value: "The summary should accurately reflect the provided data, identify the most significant trends, and suggest strategic implications without hallucinating additional statistics."
+      - type: javascript
+        value: "output.length > 200"

@@ -1,0 +1,30 @@
+[project]
+name = "markai-agents"
+version = "0.1.0"
+description = "MARKAI LangGraph-based AI workflow agents"
+requires-python = ">=3.12"
+dependencies = [
+    "langgraph>=0.4",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.3",
+    "litellm>=1.60",
+    "nats-py>=2.14",
+    "asyncpg>=0.31",
+    "sqlalchemy[asyncio]>=2.0.48",
+    "httpx>=0.28",
+    "pyodbc>=5.3",
+    "minio>=7.2",
+    "qdrant-client>=1.17",
+    "playwright>=1.58",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.13",
+    "opentelemetry-api>=1.40",
+    "opentelemetry-sdk>=1.40",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["shared*", "workflows*", "worker*"]
