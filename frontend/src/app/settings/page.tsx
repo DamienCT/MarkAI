@@ -447,19 +447,20 @@ export default function SettingsPage() {
           <CardDescription>Where notifications are delivered</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-wrap gap-4">
+          <div className="space-y-3">
             {[
-              { value: "teams", label: "Teams" },
-              { value: "portal", label: "In-App Portal" },
-            ].map(({ value, label }) => (
-              <label key={value} className="flex items-center gap-2 cursor-pointer">
+              { value: "teams", label: "Teams", desc: "Alerts via Microsoft Teams webhook" },
+              { value: "portal", label: "In-App Portal", desc: "Real-time notifications in the app" },
+            ].map(({ value, label, desc }) => (
+              <label key={value} className="flex items-center gap-3 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={settings.notification_channels.includes(value)}
                   onChange={() => toggleChannel("notification_channels", value)}
-                  className="h-4 w-4 rounded border-input accent-primary"
+                  className="h-4 w-4 rounded border-input accent-primary flex-shrink-0"
                 />
                 <span className="text-sm font-medium">{label}</span>
+                <span className="text-xs text-muted-foreground">{desc}</span>
               </label>
             ))}
           </div>

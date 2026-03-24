@@ -209,7 +209,7 @@ export default function UsersPage() {
                     <TableHead className="w-10"></TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead>Email</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead className="text-center">Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -227,17 +227,25 @@ export default function UsersPage() {
                             type="checkbox"
                             checked={isSelected}
                             disabled={alreadyExists}
-                            onChange={() => toggleSelection(result.id)}
-                            className="h-4 w-4 rounded border-gray-300"
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              toggleSelection(result.id);
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="h-4 w-4 rounded border-gray-300 cursor-pointer"
                           />
                         </TableCell>
                         <TableCell className="font-medium">{result.displayName}</TableCell>
                         <TableCell className="text-sm">
                           {result.mail || result.userPrincipalName || "—"}
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="text-center">
                           {alreadyExists ? (
                             <Badge variant="outline">Already Added</Badge>
+                          ) : securityGroupMembers.has(result.id) ? (
+                            <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                              Security Group
+                            </Badge>
                           ) : (
                             <span className="text-sm text-muted-foreground">Available</span>
                           )}

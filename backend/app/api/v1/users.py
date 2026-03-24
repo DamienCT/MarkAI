@@ -1,5 +1,8 @@
+import logging
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -152,30 +155,33 @@ async def get_security_group_members(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return entra_ids of existing users who are in the admin security group."""
+    """Return Entra object IDs of ALL members in the admin security group (from Graph API)."""
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     if not settings.ADMIN_SECURITY_GROUP_ID:
         return []
 
-    result = await db.execute(select(User))
-    all_users = result.scalars().all()
+    try:
+        from app.auth.entra import get_graph_api_token
+        import httpx
 
-    member_ids: list[str] = []
-    for user in all_users:
-        if user.entra_id == "dev-admin":
-            continue
-        try:
-            is_member = await check_user_in_security_group(
-                user.entra_id, settings.ADMIN_SECURITY_GROUP_ID
-            )
-            if is_member:
-                member_ids.append(user.entra_id)
-        except Exception:
-            continue
+        token = await get_graph_api_token()
+        member_ids: list[str] = []
+        url = f"https://graph.microsoft.com/v1.0/groups/{settings.ADMIN_SECURITY_GROUP_ID}/members"
+        params = {"$select": "id", "$top": "999"}
 
-    return member_ids
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            resp.raise_for_status()
+            for member in resp.json().get("value", []):
+                if member.get("id"):
+                    member_ids.append(member["id"])
+
+        return member_ids
+    except Exception as exc:
+        logger.warning("Failed to fetch security group members: %s", exc)
+        return []
 
 
 # ---------------------------------------------------------------------------

@@ -120,10 +120,10 @@ async def search_graph_users(query: str) -> list[dict[str, Any]]:
     graph_url = "https://graph.microsoft.com/v1.0/users"
     params = {
         "$filter": (
-            f"startswith(displayName,'{safe_q}') or "
-            f"startswith(mail,'{safe_q}')"
+            f"startswith(mail,'{safe_q}') or "
+            f"startswith(userPrincipalName,'{safe_q}')"
         ),
-        "$select": "id,displayName,mail,userPrincipalName",
+        "$select": "id,displayName,mail,userPrincipalName,jobTitle,department",
         "$top": "20",
     }
 
