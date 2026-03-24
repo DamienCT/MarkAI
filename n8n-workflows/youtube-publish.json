@@ -1,0 +1,396 @@
+{
+  "name": "MARKAI - YouTube Publish",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "markai/publish/youtube",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "yt-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "markai-publish-youtube"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "set-content-id",
+              "name": "content_id",
+              "value": "={{ $json.body.content_id }}",
+              "type": "string"
+            },
+            {
+              "id": "set-title",
+              "name": "title",
+              "value": "={{ $json.body.headline || 'Untitled Video' }}",
+              "type": "string"
+            },
+            {
+              "id": "set-description",
+              "name": "description",
+              "value": "={{ $json.body.caption }}{{ $json.body.hashtags && $json.body.hashtags.length > 0 ? '\\n\\n' + $json.body.hashtags.map(t => '#' + t).join(' ') : '' }}",
+              "type": "string"
+            },
+            {
+              "id": "set-tags",
+              "name": "tags",
+              "value": "={{ JSON.stringify($json.body.hashtags || []) }}",
+              "type": "string"
+            },
+            {
+              "id": "set-video-url",
+              "name": "video_url",
+              "value": "={{ $json.body.image_url }}",
+              "type": "string"
+            },
+            {
+              "id": "set-access-token",
+              "name": "access_token",
+              "value": "={{ $json.body.api_key }}",
+              "type": "string"
+            },
+            {
+              "id": "set-channel-id",
+              "name": "channel_id",
+              "value": "={{ $json.body.channel_id }}",
+              "type": "string"
+            },
+            {
+              "id": "set-channel",
+              "name": "channel",
+              "value": "youtube",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "yt-set-vars",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.video_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "yt-download-video",
+      "name": "Download Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [690, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Set Variables').item.json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"snippet\": {\n    \"title\": {{ JSON.stringify($('Set Variables').item.json.title) }},\n    \"description\": {{ JSON.stringify($('Set Variables').item.json.description) }},\n    \"tags\": {{ $('Set Variables').item.json.tags }},\n    \"categoryId\": \"22\"\n  },\n  \"status\": {\n    \"privacyStatus\": \"public\",\n    \"selfDeclaredMadeForKids\": false\n  }\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "yt-init-upload",
+      "name": "Init Resumable Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $json.headers.location || $json.headers.Location }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "video/*"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "yt-upload-video",
+      "name": "Upload Video Binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MARKAI_API_URL || 'http://backend:8000' }}/api/v1/webhooks/publish-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.N8N_WEBHOOK_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content_id",
+              "value": "={{ $('Set Variables').item.json.content_id }}"
+            },
+            {
+              "name": "status",
+              "value": "published"
+            },
+            {
+              "name": "platform_post_id",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "published_at",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "yt-callback-success",
+      "name": "Callback Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MARKAI_API_URL || 'http://backend:8000' }}/api/v1/webhooks/publish-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.N8N_WEBHOOK_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content_id",
+              "value": "={{ $('Set Variables').item.json.content_id }}"
+            },
+            {
+              "name": "status",
+              "value": "failed"
+            },
+            {
+              "name": "error_message",
+              "value": "={{ $json.error?.message || $json.message || 'YouTube upload failed' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "yt-callback-fail",
+      "name": "Callback Fail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 540]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'accepted', content_id: $('Set Variables').item.json.content_id }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "yt-respond-ok",
+      "name": "Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'accepted', content_id: $('Set Variables').item.json.content_id }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "yt-respond-fail",
+      "name": "Respond Fail",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1570, 540]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Download Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Video": {
+      "main": [
+        [
+          {
+            "node": "Init Resumable Upload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Callback Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Resumable Upload": {
+      "main": [
+        [
+          {
+            "node": "Upload Video Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Callback Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Video Binary": {
+      "main": [
+        [
+          {
+            "node": "Callback Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Callback Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Callback Success": {
+      "main": [
+        [
+          {
+            "node": "Respond Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Callback Fail": {
+      "main": [
+        [
+          {
+            "node": "Respond Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "MARKAI"
+    },
+    {
+      "name": "publish"
+    },
+    {
+      "name": "youtube"
+    }
+  ],
+  "triggerCount": 1,
+  "pinData": {}
+}

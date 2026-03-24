@@ -1,0 +1,405 @@
+{
+  "name": "MARKAI - Facebook Publish",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "markai/publish/facebook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "fb-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "markai-publish-facebook"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "set-caption",
+              "name": "full_message",
+              "value": "={{ $json.body.caption }}{{ $json.body.hashtags && $json.body.hashtags.length > 0 ? '\\n\\n' + $json.body.hashtags.map(t => '#' + t).join(' ') : '' }}",
+              "type": "string"
+            },
+            {
+              "id": "set-content-id",
+              "name": "content_id",
+              "value": "={{ $json.body.content_id }}",
+              "type": "string"
+            },
+            {
+              "id": "set-page-id",
+              "name": "page_id",
+              "value": "={{ $json.body.page_id }}",
+              "type": "string"
+            },
+            {
+              "id": "set-access-token",
+              "name": "access_token",
+              "value": "={{ $json.body.meta_access_token }}",
+              "type": "string"
+            },
+            {
+              "id": "set-image-url",
+              "name": "image_url",
+              "value": "={{ $json.body.image_url || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "set-cta-url",
+              "name": "cta_url",
+              "value": "={{ $json.body.cta_url || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "set-channel",
+              "name": "channel",
+              "value": "facebook",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fb-set-vars",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-image",
+              "leftValue": "={{ $json.image_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "fb-check-image",
+      "name": "Has Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Set Variables').item.json.page_id }}/photos",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $('Set Variables').item.json.image_url }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $('Set Variables').item.json.full_message }}"
+            },
+            {
+              "name": "access_token",
+              "value": "={{ $('Set Variables').item.json.access_token }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fb-post-photo",
+      "name": "Post Photo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 200],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Set Variables').item.json.page_id }}/feed",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "={{ $('Set Variables').item.json.full_message }}"
+            },
+            {
+              "name": "link",
+              "value": "={{ $('Set Variables').item.json.cta_url }}"
+            },
+            {
+              "name": "access_token",
+              "value": "={{ $('Set Variables').item.json.access_token }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fb-post-text",
+      "name": "Post Text/Link",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 420],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MARKAI_API_URL || 'http://backend:8000' }}/api/v1/webhooks/publish-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.N8N_WEBHOOK_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content_id",
+              "value": "={{ $('Set Variables').item.json.content_id }}"
+            },
+            {
+              "name": "status",
+              "value": "published"
+            },
+            {
+              "name": "platform_post_id",
+              "value": "={{ $json.id || $json.post_id }}"
+            },
+            {
+              "name": "published_at",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "fb-callback-success",
+      "name": "Callback Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MARKAI_API_URL || 'http://backend:8000' }}/api/v1/webhooks/publish-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.N8N_WEBHOOK_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content_id",
+              "value": "={{ $('Set Variables').item.json.content_id }}"
+            },
+            {
+              "name": "status",
+              "value": "failed"
+            },
+            {
+              "name": "error_message",
+              "value": "={{ $json.error?.message || $json.message || 'Facebook publish failed' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "fb-callback-fail",
+      "name": "Callback Fail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 540]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'accepted', content_id: $('Set Variables').item.json.content_id }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "fb-respond-ok",
+      "name": "Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'accepted', content_id: $('Set Variables').item.json.content_id }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "fb-respond-fail",
+      "name": "Respond Fail",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1350, 540]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Has Image?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Image?": {
+      "main": [
+        [
+          {
+            "node": "Post Photo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Text/Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Photo": {
+      "main": [
+        [
+          {
+            "node": "Callback Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Callback Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Text/Link": {
+      "main": [
+        [
+          {
+            "node": "Callback Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Callback Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Callback Success": {
+      "main": [
+        [
+          {
+            "node": "Respond Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Callback Fail": {
+      "main": [
+        [
+          {
+            "node": "Respond Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "MARKAI"
+    },
+    {
+      "name": "publish"
+    },
+    {
+      "name": "facebook"
+    }
+  ],
+  "triggerCount": 1,
+  "pinData": {}
+}
