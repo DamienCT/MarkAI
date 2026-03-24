@@ -104,11 +104,8 @@ export default function SettingsPage() {
 
   const allTimezones = useMemo(() => getAllTimezones(), []);
   const groupedTimezones = useMemo(() => {
-    const filtered = tzSearch
-      ? allTimezones.filter((tz) => tz.toLowerCase().includes(tzSearch.toLowerCase()))
-      : allTimezones;
-    return groupTimezones(filtered);
-  }, [allTimezones, tzSearch]);
+    return groupTimezones(allTimezones);
+  }, [allTimezones]);
 
   useEffect(() => {
     async function fetchSettings() {
@@ -169,41 +166,56 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-4xl">
-      <div>
-        <h1 className="text-3xl font-bold">Settings</h1>
-        <p className="text-muted-foreground">Global application configuration</p>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Settings</h1>
+          <p className="text-muted-foreground">Global application configuration</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {message && (
+            <p className={`text-sm font-medium ${message.type === "success" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+              {message.text}
+            </p>
+          )}
+          <Button onClick={handleSave} disabled={saving} size="lg">
+            {saving ? "Saving..." : "Save Settings"}
+          </Button>
+        </div>
       </div>
 
-      {/* ── Timezone ──────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+      {/* ── Row 1: Timezone | Scheduler ─────────────────────────── */}
+
       <Card>
         <CardHeader>
           <CardTitle>Timezone</CardTitle>
           <CardDescription>Select the primary timezone for scheduling</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <Label htmlFor="tz-search">Search timezone</Label>
-          <input
-            id="tz-search"
-            type="text"
-            placeholder="Type to filter (e.g. Mauritius, London...)"
-            value={tzSearch}
-            onChange={(e) => setTzSearch(e.target.value)}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
+          <Label htmlFor="tz-region">Region</Label>
           <select
+            id="tz-region"
+            value={tzSearch || settings.scheduler_timezone.split("/")[0]}
+            onChange={(e) => setTzSearch(e.target.value)}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&>option]:bg-background [&>option]:text-foreground"
+          >
+            {Object.keys(groupedTimezones).map((region) => (
+              <option key={region} value={region}>{region}</option>
+            ))}
+          </select>
+          <Label htmlFor="tz-select">Timezone</Label>
+          <select
+            id="tz-select"
             value={settings.scheduler_timezone}
             onChange={(e) => setSettings((s) => ({ ...s, scheduler_timezone: e.target.value }))}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&>option]:bg-background [&>option]:text-foreground"
           >
-            {Object.entries(groupedTimezones).map(([region, tzList]) => (
-              <optgroup key={region} label={region}>
-                {tzList.map((tz) => (
-                  <option key={tz} value={tz}>
-                    {tz.replace(/_/g, " ")}
-                  </option>
-                ))}
-              </optgroup>
+            {(groupedTimezones[tzSearch || settings.scheduler_timezone.split("/")[0]] || []).map((tz) => (
+              <option key={tz} value={tz}>
+                {tz.split("/").slice(1).join("/").replace(/_/g, " ") || tz}
+              </option>
             ))}
           </select>
           <p className="text-xs text-muted-foreground">
@@ -212,72 +224,6 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* ── Max Daily Posts ───────────────────────────────────────── */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Max Daily Posts Per Channel</CardTitle>
-          <CardDescription>Maximum number of posts to publish per channel per day</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-3">
-            {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
-              <label
-                key={n}
-                className={`flex items-center justify-center w-14 h-10 rounded-md border cursor-pointer text-sm font-medium transition-colors ${
-                  settings.max_daily_posts === n
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-background text-foreground border-input hover:bg-accent"
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="max_daily_posts"
-                  value={n}
-                  checked={settings.max_daily_posts === n}
-                  onChange={() => setSettings((s) => ({ ...s, max_daily_posts: n }))}
-                  className="sr-only"
-                />
-                {n}
-              </label>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ── Auto-Approve Threshold ───────────────────────────────── */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Auto-Approve Threshold</CardTitle>
-          <CardDescription>
-            Content with AI confidence score above this threshold will be auto-approved
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center gap-4">
-            <input
-              type="range"
-              min={80}
-              max={100}
-              step={1}
-              value={settings.auto_approve_threshold}
-              onChange={(e) =>
-                setSettings((s) => ({ ...s, auto_approve_threshold: Number(e.target.value) }))
-              }
-              className="flex-1 h-2 accent-primary cursor-pointer"
-              title="Content with AI confidence score above this threshold will be auto-approved"
-            />
-            <span className="text-lg font-semibold w-14 text-right tabular-nums">
-              {settings.auto_approve_threshold}%
-            </span>
-          </div>
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>80%</span>
-            <span>100%</span>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ── Scheduler Settings ───────────────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle>Scheduler Settings</CardTitle>
@@ -396,6 +342,72 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* ── Row 2: Auto-Approve Threshold | Max Daily Posts ──────── */}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Auto-Approve Threshold</CardTitle>
+          <CardDescription>
+            Content with AI confidence above this threshold will be auto-approved
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-4">
+            <input
+              type="range"
+              min={80}
+              max={100}
+              step={1}
+              value={settings.auto_approve_threshold}
+              onChange={(e) =>
+                setSettings((s) => ({ ...s, auto_approve_threshold: Number(e.target.value) }))
+              }
+              className="flex-1 h-2 accent-primary cursor-pointer"
+            />
+            <span className="text-lg font-semibold w-14 text-right tabular-nums">
+              {settings.auto_approve_threshold}%
+            </span>
+          </div>
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>80%</span>
+            <span>100%</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Max Daily Posts Per Channel</CardTitle>
+          <CardDescription>Maximum posts to publish per channel per day</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-3">
+            {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+              <label
+                key={n}
+                className={`flex items-center justify-center w-14 h-10 rounded-md border cursor-pointer text-sm font-medium transition-colors ${
+                  settings.max_daily_posts === n
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-background text-foreground border-input hover:bg-accent"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="max_daily_posts"
+                  value={n}
+                  checked={settings.max_daily_posts === n}
+                  onChange={() => setSettings((s) => ({ ...s, max_daily_posts: n }))}
+                  className="sr-only"
+                />
+                {n}
+              </label>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Row 3: Default Channels | Notification Channels ──────── */}
+
       {/* ── Default Channels ─────────────────────────────────────── */}
       <Card>
         <CardHeader>
@@ -403,7 +415,7 @@ export default function SettingsPage() {
           <CardDescription>Channels enabled by default for new content</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-wrap gap-4">
+          <div className="grid grid-cols-4 gap-3">
             {[
               { value: "instagram", label: "Instagram" },
               { value: "facebook", label: "Facebook" },
@@ -411,7 +423,7 @@ export default function SettingsPage() {
               { value: "youtube", label: "YouTube" },
               { value: "tiktok", label: "TikTok" },
               { value: "x", label: "X (Twitter)" },
-              { value: "website_blog", label: "Website / Blog" },
+              { value: "website_blog", label: "Blog" },
               { value: "teams", label: "Teams" },
             ].map(({ value, label }) => (
               <label key={value} className="flex items-center gap-2 cursor-pointer">
@@ -454,21 +466,7 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* ── Save ─────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-4 justify-end">
-        {message && (
-          <p
-            className={`text-sm font-medium ${
-              message.type === "success" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
-            }`}
-          >
-            {message.text}
-          </p>
-        )}
-        <Button onClick={handleSave} disabled={saving} size="lg">
-          {saving ? "Saving..." : "Save Settings"}
-        </Button>
-      </div>
+      </div>{/* end grid */}
     </div>
   );
 }
