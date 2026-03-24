@@ -73,11 +73,27 @@ class Settings(BaseSettings):
     TEAMS_WEBHOOK_URL: str = ""
 
     # --- Social Platform API Keys ---
+    # Meta (Instagram + Facebook)
     META_ACCESS_TOKEN: str = ""
     META_PAGE_ID: str = ""
     META_INSTAGRAM_ACCOUNT_ID: str = ""
+    # LinkedIn
     LINKEDIN_ACCESS_TOKEN: str = ""
     LINKEDIN_ORG_ID: str = ""
+    # YouTube
+    YOUTUBE_CLIENT_ID: str = ""
+    YOUTUBE_CLIENT_SECRET: str = ""
+    YOUTUBE_REFRESH_TOKEN: str = ""
+    YOUTUBE_CHANNEL_ID: str = ""
+    # TikTok
+    TIKTOK_CLIENT_KEY: str = ""
+    TIKTOK_CLIENT_SECRET: str = ""
+    TIKTOK_ACCESS_TOKEN: str = ""
+    # X (Twitter)
+    X_API_KEY: str = ""
+    X_API_SECRET: str = ""
+    X_ACCESS_TOKEN: str = ""
+    X_ACCESS_TOKEN_SECRET: str = ""
 
     # --- OpenTelemetry ---
     OTEL_EXPORTER_OTLP_ENDPOINT: str = ""
