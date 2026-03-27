@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { WorkflowStatus } from "@/components/brand/WorkflowStatus";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Competitor } from "@/types";
 
 interface CompetitorTrackerProps {
@@ -55,6 +56,7 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
   const [deleting, setDeleting] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [showWorkflowStatus, setShowWorkflowStatus] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   // Fetch local competitor list with IDs
   const [competitorList, setCompetitorList] = useState<CompetitorWithId[]>(competitors);
@@ -64,34 +66,31 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
   }, [competitors]);
 
   useEffect(() => {
-    async function fetchInsights() {
+    async function fetchCompetitorData() {
       try {
-        const data = await api.get<CompetitorInsight[]>(
+        // Single fetch for both competitor list and insight data (same endpoint)
+        const data = await api.get<(CompetitorWithId & Partial<CompetitorInsight>)[]>(
           `/api/v1/brands/${brandId}/competitors`
         );
-        setInsights(data);
+        setCompetitorList(data);
+        // Extract insight fields where they exist
+        const insightData: CompetitorInsight[] = data
+          .filter((d) => d.recent_posts !== undefined || d.avg_engagement !== undefined)
+          .map((d) => ({
+            competitor_name: d.name,
+            recent_posts: d.recent_posts ?? 0,
+            avg_engagement: d.avg_engagement ?? 0,
+            trending_topics: d.trending_topics ?? [],
+            last_updated: d.last_updated ?? "",
+          }));
+        setInsights(insightData);
       } catch {
-        // Handle error
+        toast.error("Failed to load competitors");
       } finally {
         setLoading(false);
       }
     }
-    fetchInsights();
-  }, [brandId]);
-
-  // Fetch competitors with IDs from the brand API
-  useEffect(() => {
-    async function fetchCompetitorsFull() {
-      try {
-        const data = await api.get<CompetitorWithId[]>(
-          `/api/v1/brands/${brandId}/competitors`
-        );
-        setCompetitorList(data);
-      } catch {
-        // Fall back to props
-      }
-    }
-    fetchCompetitorsFull();
+    fetchCompetitorData();
   }, [brandId]);
 
   const resetForm = () => {
@@ -159,8 +158,7 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
     }
   };
 
-  const handleDelete = async (competitorId: string) => {
-    if (!confirm("Delete this competitor?")) return;
+  const executeDelete = useCallback(async (competitorId: string) => {
     setDeleting(competitorId);
     try {
       await api.delete(`/api/v1/brands/${brandId}/competitors/${competitorId}`);
@@ -174,7 +172,7 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
     } finally {
       setDeleting(null);
     }
-  };
+  }, [brandId, onCompetitorsChange]);
 
   const handleAutoDiscover = async () => {
     setTriggering(true);
@@ -360,7 +358,7 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
                               size="sm"
                               className="h-7 w-7 p-0 text-destructive hover:text-destructive"
                               disabled={deleting === competitor.id}
-                              onClick={() => handleDelete(competitor.id!)}
+                              onClick={() => setDeleteConfirmId(competitor.id!)}
                             >
                               {deleting === competitor.id ? (
                                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -408,6 +406,18 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={deleteConfirmId !== null}
+        onOpenChange={(open) => { if (!open) setDeleteConfirmId(null); }}
+        title="Delete Competitor"
+        description="Are you sure you want to delete this competitor?"
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={() => {
+          if (deleteConfirmId) executeDelete(deleteConfirmId);
+        }}
+      />
     </div>
   );
 }

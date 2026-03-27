@@ -56,8 +56,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
 
     # ── Social API Tokens ────────────────────────────────────────────────
-    INSTAGRAM_ACCESS_TOKEN: str = ""
-    FACEBOOK_ACCESS_TOKEN: str = ""
+    META_ACCESS_TOKEN: str = ""          # Shared token for Instagram + Facebook Graph API
     LINKEDIN_ACCESS_TOKEN: str = ""
 
     @property

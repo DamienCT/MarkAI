@@ -1,10 +1,11 @@
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
+from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
 
 router = APIRouter()
@@ -28,6 +29,8 @@ async def update_settings(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if not role_has_access(current_user.role, "admin"):
+        raise HTTPException(status_code=403, detail="Admin role required to update settings")
     for key, value in settings.items():
         await db.execute(
             text(

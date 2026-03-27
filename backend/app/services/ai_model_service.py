@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select, update
@@ -95,16 +95,37 @@ def _categorize_model(model_id: str) -> list[str]:
     return categories
 
 
+# Module-level Valkey connection pool (reused across all calls)
+_valkey_pool = None
+
+
+def _get_valkey_pool():
+    """Get or create the module-level Valkey connection pool."""
+    global _valkey_pool
+    if _valkey_pool is None:
+        try:
+            import redis.asyncio as aioredis
+
+            _valkey_pool = aioredis.ConnectionPool(
+                host=settings.VALKEY_HOST,
+                port=settings.VALKEY_PORT,
+                decode_responses=True,
+                max_connections=10,
+            )
+        except Exception:
+            pass
+    return _valkey_pool
+
+
 async def _get_valkey_client():
-    """Try to get a Valkey (Redis) connection. Returns None if unavailable."""
+    """Try to get a Valkey (Redis) connection from the pool. Returns None if unavailable."""
     try:
         import redis.asyncio as aioredis
 
-        client = aioredis.Redis(
-            host=settings.VALKEY_HOST,
-            port=settings.VALKEY_PORT,
-            decode_responses=True,
-        )
+        pool = _get_valkey_pool()
+        if pool is None:
+            return None
+        client = aioredis.Redis(connection_pool=pool)
         await client.ping()
         return client
     except Exception:
@@ -117,7 +138,6 @@ async def _cache_get(key: str) -> str | None:
     if client:
         try:
             val = await client.get(key)
-            await client.aclose()
             return val
         except Exception:
             pass
@@ -140,7 +160,6 @@ async def _cache_set(key: str, value: str, ttl: int = _CACHE_TTL) -> None:
     if client:
         try:
             await client.set(key, value, ex=ttl)
-            await client.aclose()
             return
         except Exception:
             pass
@@ -161,7 +180,6 @@ async def _cache_delete_pattern(pattern: str) -> None:
                 keys.append(key)
             if keys:
                 await client.delete(*keys)
-            await client.aclose()
         except Exception:
             pass
 
@@ -405,7 +423,7 @@ async def set_active_model(
         if existing:
             existing.is_active = True
             existing.set_by = user_id
-            existing.set_at = datetime.utcnow()
+            existing.set_at = datetime.now(timezone.utc)
             selection = existing
         else:
             selection = AIModelSelection(

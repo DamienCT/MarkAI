@@ -58,10 +58,10 @@ def _load_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
 # ── Logo rendering ───────────────────────────────────────────────
 
 
-def render_logo_png(svg_bytes: bytes, size: int = 1024) -> bytes:
+def render_logo_png(svg_bytes: bytes, size: int = 1024) -> bytes | None:
     """Render an SVG logo to transparent PNG bytes using ImageMagick.
 
-    Falls back to Pillow white-removal if ImageMagick is not available.
+    Returns None if ImageMagick is not available.
     """
     with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as svg_f:
         svg_f.write(svg_bytes)
@@ -77,20 +77,8 @@ def render_logo_png(svg_bytes: bytes, size: int = 1024) -> bytes:
         )
         return Path(png_path).read_bytes()
     except (subprocess.CalledProcessError, FileNotFoundError):
-        logger.warning("ImageMagick not available — falling back to Pillow white-removal")
-        # Fallback: open as-is and remove white background
-        img = Image.open(svg_path).convert("RGBA")
-        data = img.getdata()
-        new_data = []
-        for r, g, b, a in data:
-            if r > 240 and g > 240 and b > 240:
-                new_data.append((255, 255, 255, 0))
-            else:
-                new_data.append((r, g, b, a))
-        img.putdata(new_data)
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
+        logger.error("ImageMagick not available — cannot render SVG to PNG. Install ImageMagick.")
+        return None
     finally:
         Path(svg_path).unlink(missing_ok=True)
         Path(png_path).unlink(missing_ok=True)
@@ -162,16 +150,24 @@ def overlay_logo_and_text(
     bbox = logo.getbbox()
     if bbox:
         logo = logo.crop(bbox)
-    logo_w = int(base.width * logo_scale)
-    logo_h = int(logo.height * (logo_w / logo.width))
-    logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
+    if logo.width == 0 or logo.height == 0:
+        logger.warning("Logo has zero dimensions — skipping logo overlay")
+        # Still apply text overlay below, so don't return early
+        logo = None
+    logo_w = int(base.width * logo_scale) if logo else 0
+    logo_h = int(logo.height * (logo_w / logo.width)) if (logo and logo_w > 0) else 0
+    if logo and logo_w > 0 and logo_h > 0:
+        logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
+    else:
+        logo = None
 
-    alpha = logo.split()[3]
-    alpha = ImageEnhance.Brightness(alpha).enhance(logo_opacity)
-    logo.putalpha(alpha)
+    if logo is not None:
+        alpha = logo.split()[3]
+        alpha = ImageEnhance.Brightness(alpha).enhance(logo_opacity)
+        logo.putalpha(alpha)
 
-    lx, ly = find_best_logo_position(image_data, logo_w, logo_h)
-    overlay.paste(logo, (lx, ly), logo)
+        lx, ly = find_best_logo_position(image_data, logo_w, logo_h)
+        overlay.paste(logo, (lx, ly), logo)
 
     # --- Text overlay ---
     font_large = _load_font(int(base.width * 0.040), "regular")
@@ -238,9 +234,16 @@ def _draw_status_bar(draw: ImageDraw.Draw, width: int, y: int = 0):
     draw.rectangle([bx + 2, by + 2, bx + 22, by + 11], fill=fg)
 
 
-def _draw_avatar(draw: ImageDraw.Draw, cx: int, cy: int, r: int = 22):
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(79, 220, 239))
-    draw.text((cx - 8, cy - 11), "H", font=_load_font(18, "bold"), fill=(255, 255, 255))
+def _draw_avatar(
+    draw: ImageDraw.Draw,
+    cx: int,
+    cy: int,
+    r: int = 22,
+    initial: str = "H",
+    color: tuple[int, int, int] = (79, 220, 239),
+):
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+    draw.text((cx - 8, cy - 11), initial, font=_load_font(18, "bold"), fill=(255, 255, 255))
 
 
 def generate_mockup(
@@ -249,31 +252,35 @@ def generate_mockup(
     platform: Literal["instagram", "facebook", "linkedin", "x"],
     username: str = "healthspan.mu",
     display_name: str = "Healthspan Mauritius",
+    avatar_initial: str | None = None,
+    avatar_color: tuple[int, int, int] = (79, 220, 239),
 ) -> bytes:
     """Generate a realistic mobile feed mockup for a given platform.
 
     Returns PNG bytes of the mockup image (780x1688 — 2x iPhone resolution).
+    ``avatar_initial`` defaults to the first character of *display_name*.
     """
+    initial = avatar_initial or (display_name[0].upper() if display_name else "H")
     W, H = 780, 1688
     img = Image.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     post_img = Image.open(BytesIO(image_data)).convert("RGB")
 
     if platform == "instagram":
-        img = _mockup_instagram(img, draw, post_img, caption, username, W, H)
+        img = _mockup_instagram(img, draw, post_img, caption, username, W, H, initial=initial, avatar_color=avatar_color)
     elif platform == "facebook":
-        img = _mockup_facebook(img, draw, post_img, caption, display_name, W, H)
+        img = _mockup_facebook(img, draw, post_img, caption, display_name, W, H, initial=initial, avatar_color=avatar_color)
     elif platform == "linkedin":
-        img = _mockup_linkedin(img, draw, post_img, caption, display_name, W, H)
+        img = _mockup_linkedin(img, draw, post_img, caption, display_name, W, H, initial=initial, avatar_color=avatar_color)
     elif platform == "x":
-        img = _mockup_x(img, draw, post_img, caption, username, display_name, W, H)
+        img = _mockup_x(img, draw, post_img, caption, username, display_name, W, H, initial=initial, avatar_color=avatar_color)
 
     buf = BytesIO()
     img.save(buf, format="PNG", quality=95)
     return buf.getvalue()
 
 
-def _mockup_instagram(img, draw, post_img, caption, username, W, H):
+def _mockup_instagram(img, draw, post_img, caption, username, W, H, initial="H", avatar_color=(79, 220, 239)):
     y = 0
     _draw_status_bar(draw, W, y)
     y += 44
@@ -299,7 +306,7 @@ def _mockup_instagram(img, draw, post_img, caption, username, W, H):
     y += 1
 
     # Post header
-    _draw_avatar(draw, 34, y + 28)
+    _draw_avatar(draw, 34, y + 28, initial=initial, color=avatar_color)
     draw.text((60, y + 20), username, font=_load_font(15, "bold"), fill=(0, 0, 0))
     y += 56
 
@@ -347,7 +354,7 @@ def _mockup_instagram(img, draw, post_img, caption, username, W, H):
     return img
 
 
-def _mockup_facebook(img, draw, post_img, caption, display_name, W, H):
+def _mockup_facebook(img, draw, post_img, caption, display_name, W, H, initial="H", avatar_color=(79, 220, 239)):
     img = Image.new("RGB", (W, H), (240, 242, 245))
     draw = ImageDraw.Draw(img)
     y = 0
@@ -379,7 +386,7 @@ def _mockup_facebook(img, draw, post_img, caption, display_name, W, H):
 
     # Post card
     draw.rectangle([0, y, W, H - 56], fill=(255, 255, 255))
-    _draw_avatar(draw, 38, y + 30)
+    _draw_avatar(draw, 38, y + 30, initial=initial, color=avatar_color)
     draw.text((68, y + 14), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
     draw.text((68, y + 34), "2h \u00B7 \U0001F310", font=_load_font(13), fill=(100, 100, 100))
     y += 60
@@ -420,7 +427,7 @@ def _mockup_facebook(img, draw, post_img, caption, display_name, W, H):
     return img
 
 
-def _mockup_linkedin(img, draw, post_img, caption, display_name, W, H):
+def _mockup_linkedin(img, draw, post_img, caption, display_name, W, H, initial="H", avatar_color=(79, 220, 239)):
     img = Image.new("RGB", (W, H), (240, 240, 240))
     draw = ImageDraw.Draw(img)
     y = 0
@@ -438,7 +445,7 @@ def _mockup_linkedin(img, draw, post_img, caption, display_name, W, H):
 
     # Post card
     draw.rectangle([0, y, W, H - 56], fill=(255, 255, 255))
-    _draw_avatar(draw, 40, y + 34, 24)
+    _draw_avatar(draw, 40, y + 34, 24, initial=initial, color=avatar_color)
     draw.text((72, y + 14), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
     draw.text((72, y + 34), "Health & Wellness \u00B7 1,234 followers", font=_load_font(12), fill=(100, 100, 100))
     draw.text((72, y + 50), "2h \u00B7 \U0001F310", font=_load_font(12), fill=(100, 100, 100))
@@ -476,7 +483,7 @@ def _mockup_linkedin(img, draw, post_img, caption, display_name, W, H):
     return img
 
 
-def _mockup_x(img, draw, post_img, caption, username, display_name, W, H):
+def _mockup_x(img, draw, post_img, caption, username, display_name, W, H, initial="H", avatar_color=(79, 220, 239)):
     y = 0
     _draw_status_bar(draw, W, 0)
     y += 44
@@ -499,7 +506,7 @@ def _mockup_x(img, draw, post_img, caption, username, display_name, W, H):
     # Tweet
     ax = 38
     ay = y + 38
-    _draw_avatar(draw, ax, ay)
+    _draw_avatar(draw, ax, ay, initial=initial, color=avatar_color)
     name_x = ax + 34
     draw.text((name_x, y + 12), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
     draw.text((name_x, y + 32), f"@{username} \u00B7 2h", font=_load_font(13), fill=(100, 100, 100))

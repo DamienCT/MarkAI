@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -33,7 +34,7 @@ export default function AuditLogPage() {
       const data = await api.get<AuditLogEntry[]>("/api/v1/audit", params);
       setEntries(data);
     } catch {
-      // Handle error
+      toast.error("Failed to load audit log");
     } finally {
       setLoading(false);
     }

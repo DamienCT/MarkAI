@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from shared.llm import chat_completion, generate_image
+from shared.llm import chat_completion, generate_image, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
     get_brand,
@@ -15,7 +15,10 @@ from shared.tools.database import (
     get_latest_strategy,
     store_content,
 )
-from shared.tools.storage import upload_file, ensure_bucket, download_file
+from shared.tools.storage import (
+    upload_file, ensure_bucket, download_file,
+    async_upload_file, async_ensure_bucket, async_download_file,
+)
 from shared.image_processing import (
     render_logo_png,
     overlay_logo_and_text,
@@ -65,8 +68,8 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
         )},
         {"role": "user", "content": (
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
-            f"Platform: {sanitize_for_prompt(item.get('platform', ''))}\n"
-            f"Content type: {sanitize_for_prompt(item.get('content_type', ''))}\n"
+            f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
+            f"Content type: {sanitize_for_prompt(item.get('item_type', ''))}\n"
             f"Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
             f"Brand voice: {sanitize_json_for_prompt(strategy.get('positioning', {}).get('brand_voice', ''))}"
         )},
@@ -97,7 +100,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         {"role": "user", "content": (
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
             f"Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
-            f"Platform: {sanitize_for_prompt(item.get('platform', ''))}\n"
+            f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
             f"Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
             f"Brand voice: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=2000)}"
         )},
@@ -123,14 +126,13 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
         {"role": "user", "content": (
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
             f"Caption: {sanitize_for_prompt(state.get('caption', '')[:500])}\n"
-            f"Platform: {sanitize_for_prompt(item.get('platform', ''))}\n"
+            f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
             f"Theme: {sanitize_for_prompt(item.get('theme', ''))}"
         )},
     ]
     result = await chat_completion(prompt, temperature=0.6)
-    try:
-        hashtags = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
+    hashtags = parse_llm_json(result, fallback=None)
+    if hashtags is None:
         hashtags = [tag.strip().strip("#") for tag in result.split() if tag.strip()]
     return {"hashtags": hashtags}
 
@@ -228,7 +230,7 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     if is_lifestyle_only or not has_product_image:
         # Pure lifestyle — no product in the image
         prompt_text = (
-            f"Create a clean, professional social media lifestyle image for a {sanitize_for_prompt(item.get('platform', 'instagram'))} post. "
+            f"Create a clean, professional social media lifestyle image for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
             f"Style: modern, aspirational wellness lifestyle in a tropical Mauritius setting. "
             f"Golden hour or warm natural lighting. Editorial quality, shot on 50mm lens. "
@@ -239,7 +241,7 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     else:
         # Scene with generic product placeholder — will be replaced by Gemini later
         prompt_text = (
-            f"Create a professional social media product lifestyle photo for a {sanitize_for_prompt(item.get('platform', 'instagram'))} post. "
+            f"Create a professional social media product lifestyle photo for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
             f"Include a generic health/wellness product (a simple pouch or box) placed naturally in the scene. "
             f"Style: modern, aspirational wellness lifestyle in a tropical setting. "
@@ -277,7 +279,7 @@ PLATFORM_SPECS = {
 
 async def adapt_platforms(state: ContentState) -> dict[str, Any]:
     """Create platform-specific adaptations of the content via LLM for all 8 channels."""
-    source_platform = state.get("calendar_item", {}).get("platform", "instagram")
+    source_platform = state.get("calendar_item", {}).get("channel", "instagram")
 
     # Build per-platform spec block for the prompt
     spec_lines = "\n".join(
@@ -308,10 +310,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.5)
-    try:
-        adaptations = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        adaptations = {source_platform: {"caption": state.get("caption", ""), "hashtags": state.get("hashtags", [])}}
+    adaptations = parse_llm_json(result, fallback={source_platform: {"caption": state.get("caption", ""), "hashtags": state.get("hashtags", [])}})
 
     # Extract CTA from the primary platform adaptation
     primary = adaptations.get(source_platform, {})
@@ -400,7 +399,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             _, b64_part = generated_image_url.split(",", 1)
             image_data = _b64.b64decode(b64_part)
         elif generated_image_url.startswith("content-images/"):
-            image_data = download_file("content-images", generated_image_url.replace("content-images/", ""))
+            image_data = await async_download_file("content-images", generated_image_url.replace("content-images/", ""))
         else:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.get(generated_image_url)
@@ -418,7 +417,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
                     # Download SVG and render to PNG
                     if logo_url.startswith("content-images/") or logo_url.startswith("brand-assets/"):
                         bucket, _, obj = logo_url.partition("/")
-                        svg_bytes = download_file(bucket, obj)
+                        svg_bytes = await async_download_file(bucket, obj)
                     else:
                         async with httpx.AsyncClient(timeout=30) as client:
                             resp = await client.get(logo_url)
@@ -429,7 +428,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
                     # Already a raster image — download it
                     if logo_url.startswith("content-images/") or logo_url.startswith("brand-assets/"):
                         bucket, _, obj = logo_url.partition("/")
-                        logo_png = download_file(bucket, obj)
+                        logo_png = await async_download_file(bucket, obj)
                     else:
                         async with httpx.AsyncClient(timeout=30) as client:
                             resp = await client.get(logo_url)
@@ -459,9 +458,9 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
 
         # Upload branded image to MinIO
         brand_id = state["brand_id"]
-        ensure_bucket("content-images")
+        await async_ensure_bucket("content-images")
         branded_obj = f"{brand_id}/{state['calendar_item_id']}/branded.png"
-        upload_file("content-images", branded_obj, branded_bytes, "image/png")
+        await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")
 
         return {
             "branded_image": f"content-images/{branded_obj}",
@@ -490,7 +489,7 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
         # Get image bytes
         if image_source.startswith("content-images/"):
             obj_name = image_source.replace("content-images/", "")
-            image_data = download_file("content-images", obj_name)
+            image_data = await async_download_file("content-images", obj_name)
         else:
             import base64 as _b64
             if image_source.startswith("data:"):
@@ -510,16 +509,18 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
         item_id = state["calendar_item_id"]
 
         mockup_urls = {}
-        ensure_bucket("content-images")
+        await async_ensure_bucket("content-images")
+        brand_initial = brand_name[0].upper() if brand_name else "H"
 
         for platform in ["instagram", "facebook", "linkedin", "x"]:
             try:
                 mockup_bytes = generate_mockup(
                     image_data, caption, platform,
                     display_name=brand_name,
+                    avatar_initial=brand_initial,
                 )
                 obj_name = f"{brand_id}/{item_id}/mockup_{platform}.png"
-                upload_file("content-images", obj_name, mockup_bytes, "image/png")
+                await async_upload_file("content-images", obj_name, mockup_bytes, "image/png")
                 mockup_urls[platform] = f"content-images/{obj_name}"
                 logger.info("Generated %s mockup for %s", platform, item_id)
             except Exception:
@@ -551,9 +552,9 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
                     resp.raise_for_status()
                     image_data = resp.content
 
-            ensure_bucket("content-images")
+            await async_ensure_bucket("content-images")
             object_name = f"{brand_id}/{state['calendar_item_id']}/background.png"
-            upload_file("content-images", object_name, image_data, "image/png")
+            await async_upload_file("content-images", object_name, image_data, "image/png")
             generated_image_url = f"content-images/{object_name}"
         except Exception:
             logger.exception("Failed to upload generated image to MinIO")

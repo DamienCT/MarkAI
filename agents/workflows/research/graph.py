@@ -14,6 +14,12 @@ from workflows.research.nodes import (
     store_results,
 )
 
+
+def _check_failed(state: ResearchState) -> str:
+    """Route to END early if a prior node set status='failed'."""
+    return "end" if state.get("status") == "failed" else "continue"
+
+
 builder = StateGraph(ResearchState)
 
 builder.add_node("crawl_website", crawl_website)
@@ -24,7 +30,7 @@ builder.add_node("build_personas", build_personas)
 builder.add_node("store_results", store_results)
 
 builder.set_entry_point("crawl_website")
-builder.add_edge("crawl_website", "analyze_social")
+builder.add_conditional_edges("crawl_website", _check_failed, {"end": END, "continue": "analyze_social"})
 builder.add_edge("analyze_social", "analyze_competitors")
 builder.add_edge("analyze_competitors", "identify_gaps")
 builder.add_edge("identify_gaps", "build_personas")

@@ -54,6 +54,10 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
+      # I-M5: Traces currently go only to debug (console). When a trace backend
+      # (Jaeger/Tempo) is deployed, add an otlp exporter here, e.g.:
+      #   exporters: [debug, otlp/tempo]
+      # and define the otlp/tempo exporter above pointing to tempo:4317
       exporters: [debug]
 
     metrics:

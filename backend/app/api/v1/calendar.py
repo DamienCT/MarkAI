@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,12 @@ from app.schemas.calendar_item import (
     CalendarItemUpdate,
 )
 from app.services import calendar_service
+
+
+class CalendarReorderItem(BaseModel):
+    """Pydantic model for a single item in a calendar reorder request."""
+    id: uuid.UUID
+    scheduled_at: datetime
 
 router = APIRouter()
 
@@ -132,11 +139,13 @@ async def delete_calendar_item(
 
 @router.post("/reorder", response_model=list[CalendarItemResponse])
 async def reorder_calendar_items(
-    items: list[dict],
+    items: list[CalendarReorderItem],
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Reorder calendar items via drag-and-drop (update scheduled_at)."""
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    return await calendar_service.reorder_calendar_items(db, items)
+    return await calendar_service.reorder_calendar_items(
+        db, [item.model_dump() for item in items]
+    )

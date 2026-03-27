@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from shared.llm import chat_completion
+from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_json_for_prompt
 from shared.tools.database import (
     get_latest_strategy,
@@ -41,10 +41,7 @@ async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
         {"role": "user", "content": f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.5)
-    try:
-        campaigns = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        campaigns = [{"name": "General Campaign", "description": result}]
+    campaigns = parse_llm_json(result, fallback=[{"name": "General Campaign", "description": result}])
     return {"campaigns": campaigns}
 
 
@@ -78,10 +75,7 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.5, max_tokens=8192)
-    try:
-        items = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        items = []
+    items = parse_llm_json(result, fallback=[])
     return {"calendar_items": items}
 
 

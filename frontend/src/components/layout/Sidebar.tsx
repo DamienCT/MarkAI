@@ -20,6 +20,8 @@ import {
   Shield,
   Users,
   Cpu,
+  FlaskConical,
+  Image as ImageIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BrandSwitcher } from "./BrandSwitcher";
@@ -35,6 +37,8 @@ const navigation = [
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Learning", href: "/learning", icon: Brain },
   { name: "AI Providers", href: "/providers", icon: Cpu },
+  { name: "Prompt Lab", href: "/prompts", icon: FlaskConical },
+  { name: "Product Images", href: "/intelligence/products", icon: ImageIcon },
   { name: "System", href: "/system", icon: Server, exact: true },
   { name: "Audit Log", href: "/system/audit", icon: Shield },
   { name: "Settings", href: "/settings", icon: Settings, exact: true },

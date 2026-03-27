@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -57,15 +57,15 @@ async def check_due_content() -> None:
             try:
                 await dispatch_to_n8n(content, calendar_item, brand)
 
-                calendar_item.status = "published"
+                calendar_item.status = "publishing"
                 await db.commit()
 
                 log = ScheduledJobLog(
                     job_name="publish_dispatch",
                     job_type="publish",
                     status="completed",
-                    started_at=datetime.now(),
-                    completed_at=datetime.now(),
+                    started_at=datetime.now(timezone.utc),
+                    completed_at=datetime.now(timezone.utc),
                     details={
                         "content_id": str(content.id),
                         "channel": calendar_item.channel,
@@ -89,8 +89,8 @@ async def check_due_content() -> None:
                     job_name="publish_dispatch",
                     job_type="publish",
                     status="failed",
-                    started_at=datetime.now(),
-                    completed_at=datetime.now(),
+                    started_at=datetime.now(timezone.utc),
+                    completed_at=datetime.now(timezone.utc),
                     details={
                         "content_id": str(content.id),
                         "error": str(e),

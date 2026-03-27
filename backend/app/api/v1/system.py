@@ -1,7 +1,7 @@
 import logging
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -90,7 +90,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 
     return HealthResponse(
         status="healthy" if all_ok else "degraded",
-        timestamp=datetime.now().isoformat(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
         environment=settings.MARKAI_ENV,
         dependencies=deps,
     )
@@ -131,7 +131,7 @@ async def trigger_job(
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
 
-    job.modify(next_run_time=datetime.now())
+    job.modify(next_run_time=datetime.now(timezone.utc))
     return {"message": f"Job '{job_id}' triggered", "job_id": job_id}
 
 

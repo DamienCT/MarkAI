@@ -10,14 +10,28 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 logger = logging.getLogger(__name__)
 
 from shared.config import settings
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Return True for transient errors worth retrying."""
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (429, 500, 502, 503)
+    return False
+
+
+_retry_on_transient = retry_if_exception(_is_retryable)
 
 _HEADERS: dict[str, str] = {}
 
@@ -92,18 +106,17 @@ async def get_model_for_category(category: str) -> str:
     return f"openai/{fallback}"
 
 
+def strip_markdown_fences(text: str) -> str:
+    """Remove markdown code fences (```json ... ```) from LLM output."""
+    return re.sub(r'^```\w*\n?|```$', '', text.strip(), flags=re.MULTILINE).strip()
+
+
 def parse_llm_json(text: str, fallback: Any = None) -> Any:
     """Parse JSON from LLM output, handling markdown fences and common issues.
 
     Returns the parsed object, or *fallback* if parsing fails.
     """
-    cleaned = text.strip()
-    # Strip markdown code fences
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[-1] if "\n" in cleaned else cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    cleaned = cleaned.strip()
+    cleaned = strip_markdown_fences(text)
 
     try:
         return json.loads(cleaned)
@@ -131,6 +144,12 @@ def validate_llm_output(data: Any, required_fields: list[str] | None = None, exp
     return True
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=_retry_on_transient,
+    reraise=True,
+)
 async def chat_completion(
     messages: list[dict[str, str]],
     model: str | None = None,
@@ -164,12 +183,17 @@ async def chat_completion(
             return data["choices"][0]["message"]["content"]
     except httpx.ConnectError:
         raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
-    except httpx.TimeoutException:
-        raise RuntimeError(f"LiteLLM request timed out after 120s (model={model})")
-    except httpx.HTTPStatusError as e:
-        raise RuntimeError(f"LiteLLM returned HTTP {e.response.status_code}: {e.response.text[:200]}")
+    except (httpx.TimeoutException, httpx.HTTPStatusError):
+        # Let tenacity retry handle transient errors (429, 5xx, timeouts)
+        raise
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=_retry_on_transient,
+    reraise=True,
+)
 async def get_embedding(
     text: str,
     model: str | None = None,
@@ -179,17 +203,30 @@ async def get_embedding(
     if model is None:
         model = await get_model_for_category(category)
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            f"{settings.LITELLM_BASE_URL}/v1/embeddings",
-            headers=_auth_headers(),
-            json={"model": model, "input": text},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["data"][0]["embedding"]
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{settings.LITELLM_BASE_URL}/v1/embeddings",
+                headers=_auth_headers(),
+                json={"model": model, "input": text},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["data"][0]["embedding"]
+    except httpx.ConnectError:
+        raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
+    except httpx.TimeoutException:
+        raise
+    except httpx.HTTPStatusError:
+        raise
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=_retry_on_transient,
+    reraise=True,
+)
 async def generate_image(
     prompt: str,
     model: str | None = None,
@@ -204,26 +241,33 @@ async def generate_image(
     if model is None:
         model = await get_model_for_category(category)
 
-    async with httpx.AsyncClient(timeout=180) as client:
-        resp = await client.post(
-            f"{settings.LITELLM_BASE_URL}/v1/images/generations",
-            headers=_auth_headers(),
-            json={
-                "model": model,
-                "prompt": prompt,
-                "size": size,
-                "n": n,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        result = data["data"][0]
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.post(
+                f"{settings.LITELLM_BASE_URL}/v1/images/generations",
+                headers=_auth_headers(),
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "size": size,
+                    "n": n,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result = data["data"][0]
 
-        # gpt-image-1.5 and newer return b64_json, older models return url
-        if result.get("url"):
-            return result["url"]
-        elif result.get("b64_json"):
-            # Return as data URI — caller can decode if needed
-            return f"data:image/png;base64,{result['b64_json']}"
-        else:
-            raise ValueError("Image generation returned neither url nor b64_json")
+            # gpt-image-1.5 and newer return b64_json, older models return url
+            if result.get("url"):
+                return result["url"]
+            elif result.get("b64_json"):
+                # Return as data URI — caller can decode if needed
+                return f"data:image/png;base64,{result['b64_json']}"
+            else:
+                raise ValueError("Image generation returned neither url nor b64_json")
+    except httpx.ConnectError:
+        raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
+    except httpx.TimeoutException:
+        raise
+    except httpx.HTTPStatusError:
+        raise

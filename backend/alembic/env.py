@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.models.base import Base
 
 # Import all models so Alembic sees them
-from app.auth.models import User  # noqa: F401
+from app.auth.models import User, Notification, AuditLog, ScheduledJobLog  # noqa: F401
 from app.models.brand import Brand  # noqa: F401
 from app.models.content import Content  # noqa: F401
 from app.models.campaign import Campaign  # noqa: F401
@@ -21,6 +21,7 @@ from app.models.engagement import EngagementMetric  # noqa: F401
 from app.models.adaptation import Adaptation  # noqa: F401
 from app.models.competitor import Competitor  # noqa: F401
 from app.models.product import Product  # noqa: F401
+from app.models.ai_model import AIModelCategory, AIModel, AIModelSelection  # noqa: F401
 
 config = context.config
 

@@ -25,6 +25,11 @@ services:
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
       - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      # I-H1: Dashboard basic auth — CHANGE password in production!
+      # Default credentials: admin / admin
+      # Generate new hash: echo $(htpasswd -nB admin) | sed -e 's/\\$/\\$\\$/g'
+      - "traefik.http.middlewares.dashboard-auth.basicauth.users=admin:$$2y$$05$$Y6kz5FZwQvP6OuGqg8dOYeKzGnRjVzEJd8R7K5aIkL9s1dQwXrJOy"
+      - "traefik.http.routers.dashboard.middlewares=dashboard-auth"
     networks:
       - markai-net
 
@@ -33,6 +38,10 @@ services:
     image: postgres:16-alpine
     container_name: markai-postgres
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-markai}
       POSTGRES_USER: ${POSTGRES_USER:-markai}
@@ -41,7 +50,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-markai} -d ${POSTGRES_DB:-markai}"]
       interval: 10s
@@ -59,7 +68,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     ports:
-      - "6333:6333"
+      - "127.0.0.1:6333:6333"
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333 && echo -e \"GET /readyz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
       interval: 15s
@@ -71,7 +80,7 @@ services:
 
   # ── MinIO (Object Storage) ────────────────────────────────────
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
     container_name: markai-minio
     restart: unless-stopped
     environment:
@@ -80,8 +89,8 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     command: server /data --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -98,7 +107,7 @@ services:
     container_name: markai-valkey
     restart: unless-stopped
     ports:
-      - "6381:6379"
+      - "127.0.0.1:6381:6379"
     volumes:
       - valkey_data:/data
     healthcheck:
@@ -117,8 +126,8 @@ services:
     restart: unless-stopped
     command: "-js -m 8222"
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
     volumes:
       - nats_data:/data
     healthcheck:
@@ -135,10 +144,14 @@ services:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: markai-litellm
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-markai-litellm-key}
@@ -166,10 +179,18 @@ services:
       - "5678:5678"
     volumes:
       - n8n_data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5678/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     environment:
       N8N_HOST: n8n.${MARKAI_DOMAIN:-markai.example.com}
       N8N_PROTOCOL: https
       WEBHOOK_URL: ${N8N_WEBHOOK_BASE:-https://n8n.example.com/webhook}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
+      MARKAI_API_URL: http://backend:8000
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.n8n.rule=Host(`n8n.${MARKAI_DOMAIN:-markai.example.com}`)"
@@ -192,6 +213,10 @@ services:
       - .env
     environment:
       MARKAI_ENV: production
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 15s
@@ -227,10 +252,20 @@ services:
       dockerfile: Dockerfile
     container_name: markai-frontend
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     ports:
       - "3000:3000"
     env_file:
       - .env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       - backend
     labels:
@@ -249,8 +284,18 @@ services:
       dockerfile: Dockerfile
     container_name: markai-agents
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     env_file:
       - .env
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python -m worker' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       nats:
         condition: service_started
@@ -276,6 +321,12 @@ services:
       - "8001:8001"
     env_file:
       - .env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - markai-net
 
@@ -288,6 +339,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -318,7 +375,7 @@ services:
     container_name: markai-prometheus
     restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - prometheus_data:/prometheus
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -335,7 +392,7 @@ services:
     container_name: markai-loki
     restart: unless-stopped
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     volumes:
       - loki_data:/loki
       - ./observability/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
@@ -349,8 +406,8 @@ services:
     container_name: markai-otel-collector
     restart: unless-stopped
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
     volumes:
       - ./observability/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
     networks:

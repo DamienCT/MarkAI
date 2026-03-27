@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy import select
@@ -85,7 +85,7 @@ async def upsert_from_bc(
         for key, value in data.items():
             if hasattr(product, key):
                 setattr(product, key, value)
-    product.bc_last_synced_at = datetime.now()
+    product.bc_last_synced_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(product)
     return product

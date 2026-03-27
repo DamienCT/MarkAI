@@ -134,10 +134,18 @@ _DEFAULTS_TO_CHECK = {
 if settings.MARKAI_ENV == "production":
     import logging as _log
     _startup_logger = _log.getLogger("app.config")
+    _insecure_defaults = []
     for _field, _default in _DEFAULTS_TO_CHECK.items():
         if getattr(settings, _field, None) == _default:
-            _startup_logger.warning(
+            _insecure_defaults.append(_field)
+            _startup_logger.critical(
                 "SECURITY: %s is still set to its default value. "
                 "Set a strong value in .env before deploying to production.",
                 _field,
             )
+    if _insecure_defaults:
+        raise RuntimeError(
+            f"Refusing to start in production with default secrets: "
+            f"{', '.join(_insecure_defaults)}. "
+            f"Set strong values in .env for these settings."
+        )

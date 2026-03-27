@@ -8,7 +8,7 @@ from typing import Any
 
 from langgraph.types import interrupt
 
-from shared.llm import chat_completion
+from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_json_for_prompt
 from shared.tools.database import get_latest_research, store_strategy
 
@@ -33,10 +33,7 @@ async def generate_positioning(state: StrategyState) -> dict[str, Any]:
         {"role": "user", "content": f"Research data:\n{sanitize_json_for_prompt(research, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.5)
-    try:
-        positioning = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        positioning = {"raw": result}
+    positioning = parse_llm_json(result, fallback={"raw": result})
     return {"positioning": positioning}
 
 
@@ -50,10 +47,7 @@ async def define_pillars(state: StrategyState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.5)
-    try:
-        pillars = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        pillars = [{"name": "General", "description": result}]
+    pillars = parse_llm_json(result, fallback=[{"name": "General", "description": result}])
     return {"pillars": pillars}
 
 
@@ -68,10 +62,7 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.5)
-    try:
-        audiences = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        audiences = [{"segment_name": "Primary", "description": result}]
+    audiences = parse_llm_json(result, fallback=[{"segment_name": "Primary", "description": result}])
     return {"audiences": audiences}
 
 
@@ -85,10 +76,7 @@ async def plan_cadence(state: StrategyState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.4)
-    try:
-        cadence = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        cadence = {"raw": result}
+    cadence = parse_llm_json(result, fallback={"raw": result})
     return {"cadence": cadence}
 
 
@@ -103,10 +91,7 @@ async def generate_themes(state: StrategyState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.6)
-    try:
-        themes = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        themes = [{"month": "current", "theme_name": "General", "description": result}]
+    themes = parse_llm_json(result, fallback=[{"month": "current", "theme_name": "General", "description": result}])
     return {"themes": themes}
 
 

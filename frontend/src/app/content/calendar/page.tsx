@@ -55,7 +55,6 @@ export default function ContentCalendarPage() {
           <p className="text-sm text-muted-foreground mt-1">
             Content will appear here once you schedule posts from the Content Studio
           </p>
-          <CalendarView items={[]} />
         </div>
       ) : (
         <CalendarView items={items} onReschedule={handleReschedule} />

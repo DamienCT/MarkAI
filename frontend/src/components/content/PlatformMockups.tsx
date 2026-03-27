@@ -62,6 +62,7 @@ export function PlatformMockups({ mockupUrls, imageBaseUrl = "" }: PlatformMocku
                         src={url}
                         alt={`${PLATFORM_LABELS[p] || p} preview`}
                         className="w-full h-auto"
+                        loading="lazy"
                       />
                     </div>
                   </DialogTrigger>
@@ -70,6 +71,7 @@ export function PlatformMockups({ mockupUrls, imageBaseUrl = "" }: PlatformMocku
                       src={url}
                       alt={`${PLATFORM_LABELS[p] || p} preview`}
                       className="w-full h-auto rounded-lg"
+                      loading="lazy"
                     />
                   </DialogContent>
                 </Dialog>

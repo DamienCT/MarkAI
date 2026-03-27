@@ -1,6 +1,6 @@
 import logging
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -71,7 +71,7 @@ async def publish_result(
                 cal_item.published_at = (
                     datetime.fromisoformat(payload.published_at)
                     if payload.published_at
-                    else datetime.now()
+                    else datetime.now(timezone.utc)
                 )
 
         logger.info(

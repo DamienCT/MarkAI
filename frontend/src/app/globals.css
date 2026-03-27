@@ -115,3 +115,23 @@
     color: var(--foreground);
   }
 }
+
+/* Print styles for intelligence reports */
+@media print {
+  nav, aside, header, footer,
+  [data-no-print],
+  .no-print {
+    display: none !important;
+  }
+  body {
+    font-size: 12pt;
+    color: #000 !important;
+    background: #fff !important;
+  }
+  .print-break {
+    page-break-before: always;
+  }
+  * {
+    box-shadow: none !important;
+  }
+}

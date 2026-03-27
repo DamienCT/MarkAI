@@ -308,7 +308,7 @@ export function ProductsTab({
                                 className="flex items-center justify-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
                                 onClick={(e) => { e.stopPropagation(); onOpenGallery(product); }}
                               >
-                                <img src={product.primary_image_url} alt="" className="h-8 w-8 rounded-sm object-cover ring-1 ring-border" />
+                                <img src={product.primary_image_url} alt="" className="h-8 w-8 rounded-sm object-cover ring-1 ring-border" loading="lazy" />
                                 <span className="text-[10px] text-muted-foreground">
                                   {Array.isArray(product.image_urls) ? product.image_urls.length : 0}
                                 </span>
@@ -439,6 +439,7 @@ export function ProductsTab({
                     src={typeof img === "string" ? img : img.url}
                     alt=""
                     className="w-full h-full object-cover"
+                    loading="lazy"
                   />
                   {galleryProduct?.primary_image_url === (typeof img === "string" ? img : img.url) && (
                     <Badge className="absolute top-1 left-1 text-[9px] h-4 bg-primary">Primary</Badge>

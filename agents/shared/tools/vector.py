@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from uuid import uuid4
@@ -96,3 +97,34 @@ def search_similar(
         {"id": str(hit.id), "score": hit.score, "payload": hit.payload}
         for hit in results
     ]
+
+
+# ── Async wrappers (non-blocking for async callers) ─────────────────────
+
+async def async_create_collection(
+    collection_name: str,
+    vector_size: int = 1536,
+    distance: Distance = Distance.COSINE,
+) -> None:
+    await asyncio.to_thread(create_collection, collection_name, vector_size, distance)
+
+
+async def async_upsert_vectors(
+    collection_name: str,
+    vectors: list[list[float]],
+    payloads: list[dict[str, Any]],
+    ids: list[str] | None = None,
+) -> None:
+    await asyncio.to_thread(upsert_vectors, collection_name, vectors, payloads, ids)
+
+
+async def async_search_similar(
+    collection_name: str,
+    query_vector: list[float],
+    limit: int = 10,
+    filter_field: str | None = None,
+    filter_value: str | None = None,
+) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(
+        search_similar, collection_name, query_vector, limit, filter_field, filter_value
+    )

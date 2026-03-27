@@ -246,27 +246,6 @@ export default function ReportPage() {
 
   return (
     <>
-      {/* Print-friendly CSS */}
-      <style jsx global>{`
-        @media print {
-          nav, aside, header, footer,
-          [data-no-print],
-          .no-print {
-            display: none !important;
-          }
-          body {
-            font-size: 12pt;
-            color: #000 !important;
-            background: #fff !important;
-          }
-          .print-break {
-            page-break-before: always;
-          }
-          * {
-            box-shadow: none !important;
-          }
-        }
-      `}</style>
 
       <div className="space-y-8 max-w-5xl mx-auto pb-12">
         {/* ── Top Bar (no-print) ──────────────────────────────────── */}

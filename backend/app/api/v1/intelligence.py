@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +17,8 @@ from app.models.agent_run import AgentRun
 from app.models.competitor import Competitor
 from app.services import brand_service, nats_service
 from sqlalchemy import func
+
+logger = logging.getLogger(__name__)
 
 
 async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: bool = False) -> str:
@@ -44,8 +46,8 @@ async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: b
                 )
                 resp.raise_for_status()
                 return resp.json()["choices"][0]["message"]["content"]
-            except Exception:
-                pass  # Fall through to direct OpenAI
+            except Exception as litellm_exc:
+                logger.warning("LiteLLM call failed, falling back to direct OpenAI: %s", litellm_exc)
 
         # Direct OpenAI fallback
         if not settings.OPENAI_API_KEY:
@@ -61,8 +63,6 @@ async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: b
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -315,7 +315,7 @@ async def trigger_research(
             "brand_id": str(trigger.brand_id),
             "triggered_by": str(current_user.id),
             "params": trigger.params,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
 
@@ -338,7 +338,7 @@ async def trigger_strategy(
             "brand_id": str(trigger.brand_id),
             "triggered_by": str(current_user.id),
             "params": trigger.params,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
 
@@ -361,7 +361,7 @@ async def trigger_content_generation(
             "brand_id": str(trigger.brand_id),
             "triggered_by": str(current_user.id),
             "params": trigger.params,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
 

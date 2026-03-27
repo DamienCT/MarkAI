@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from shared.llm import chat_completion
+from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_json_for_prompt
 from shared.tools.database import get_performance_data, store_adaptations
 
@@ -39,10 +39,7 @@ async def analyze_patterns(state: EvaluationState) -> dict[str, Any]:
         {"role": "user", "content": f"Performance data (last 30 days):\n{sanitize_json_for_prompt(perf_data)}"},
     ]
     result = await chat_completion(prompt, temperature=0.3)
-    try:
-        patterns = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        patterns = {"raw_analysis": result}
+    patterns = parse_llm_json(result, fallback={"raw_analysis": result})
 
     return {"patterns": patterns}
 
@@ -62,10 +59,7 @@ async def generate_recommendations(state: EvaluationState) -> dict[str, Any]:
         {"role": "user", "content": f"Performance patterns:\n{sanitize_json_for_prompt(patterns, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.4)
-    try:
-        recommendations = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        recommendations = [{"title": "Analysis complete", "description": result, "confidence": 0.5}]
+    recommendations = parse_llm_json(result, fallback=[{"title": "Analysis complete", "description": result, "confidence": 0.5}])
 
     return {"recommendations": recommendations}
 
@@ -90,12 +84,7 @@ async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
         {"role": "user", "content": f"Recommendations:\n{sanitize_json_for_prompt(recommendations, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.2)
-    try:
-        classified = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        classified = [
-            {**r, "tier": 2} for r in recommendations
-        ]
+    classified = parse_llm_json(result, fallback=[{**r, "tier": 2} for r in recommendations])
 
     return {"adaptations": classified}
 

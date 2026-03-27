@@ -19,7 +19,7 @@ export function AssetPreview({ url, alt = "Asset" }: AssetPreviewProps) {
           {isVideo ? (
             <video src={url} className="h-full w-full object-cover" muted />
           ) : (
-            <img src={url} alt={alt} className="h-full w-full object-cover" />
+            <img src={url} alt={alt} className="h-full w-full object-cover" loading="lazy" />
           )}
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
             <ZoomIn className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -30,7 +30,7 @@ export function AssetPreview({ url, alt = "Asset" }: AssetPreviewProps) {
         {isVideo ? (
           <video src={url} controls className="w-full" />
         ) : (
-          <img src={url} alt={alt} className="w-full" />
+          <img src={url} alt={alt} className="w-full" loading="lazy" />
         )}
       </DialogContent>
     </Dialog>

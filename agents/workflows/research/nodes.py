@@ -6,12 +6,12 @@ import json
 import logging
 from typing import Any
 
-from shared.llm import chat_completion, get_embedding
+from shared.llm import chat_completion, get_embedding, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.browser import crawl_site, extract_page
 from shared.tools.social import get_social_profiles, get_engagement_data
 from shared.tools.database import get_brand, get_brand_config, store_competitors
-from shared.tools.vector import create_collection, upsert_vectors
+from shared.tools.vector import create_collection, upsert_vectors, async_create_collection, async_upsert_vectors
 from shared.tools.web_search import web_search
 
 from workflows.research.state import ResearchState
@@ -104,10 +104,7 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
     competitor_text = await chat_completion(identify_prompt, temperature=0.3)
 
     # Parse competitor list
-    try:
-        competitors = json.loads(competitor_text.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        competitors = []
+    competitors = parse_llm_json(competitor_text, fallback=[])
 
     # If LLM couldn't identify competitors (e.g. no website data), do targeted web searches
     if not competitors or len(competitors) < 3:
@@ -142,7 +139,7 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
             ]
             try:
                 filtered_text = await chat_completion(filter_prompt, temperature=0.2)
-                filtered = json.loads(filtered_text.strip().strip("```json").strip("```"))
+                filtered = parse_llm_json(filtered_text, fallback=[])
                 if isinstance(filtered, list) and filtered:
                     competitors = filtered
             except Exception:
@@ -195,10 +192,7 @@ async def identify_gaps(state: ResearchState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.4)
-    try:
-        gaps = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        gaps = [{"category": "general", "description": result, "opportunity": "", "priority": "medium"}]
+    gaps = parse_llm_json(result, fallback=[{"category": "general", "description": result, "opportunity": "", "priority": "medium"}])
 
     return {"gaps": gaps}
 
@@ -214,10 +208,7 @@ async def build_personas(state: ResearchState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.5)
-    try:
-        personas = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        personas = [{"name": "Primary Audience", "description": result}]
+    personas = parse_llm_json(result, fallback=[{"name": "Primary Audience", "description": result}])
 
     return {"personas": personas}
 
@@ -242,7 +233,7 @@ async def store_results(state: ResearchState) -> dict[str, Any]:
 
     # Try vector store but don't fail if Qdrant is down
     try:
-        create_collection("brand_research", vector_size=1536)
+        await async_create_collection("brand_research", vector_size=1536)
         texts_to_embed = []
         payloads_list = []
         for gap in state.get("gaps", []):
@@ -255,7 +246,7 @@ async def store_results(state: ResearchState) -> dict[str, Any]:
             payloads_list.append({"brand_id": brand_id, "type": "persona", "data": persona})
         if texts_to_embed:
             vectors = [await get_embedding(t) for t in texts_to_embed]
-            upsert_vectors("brand_research", vectors, payloads_list)
+            await async_upsert_vectors("brand_research", vectors, payloads_list)
     except Exception as exc:
         logger.warning("Qdrant vector store failed (non-fatal): %s", exc)
 

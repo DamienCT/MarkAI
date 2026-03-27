@@ -33,9 +33,15 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
+# I-H6: Run as non-root user
+RUN adduser --system --uid 1001 appuser
+
 COPY alembic.ini .
 COPY alembic/ alembic/
 COPY app/ app/
+
+RUN chown -R appuser /app
+USER appuser
 
 EXPOSE 8000
 

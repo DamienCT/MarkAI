@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { Info, Eye } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -76,7 +76,9 @@ export default function PromptsPage() {
     }
   };
 
-  const handleWeightChange = async (id: string, weight: number) => {
+  const weightDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleWeightChange = useCallback(async (id: string, weight: number) => {
     try {
       await api.patch(`/api/v1/prompts/${id}`, { a_b_weight: weight });
       setPrompts((prev) =>
@@ -87,7 +89,19 @@ export default function PromptsPage() {
       const detail = (err as { detail?: string })?.detail || "Failed to update weight";
       toast.error(detail);
     }
-  };
+  }, []);
+
+  const debouncedWeightChange = useCallback((id: string, weight: number) => {
+    // Update local state immediately for responsiveness
+    setPrompts((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, a_b_weight: weight } : p))
+    );
+    // Debounce the API call by 300ms
+    if (weightDebounceRef.current) clearTimeout(weightDebounceRef.current);
+    weightDebounceRef.current = setTimeout(() => {
+      handleWeightChange(id, weight);
+    }, 300);
+  }, [handleWeightChange]);
 
   const handleToggleActive = async (id: string, isActive: boolean) => {
     try {
@@ -223,7 +237,10 @@ export default function PromptsPage() {
                               min={0}
                               max={100}
                               value={Math.round(prompt.a_b_weight * 100)}
-                              onChange={(e) => handleWeightChange(prompt.id, parseInt(e.target.value) / 100)}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value, 10);
+                                if (!isNaN(val)) debouncedWeightChange(prompt.id, val / 100);
+                              }}
                               className="w-20 h-8"
                             />
                             <span className="text-xs text-muted-foreground">%</span>

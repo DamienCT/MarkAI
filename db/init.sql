@@ -9,7 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE TABLE users (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     entra_object_id VARCHAR(255) UNIQUE NOT NULL,
-    email           VARCHAR(320) NOT NULL UNIQUE,
+    email           VARCHAR(255) NOT NULL UNIQUE,
     display_name    VARCHAR(255) NOT NULL,
     avatar_url      TEXT,
     role            VARCHAR(50) NOT NULL DEFAULT 'viewer'
@@ -20,8 +20,7 @@ CREATE TABLE users (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_users_email ON users (email);
-CREATE INDEX idx_users_entra_object_id ON users (entra_object_id);
+-- idx_users_email and idx_users_entra_object_id removed: UNIQUE constraints already create indexes
 CREATE INDEX idx_users_role ON users (role);
 
 -- ── Brands ──────────────────────────────────────────────────────
@@ -30,10 +29,11 @@ CREATE TABLE brands (
     name            VARCHAR(255) NOT NULL,
     slug            VARCHAR(255) NOT NULL UNIQUE,
     description     TEXT,
+    website_url     TEXT,
     logo_url        TEXT,
     brand_guidelines JSONB DEFAULT '{}',
     tone_of_voice   TEXT,
-    target_audience JSONB DEFAULT '[]',
+    target_audience JSONB DEFAULT '{}',
     color_palette   JSONB DEFAULT '{}',
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
     is_bc_linked    BOOLEAN NOT NULL DEFAULT FALSE,
@@ -44,7 +44,7 @@ CREATE TABLE brands (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_brands_slug ON brands (slug);
+-- idx_brands_slug removed: UNIQUE constraint already creates an index
 CREATE INDEX idx_brands_created_by ON brands (created_by);
 CREATE INDEX idx_brands_bc_company ON brands (bc_company);
 
@@ -53,14 +53,14 @@ CREATE TABLE products (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     brand_id            UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     bc_item_no          VARCHAR(50),
-    bc_item_category    VARCHAR(100),
+    bc_item_category    VARCHAR(255),
     name                VARCHAR(500) NOT NULL,
     description         TEXT,
     short_description   TEXT,
-    sku                 VARCHAR(100),
-    barcode             VARCHAR(100),
-    unit_price          NUMERIC(15,2),
-    currency            VARCHAR(3) DEFAULT 'MUR',
+    sku                 VARCHAR(255),
+    barcode             VARCHAR(255),
+    unit_price          NUMERIC(12,2),
+    currency            VARCHAR(255) DEFAULT 'MUR',
     category            VARCHAR(255),
     subcategory         VARCHAR(255),
     attributes          JSONB DEFAULT '{}',
@@ -68,7 +68,7 @@ CREATE TABLE products (
     image_urls          JSONB DEFAULT '[]',
     primary_image_url   TEXT,
     vendor_name         VARCHAR(255),
-    vendor_no           VARCHAR(50),
+    vendor_no           VARCHAR(255),
     bc_company          VARCHAR(255),
     bc_location         VARCHAR(255),
     remaining_qty       DECIMAL(12,2),
@@ -93,7 +93,7 @@ CREATE INDEX idx_products_tags ON products USING GIN (tags);
 CREATE TABLE campaigns (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
-    name            VARCHAR(500) NOT NULL,
+    name            VARCHAR(255) NOT NULL,
     description     TEXT,
     objective       VARCHAR(100) CHECK (objective IN (
                         'awareness', 'engagement', 'traffic', 'conversions',
@@ -135,7 +135,7 @@ CREATE TABLE calendar_items (
     published_at    TIMESTAMPTZ,
     status          VARCHAR(50) NOT NULL DEFAULT 'queued'
                     CHECK (status IN ('queued', 'working', 'in_review', 'reworking',
-                                       'approved', 'scheduled', 'published', 'failed')),
+                                       'approved', 'scheduled', 'publishing', 'published', 'failed')),
     assigned_to     UUID REFERENCES users(id),
     product_ids     UUID[] DEFAULT '{}',
     tags            TEXT[] DEFAULT '{}',
@@ -160,7 +160,7 @@ CREATE TABLE content (
     brand_id            UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     version             INTEGER NOT NULL DEFAULT 1,
     body_text           TEXT,
-    headline            VARCHAR(500),
+    headline            VARCHAR(255),
     caption             TEXT,
     hashtags            TEXT[] DEFAULT '{}',
     cta_text            VARCHAR(255),
@@ -171,7 +171,7 @@ CREATE TABLE content (
     platform_metadata   JSONB DEFAULT '{}',
     platform_post_id    VARCHAR(255),
     ai_generated        BOOLEAN NOT NULL DEFAULT FALSE,
-    ai_model            VARCHAR(100),
+    ai_model            VARCHAR(255),
     ai_prompt_version   UUID,
     generation_metadata JSONB DEFAULT '{}',
     is_current          BOOLEAN NOT NULL DEFAULT TRUE,
@@ -316,7 +316,7 @@ CREATE TABLE adaptations (
     adapted_hashtags    TEXT[] DEFAULT '{}',
     adapted_media       JSONB DEFAULT '[]',
     adaptation_notes    TEXT,
-    ai_model            VARCHAR(100),
+    ai_model            VARCHAR(255),
     status              VARCHAR(50) NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued', 'working', 'in_review', 'reworking',
                                            'approved', 'scheduled', 'published', 'failed')),

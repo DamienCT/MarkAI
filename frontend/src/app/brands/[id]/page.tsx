@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { BrandOnboarding } from "@/components/brand/BrandOnboarding";
 import { api, apiUrl } from "@/lib/api";
 import type { Brand, Content, EngagementMetrics, Channel, Product, AgentRun } from "@/types";
@@ -99,16 +100,6 @@ interface LogoInfo {
   filename?: string;
 }
 
-interface ResearchReport {
-  id: string;
-  brand_id: string;
-  agent_type: string;
-  status: string;
-  started_at: string;
-  completed_at?: string;
-  output_payload?: Record<string, unknown>;
-}
-
 interface CompetitorData {
   id: string;
   name: string;
@@ -139,7 +130,7 @@ export default function BrandDetailPage() {
   const [selectedLogoLabel, setSelectedLogoLabel] = useState("primary");
 
   // Intelligence state
-  const [research, setResearch] = useState<ResearchReport[]>([]);
+  const [research, setResearch] = useState<AgentRun[]>([]);
   const [competitors, setCompetitors] = useState<CompetitorData[]>([]);
   const [loadingIntel, setLoadingIntel] = useState(false);
   const [triggeringWorkflow, setTriggeringWorkflow] = useState<string | null>(null);
@@ -167,6 +158,9 @@ export default function BrandDetailPage() {
 
   // Onboarding dialog state
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+
+  // Delete confirmation dialog state
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   // Agent Pipeline state
   const [pipelineRuns, setPipelineRuns] = useState<AgentRun[]>([]);
@@ -219,12 +213,12 @@ export default function BrandDetailPage() {
     setLoadingIntel(true);
     try {
       const [runsData, compData] = await Promise.allSettled([
-        api.get<ResearchReport[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }),
+        api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }),
         api.get<{ competitors: CompetitorData[] }>(`/api/v1/intelligence/research/${brandId}`),
       ]);
       if (runsData.status === "fulfilled") {
         setResearch(runsData.value);
-        setPipelineRuns(runsData.value as unknown as AgentRun[]);
+        setPipelineRuns(runsData.value);
       }
       if (compData.status === "fulfilled") {
         setCompetitors(compData.value.competitors || []);
@@ -241,10 +235,10 @@ export default function BrandDetailPage() {
     const hasRunning = research.some((r) => r.status === "running" || r.status === "pending");
     if (!hasRunning || (activeTab !== "intelligence" && activeTab !== "overview")) return;
     const interval = setInterval(() => {
-      api.get<ResearchReport[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 })
+      api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 })
         .then((runs) => {
           setResearch(runs);
-          setPipelineRuns(runs as unknown as AgentRun[]);
+          setPipelineRuns(runs);
         })
         .catch(() => {});
     }, 5000);
@@ -377,7 +371,6 @@ export default function BrandDetailPage() {
   }, [brandId, channelConfigs]);
 
   const handleDelete = useCallback(async () => {
-    if (!confirm("Are you sure you want to delete this brand? This action cannot be undone.")) return;
     try {
       await api.delete(`/api/v1/brands/${brandId}`);
       toast.success("Brand deleted");
@@ -693,6 +686,7 @@ export default function BrandDetailPage() {
                 src={apiUrl(brand.logo_url)}
                 alt={brand.name}
                 className="h-10 w-10 rounded-lg object-cover border"
+                loading="lazy"
               />
             )}
             <div>
@@ -711,7 +705,7 @@ export default function BrandDetailPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="destructive" size="sm" onClick={handleDelete}>
+          <Button variant="destructive" size="sm" onClick={() => setDeleteConfirmOpen(true)}>
             <Trash2 className="mr-2 h-4 w-4" />
             Delete
           </Button>
@@ -862,6 +856,17 @@ export default function BrandDetailPage() {
           />
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title="Delete Brand"
+        description="Are you sure you want to delete this brand? This action cannot be undone."
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

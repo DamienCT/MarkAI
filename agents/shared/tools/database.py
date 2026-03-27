@@ -310,8 +310,9 @@ async def upsert_product(product: dict[str, Any]) -> str:
                 "vendor_no, unit_price, bc_company, bc_location, remaining_qty, is_active) "
                 "VALUES (:brand_id, :bc_item_no, :name, :description, :category, "
                 ":vendor_no, :unit_price, :bc_company, :bc_location, :remaining_qty, true) "
-                "ON CONFLICT (id) DO UPDATE SET "
-                "name = EXCLUDED.name, remaining_qty = EXCLUDED.remaining_qty, updated_at = NOW() "
+                "ON CONFLICT (brand_id, bc_item_no) DO UPDATE SET "
+                "name = EXCLUDED.name, description = EXCLUDED.description, "
+                "remaining_qty = EXCLUDED.remaining_qty, updated_at = NOW() "
                 "RETURNING id"
             ),
             product,
@@ -402,26 +403,55 @@ async def get_performance_data(brand_id: str, days: int = 30) -> list[dict[str, 
 
 
 async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
+    """Store adaptations from the evaluation workflow.
+
+    Accepts records with either the evaluation-node schema
+    (brand_id, tier, description, confidence, data, status) or the
+    legacy content-adaptation schema (source_content_id, target_channel, ...).
+    """
     ids: list[str] = []
     async with async_session_factory() as session:
         for a in adaptations:
             adapt_id = str(uuid4())
-            await session.execute(
-                text(
-                    "INSERT INTO adaptations (id, source_content_id, target_channel, "
-                    "adapted_text, adapted_headline, adaptation_notes, status) "
-                    "VALUES (:id, :source_content_id, :target_channel, "
-                    ":adapted_text, :adapted_headline, :notes, 'proposed')"
-                ),
-                {
-                    "id": adapt_id,
-                    "source_content_id": a.get("source_content_id"),
-                    "target_channel": a.get("target_channel", "instagram"),
-                    "adapted_text": a.get("adapted_text", ""),
-                    "adapted_headline": a.get("adapted_headline", ""),
-                    "notes": a.get("notes", ""),
-                },
-            )
+
+            # Detect which schema the caller is using
+            if "brand_id" in a and "tier" in a:
+                # Evaluation-node schema
+                await session.execute(
+                    text(
+                        "INSERT INTO adaptations (id, brand_id, tier, description, "
+                        "confidence, data, status) "
+                        "VALUES (:id, :brand_id, :tier, :description, "
+                        ":confidence, :data, :status)"
+                    ),
+                    {
+                        "id": adapt_id,
+                        "brand_id": a.get("brand_id"),
+                        "tier": a.get("tier", 2),
+                        "description": a.get("description", ""),
+                        "confidence": a.get("confidence", 0.5),
+                        "data": a.get("data", "{}"),
+                        "status": a.get("status", "pending"),
+                    },
+                )
+            else:
+                # Legacy content-adaptation schema
+                await session.execute(
+                    text(
+                        "INSERT INTO adaptations (id, source_content_id, target_channel, "
+                        "adapted_text, adapted_headline, adaptation_notes, status) "
+                        "VALUES (:id, :source_content_id, :target_channel, "
+                        ":adapted_text, :adapted_headline, :notes, 'proposed')"
+                    ),
+                    {
+                        "id": adapt_id,
+                        "source_content_id": a.get("source_content_id"),
+                        "target_channel": a.get("target_channel", "instagram"),
+                        "adapted_text": a.get("adapted_text", ""),
+                        "adapted_headline": a.get("adapted_headline", ""),
+                        "notes": a.get("notes", ""),
+                    },
+                )
             ids.append(adapt_id)
         await session.commit()
     return ids

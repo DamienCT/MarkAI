@@ -14,7 +14,7 @@ router = APIRouter()
 
 @router.get("/")
 async def list_approvals(
-    status: str | None = None,
+    status_filter: str | None = None,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
@@ -23,17 +23,16 @@ async def list_approvals(
     """List approvals, optionally filtered by status."""
     from sqlalchemy import select, func
     from app.models.approval import Approval
-    from fastapi.responses import JSONResponse
 
     # Count total
     count_stmt = select(func.count(Approval.id))
-    if status:
-        count_stmt = count_stmt.where(Approval.status == status)
+    if status_filter:
+        count_stmt = count_stmt.where(Approval.status == status_filter)
     total = (await db.execute(count_stmt)).scalar() or 0
 
     stmt = select(Approval).order_by(Approval.created_at.desc()).offset(skip).limit(limit)
-    if status:
-        stmt = stmt.where(Approval.status == status)
+    if status_filter:
+        stmt = stmt.where(Approval.status == status_filter)
     result = await db.execute(stmt)
     items = result.scalars().all()
 

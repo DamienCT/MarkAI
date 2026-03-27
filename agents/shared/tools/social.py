@@ -26,7 +26,7 @@ async def ig_get_profile(ig_user_id: str) -> dict[str, Any]:
             f"{_IG_BASE}/{ig_user_id}",
             params={
                 "fields": "id,username,name,biography,followers_count,follows_count,media_count,profile_picture_url,website",
-                "access_token": settings.INSTAGRAM_ACCESS_TOKEN,
+                "access_token": settings.META_ACCESS_TOKEN,
             },
         )
         resp.raise_for_status()
@@ -41,7 +41,7 @@ async def ig_get_recent_posts(ig_user_id: str, limit: int = 25) -> list[dict[str
             params={
                 "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count",
                 "limit": limit,
-                "access_token": settings.INSTAGRAM_ACCESS_TOKEN,
+                "access_token": settings.META_ACCESS_TOKEN,
             },
         )
         resp.raise_for_status()
@@ -56,7 +56,7 @@ async def ig_get_post_insights(media_id: str) -> dict[str, Any]:
             f"{_IG_BASE}/{media_id}/insights",
             params={
                 "metric": "impressions,reach,engagement,saved",
-                "access_token": settings.INSTAGRAM_ACCESS_TOKEN,
+                "access_token": settings.META_ACCESS_TOKEN,
             },
         )
         resp.raise_for_status()
@@ -73,7 +73,7 @@ async def fb_get_page(page_id: str) -> dict[str, Any]:
             f"{_FB_BASE}/{page_id}",
             params={
                 "fields": "id,name,about,fan_count,followers_count,category,website,link",
-                "access_token": settings.FACEBOOK_ACCESS_TOKEN,
+                "access_token": settings.META_ACCESS_TOKEN,
             },
         )
         resp.raise_for_status()
@@ -89,7 +89,7 @@ async def fb_get_recent_posts(page_id: str, limit: int = 25) -> list[dict[str, A
                 "fields": "id,message,created_time,permalink_url,shares,full_picture,"
                           "reactions.summary(true),comments.summary(true)",
                 "limit": limit,
-                "access_token": settings.FACEBOOK_ACCESS_TOKEN,
+                "access_token": settings.META_ACCESS_TOKEN,
             },
         )
         resp.raise_for_status()
@@ -154,13 +154,13 @@ async def get_social_profiles(
     """Fetch all available social profiles for a brand."""
     profiles: dict[str, Any] = {}
 
-    if ig_user_id and settings.INSTAGRAM_ACCESS_TOKEN:
+    if ig_user_id and settings.META_ACCESS_TOKEN:
         try:
             profiles["instagram"] = await ig_get_profile(ig_user_id)
         except Exception:
             logger.exception("Failed to fetch Instagram profile")
 
-    if fb_page_id and settings.FACEBOOK_ACCESS_TOKEN:
+    if fb_page_id and settings.META_ACCESS_TOKEN:
         try:
             profiles["facebook"] = await fb_get_page(fb_page_id)
         except Exception:
@@ -184,13 +184,13 @@ async def get_engagement_data(
     """Fetch recent posts and engagement across all platforms."""
     engagement: dict[str, list[dict[str, Any]]] = {}
 
-    if ig_user_id and settings.INSTAGRAM_ACCESS_TOKEN:
+    if ig_user_id and settings.META_ACCESS_TOKEN:
         try:
             engagement["instagram"] = await ig_get_recent_posts(ig_user_id, post_limit)
         except Exception:
             logger.exception("Failed to fetch Instagram posts")
 
-    if fb_page_id and settings.FACEBOOK_ACCESS_TOKEN:
+    if fb_page_id and settings.META_ACCESS_TOKEN:
         try:
             engagement["facebook"] = await fb_get_recent_posts(fb_page_id, post_limit)
         except Exception:

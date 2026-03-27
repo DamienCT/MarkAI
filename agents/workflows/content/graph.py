@@ -18,6 +18,12 @@ from workflows.content.nodes import (
     store_content_node,
 )
 
+
+def _check_failed(state: ContentState) -> str:
+    """Route to END early if a prior node set status='failed'."""
+    return "end" if state.get("status") == "failed" else "continue"
+
+
 builder = StateGraph(ContentState)
 
 builder.add_node("load_context", load_context)
@@ -32,7 +38,7 @@ builder.add_node("generate_mockups", generate_mockups_node)
 builder.add_node("store_content", store_content_node)
 
 builder.set_entry_point("load_context")
-builder.add_edge("load_context", "generate_hook")
+builder.add_conditional_edges("load_context", _check_failed, {"end": END, "continue": "generate_hook"})
 builder.add_edge("generate_hook", "generate_caption")
 builder.add_edge("generate_caption", "generate_hashtags")
 builder.add_edge("generate_hashtags", "source_product_image")

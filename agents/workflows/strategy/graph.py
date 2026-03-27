@@ -16,6 +16,12 @@ from workflows.strategy.nodes import (
     human_review,
 )
 
+
+def _check_failed(state: StrategyState) -> str:
+    """Route to END early if a prior node set status='failed'."""
+    return "end" if state.get("status") == "failed" else "continue"
+
+
 builder = StateGraph(StrategyState)
 
 builder.add_node("load_research", load_research)
@@ -27,7 +33,7 @@ builder.add_node("generate_themes", generate_themes)
 builder.add_node("human_review", human_review)
 
 builder.set_entry_point("load_research")
-builder.add_edge("load_research", "generate_positioning")
+builder.add_conditional_edges("load_research", _check_failed, {"end": END, "continue": "generate_positioning"})
 builder.add_edge("generate_positioning", "define_pillars")
 builder.add_edge("define_pillars", "define_audiences")
 builder.add_edge("define_audiences", "plan_cadence")

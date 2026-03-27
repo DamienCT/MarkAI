@@ -287,7 +287,11 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
     const urlsToValidate = [websiteUrl, ...additionalWebsites].filter(Boolean);
     for (const url of urlsToValidate) {
       try {
-        new URL(url);
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          toast.error(`Invalid URL protocol: ${url}`);
+          return;
+        }
       } catch {
         toast.error(`Invalid URL: ${url}`);
         return;

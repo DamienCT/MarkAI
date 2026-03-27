@@ -52,7 +52,8 @@ class NATSConsumer:
             durable_name=durable_name,
             deliver_policy=DeliverPolicy.ALL,
             ack_policy=AckPolicy.EXPLICIT,
-            ack_wait=300,  # 5 minutes for long-running workflows
+            ack_wait=1860,  # 31 minutes — must exceed WORKFLOW_TIMEOUT (30 min)
+            max_deliver=5,  # after 5 delivery attempts, message is discarded
         )
         sub = await self.js.subscribe(
             subject,

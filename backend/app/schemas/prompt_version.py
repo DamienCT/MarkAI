@@ -2,7 +2,9 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+_VALID_AB_GROUPS = frozenset({"A", "B"})
 
 
 class PromptVersionBase(BaseModel):
@@ -16,6 +18,15 @@ class PromptVersionBase(BaseModel):
     performance_score: Decimal | None = None
     a_b_group: str | None = None
 
+    @field_validator("a_b_group")
+    @classmethod
+    def validate_a_b_group(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_AB_GROUPS:
+            raise ValueError(
+                f"Invalid a_b_group '{v}'. Must be 'A' or 'B'."
+            )
+        return v
+
 
 class PromptVersionCreate(PromptVersionBase):
     pass
@@ -28,6 +39,15 @@ class PromptVersionUpdate(BaseModel):
     is_active: bool | None = None
     performance_score: Decimal | None = None
     a_b_group: str | None = None
+
+    @field_validator("a_b_group")
+    @classmethod
+    def validate_a_b_group(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_AB_GROUPS:
+            raise ValueError(
+                f"Invalid a_b_group '{v}'. Must be 'A' or 'B'."
+            )
+        return v
 
 
 class PromptVersionResponse(PromptVersionBase):

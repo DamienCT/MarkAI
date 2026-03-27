@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -37,7 +37,7 @@ async def upsert_engagement(
         engagement_rate=metrics.get("engagement_rate"),
         sentiment_score=metrics.get("sentiment_score"),
         raw_metrics=metrics,
-        fetched_at=datetime.now(),
+        fetched_at=datetime.now(timezone.utc),
     )
     db.add(em)
     await db.commit()
@@ -51,7 +51,7 @@ async def pull_all_engagement() -> None:
     logger.info("Starting engagement pull for all published content")
 
     async with async_session_factory() as db:
-        cutoff = datetime.now() - timedelta(days=30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
         # Find calendar items that are published within the last 30 days
         result = await db.execute(
             select(CalendarItem)
@@ -81,17 +81,20 @@ async def pull_all_engagement() -> None:
             brand = content.brand
             guidelines = brand.brand_guidelines or {}
             creds = guidelines.get("social_credentials", {})
+            # Also check per-channel config (same pattern as publish_service)
+            channels_cfg = guidelines.get("channels", {})
+            ch_cfg = channels_cfg.get(channel, {})
 
             try:
                 if channel == "instagram":
-                    token = creds.get("meta_access_token", "")
+                    token = ch_cfg.get("access_token") or creds.get("meta_access_token", "")
                     metrics = await pull_instagram_insights(content, token)
                 elif channel == "facebook":
-                    token = creds.get("meta_access_token", "")
+                    token = ch_cfg.get("access_token") or creds.get("meta_access_token", "")
                     metrics = await pull_facebook_insights(content, token)
                 elif channel == "linkedin":
-                    token = creds.get("linkedin_access_token", "")
-                    org_id = creds.get("linkedin_org_id", "")
+                    token = ch_cfg.get("access_token") or creds.get("linkedin_access_token", "")
+                    org_id = ch_cfg.get("org_id") or creds.get("linkedin_org_id", "")
                     metrics = await pull_linkedin_insights(content, token, org_id)
                 else:
                     continue

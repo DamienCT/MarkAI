@@ -60,7 +60,7 @@ export default function SystemPage() {
         if (queueData.status === "fulfilled") setQueues(queueData.value);
         if (brandsData.status === "fulfilled") setBrands(brandsData.value);
       } catch {
-        // Handle error
+        toast.error("Failed to load system data");
       } finally {
         setLoading(false);
       }

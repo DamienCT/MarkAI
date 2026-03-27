@@ -6,8 +6,10 @@ SQL queries against the Fabric Lakehouse SQL endpoint via pyodbc.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import struct
+import time
 from typing import Any
 
 import httpx
@@ -19,11 +21,18 @@ logger = logging.getLogger(__name__)
 
 _token_cache: dict[str, Any] = {}
 
+# Token cache expiry: 50 minutes (tokens are typically valid for 60 min)
+_TOKEN_EXPIRY_SECONDS = 50 * 60
+
 
 async def _get_sql_token() -> str:
-    """Obtain an access token for the Fabric SQL endpoint."""
+    """Obtain an access token for the Fabric SQL endpoint.
+
+    Caches the token for 50 minutes (tokens are typically valid for 60 min).
+    """
     cached = _token_cache.get("sql_token")
-    if cached:
+    cached_at = _token_cache.get("sql_token_time", 0)
+    if cached and (time.time() - cached_at) < _TOKEN_EXPIRY_SECONDS:
         return cached
 
     token_url = f"https://login.microsoftonline.com/{settings.FABRIC_TENANT_ID}/oauth2/v2.0/token"
@@ -38,6 +47,7 @@ async def _get_sql_token() -> str:
         token = resp.json()["access_token"]
 
     _token_cache["sql_token"] = token
+    _token_cache["sql_token_time"] = time.time()
     return token
 
 
@@ -61,16 +71,8 @@ def _get_connection(token: str) -> pyodbc.Connection:
     return pyodbc.connect(conn_str, attrs_before={1256: token_struct})
 
 
-async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str, Any]]:
-    """Execute a SQL query against the Fabric Lakehouse SQL endpoint and return rows."""
-    token = await _get_sql_token()
-    try:
-        conn = _get_connection(token)
-    except pyodbc.Error:
-        invalidate_token_cache()
-        token = await _get_sql_token()
-        conn = _get_connection(token)
-
+def _execute_sql_sync(conn: pyodbc.Connection, query: str, params: tuple | None = None) -> list[dict[str, Any]]:
+    """Execute a SQL query synchronously (runs in a thread)."""
     try:
         cursor = conn.cursor()
         if params:
@@ -84,6 +86,19 @@ async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str,
         return result
     finally:
         conn.close()
+
+
+async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str, Any]]:
+    """Execute a SQL query against the Fabric Lakehouse SQL endpoint and return rows."""
+    token = await _get_sql_token()
+    try:
+        conn = await asyncio.to_thread(_get_connection, token)
+    except pyodbc.Error:
+        invalidate_token_cache()
+        token = await _get_sql_token()
+        conn = await asyncio.to_thread(_get_connection, token)
+
+    return await asyncio.to_thread(_execute_sql_sync, conn, query, params)
 
 
 async def get_product_image_from_bc(product_sku: str) -> str | None:

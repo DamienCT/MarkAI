@@ -19,8 +19,6 @@ import { api } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 import type { Notification } from "@/types";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 interface HeaderProps {
   title?: string;
   breadcrumbs?: { label: string; href?: string }[];
@@ -32,7 +30,6 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -46,73 +43,30 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
     }
   }, []);
 
-  const startPollingFallback = useCallback(() => {
-    // Don't start if already polling
-    if (pollingRef.current) return;
+  useEffect(() => {
+    // Poll for notifications every 30 seconds using the authed api client
+    // (EventSource does not support custom Authorization headers)
     fetchNotifications();
     pollingRef.current = setInterval(fetchNotifications, 30000);
-  }, [fetchNotifications]);
-
-  const stopPolling = useCallback(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    // Try SSE first, fall back to polling
-    let es: EventSource | null = null;
-
-    try {
-      const sseUrl = `${API_BASE_URL}/api/v1/notifications/stream`;
-      es = new EventSource(sseUrl);
-      eventSourceRef.current = es;
-
-      es.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          // Map the SSE payload to our Notification type
-          const mapped: Notification[] = (data.notifications || []).map(
-            (n: Record<string, unknown>) => ({
-              id: n.id as string,
-              user_id: "",
-              type: (n.notification_type as string) || "",
-              title: (n.title as string) || "",
-              message: (n.body as string) || "",
-              read: !!(n.is_read),
-              action_url: undefined,
-              created_at: (n.created_at as string) || "",
-            })
-          );
-          setNotifications(mapped);
-          setUnreadCount(data.unread_count ?? mapped.length);
-        } catch {
-          // Ignore parse errors
-        }
-      };
-
-      es.onerror = () => {
-        // SSE failed, close and fall back to polling
-        es?.close();
-        eventSourceRef.current = null;
-        startPollingFallback();
-      };
-    } catch {
-      // EventSource constructor failed, fall back to polling
-      startPollingFallback();
-    }
 
     return () => {
-      es?.close();
-      eventSourceRef.current = null;
-      stopPolling();
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
     };
-  }, [startPollingFallback, stopPolling]);
+  }, [fetchNotifications]);
 
-  const handleMarkAllRead = () => {
-    setNotifications([]);
-    setUnreadCount(0);
+  const handleMarkAllRead = async () => {
+    try {
+      await api.post("/api/v1/notifications/mark-read");
+      setNotifications([]);
+      setUnreadCount(0);
+    } catch {
+      // Silently fail — clear local state anyway so the UI feels responsive
+      setNotifications([]);
+      setUnreadCount(0);
+    }
   };
 
   const initials = session?.user?.name

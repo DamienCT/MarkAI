@@ -14,10 +14,10 @@ import { formatRelativeTime } from "@/lib/utils";
 
 interface ResearchReport {
   id: string;
-  brand_id: string;
+  brand_id?: string;
   agent_type: string;
   status: string;
-  started_at: string;
+  started_at?: string;
   completed_at?: string;
   output_payload?: Record<string, unknown>;
 }
@@ -80,7 +80,7 @@ export function IntelligenceTab({
             const latestByType: Record<string, ResearchReport> = {};
             for (const run of research) {
               const t = run.agent_type;
-              if (!latestByType[t] || new Date(run.started_at) > new Date(latestByType[t].started_at)) {
+              if (!latestByType[t] || (run.started_at && (!latestByType[t].started_at || new Date(run.started_at) > new Date(latestByType[t].started_at)))) {
                 latestByType[t] = run;
               }
             }

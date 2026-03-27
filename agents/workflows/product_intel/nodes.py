@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from shared.llm import chat_completion
+from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.browser import extract_page
 from shared.tools.database import get_products, upsert_product
@@ -62,10 +62,7 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
         {"role": "user", "content": f"Vendor groups:\n{sanitize_json_for_prompt({v: [{'name': p['name'], 'sku': p.get('sku')} for p in ps[:20]] for v, ps in vendor_groups.items()}, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.3)
-    try:
-        brand_mappings = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        brand_mappings = {v: [{"brand_name": v, "product_count": len(ps)}] for v, ps in vendor_groups.items()}
+    brand_mappings = parse_llm_json(result, fallback={v: [{"brand_name": v, "product_count": len(ps)}] for v, ps in vendor_groups.items()})
 
     return {"products": products, "brand_mappings": brand_mappings}
 
@@ -99,10 +96,7 @@ async def research_brand(state: ProductIntelState) -> dict[str, Any]:
                         {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nWebsite data:\n{sanitize_json_for_prompt(page_data, max_length=5000)}"},
                     ]
                     analysis = await chat_completion(prompt, temperature=0.3)
-                    try:
-                        brand_data = json.loads(analysis.strip().strip("```json").strip("```"))
-                    except json.JSONDecodeError:
-                        brand_data = {"description": analysis}
+                    brand_data = parse_llm_json(analysis, fallback={"description": analysis})
 
                     brand_info.update(brand_data)
                     brand_info["brand_website"] = website
@@ -132,10 +126,7 @@ async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
         )},
     ]
     result = await chat_completion(prompt, temperature=0.2, max_tokens=8192)
-    try:
-        matched = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        matched = []
+    matched = parse_llm_json(result, fallback=[])
 
     # Update products in DB
     for match in matched:
@@ -209,9 +200,6 @@ async def flag_promotable(state: ProductIntelState) -> dict[str, Any]:
         {"role": "user", "content": f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in candidates[:50]], max_length=6000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.4)
-    try:
-        promotable = json.loads(result.strip().strip("```json").strip("```"))
-    except json.JSONDecodeError:
-        promotable = []
+    promotable = parse_llm_json(result, fallback=[])
 
     return {"promotable_items": promotable, "status": "completed"}

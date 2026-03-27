@@ -13,6 +13,12 @@ from workflows.evaluation.nodes import (
     store_adaptations_node,
 )
 
+
+def _check_failed(state: EvaluationState) -> str:
+    """Route to END early if a prior node set status='failed'."""
+    return "end" if state.get("status") == "failed" else "continue"
+
+
 builder = StateGraph(EvaluationState)
 
 builder.add_node("load_performance", load_performance)
@@ -22,7 +28,7 @@ builder.add_node("classify_adaptations", classify_adaptations)
 builder.add_node("store_adaptations", store_adaptations_node)
 
 builder.set_entry_point("load_performance")
-builder.add_edge("load_performance", "analyze_patterns")
+builder.add_conditional_edges("load_performance", _check_failed, {"end": END, "continue": "analyze_patterns"})
 builder.add_edge("analyze_patterns", "generate_recommendations")
 builder.add_edge("generate_recommendations", "classify_adaptations")
 builder.add_edge("classify_adaptations", "store_adaptations")

@@ -13,6 +13,12 @@ from workflows.planning.nodes import (
     store_calendar,
 )
 
+
+def _check_failed(state: PlanningState) -> str:
+    """Route to END early if a prior node set status='failed'."""
+    return "end" if state.get("status") == "failed" else "continue"
+
+
 builder = StateGraph(PlanningState)
 
 builder.add_node("load_strategy", load_strategy)
@@ -22,7 +28,7 @@ builder.add_node("assign_products", assign_products)
 builder.add_node("store_calendar", store_calendar)
 
 builder.set_entry_point("load_strategy")
-builder.add_edge("load_strategy", "generate_campaigns")
+builder.add_conditional_edges("load_strategy", _check_failed, {"end": END, "continue": "generate_campaigns"})
 builder.add_edge("generate_campaigns", "generate_calendar")
 builder.add_edge("generate_calendar", "assign_products")
 builder.add_edge("assign_products", "store_calendar")

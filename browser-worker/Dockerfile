@@ -18,7 +18,14 @@ COPY --from=builder /install /usr/local
 # Install Playwright Chromium and its OS-level dependencies
 RUN playwright install chromium --with-deps
 
+# I-H6: Run as non-root user
+# Playwright browser cache is installed as root above; grant read access to appuser
+RUN adduser --system --uid 1001 appuser
+
 COPY app/ app/
+
+RUN chown -R appuser /app
+USER appuser
 
 EXPOSE 8001
 

@@ -65,8 +65,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
-_cors_origins = [settings.FRONTEND_URL] if settings.FRONTEND_URL else ["*"]
+# CORS — never combine allow_origins=["*"] with allow_credentials=True
+_frontend_url = settings.FRONTEND_URL or "http://localhost:3000"
+_cors_origins = [_frontend_url]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -90,10 +91,11 @@ async def global_exception_handler(request: Request, exc: Exception):
         if not any(s in line.lower() for s in ("secret", "password", "api_key", "token", "credential"))
     )
     logger.error("Unhandled exception on %s %s: %s\n%s", request.method, request.url.path, type(exc).__name__, sanitized_tb)
-    origin = request.headers.get("origin", "")
+    # Use configured CORS origins instead of echoing the request's Origin header
     headers = {}
-    if origin:
-        headers["access-control-allow-origin"] = origin
+    _allowed_origin = settings.FRONTEND_URL or "http://localhost:3000"
+    if _allowed_origin:
+        headers["access-control-allow-origin"] = _allowed_origin
         headers["access-control-allow-credentials"] = "true"
     # Never expose internal exception details to the client
     return JSONResponse(

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy import select
@@ -76,7 +76,7 @@ async def resolve_approval(
 
     approval.status = decision.status
     approval.feedback = decision.feedback
-    approval.decided_at = datetime.now()
+    approval.decided_at = datetime.now(timezone.utc)
 
     # Update the associated calendar item status based on the decision
     if approval.calendar_item_id:
