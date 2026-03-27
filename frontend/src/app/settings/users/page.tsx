@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { api } from "@/lib/api";
 import { formatDate, formatRelativeTime } from "@/lib/utils";
 
-// Match the backend UserResponse schema exactly
 interface UserFromAPI {
   id: string;
   email: string;
@@ -38,16 +38,10 @@ interface GrantAccessResult {
   errors: string[];
 }
 
-const ADMIN_SECURITY_GROUP_ID = process.env.NEXT_PUBLIC_ADMIN_SECURITY_GROUP_ID || "";
-
 export default function UsersPage() {
   const [users, setUsers] = useState<UserFromAPI[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // Security group members
   const [securityGroupMembers, setSecurityGroupMembers] = useState<Set<string>>(new Set());
-
-  // Search state
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<EntraUser[]>([]);
   const [searching, setSearching] = useState(false);
@@ -60,7 +54,7 @@ export default function UsersPage() {
       const data = await api.get<UserFromAPI[]>("/api/v1/users");
       setUsers(data);
     } catch {
-      // Handle error
+      toast.error("Failed to load users");
     } finally {
       setLoading(false);
     }
@@ -71,7 +65,7 @@ export default function UsersPage() {
       const members = await api.get<string[]>("/api/v1/users/security-group-members");
       setSecurityGroupMembers(new Set(members));
     } catch {
-      // Security group check is optional; ignore errors
+      // Security group check is optional
     }
   }, []);
 
@@ -80,7 +74,6 @@ export default function UsersPage() {
     fetchSecurityGroupMembers();
   }, [fetchUsers, fetchSecurityGroupMembers]);
 
-  // Debounced search
   useEffect(() => {
     if (!searchQuery || searchQuery.length < 2) {
       setSearchResults([]);
@@ -94,6 +87,7 @@ export default function UsersPage() {
         setSearchResults(results);
       } catch {
         setSearchResults([]);
+        toast.error("Search failed");
       } finally {
         setSearching(false);
       }
@@ -105,33 +99,36 @@ export default function UsersPage() {
   const toggleSelection = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   };
 
   const handleGrantAccess = async () => {
-    if (selectedIds.size === 0) return;
+    if (selectedIds.size === 0) {
+      toast.error("Select at least one user");
+      return;
+    }
     setGranting(true);
     try {
       const result = await api.post<GrantAccessResult>("/api/v1/users/grant-access", {
         user_ids: Array.from(selectedIds),
         role: grantRole,
       });
-      if (result.errors.length > 0) {
-        console.warn("Some users could not be granted access:", result.errors);
+      if (result.granted.length > 0) {
+        toast.success(`Access granted to ${result.granted.length} user${result.granted.length !== 1 ? "s" : ""}`);
       }
-      // Refresh user list and clear selection
+      if (result.errors.length > 0) {
+        toast.warning(`${result.errors.length} user${result.errors.length !== 1 ? "s" : ""} could not be added`);
+      }
       setSelectedIds(new Set());
       setSearchQuery("");
       setSearchResults([]);
       await fetchUsers();
-    } catch {
-      // Handle error
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to grant access";
+      toast.error(detail);
     } finally {
       setGranting(false);
     }
@@ -143,8 +140,10 @@ export default function UsersPage() {
       setUsers((prev) =>
         prev.map((u) => (u.id === userId ? { ...u, role: role as UserFromAPI["role"] } : u))
       );
-    } catch {
-      // Handle error
+      toast.success("Role updated");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to update role";
+      toast.error(detail);
     }
   };
 
@@ -154,8 +153,10 @@ export default function UsersPage() {
       setUsers((prev) =>
         prev.map((u) => (u.id === userId ? { ...u, is_active: !isActive } : u))
       );
-    } catch {
-      // Handle error
+      toast.success(isActive ? "User deactivated" : "User activated");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to update user status";
+      toast.error(detail);
     }
   };
 
@@ -172,7 +173,6 @@ export default function UsersPage() {
     );
   }
 
-  // Determine which search results are already existing users
   const existingEntraIds = new Set(users.map((u) => u.entra_id));
 
   return (
@@ -186,9 +186,7 @@ export default function UsersPage() {
       <Card>
         <CardHeader>
           <CardTitle>Add Users from Microsoft Entra ID</CardTitle>
-          <CardDescription>
-            Search for users in your organization and grant them access to MARKAI
-          </CardDescription>
+          <CardDescription>Search for users in your organization and grant them access to MARKAI</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Input
@@ -197,9 +195,7 @@ export default function UsersPage() {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
 
-          {searching && (
-            <p className="text-sm text-muted-foreground">Searching...</p>
-          )}
+          {searching && <p className="text-sm text-muted-foreground">Searching...</p>}
 
           {searchResults.length > 0 && (
             <div className="border rounded-md max-h-64 overflow-y-auto">
@@ -227,25 +223,18 @@ export default function UsersPage() {
                             type="checkbox"
                             checked={isSelected}
                             disabled={alreadyExists}
-                            onChange={(e) => {
-                              e.stopPropagation();
-                              toggleSelection(result.id);
-                            }}
+                            onChange={(e) => { e.stopPropagation(); toggleSelection(result.id); }}
                             onClick={(e) => e.stopPropagation()}
-                            className="h-4 w-4 rounded border-gray-300 cursor-pointer"
+                            className="h-4 w-4 rounded-sm border-gray-300 cursor-pointer"
                           />
                         </TableCell>
                         <TableCell className="font-medium">{result.displayName}</TableCell>
-                        <TableCell className="text-sm">
-                          {result.mail || result.userPrincipalName || "—"}
-                        </TableCell>
+                        <TableCell className="text-sm">{result.mail || result.userPrincipalName || "--"}</TableCell>
                         <TableCell className="text-center">
                           {alreadyExists ? (
                             <Badge variant="outline">Already Added</Badge>
                           ) : securityGroupMembers.has(result.id) ? (
-                            <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                              Security Group
-                            </Badge>
+                            <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">Security Group</Badge>
                           ) : (
                             <span className="text-sm text-muted-foreground">Available</span>
                           )}
@@ -312,19 +301,13 @@ export default function UsersPage() {
                         <Avatar className="h-8 w-8">
                           <AvatarImage src={user.avatar_url || undefined} />
                           <AvatarFallback>
-                            {user.display_name
-                              .split(" ")
-                              .map((n) => n[0])
-                              .join("")
-                              .toUpperCase()}
+                            {user.display_name.split(" ").map((n) => n[0]).join("").toUpperCase()}
                           </AvatarFallback>
                         </Avatar>
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{user.display_name}</span>
                           {isSecurityGroupMember(user) && (
-                            <Badge variant="secondary" className="text-xs">
-                              Security Group Member
-                            </Badge>
+                            <Badge variant="secondary" className="text-xs">Security Group</Badge>
                           )}
                         </div>
                       </div>

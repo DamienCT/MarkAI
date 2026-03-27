@@ -9,7 +9,7 @@ from app.config import settings
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=(settings.MARKAI_ENV == "development"),
+    echo=False,
     pool_size=20,
     max_overflow=10,
 )

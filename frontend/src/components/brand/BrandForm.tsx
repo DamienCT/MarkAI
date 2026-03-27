@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { Save } from "lucide-react";
+import { toast } from "sonner";
+import { Save, Wand2, Loader2, RefreshCw, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,23 +20,93 @@ interface BrandFormProps {
   loading?: boolean;
 }
 
+interface AIGenerateResponse {
+  fields: Record<string, string>;
+}
+
+interface AIRewriteResponse {
+  value: string;
+}
+
+function AiWandButton({
+  onClick,
+  generating,
+  title,
+}: {
+  onClick: () => void;
+  generating: boolean;
+  title?: string;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-6 w-6 p-0 text-muted-foreground hover:text-primary"
+      onClick={onClick}
+      disabled={generating}
+      title={title || "Generate with AI"}
+    >
+      {generating ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <Wand2 className="h-3.5 w-3.5" />
+      )}
+    </Button>
+  );
+}
+
+function AiRewriteButton({
+  onClick,
+  rewriting,
+  title,
+}: {
+  onClick: () => void;
+  rewriting: boolean;
+  title?: string;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-6 w-6 p-0 text-muted-foreground hover:text-blue-500"
+      onClick={onClick}
+      disabled={rewriting}
+      title={title || "Rewrite with AI"}
+    >
+      {rewriting ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <RefreshCw className="h-3.5 w-3.5" />
+      )}
+    </Button>
+  );
+}
+
 export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
   const [name, setName] = useState(brand?.name || "");
   const [slug, setSlug] = useState(brand?.slug || "");
   const [description, setDescription] = useState(brand?.description || "");
-  const [industry, setIndustry] = useState(brand?.industry || "");
   const [websiteUrl, setWebsiteUrl] = useState(brand?.website_url || "");
-  const [status, setStatus] = useState(brand?.status || "onboarding");
-  const [targetAudience, setTargetAudience] = useState(brand?.target_audience || "");
-  const [brandGuidelines, setBrandGuidelines] = useState(brand?.brand_guidelines || "");
-  const [voiceTone, setVoiceTone] = useState(brand?.voice_profile?.tone?.join(", ") || "");
-  const [voiceStyle, setVoiceStyle] = useState(brand?.voice_profile?.style || "");
-  const [emojiUsage, setEmojiUsage] = useState(brand?.voice_profile?.emoji_usage || "moderate");
-  const [hashtagStrategy, setHashtagStrategy] = useState(brand?.voice_profile?.hashtag_strategy || "");
-  const [dos, setDos] = useState(brand?.voice_profile?.dos?.join("\n") || "");
-  const [donts, setDonts] = useState(brand?.voice_profile?.donts?.join("\n") || "");
+  const [toneOfVoice, setToneOfVoice] = useState(brand?.tone_of_voice || "");
 
-  // BC Integration state
+  const guidelines = (brand?.brand_guidelines || {}) as Record<string, unknown>;
+  const [additionalWebsites, setAdditionalWebsites] = useState<string[]>(
+    ((guidelines.websites as string[]) || [])
+  );
+  const [voiceStyle, setVoiceStyle] = useState((guidelines.voice_style as string) || "");
+  const [emojiUsage, setEmojiUsage] = useState((guidelines.emoji_usage as string) || "moderate");
+  const [hashtagStrategy, setHashtagStrategy] = useState((guidelines.hashtag_strategy as string) || "");
+  const [dos, setDos] = useState(((guidelines.dos as string[]) || []).join("\n"));
+  const [donts, setDonts] = useState(((guidelines.donts as string[]) || []).join("\n"));
+
+  const [targetAudience, setTargetAudience] = useState(
+    typeof brand?.target_audience === "object" && brand?.target_audience
+      ? (brand.target_audience as Record<string, string>).description || ""
+      : ""
+  );
+
   const [bcCompany, setBcCompany] = useState<string | null>(brand?.bc_company ?? null);
   const [bcLocations, setBcLocations] = useState<string[]>(brand?.bc_locations ?? []);
   const [availableCompanies, setAvailableCompanies] = useState<string[]>([]);
@@ -43,13 +114,18 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
   const [loadingCompanies, setLoadingCompanies] = useState(false);
   const [loadingLocations, setLoadingLocations] = useState(false);
 
+  // AI generation state
+  const [generatingField, setGeneratingField] = useState<string | null>(null);
+  const [generatingAll, setGeneratingAll] = useState(false);
+  const [rewritingField, setRewritingField] = useState<string | null>(null);
+
   const fetchCompanies = useCallback(async () => {
     setLoadingCompanies(true);
     try {
       const companies = await api.get<string[]>("/api/v1/brands/bc-companies");
       setAvailableCompanies(companies);
     } catch {
-      // Handle error silently
+      toast.error("Failed to load BC companies");
     } finally {
       setLoadingCompanies(false);
     }
@@ -63,18 +139,15 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
       );
       setAvailableLocations(locations);
     } catch {
-      // Handle error silently
+      toast.error("Failed to load BC locations");
     } finally {
       setLoadingLocations(false);
     }
   }, []);
 
   useEffect(() => {
-    if (bcCompany) {
-      fetchLocations(bcCompany);
-    } else {
-      setAvailableLocations([]);
-    }
+    if (bcCompany) fetchLocations(bcCompany);
+    else setAvailableLocations([]);
   }, [bcCompany, fetchLocations]);
 
   const handleCompanyChange = (value: string) => {
@@ -90,36 +163,170 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
 
   const toggleLocation = (location: string) => {
     setBcLocations((prev) =>
-      prev.includes(location)
-        ? prev.filter((l) => l !== location)
-        : [...prev, location]
+      prev.includes(location) ? prev.filter((l) => l !== location) : [...prev, location]
     );
+  };
+
+  const applyGeneratedFields = (fields: Record<string, string>) => {
+    if (fields.description) setDescription(fields.description);
+    if (fields.target_audience) setTargetAudience(fields.target_audience);
+    if (fields.tone_of_voice) setToneOfVoice(fields.tone_of_voice);
+    if (fields.voice_style) setVoiceStyle(fields.voice_style);
+    if (fields.hashtag_strategy) setHashtagStrategy(fields.hashtag_strategy);
+    if (fields.dos) setDos(fields.dos);
+    if (fields.donts) setDonts(fields.donts);
+  };
+
+  const handleGenerateField = async (field: string) => {
+    if (!brand?.id) {
+      toast.error("Save the brand first before using AI generation");
+      return;
+    }
+    setGeneratingField(field);
+    try {
+      const result = await api.post<AIGenerateResponse>("/api/v1/intelligence/generate-fields", {
+        brand_id: brand.id,
+        field,
+      });
+      applyGeneratedFields(result.fields);
+      toast.success(`AI generated ${field.replace(/_/g, " ")}`);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "AI generation failed";
+      toast.error(detail);
+    } finally {
+      setGeneratingField(null);
+    }
+  };
+
+  const handleGenerateAll = async () => {
+    if (!brand?.id) {
+      toast.error("Save the brand first before using AI generation");
+      return;
+    }
+    setGeneratingAll(true);
+    try {
+      const result = await api.post<AIGenerateResponse>("/api/v1/intelligence/generate-fields", {
+        brand_id: brand.id,
+        field: null, // null = generate all empty fields
+      });
+      const count = Object.keys(result.fields).length;
+      if (count === 0) {
+        toast.info("All fields are already filled");
+      } else {
+        applyGeneratedFields(result.fields);
+        toast.success(`AI populated ${count} field${count !== 1 ? "s" : ""}`);
+      }
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "AI generation failed";
+      toast.error(detail);
+    } finally {
+      setGeneratingAll(false);
+    }
+  };
+
+  const getFieldValue = (field: string): string => {
+    switch (field) {
+      case "description": return description;
+      case "target_audience": return targetAudience;
+      case "tone_of_voice": return toneOfVoice;
+      case "voice_style": return voiceStyle;
+      case "hashtag_strategy": return hashtagStrategy;
+      case "dos": return dos;
+      case "donts": return donts;
+      default: return "";
+    }
+  };
+
+  const setFieldValue = (field: string, value: string) => {
+    switch (field) {
+      case "description": setDescription(value); break;
+      case "target_audience": setTargetAudience(value); break;
+      case "tone_of_voice": setToneOfVoice(value); break;
+      case "voice_style": setVoiceStyle(value); break;
+      case "hashtag_strategy": setHashtagStrategy(value); break;
+      case "dos": setDos(value); break;
+      case "donts": setDonts(value); break;
+    }
+  };
+
+  const handleRewriteField = async (field: string) => {
+    if (!brand?.id) {
+      toast.error("Save the brand first");
+      return;
+    }
+    const currentValue = getFieldValue(field);
+    if (!currentValue.trim()) {
+      toast.error("Field is empty — use the wand to generate first");
+      return;
+    }
+    setRewritingField(field);
+    try {
+      const result = await api.post<AIRewriteResponse>("/api/v1/intelligence/rewrite-field", {
+        brand_id: brand.id,
+        field,
+        current_value: currentValue,
+      });
+      setFieldValue(field, result.value);
+      toast.success(`Rephrased ${field.replace(/_/g, " ")}`);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Rewrite failed";
+      toast.error(detail);
+    } finally {
+      setRewritingField(null);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!name.trim()) {
+      toast.error("Brand name is required");
+      return;
+    }
+
+    // Validate URLs
+    const urlsToValidate = [websiteUrl, ...additionalWebsites].filter(Boolean);
+    for (const url of urlsToValidate) {
+      try {
+        new URL(url);
+      } catch {
+        toast.error(`Invalid URL: ${url}`);
+        return;
+      }
+    }
+
+    const existingGuidelines = (brand?.brand_guidelines || {}) as Record<string, unknown>;
+    const newGuidelines: Record<string, unknown> = {
+      ...existingGuidelines,
+      voice_style: voiceStyle || undefined,
+      emoji_usage: emojiUsage || undefined,
+      hashtag_strategy: hashtagStrategy || undefined,
+      dos: dos ? dos.split("\n").filter(Boolean) : [],
+      donts: donts ? donts.split("\n").filter(Boolean) : [],
+    };
+
+    // Store additional websites in brand_guidelines
+    const filteredWebsites = additionalWebsites.filter((u) => u.trim());
+    if (filteredWebsites.length > 0) {
+      newGuidelines.websites = filteredWebsites;
+    }
+
     await onSubmit({
       name,
-      slug: slug || name.toLowerCase().replace(/\s+/g, "-"),
-      description,
-      industry,
-      website_url: websiteUrl || undefined,
-      status: status as Brand["status"],
-      target_audience: targetAudience || undefined,
-      brand_guidelines: brandGuidelines || undefined,
-      bc_company: bcCompany,
+      slug: slug || name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
+      description: description || null,
+      website_url: websiteUrl || null,
+      tone_of_voice: toneOfVoice || null,
+      target_audience: targetAudience ? { description: targetAudience } : {},
+      brand_guidelines: newGuidelines,
+      color_palette: {},
+      is_active: true,
+      is_bc_linked: !!bcCompany,
+      bc_company: bcCompany || null,
       bc_locations: bcLocations,
-      voice_profile: {
-        tone: voiceTone.split(",").map((t) => t.trim()).filter(Boolean),
-        style: voiceStyle,
-        vocabulary_level: "professional",
-        emoji_usage: emojiUsage,
-        hashtag_strategy: hashtagStrategy,
-        dos: dos.split("\n").filter(Boolean),
-        donts: donts.split("\n").filter(Boolean),
-      },
-    });
+    } as Partial<Brand>);
   };
+
+  const isGenerating = generatingField !== null || generatingAll || rewritingField !== null;
 
   return (
     <form onSubmit={handleSubmit}>
@@ -128,96 +335,126 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="voice">Voice Profile</TabsTrigger>
           <TabsTrigger value="bc">Business Central</TabsTrigger>
-          <TabsTrigger value="social">Social Accounts</TabsTrigger>
         </TabsList>
 
         <TabsContent value="details" className="space-y-4 mt-4">
+          {/* AI Fill All button */}
+          {brand?.id && (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateAll}
+                disabled={isGenerating}
+              >
+                {generatingAll ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Wand2 className="mr-2 h-3.5 w-3.5" />
+                )}
+                {generatingAll ? "Generating..." : "AI Fill Empty Fields"}
+              </Button>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="name">Brand Name *</Label>
-              <Input
-                id="name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-              />
+              <Input id="name" value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="space-y-2">
               <Label htmlFor="slug">Slug</Label>
-              <Input
-                id="slug"
-                value={slug}
-                onChange={(e) => setSlug(e.target.value)}
-                placeholder="auto-generated-from-name"
-              />
+              <Input id="slug" value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="auto-generated-from-name" />
             </div>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="description">Description</Label>
-            <Textarea
-              id="description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-            />
+            <div className="flex items-center gap-1">
+              <Label htmlFor="description">Description</Label>
+              {brand?.id && (
+                <>
+                  <AiWandButton
+                    onClick={() => handleGenerateField("description")}
+                    generating={generatingField === "description"}
+                    title="Generate from context"
+                  />
+                  <AiRewriteButton
+                    onClick={() => handleRewriteField("description")}
+                    rewriting={rewritingField === "description"}
+                    title="Rephrase with AI"
+                  />
+                </>
+              )}
+            </div>
+            <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {/* Websites */}
+          <div className="space-y-3">
+            <Label>Brand Websites</Label>
             <div className="space-y-2">
-              <Label htmlFor="industry">Industry</Label>
-              <Input
-                id="industry"
-                value={industry}
-                onChange={(e) => setIndustry(e.target.value)}
-                placeholder="e.g., Fashion, Technology"
-              />
+              <div className="flex gap-2">
+                <Input
+                  value={websiteUrl}
+                  onChange={(e) => setWebsiteUrl(e.target.value)}
+                  placeholder="Primary website (e.g., https://healthspan.mu)"
+                  type="url"
+                />
+                <Badge variant="secondary" className="shrink-0 self-center">Primary</Badge>
+              </div>
+              {additionalWebsites.map((url, i) => (
+                <div key={i} className="flex gap-2">
+                  <Input
+                    value={url}
+                    onChange={(e) => {
+                      const updated = [...additionalWebsites];
+                      updated[i] = e.target.value;
+                      setAdditionalWebsites(updated);
+                    }}
+                    placeholder="Additional URL (e.g., https://shop.healthspan.mu)"
+                    type="url"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-muted-foreground hover:text-destructive"
+                    onClick={() => setAdditionalWebsites(additionalWebsites.filter((_, j) => j !== i))}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setAdditionalWebsites([...additionalWebsites, ""])}
+              >
+                + Add Website
+              </Button>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="website">Website URL</Label>
-              <Input
-                id="website"
-                type="url"
-                value={websiteUrl}
-                onChange={(e) => setWebsiteUrl(e.target.value)}
-                placeholder="https://"
-              />
-            </div>
+            <p className="text-xs text-muted-foreground">
+              All URLs are used for AI research, competitor analysis, and content generation — even if the channel is off.
+            </p>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="status">Status</Label>
-              <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="onboarding">Onboarding</SelectItem>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-1">
               <Label htmlFor="audience">Target Audience</Label>
-              <Input
-                id="audience"
-                value={targetAudience}
-                onChange={(e) => setTargetAudience(e.target.value)}
-                placeholder="e.g., Women 25-45, fashion-conscious"
-              />
+              {brand?.id && (
+                <>
+                  <AiWandButton onClick={() => handleGenerateField("target_audience")} generating={generatingField === "target_audience"} title="Generate from context" />
+                  <AiRewriteButton onClick={() => handleRewriteField("target_audience")} rewriting={rewritingField === "target_audience"} title="Rephrase with AI" />
+                </>
+              )}
             </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="guidelines">Brand Guidelines</Label>
-            <Textarea
-              id="guidelines"
-              value={brandGuidelines}
-              onChange={(e) => setBrandGuidelines(e.target.value)}
-              rows={4}
-              placeholder="Key brand guidelines and rules..."
+            <Input
+              id="audience"
+              value={targetAudience}
+              onChange={(e) => setTargetAudience(e.target.value)}
+              placeholder="e.g., Women 25-45, fashion-conscious"
             />
           </div>
         </TabsContent>
@@ -225,16 +462,32 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
         <TabsContent value="voice" className="space-y-4 mt-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="tone">Tone (comma-separated)</Label>
+              <div className="flex items-center gap-1">
+                <Label htmlFor="tone">Tone of Voice</Label>
+                {brand?.id && (
+                  <>
+                    <AiWandButton onClick={() => handleGenerateField("tone_of_voice")} generating={generatingField === "tone_of_voice"} title="Generate from context" />
+                    <AiRewriteButton onClick={() => handleRewriteField("tone_of_voice")} rewriting={rewritingField === "tone_of_voice"} title="Rephrase with AI" />
+                  </>
+                )}
+              </div>
               <Input
                 id="tone"
-                value={voiceTone}
-                onChange={(e) => setVoiceTone(e.target.value)}
+                value={toneOfVoice}
+                onChange={(e) => setToneOfVoice(e.target.value)}
                 placeholder="friendly, professional, witty"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="style">Style</Label>
+              <div className="flex items-center gap-1">
+                <Label htmlFor="style">Style</Label>
+                {brand?.id && (
+                  <>
+                    <AiWandButton onClick={() => handleGenerateField("voice_style")} generating={generatingField === "voice_style"} title="Generate from context" />
+                    <AiRewriteButton onClick={() => handleRewriteField("voice_style")} rewriting={rewritingField === "voice_style"} title="Rephrase with AI" />
+                  </>
+                )}
+              </div>
               <Input
                 id="style"
                 value={voiceStyle}
@@ -248,9 +501,7 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
             <div className="space-y-2">
               <Label htmlFor="emoji">Emoji Usage</Label>
               <Select value={emojiUsage} onValueChange={setEmojiUsage}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">None</SelectItem>
                   <SelectItem value="minimal">Minimal</SelectItem>
@@ -260,7 +511,15 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="hashtag">Hashtag Strategy</Label>
+              <div className="flex items-center gap-1">
+                <Label htmlFor="hashtag">Hashtag Strategy</Label>
+                {brand?.id && (
+                  <>
+                    <AiWandButton onClick={() => handleGenerateField("hashtag_strategy")} generating={generatingField === "hashtag_strategy"} title="Generate from context" />
+                    <AiRewriteButton onClick={() => handleRewriteField("hashtag_strategy")} rewriting={rewritingField === "hashtag_strategy"} title="Rephrase with AI" />
+                  </>
+                )}
+              </div>
               <Input
                 id="hashtag"
                 value={hashtagStrategy}
@@ -274,23 +533,39 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="dos">Do&apos;s (one per line)</Label>
+              <div className="flex items-center gap-1">
+                <Label htmlFor="dos">Do&apos;s (one per line)</Label>
+                {brand?.id && (
+                  <>
+                    <AiWandButton onClick={() => handleGenerateField("dos")} generating={generatingField === "dos"} title="Generate from context" />
+                    <AiRewriteButton onClick={() => handleRewriteField("dos")} rewriting={rewritingField === "dos"} title="Rephrase with AI" />
+                  </>
+                )}
+              </div>
               <Textarea
                 id="dos"
                 value={dos}
                 onChange={(e) => setDos(e.target.value)}
                 rows={5}
-                placeholder="Use inclusive language&#10;Reference seasonal themes&#10;Include CTAs"
+                placeholder={"Use inclusive language\nReference seasonal themes\nInclude CTAs"}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="donts">Don&apos;ts (one per line)</Label>
+              <div className="flex items-center gap-1">
+                <Label htmlFor="donts">Don&apos;ts (one per line)</Label>
+                {brand?.id && (
+                  <>
+                    <AiWandButton onClick={() => handleGenerateField("donts")} generating={generatingField === "donts"} title="Generate from context" />
+                    <AiRewriteButton onClick={() => handleRewriteField("donts")} rewriting={rewritingField === "donts"} title="Rephrase with AI" />
+                  </>
+                )}
+              </div>
               <Textarea
                 id="donts"
                 value={donts}
                 onChange={(e) => setDonts(e.target.value)}
                 rows={5}
-                placeholder="No controversial topics&#10;No competitor mentions&#10;Avoid jargon"
+                placeholder={"No controversial topics\nNo competitor mentions\nAvoid jargon"}
               />
             </div>
           </div>
@@ -306,29 +581,23 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
 
           <div className="space-y-2">
             <Label htmlFor="bc-company">Select BC Company</Label>
-            <div className="flex gap-2">
-              <Select
-                value={bcCompany ?? ""}
-                onValueChange={handleCompanyChange}
-                onOpenChange={(open) => {
-                  if (open && availableCompanies.length === 0) {
-                    fetchCompanies();
-                  }
-                }}
-              >
-                <SelectTrigger className="flex-1">
-                  <SelectValue placeholder={loadingCompanies ? "Loading companies..." : "Select a company"} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__skip__">Link Later (skip)</SelectItem>
-                  {availableCompanies.map((company) => (
-                    <SelectItem key={company} value={company}>
-                      {company}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <Select
+              value={bcCompany ?? ""}
+              onValueChange={handleCompanyChange}
+              onOpenChange={(open) => {
+                if (open && availableCompanies.length === 0) fetchCompanies();
+              }}
+            >
+              <SelectTrigger className="flex-1">
+                <SelectValue placeholder={loadingCompanies ? "Loading companies..." : "Select a company"} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__skip__">Link Later (skip)</SelectItem>
+                {availableCompanies.map((company) => (
+                  <SelectItem key={company} value={company}>{company}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           {bcCompany && (
@@ -353,9 +622,7 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
                 </div>
               )}
               {bcLocations.length > 0 && (
-                <p className="text-sm text-muted-foreground mt-2">
-                  Selected: {bcLocations.join(", ")}
-                </p>
+                <p className="text-sm text-muted-foreground mt-2">Selected: {bcLocations.join(", ")}</p>
               )}
             </div>
           )}
@@ -376,28 +643,10 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
             </div>
           )}
         </TabsContent>
-
-        <TabsContent value="social" className="mt-4">
-          <div className="text-center py-8">
-            <p className="text-muted-foreground">
-              Social account connections are managed through the platform integrations.
-            </p>
-            {brand?.social_accounts && brand.social_accounts.length > 0 && (
-              <div className="mt-4 space-y-2 max-w-md mx-auto">
-                {brand.social_accounts.map((account, i) => (
-                  <div key={i} className="flex items-center justify-between rounded-md border p-3">
-                    <span className="text-sm capitalize font-medium">{account.platform}</span>
-                    <span className="text-sm text-muted-foreground">@{account.handle}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </TabsContent>
       </Tabs>
 
       <div className="flex justify-end mt-6">
-        <Button type="submit" disabled={loading || !name}>
+        <Button type="submit" disabled={loading || !name.trim()}>
           <Save className="mr-2 h-4 w-4" />
           {loading ? "Saving..." : brand ? "Update Brand" : "Create Brand"}
         </Button>

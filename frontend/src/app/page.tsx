@@ -191,7 +191,7 @@ export default function DashboardPage() {
                       <div>
                         <p className="text-sm font-medium">{post.title}</p>
                         <p className="text-xs text-muted-foreground">
-                          {post.platform} {post.brand_name ? `- ${post.brand_name}` : ""}
+                          {post.channel}{post.description ? ` - ${post.description}` : ""}
                         </p>
                       </div>
                     </div>

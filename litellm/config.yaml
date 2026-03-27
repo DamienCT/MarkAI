@@ -1,17 +1,73 @@
 # LiteLLM Proxy Configuration
-# Models are resolved dynamically using the "openai/" prefix pattern.
-# No hardcoded model_list needed — the backend resolves the active model
-# per category and passes "openai/<model_id>" to LiteLLM.
+# Routes all requests through LiteLLM for model management, caching, and observability.
+# Swap models here to change providers (OpenAI, Azure, Ollama, etc.) without touching app code.
+
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4.1-mini
+    litellm_params:
+      model: openai/gpt-4.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4.1
+    litellm_params:
+      model: openai/gpt-4.1
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4-turbo
+    litellm_params:
+      model: openai/gpt-4-turbo
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Image generation
+  - model_name: gpt-image-1.5
+    litellm_params:
+      model: openai/gpt-image-1.5
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-image-1
+    litellm_params:
+      model: openai/gpt-image-1
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-image-1-mini
+    litellm_params:
+      model: openai/gpt-image-1-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Video generation
+  - model_name: sora-2
+    litellm_params:
+      model: openai/sora-2
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: sora-2-pro
+    litellm_params:
+      model: openai/sora-2-pro
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Add on-prem / other providers here, e.g.:
+  # - model_name: llama-3
+  #   litellm_params:
+  #     model: ollama/llama3
+  #     api_base: http://ollama:11434
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-  alerting:
-    - slack
-  alert_types:
-    - llm_exceptions
-    - llm_too_slow
-    - llm_requests_hanging
-    - budget_alerts
 
 litellm_settings:
   cache: true
@@ -19,10 +75,6 @@ litellm_settings:
     type: redis
     host: os.environ/VALKEY_HOST
     port: os.environ/VALKEY_PORT
-  success_callback:
-    - prometheus
-  failure_callback:
-    - prometheus
   num_retries: 3
   request_timeout: 120
   set_verbose: false

@@ -13,15 +13,15 @@ logger = logging.getLogger(__name__)
 _nc: NATSClient | None = None
 _js: JetStreamContext | None = None
 
+# Single unified stream matching the agents worker expectation
 STREAMS = {
-    "BRAND": {"subjects": ["brand.>"]},
-    "RESEARCH": {"subjects": ["research.>"]},
-    "STRATEGY": {"subjects": ["strategy.>"]},
-    "CONTENT": {"subjects": ["content.>"]},
-    "PUBLISH": {"subjects": ["publish.>"]},
-    "ENGAGEMENT": {"subjects": ["engagement.>"]},
-    "EVALUATION": {"subjects": ["evaluation.>"]},
-    "PRODUCT": {"subjects": ["product.>"]},
+    "WORKFLOWS": {
+        "subjects": [
+            "research.>", "strategy.>", "content.>", "evaluation.>",
+            "product.>", "planning.>", "adaptation.>", "publish.>",
+            "engagement.>", "brand.>",
+        ]
+    },
 }
 
 
@@ -31,16 +31,16 @@ async def connect() -> NATSClient:
     _nc = await nats.connect(settings.NATS_URL)
     _js = _nc.jetstream()
 
-    # Ensure all streams exist
+    # Ensure all streams exist with correct subjects
     for stream_name, stream_config in STREAMS.items():
         try:
-            await _js.find_stream_name_by_subject(stream_config["subjects"][0])
-        except Exception:
+            # Try to update existing stream to ensure subjects are set
             await _js.add_stream(
                 name=stream_name,
                 subjects=stream_config["subjects"],
             )
-            logger.info("Created NATS JetStream stream: %s", stream_name)
+        except Exception as exc:
+            logger.warning("Stream %s setup: %s", stream_name, exc)
 
     logger.info("Connected to NATS at %s", settings.NATS_URL)
     return _nc

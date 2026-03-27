@@ -1,5 +1,5 @@
 import logging
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -13,9 +13,7 @@ from app.models.base import async_session_factory
 
 logger = logging.getLogger(__name__)
 
-# In dev mode, make the bearer token optional so unauthenticated
-# requests fall through to the dev user path.
-security = HTTPBearer(auto_error=False)
+security = HTTPBearer(auto_error=True)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -27,59 +25,24 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def _get_or_create_dev_user(db: AsyncSession) -> User:
-    """Return a dev admin user, creating it if it doesn't exist."""
-    result = await db.execute(select(User).where(User.entra_id == "dev-admin"))
-    user = result.scalar_one_or_none()
-    if user is None:
-        user = User(
-            entra_id="dev-admin",
-            email="admin@localhost",
-            display_name="Dev Admin",
-            role="admin",
-        )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-    return user
-
-
 async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
     Validate the Entra ID JWT and return the corresponding User record.
     Creates the user on first login if they don't exist yet.
 
-    In development mode (MARKAI_ENV=development), if no token is provided,
-    returns a dev admin user so the UI can be used without Entra ID.
-
-    In production mode:
-    - JWT must be valid
+    - JWT must be valid (issued by our Entra ID tenant)
     - If the user's groups claim contains ADMIN_SECURITY_GROUP_ID,
       auto-provision as admin with is_active=True
     - Otherwise, check DB is_active flag; new users without the security
       group are provisioned as viewer with is_active=False (pending approval)
     """
-    # Dev mode: no token provided -> return dev admin user
-    if credentials is None or not credentials.credentials:
-        if settings.MARKAI_ENV == "development":
-            return await _get_or_create_dev_user(db)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
     token = credentials.credentials
     try:
         claims = await validate_entra_token(token)
     except Exception as exc:
-        # In dev mode, if token validation fails, fall back to dev user
-        if settings.MARKAI_ENV == "development":
-            logger.info("Dev mode: JWT validation failed, using dev user")
-            return await _get_or_create_dev_user(db)
         logger.warning("JWT validation failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

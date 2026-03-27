@@ -18,6 +18,9 @@ dependencies = [
     "valkey>=6.1",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
 [project.optional-dependencies]
 dev = [
     "pytest",

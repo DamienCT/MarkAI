@@ -1,11 +1,14 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
+import { FileText } from "lucide-react";
 
 interface ResearchReport {
   id: string;
@@ -28,6 +31,7 @@ interface TrendData {
 }
 
 export default function IntelligencePage() {
+  const router = useRouter();
   const [reports, setReports] = useState<ResearchReport[]>([]);
   const [trends, setTrends] = useState<TrendData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,7 +46,7 @@ export default function IntelligencePage() {
         if (reportsData.status === "fulfilled") setReports(reportsData.value);
         if (trendsData.status === "fulfilled") setTrends(trendsData.value);
       } catch {
-        // Handle error
+        toast.error("Failed to load intelligence data");
       } finally {
         setLoading(false);
       }
@@ -81,13 +85,20 @@ export default function IntelligencePage() {
             ) : (
               <div className="space-y-4">
                 {reports.map((report) => (
-                  <div key={report.id} className="rounded-md border p-4 space-y-2">
+                  <div
+                    key={report.id}
+                    className="rounded-md border p-4 space-y-2 cursor-pointer hover:bg-muted/50 hover:border-primary/30 transition-colors group"
+                    onClick={() => router.push(`/intelligence/report/${report.id}`)}
+                  >
                     <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-medium">{report.title}</h3>
+                      <h3 className="text-sm font-medium group-hover:text-primary transition-colors flex items-center gap-1.5">
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-primary" />
+                        {report.title}
+                      </h3>
                       <Badge variant="outline">{report.report_type}</Badge>
                     </div>
                     <p className="text-xs text-muted-foreground">{report.summary}</p>
-                    {report.insights.length > 0 && (
+                    {report.insights && report.insights.length > 0 && (
                       <ul className="text-xs text-muted-foreground space-y-1">
                         {report.insights.slice(0, 3).map((insight, i) => (
                           <li key={i} className="flex items-start gap-1">

@@ -35,9 +35,10 @@ async def get_analytics_summary(
     total_clicks = (
         await db.execute(text("SELECT COALESCE(SUM(clicks), 0) FROM engagement_metrics"))
     ).scalar() or 0
-    avg_engagement_rate = (
+    raw_avg_rate = (
         await db.execute(text("SELECT COALESCE(AVG(engagement_rate), 0) FROM engagement_metrics"))
-    ).scalar() or 0.0
+    ).scalar()
+    avg_engagement_rate = float(raw_avg_rate) if raw_avg_rate is not None else 0.0
     total_published = (
         await db.execute(text("SELECT count(*) FROM calendar_items WHERE status = 'published'"))
     ).scalar() or 0
@@ -156,3 +157,40 @@ async def get_top_content(
         }
         for row in rows.fetchall()
     ]
+
+
+@router.get("/brands/{brand_id}/metrics")
+async def get_brand_metrics(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Engagement metrics for a specific brand."""
+    rows = await db.execute(
+        text("""
+            SELECT
+                COALESCE(SUM(em.likes), 0),
+                COALESCE(SUM(em.comments), 0),
+                COALESCE(SUM(em.shares), 0),
+                COALESCE(SUM(em.impressions), 0),
+                COALESCE(SUM(em.reach), 0),
+                COALESCE(AVG(em.engagement_rate), 0),
+                COUNT(DISTINCT ci.id)
+            FROM engagement_metrics em
+            JOIN calendar_items ci ON em.calendar_item_id = ci.id
+            WHERE ci.brand_id = :brand_id
+        """),
+        {"brand_id": str(brand_id)},
+    )
+    row = rows.fetchone()
+    if not row:
+        return {"likes": 0, "comments": 0, "shares": 0, "impressions": 0, "reach": 0, "engagement_rate": 0, "total_posts": 0}
+    return {
+        "likes": int(row[0]),
+        "comments": int(row[1]),
+        "shares": int(row[2]),
+        "impressions": int(row[3]),
+        "reach": int(row[4]),
+        "engagement_rate": round(float(row[5]), 4),
+        "total_posts": int(row[6]),
+    }

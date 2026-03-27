@@ -49,6 +49,7 @@ export function statusColor(status: string): string {
     completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
     failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
   };
+  if (!status) return "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300";
   return map[status.toLowerCase()] || "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300";
 }
 

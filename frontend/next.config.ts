@@ -8,10 +8,6 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
       {
-        protocol: "https",
-        hostname: "minio.markai.local",
-      },
-      {
         protocol: "http",
         hostname: "minio",
         port: "9000",
@@ -20,6 +16,11 @@ const nextConfig: NextConfig = {
         protocol: "http",
         hostname: "localhost",
         port: "9000",
+      },
+      {
+        // Production MinIO behind Traefik
+        protocol: "https",
+        hostname: "*.hstgr.cloud",
       },
     ],
   },

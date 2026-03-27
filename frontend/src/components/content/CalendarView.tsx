@@ -14,7 +14,7 @@ import {
   parseISO,
   isToday as isDateToday,
 } from "date-fns";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { CalendarItem } from "@/types";
@@ -37,7 +37,7 @@ interface CalendarViewProps {
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-// Ordered: Queued → Working → In Review → Reworking → Approved → Scheduled → Published → Failed
+// Ordered: Queued -> Working -> In Review -> Reworking -> Approved -> Scheduled -> Published -> Failed
 const STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }> = {
   queued:      { bg: "bg-slate-200 dark:bg-slate-700",   text: "text-slate-800 dark:text-slate-200", label: "Queued" },
   working:     { bg: "bg-indigo-200 dark:bg-indigo-800", text: "text-indigo-900 dark:text-indigo-100", label: "Working" },
@@ -53,9 +53,12 @@ function getStatusStyle(status: string) {
   return STATUS_CONFIG[status] || STATUS_CONFIG.queued;
 }
 
+const MAX_VISIBLE_ITEMS = 4;
+
 export function CalendarView({ items, onReschedule }: CalendarViewProps) {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [dragItem, setDragItem] = useState<CalendarItem | null>(null);
+  const [expandedDay, setExpandedDay] = useState<Date | null>(null);
 
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(currentMonth);
@@ -87,7 +90,27 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
     setDragItem(null);
   }
 
-  const today = new Date();
+  function renderItem(item: CalendarItem) {
+    const style = getStatusStyle(item.status);
+    return (
+      <div
+        key={item.id}
+        draggable
+        onDragStart={() => handleDragStart(item)}
+        className={cn(
+          "rounded-sm px-1.5 py-0.5 text-[10px] leading-tight truncate cursor-move transition-opacity hover:opacity-80",
+          style.bg,
+          style.text
+        )}
+        title={`${item.title || "Untitled"} \u2014 ${style.label}${item.channel ? ` (${item.channel})` : ""}`}
+      >
+        {item.channel && (
+          <span className="font-semibold uppercase">{CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)} </span>
+        )}
+        {item.title || "Untitled"}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -113,7 +136,7 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
       </div>
 
       {/* Calendar Grid */}
-      <div className="grid grid-cols-7 gap-px bg-border rounded-lg overflow-hidden">
+      <div className="grid grid-cols-7 gap-px bg-border rounded-lg overflow-hidden max-h-[700px] overflow-y-auto">
         {/* Weekday headers */}
         {WEEKDAYS.map((day) => (
           <div key={day} className="bg-muted p-2 text-center text-xs font-medium text-muted-foreground">
@@ -123,19 +146,20 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
 
         {/* Start padding */}
         {Array.from({ length: startPadding }).map((_, i) => (
-          <div key={`pad-s-${i}`} className="bg-card/50 p-2 min-h-[110px]" />
+          <div key={`pad-s-${i}`} className="bg-card/50 p-2 min-h-[80px] sm:min-h-[110px]" />
         ))}
 
         {/* Days */}
         {days.map((day) => {
           const dayItems = getItemsForDay(day);
           const isToday = isDateToday(day);
+          const hasOverflow = dayItems.length > MAX_VISIBLE_ITEMS;
 
           return (
             <div
               key={day.toISOString()}
               className={cn(
-                "bg-card p-1.5 min-h-[110px] transition-colors",
+                "bg-card p-1.5 min-h-[80px] sm:min-h-[110px] transition-colors",
                 isToday && "ring-2 ring-primary ring-inset",
                 dragItem && "hover:bg-accent/50"
               )}
@@ -152,29 +176,15 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
                 {format(day, "d")}
               </p>
               <div className="space-y-0.5">
-                {dayItems.slice(0, 4).map((item) => {
-                  const style = getStatusStyle(item.status);
-                  return (
-                    <div
-                      key={item.id}
-                      draggable
-                      onDragStart={() => handleDragStart(item)}
-                      className={cn(
-                        "rounded px-1.5 py-0.5 text-[10px] leading-tight truncate cursor-move transition-opacity hover:opacity-80",
-                        style.bg,
-                        style.text
-                      )}
-                      title={`${item.title || "Untitled"} — ${style.label}${item.channel ? ` (${item.channel})` : ""}`}
-                    >
-                      {item.channel && (
-                        <span className="font-semibold uppercase">{CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)} </span>
-                      )}
-                      {item.title || "Untitled"}
-                    </div>
-                  );
-                })}
-                {dayItems.length > 4 && (
-                  <p className="text-[10px] text-muted-foreground px-1">+{dayItems.length - 4} more</p>
+                {dayItems.slice(0, MAX_VISIBLE_ITEMS).map((item) => renderItem(item))}
+                {hasOverflow && (
+                  <button
+                    type="button"
+                    className="text-[10px] text-muted-foreground px-1 hover:text-foreground hover:underline cursor-pointer w-full text-left"
+                    onClick={() => setExpandedDay(day)}
+                  >
+                    +{dayItems.length - MAX_VISIBLE_ITEMS} more
+                  </button>
                 )}
               </div>
             </div>
@@ -183,9 +193,63 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
 
         {/* End padding */}
         {Array.from({ length: endPadding }).map((_, i) => (
-          <div key={`pad-e-${i}`} className="bg-card/50 p-2 min-h-[110px]" />
+          <div key={`pad-e-${i}`} className="bg-card/50 p-2 min-h-[80px] sm:min-h-[110px]" />
         ))}
       </div>
+
+      {/* Expanded day dialog overlay */}
+      {expandedDay && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => setExpandedDay(null)}
+        >
+          <div
+            className="bg-card rounded-lg border shadow-lg p-4 w-full max-w-md max-h-[60vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold">
+                {format(expandedDay, "EEEE, MMMM d, yyyy")}
+              </h3>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={() => setExpandedDay(null)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="space-y-1">
+              {getItemsForDay(expandedDay).map((item) => {
+                const style = getStatusStyle(item.status);
+                return (
+                  <div
+                    key={item.id}
+                    className={cn(
+                      "rounded-sm px-2 py-1.5 text-xs",
+                      style.bg,
+                      style.text
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium truncate">
+                        {item.channel && (
+                          <span className="font-semibold uppercase mr-1">
+                            {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
+                          </span>
+                        )}
+                        {item.title || "Untitled"}
+                      </span>
+                      <span className="text-[10px] opacity-70 ml-2 shrink-0">{style.label}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -41,18 +41,18 @@ export function EngagementChart({ data }: EngagementChartProps) {
           <XAxis
             dataKey="dateLabel"
             className="text-xs"
-            tick={{ fill: "hsl(var(--muted-foreground))" }}
+            tick={{ fill: "var(--muted-foreground)" }}
           />
           <YAxis
             className="text-xs"
-            tick={{ fill: "hsl(var(--muted-foreground))" }}
+            tick={{ fill: "var(--muted-foreground)" }}
           />
           <Tooltip
             contentStyle={{
-              backgroundColor: "hsl(var(--card))",
-              border: "1px solid hsl(var(--border))",
+              backgroundColor: "var(--card)",
+              border: "1px solid var(--border)",
               borderRadius: "8px",
-              color: "hsl(var(--foreground))",
+              color: "var(--foreground)",
             }}
           />
           <Legend />

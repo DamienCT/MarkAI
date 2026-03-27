@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any
 
@@ -69,12 +70,21 @@ def invalidate_jwks_cache() -> None:
 # ---------------------------------------------------------------------------
 
 _graph_token_cache: dict[str, Any] = {}
+_graph_token_lock: asyncio.Lock | None = None
+
+
+def _get_token_lock() -> asyncio.Lock:
+    """Lazily create a token lock (must be called within an event loop)."""
+    global _graph_token_lock
+    if _graph_token_lock is None:
+        _graph_token_lock = asyncio.Lock()
+    return _graph_token_lock
 
 
 async def get_graph_api_token() -> str:
     """
     Obtain an access token for Microsoft Graph API using client credentials.
-    Caches the token until it expires.
+    Caches the token until it expires. Thread-safe via asyncio.Lock.
     """
     import time
 
@@ -82,29 +92,35 @@ async def get_graph_api_token() -> str:
     if cached and cached["expires_at"] > time.time() + 60:
         return cached["access_token"]
 
-    tenant_id = settings.AZURE_AD_TENANT_ID
-    token_url = (
-        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    )
+    async with _get_token_lock():
+        # Double-check after acquiring lock
+        cached = _graph_token_cache.get("token")
+        if cached and cached["expires_at"] > time.time() + 60:
+            return cached["access_token"]
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            token_url,
-            data={
-                "client_id": settings.AZURE_AD_CLIENT_ID,
-                "client_secret": settings.AZURE_AD_CLIENT_SECRET,
-                "scope": "https://graph.microsoft.com/.default",
-                "grant_type": "client_credentials",
-            },
+        tenant_id = settings.AZURE_AD_TENANT_ID
+        token_url = (
+            f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
         )
-        resp.raise_for_status()
-        data = resp.json()
 
-    _graph_token_cache["token"] = {
-        "access_token": data["access_token"],
-        "expires_at": time.time() + data.get("expires_in", 3600),
-    }
-    return data["access_token"]
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                token_url,
+                data={
+                    "client_id": settings.AZURE_AD_CLIENT_ID,
+                    "client_secret": settings.AZURE_AD_CLIENT_SECRET,
+                    "scope": "https://graph.microsoft.com/.default",
+                    "grant_type": "client_credentials",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        _graph_token_cache["token"] = {
+            "access_token": data["access_token"],
+            "expires_at": time.time() + data.get("expires_in", 3600),
+        }
+        return data["access_token"]
 
 
 async def search_graph_users(query: str) -> list[dict[str, Any]]:
@@ -114,8 +130,10 @@ async def search_graph_users(query: str) -> list[dict[str, Any]]:
     """
     token = await get_graph_api_token()
 
-    # Sanitise the query for OData $filter
-    safe_q = query.replace("'", "''")
+    # Sanitise the query for OData $filter — strip control chars and escape quotes
+    import re
+    safe_q = re.sub(r'[\x00-\x1f\x7f]', '', query)  # strip control characters
+    safe_q = safe_q.replace("\\", "\\\\").replace("'", "''")
 
     graph_url = "https://graph.microsoft.com/v1.0/users"
     params = {

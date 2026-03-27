@@ -7,6 +7,10 @@ interface ApiError {
   status: number;
 }
 
+export interface RequestOptions {
+  signal?: AbortSignal;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -29,10 +33,15 @@ class ApiClient {
     method: string,
     path: string,
     body?: unknown,
-    params?: Record<string, string | number | boolean | undefined>
+    params?: Record<string, string | number | boolean | undefined>,
+    options?: RequestOptions
   ): Promise<T> {
     const headers = await this.getHeaders();
-    let url = `${this.baseUrl}${path}`;
+    // Add trailing slash only for collection endpoints (paths ending in a known collection name)
+    // Don't add for paths with UUIDs/IDs at the end (path parameter endpoints)
+    const needsSlash = !path.endsWith("/") && !path.includes("?") && /\/(brands|content|products|calendar|campaigns|approvals|prompts|users|notifications|settings|agents|intelligence|providers|learning|system|audit)\/?$/.test(path);
+    const normalizedPath = needsSlash ? path + "/" : path;
+    let url = `${this.baseUrl}${normalizedPath}`;
 
     if (params) {
       const searchParams = new URLSearchParams();
@@ -49,9 +58,12 @@ class ApiClient {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: options?.signal,
     });
 
     if (!response.ok) {
+      // Don't auto-redirect on 401 — the AuthGate handles sign-in state.
+      // API 401s are shown as error toasts by each page's catch handler.
       const error: ApiError = {
         detail: "An error occurred",
         status: response.status,
@@ -60,7 +72,6 @@ class ApiClient {
         const data = await response.json();
         error.detail = data.detail || data.message || JSON.stringify(data);
       } catch (parseError) {
-        console.error("Failed to parse error response:", parseError, "Status:", response.status, response.statusText);
         error.detail = response.statusText;
       }
       throw error;
@@ -73,25 +84,72 @@ class ApiClient {
     return response.json();
   }
 
-  async get<T>(path: string, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
-    return this.request<T>("GET", path, undefined, params);
+  async get<T>(
+    path: string,
+    params?: Record<string, string | number | boolean | undefined>,
+    options?: RequestOptions
+  ): Promise<T> {
+    return this.request<T>("GET", path, undefined, params, options);
   }
 
-  async post<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>("POST", path, body);
+  async post<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>("POST", path, body, undefined, options);
   }
 
-  async put<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>("PUT", path, body);
+  async put<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>("PUT", path, body, undefined, options);
   }
 
-  async patch<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>("PATCH", path, body);
+  async patch<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>("PATCH", path, body, undefined, options);
   }
 
-  async delete<T>(path: string): Promise<T> {
-    return this.request<T>("DELETE", path);
+  async delete<T>(path: string, options?: RequestOptions): Promise<T> {
+    return this.request<T>("DELETE", path, undefined, undefined, options);
+  }
+
+  async uploadFile<T>(path: string, file: File, extraFields?: Record<string, string>): Promise<T> {
+    const session = await getSession();
+    const headers: HeadersInit = {};
+    if (session?.accessToken) {
+      headers["Authorization"] = `Bearer ${session.accessToken}`;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    if (extraFields) {
+      Object.entries(extraFields).forEach(([key, value]) => {
+        formData.append(key, value);
+      });
+    }
+
+    const url = `${this.baseUrl}${path}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error: ApiError = { detail: "Upload failed", status: response.status };
+      try {
+        const data = await response.json();
+        error.detail = data.detail || data.message || JSON.stringify(data);
+      } catch {
+        error.detail = response.statusText;
+      }
+      throw error;
+    }
+
+    return response.json();
   }
 }
 
 export const api = new ApiClient(API_BASE_URL);
+
+/** Resolve a relative API path (e.g. /api/v1/brands/.../logos/primary) to a full URL */
+export function apiUrl(path: string): string {
+  if (!path) return "";
+  if (path.startsWith("http")) return path;
+  return `${API_BASE_URL}${path}`;
+}

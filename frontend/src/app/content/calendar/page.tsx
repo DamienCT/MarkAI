@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CalendarView } from "@/components/content/CalendarView";
 import { api } from "@/lib/api";
@@ -32,8 +33,10 @@ export default function ContentCalendarPage() {
           item.id === itemId ? { ...item, scheduled_at: newDate } : item
         )
       );
-    } catch {
-      // Handle error
+      toast.success("Content rescheduled");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to reschedule";
+      toast.error(detail);
     }
   };
 

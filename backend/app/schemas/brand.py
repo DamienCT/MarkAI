@@ -8,6 +8,7 @@ class BrandBase(BaseModel):
     name: str
     slug: str
     description: str | None = None
+    website_url: str | None = None
     logo_url: str | None = None
     brand_guidelines: dict = {}
     tone_of_voice: str | None = None
@@ -27,6 +28,7 @@ class BrandUpdate(BaseModel):
     name: str | None = None
     slug: str | None = None
     description: str | None = None
+    website_url: str | None = None
     logo_url: str | None = None
     brand_guidelines: dict | None = None
     tone_of_voice: str | None = None

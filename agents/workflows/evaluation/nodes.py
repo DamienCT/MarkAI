@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from shared.llm import chat_completion
+from shared.sanitize import sanitize_json_for_prompt
 from shared.tools.database import get_performance_data, store_adaptations
 
 from workflows.evaluation.state import EvaluationState
@@ -35,7 +36,7 @@ async def analyze_patterns(state: EvaluationState) -> dict[str, Any]:
             "Return JSON with: top_performers (array), worst_performers (array), "
             "engagement_trends, time_patterns, content_type_performance, theme_performance."
         )},
-        {"role": "user", "content": f"Performance data (last 30 days):\n{json.dumps(perf_data, default=str)[:10000]}"},
+        {"role": "user", "content": f"Performance data (last 30 days):\n{sanitize_json_for_prompt(perf_data)}"},
     ]
     result = await chat_completion(prompt, temperature=0.3)
     try:
@@ -58,7 +59,7 @@ async def generate_recommendations(state: EvaluationState) -> dict[str, Any]:
             "category (timing/content/audience/format), specific_action. "
             "Return a JSON array sorted by confidence descending."
         )},
-        {"role": "user", "content": f"Performance patterns:\n{json.dumps(patterns, default=str)[:8000]}"},
+        {"role": "user", "content": f"Performance patterns:\n{sanitize_json_for_prompt(patterns, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.4)
     try:
@@ -86,7 +87,7 @@ async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
             "- tier3: Major strategic change. Examples: pillar restructuring, platform strategy changes, brand voice shifts.\n"
             "Return a JSON array where each object has the original recommendation fields plus a 'tier' field (1, 2, or 3)."
         )},
-        {"role": "user", "content": f"Recommendations:\n{json.dumps(recommendations, default=str)[:8000]}"},
+        {"role": "user", "content": f"Recommendations:\n{sanitize_json_for_prompt(recommendations, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.2)
     try:

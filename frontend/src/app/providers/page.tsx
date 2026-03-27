@@ -1,13 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { toast } from "sonner";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,24 +24,16 @@ interface HealthStatus {
 
 export default function ProvidersPage() {
   const [categories, setCategories] = useState<AIModelCategory[]>([]);
-  const [modelsByCategory, setModelsByCategory] = useState<
-    Record<string, AIModel[]>
-  >({});
+  const [modelsByCategory, setModelsByCategory] = useState<Record<string, AIModel[]>>({});
   const [loading, setLoading] = useState(true);
   const [discovering, setDiscovering] = useState(false);
-  const [discoverResult, setDiscoverResult] = useState<DiscoverResult | null>(
-    null
-  );
+  const [discoverResult, setDiscoverResult] = useState<DiscoverResult | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [savingSlug, setSavingSlug] = useState<string | null>(null);
   const [totalModels, setTotalModels] = useState(0);
-  const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      setError(null);
-
-      // Fetch categories and all models in parallel
       const [cats, allModels] = await Promise.all([
         api.get<AIModelCategory[]>("/api/v1/providers/categories"),
         api.get<AIModel[]>("/api/v1/providers/models"),
@@ -55,11 +42,9 @@ export default function ProvidersPage() {
       setCategories(cats);
       setTotalModels(allModels.length);
 
-      // Group models by category
       const grouped: Record<string, AIModel[]> = {};
       for (const model of allModels) {
         if (model.category_id) {
-          // Find the category slug for this category_id
           const cat = cats.find((c) => c.id === model.category_id);
           if (cat) {
             if (!grouped[cat.slug]) grouped[cat.slug] = [];
@@ -68,14 +53,8 @@ export default function ProvidersPage() {
         }
       }
       setModelsByCategory(grouped);
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : typeof err === "object" && err !== null && "detail" in err
-            ? String((err as { detail: string }).detail)
-            : "Failed to load data";
-      setError(message);
+    } catch {
+      toast.error("Failed to load AI models");
     } finally {
       setLoading(false);
     }
@@ -99,20 +78,13 @@ export default function ProvidersPage() {
     setDiscovering(true);
     setDiscoverResult(null);
     try {
-      const result = await api.post<DiscoverResult>(
-        "/api/v1/providers/discover"
-      );
+      const result = await api.post<DiscoverResult>("/api/v1/providers/discover");
       setDiscoverResult(result);
-      // Refresh data after discovery
+      toast.success(`Discovery complete: ${result.discovered} new, ${result.updated} updated`);
       await fetchData();
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : typeof err === "object" && err !== null && "detail" in err
-            ? String((err as { detail: string }).detail)
-            : "Discovery failed";
-      setError(message);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Discovery failed";
+      toast.error(detail);
     } finally {
       setDiscovering(false);
     }
@@ -126,16 +98,11 @@ export default function ProvidersPage() {
         is_active: true,
         priority: 0,
       });
-      // Refresh categories to get the updated active model
+      toast.success("Model selection saved");
       await fetchData();
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : typeof err === "object" && err !== null && "detail" in err
-            ? String((err as { detail: string }).detail)
-            : "Failed to update model";
-      setError(message);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to update model";
+      toast.error(detail);
     } finally {
       setSavingSlug(null);
     }
@@ -156,13 +123,11 @@ export default function ProvidersPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold">AI Model Management</h1>
           <p className="text-muted-foreground">
-            Select which AI model to use for each use case. Models are
-            discovered automatically from providers.
+            Select which AI model to use for each use case. Models are discovered automatically from providers.
           </p>
         </div>
         <Button onClick={handleDiscover} disabled={discovering}>
@@ -170,22 +135,11 @@ export default function ProvidersPage() {
         </Button>
       </div>
 
-      {/* Error banner */}
-      {error && (
-        <Card className="border-destructive">
-          <CardContent className="py-4">
-            <p className="text-sm text-destructive">{error}</p>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Stats row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Card>
           <CardContent className="py-4">
-            <div className="text-sm text-muted-foreground">
-              Available Models
-            </div>
+            <div className="text-sm text-muted-foreground">Available Models</div>
             <div className="text-2xl font-bold">{totalModels}</div>
           </CardContent>
         </Card>
@@ -197,19 +151,10 @@ export default function ProvidersPage() {
         </Card>
         <Card>
           <CardContent className="py-4">
-            <div className="text-sm text-muted-foreground">
-              LiteLLM Proxy Status
-            </div>
+            <div className="text-sm text-muted-foreground">LiteLLM Proxy Status</div>
             <div className="mt-1">
               {health ? (
-                <Badge
-                  variant={
-                    health.status === "healthy" ||
-                    health.status === "connected"
-                      ? "default"
-                      : "destructive"
-                  }
-                >
+                <Badge variant={health.status === "healthy" || health.status === "connected" ? "default" : "destructive"}>
                   {health.status || "unknown"}
                 </Badge>
               ) : (
@@ -225,8 +170,7 @@ export default function ProvidersPage() {
         <Card className="border-primary/50 bg-primary/5">
           <CardContent className="py-4">
             <p className="text-sm">
-              Discovery complete:{" "}
-              <strong>{discoverResult.discovered}</strong> new models found,{" "}
+              Discovery complete: <strong>{discoverResult.discovered}</strong> new models found,{" "}
               <strong>{discoverResult.updated}</strong> updated,{" "}
               <strong>{discoverResult.unavailable}</strong> marked unavailable.
             </p>
@@ -238,9 +182,7 @@ export default function ProvidersPage() {
       {categories.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
-            <p className="text-muted-foreground">
-              No model categories found. Run model discovery to get started.
-            </p>
+            <p className="text-muted-foreground">No model categories found. Run model discovery to get started.</p>
           </CardContent>
         </Card>
       ) : (
@@ -254,77 +196,48 @@ export default function ProvidersPage() {
               <Card key={category.id}>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-lg">
-                      {category.display_name}
-                    </CardTitle>
+                    <CardTitle className="text-lg">{category.display_name}</CardTitle>
                     {activeModel ? (
                       <Badge variant="default">Active</Badge>
                     ) : (
                       <Badge variant="outline">No selection</Badge>
                     )}
                   </div>
-                  {category.description && (
-                    <CardDescription>{category.description}</CardDescription>
-                  )}
+                  {category.description && <CardDescription>{category.description}</CardDescription>}
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Current model */}
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-muted-foreground">
-                      Active Model
-                    </label>
-                    <p className="text-sm font-mono">
-                      {activeModel ? activeModel.model_id : "Using default"}
-                    </p>
+                    <label className="text-sm font-medium text-muted-foreground">Active Model</label>
+                    <p className="text-sm font-mono">{activeModel ? activeModel.model_id : "Using default"}</p>
                   </div>
-
-                  {/* Model selector */}
                   <div className="space-y-1">
-                    <label
-                      htmlFor={`model-${category.slug}`}
-                      className="text-sm font-medium text-muted-foreground"
-                    >
+                    <label htmlFor={`model-${category.slug}`} className="text-sm font-medium text-muted-foreground">
                       Change Model
                     </label>
                     <select
                       id={`model-${category.slug}`}
-                      className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>option]:bg-background [&>option]:text-foreground"
+                      className="flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>option]:bg-background [&>option]:text-foreground"
                       value={activeModel?.id ?? ""}
                       disabled={isSaving || availableModels.length === 0}
                       onChange={(e) => {
-                        if (e.target.value) {
-                          handleModelChange(category.slug, e.target.value);
-                        }
+                        if (e.target.value) handleModelChange(category.slug, e.target.value);
                       }}
                     >
                       <option value="">
-                        {availableModels.length === 0
-                          ? "No models available"
-                          : "Select a model..."}
+                        {availableModels.length === 0 ? "No models available" : "Select a model..."}
                       </option>
                       {availableModels.map((model) => (
                         <option key={model.id} value={model.id}>
                           {model.model_id}
-                          {model.display_name &&
-                          model.display_name !== model.model_id
-                            ? ` (${model.display_name})`
-                            : ""}
+                          {model.display_name && model.display_name !== model.model_id ? ` (${model.display_name})` : ""}
                         </option>
                       ))}
                     </select>
                   </div>
-
-                  {/* Model count */}
                   <div className="text-xs text-muted-foreground">
-                    {availableModels.length} model
-                    {availableModels.length !== 1 ? "s" : ""} available
+                    {availableModels.length} model{availableModels.length !== 1 ? "s" : ""} available
                   </div>
-
-                  {isSaving && (
-                    <p className="text-xs text-muted-foreground animate-pulse">
-                      Saving...
-                    </p>
-                  )}
+                  {isSaving && <p className="text-xs text-muted-foreground animate-pulse">Saving...</p>}
                 </CardContent>
               </Card>
             );

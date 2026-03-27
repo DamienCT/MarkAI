@@ -75,6 +75,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global exception handler — ensures CORS headers are present on 500 errors
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import traceback as _tb
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    # Log traceback but sanitize to avoid leaking secrets
+    tb_text = _tb.format_exc()
+    # Strip any lines containing known secret patterns
+    sanitized_tb = "\n".join(
+        line for line in tb_text.splitlines()
+        if not any(s in line.lower() for s in ("secret", "password", "api_key", "token", "credential"))
+    )
+    logger.error("Unhandled exception on %s %s: %s\n%s", request.method, request.url.path, type(exc).__name__, sanitized_tb)
+    origin = request.headers.get("origin", "")
+    headers = {}
+    if origin:
+        headers["access-control-allow-origin"] = origin
+        headers["access-control-allow-credentials"] = "true"
+    # Never expose internal exception details to the client
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+        headers=headers,
+    )
+
+# Health check endpoint (used by Docker healthcheck)
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 # OpenTelemetry (conditional)
 if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
     _setup_telemetry(app)

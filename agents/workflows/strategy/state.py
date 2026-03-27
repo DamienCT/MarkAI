@@ -22,6 +22,10 @@ class StrategyState(TypedDict, total=False):
     cadence: dict[str, Any]
     themes: list[dict[str, Any]]
 
+    # Pipeline control
+    trigger: str  # "manual" or "event" — event-triggered skips human review
+    auto_approve: bool  # When True, skip interrupt and auto-approve
+
     # Human review
     human_approved: bool
     human_feedback: str

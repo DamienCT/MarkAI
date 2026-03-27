@@ -66,6 +66,9 @@ SUBSCRIPTIONS = [
     ("adaptation.>", "adaptation-worker"),
 ]
 
+# Module-level reference to the consumer, set during main()
+_consumer: NATSConsumer | None = None
+
 
 def _resolve_graph(subject: str):
     """Resolve a NATS subject to the appropriate LangGraph graph."""
@@ -104,67 +107,202 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         if key not in initial_state:
             initial_state[key] = value
 
-    try:
-        logger.info(
-            "Dispatching %s workflow for brand %s (run %s)",
-            subject.split(".")[0],
-            initial_state.get("brand_id"),
-            initial_state.get("run_id"),
-        )
+    # Track this run in the database
+    from shared.tools.database import create_agent_run, complete_agent_run
+    agent_type = subject.split(".")[0]
+    brand_id = initial_state.get("brand_id", "")
+    run_id = ""
 
-        # For graphs with checkpointers (strategy, adaptation), pass a thread config
+    # Ensure payload is JSON-safe (handle UUIDs, datetimes, etc.)
+    safe_payload = json.loads(json.dumps(payload, default=str))
+
+    # Idempotency: check if there's already a running workflow of this type for this brand
+    try:
+        from shared.tools.database import execute_query
+        existing = await execute_query(
+            "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type "
+            "AND status = 'running' AND started_at > NOW() - INTERVAL '30 minutes'",
+            {"brand_id": brand_id, "agent_type": agent_type},
+        )
+        if existing:
+            logger.warning(
+                "Skipping duplicate %s workflow for brand %s — already running (run %s)",
+                agent_type, brand_id, existing[0].get("id"),
+            )
+            await msg.ack()
+            return
+    except Exception:
+        pass  # If check fails, proceed anyway
+
+    try:
+        run_id = await create_agent_run(
+            brand_id=brand_id,
+            agent_type=agent_type,
+            trigger=payload.get("trigger", "manual"),
+            input_payload=safe_payload,
+        )
+        initial_state["run_id"] = run_id
+
+        logger.info("Dispatching %s workflow for brand %s (run %s)", agent_type, brand_id, run_id)
+
         config: dict[str, Any] = {}
         if hasattr(graph, "checkpointer") and graph.checkpointer is not None:
-            config["configurable"] = {
-                "thread_id": initial_state.get("run_id") or initial_state.get("brand_id", "default"),
-            }
+            config["configurable"] = {"thread_id": run_id or brand_id}
 
         result = await asyncio.wait_for(
             graph.ainvoke(initial_state, config=config if config else None),
             timeout=WORKFLOW_TIMEOUT,
         )
 
-        logger.info(
-            "Workflow %s completed for brand %s — status: %s",
-            subject.split(".")[0],
-            initial_state.get("brand_id"),
-            result.get("status", "unknown"),
-        )
+        # Ensure result is JSON-safe before storing (handle UUIDs, datetimes, etc.)
+        safe_result = json.loads(json.dumps(result, default=str))
+        await complete_agent_run(run_id, output_payload=safe_result, status="completed")
+        logger.info("Workflow %s completed for brand %s", agent_type, brand_id)
         await msg.ack()
 
+        # ── Chain: auto-trigger the next workflow in the pipeline ─────
+        CHAIN_NEXT: dict[str, str] = {
+            "research": "strategy.trigger",
+            "strategy": "planning.trigger",
+            "planning": "content.generate",
+            "evaluation": "adaptation.trigger",
+        }
+
+        # Track chain depth to prevent infinite loops
+        current_depth = payload.get("chain_depth", 0)
+
+        next_subject = CHAIN_NEXT.get(agent_type)
+
+        # ── Product intel conditional chain ───────────────────────
+        # After product_intel completes, chain to strategy ONLY if
+        # the brand already has completed research (otherwise the
+        # strategy graph would fail on load_research).
+        if agent_type == "product" and brand_id and _consumer is not None:
+            try:
+                from shared.tools.database import get_latest_research
+                existing_research = await get_latest_research(brand_id)
+                if existing_research:
+                    next_subject = "strategy.trigger"
+                    logger.info(
+                        "Product intel -> strategy chain enabled: research exists for brand %s",
+                        brand_id,
+                    )
+                else:
+                    logger.info(
+                        "Product intel completed for brand %s but no research found — skipping strategy chain",
+                        brand_id,
+                    )
+            except Exception as pi_exc:
+                logger.warning("Could not check research for product_intel chain: %s", pi_exc)
+
+        # ── Adaptation -> planning feedback loop (with guardrails) ─
+        # Only chain if adaptation produced tier2 or tier3 applied
+        # changes AND we haven't exceeded max chain depth.
+        MAX_CHAIN_DEPTH = 2
+        if agent_type == "adaptation" and brand_id and _consumer is not None:
+            applied_changes = (result or {}).get("applied_changes", [])
+            has_higher_tier = any(
+                c.get("tier") in (2, 3) for c in applied_changes
+            )
+            if has_higher_tier and current_depth < MAX_CHAIN_DEPTH:
+                next_subject = "planning.trigger"
+                logger.info(
+                    "Adaptation -> planning re-plan chain (depth %d/%d) for brand %s",
+                    current_depth + 1, MAX_CHAIN_DEPTH, brand_id,
+                )
+            elif has_higher_tier:
+                logger.info(
+                    "Adaptation has tier2/3 changes but chain_depth %d >= max %d — stopping chain for brand %s",
+                    current_depth, MAX_CHAIN_DEPTH, brand_id,
+                )
+                next_subject = None  # Override any default chain
+            else:
+                logger.info(
+                    "Adaptation completed with tier1-only changes — no re-planning needed for brand %s",
+                    brand_id,
+                )
+                next_subject = None  # Override evaluation->adaptation default
+
+        if next_subject and brand_id and _consumer is not None:
+            try:
+                # ── Planning -> Content fan-out: publish one message per calendar item
+                if agent_type == "planning" and next_subject == "content.generate":
+                    calendar_item_ids = (result or {}).get("calendar_item_ids", [])
+                    if calendar_item_ids:
+                        for cid in calendar_item_ids:
+                            item_payload = json.dumps({
+                                "brand_id": brand_id,
+                                "calendar_item_id": cid,
+                                "trigger": "event",
+                                "chain_depth": current_depth + 1,
+                            }).encode()
+                            await _consumer.js.publish(next_subject, item_payload)
+                        logger.info(
+                            "Chained planning -> content.generate for %d calendar items (brand %s)",
+                            len(calendar_item_ids), brand_id,
+                        )
+                    else:
+                        logger.warning("Planning completed but no calendar_item_ids in result — skipping content chain")
+                else:
+                    # Standard single-message chain
+                    chain_payload = json.dumps({
+                        "brand_id": brand_id,
+                        "trigger": "event",
+                        "chain_depth": current_depth + 1,
+                    }).encode()
+                    await _consumer.js.publish(next_subject, chain_payload)
+                    logger.info("Chained %s -> %s for brand %s (depth %d)", agent_type, next_subject, brand_id, current_depth + 1)
+            except Exception as chain_exc:
+                logger.error("Failed to chain %s -> %s: %s", agent_type, next_subject, chain_exc)
+                # Update run status to indicate chain failure so the UI can show it
+                if run_id:
+                    await complete_agent_run(
+                        run_id,
+                        output_payload={**(safe_result or {}), "_chain_error": str(chain_exc)},
+                        status="completed",
+                    )
+
     except asyncio.TimeoutError:
-        logger.error(
-            "Workflow %s timed out after %d seconds for brand %s (run %s)",
-            subject.split(".")[0],
-            WORKFLOW_TIMEOUT,
-            initial_state.get("brand_id"),
-            initial_state.get("run_id"),
-        )
+        logger.error("Workflow %s timed out for brand %s", agent_type, brand_id)
+        if run_id:
+            await complete_agent_run(run_id, status="failed", error_message=f"Timed out after {WORKFLOW_TIMEOUT}s")
         await msg.nak(delay=60)
 
-    except Exception:
-        logger.exception("Workflow %s failed for brand %s", subject, initial_state.get("brand_id"))
-        # Nak with delay for retry
-        await msg.nak(delay=30)
+    except Exception as exc:
+        logger.exception("Workflow %s failed for brand %s", agent_type, brand_id)
+        if run_id:
+            await complete_agent_run(run_id, status="failed", error_message=str(exc))
+        await msg.ack()  # Don't retry indefinitely on code errors
+
+
+REQUIRED_SUBJECTS = [
+    "research.>", "strategy.>", "content.>",
+    "evaluation.>", "product.>", "planning.>", "adaptation.>",
+]
 
 
 async def _ensure_stream(consumer: NATSConsumer) -> None:
     """Ensure the WORKFLOWS stream exists with the required subjects."""
     try:
-        await consumer.js.find_stream_name_by_subject("research.>")
+        info = await consumer.js.find_stream_name_by_subject("research.>")
         logger.info("Stream %s already exists", STREAM_NAME)
+        # Verify all subjects are configured
+        try:
+            stream_info = await consumer.js.stream_info(STREAM_NAME)
+            existing_subjects = set(stream_info.config.subjects or [])
+            missing = set(REQUIRED_SUBJECTS) - existing_subjects
+            if missing:
+                logger.warning("Stream %s missing subjects: %s — updating", STREAM_NAME, missing)
+                await consumer.js.update_stream(
+                    name=STREAM_NAME,
+                    subjects=REQUIRED_SUBJECTS,
+                )
+        except Exception as e:
+            logger.warning("Could not verify stream subjects: %s", e)
     except Exception:
         await consumer.js.add_stream(
             name=STREAM_NAME,
-            subjects=[
-                "research.>",
-                "strategy.>",
-                "content.>",
-                "evaluation.>",
-                "product.>",
-                "planning.>",
-                "adaptation.>",
-            ],
+            subjects=REQUIRED_SUBJECTS,
             retention="workqueue",
             max_age=86400 * 7,  # 7 days
         )
@@ -173,7 +311,9 @@ async def _ensure_stream(consumer: NATSConsumer) -> None:
 
 async def main() -> None:
     """Start the worker, subscribe to all workflow subjects, and wait for shutdown."""
+    global _consumer
     consumer = NATSConsumer()
+    _consumer = consumer
     loop = asyncio.get_running_loop()
 
     # ── Graceful shutdown ────────────────────────────────────────────────

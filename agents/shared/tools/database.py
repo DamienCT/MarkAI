@@ -1,10 +1,12 @@
-"""Real async SQLAlchemy database operations for brands, content, products, etc."""
+"""Real async SQLAlchemy database operations using the actual MARKAI schema."""
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -23,7 +25,6 @@ async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
 
 async def get_session() -> AsyncSession:
-    """Return a new async session."""
     return async_session_factory()
 
 
@@ -41,16 +42,175 @@ async def get_brand(brand_id: str) -> dict[str, Any] | None:
 async def get_brand_config(brand_id: str) -> dict[str, Any] | None:
     async with async_session_factory() as session:
         result = await session.execute(
-            text(
-                "SELECT id, brand_guidelines FROM brands WHERE id = :id"
-            ),
+            text("SELECT id, brand_guidelines, tone_of_voice, target_audience, website_url FROM brands WHERE id = :id"),
             {"id": brand_id},
         )
         row = result.mappings().first()
         return dict(row) if row else None
 
 
-# ── Content operations ───────────────────────────────────────────────────
+# ── Agent Run operations (store all workflow results here) ────────────────
+
+async def create_agent_run(
+    brand_id: str,
+    agent_type: str,
+    trigger: str = "manual",  # valid: manual, scheduled, event, webhook
+    input_payload: dict | None = None,
+) -> str:
+    """Create a new agent_run record and return its ID."""
+    run_id = str(uuid4())
+    async with async_session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO agent_runs (id, brand_id, agent_type, trigger, status, input_payload, started_at) "
+                "VALUES (:id, :brand_id, :agent_type, :trigger, 'running', :input_payload, :started_at)"
+            ),
+            {
+                "id": run_id,
+                "brand_id": brand_id,
+                "agent_type": agent_type,
+                "trigger": trigger,
+                "input_payload": json.dumps(input_payload or {}, default=str),
+                "started_at": datetime.now(timezone.utc),
+            },
+        )
+        await session.commit()
+    return run_id
+
+
+async def complete_agent_run(
+    run_id: str,
+    output_payload: dict | None = None,
+    status: str = "completed",
+    error_message: str | None = None,
+) -> None:
+    """Mark an agent_run as completed or failed."""
+    async with async_session_factory() as session:
+        await session.execute(
+            text(
+                "UPDATE agent_runs SET status = :status, output_payload = :output, "
+                "error_message = :error, completed_at = :completed_at "
+                "WHERE id = :id"
+            ),
+            {
+                "id": run_id,
+                "status": status,
+                "output": json.dumps(output_payload or {}, default=str),
+                "error": error_message,
+                "completed_at": datetime.now(timezone.utc),
+            },
+        )
+        await session.commit()
+
+
+# ── Research operations (stored in agent_runs) ────────────────────────────
+
+async def store_research(brand_id: str, research_data: dict[str, Any]) -> str:
+    """Store research results as a completed agent_run with output_payload."""
+    run_id = str(uuid4())
+    async with async_session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO agent_runs (id, brand_id, agent_type, trigger, status, output_payload, started_at, completed_at) "
+                "VALUES (:id, :brand_id, 'research', 'manual', 'completed', :output_payload, :now, :now)"
+            ),
+            {
+                "id": run_id,
+                "brand_id": brand_id,
+                "output_payload": json.dumps(research_data, default=str),
+                "now": datetime.now(timezone.utc),
+            },
+        )
+        await session.commit()
+    return run_id
+
+
+async def get_latest_research(brand_id: str) -> dict[str, Any] | None:
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT * FROM agent_runs WHERE brand_id = :brand_id "
+                "AND agent_type = 'research' AND status = 'completed' "
+                "ORDER BY completed_at DESC LIMIT 1"
+            ),
+            {"brand_id": brand_id},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+# ── Strategy operations (stored in agent_runs) ────────────────────────────
+
+async def store_strategy(brand_id: str, strategy_data: dict[str, Any]) -> str:
+    """Store strategy results as a completed agent_run with output_payload."""
+    run_id = str(uuid4())
+    async with async_session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO agent_runs (id, brand_id, agent_type, trigger, status, output_payload, started_at, completed_at) "
+                "VALUES (:id, :brand_id, 'strategy', 'manual', 'completed', :output_payload, :now, :now)"
+            ),
+            {
+                "id": run_id,
+                "brand_id": brand_id,
+                "output_payload": json.dumps(strategy_data, default=str),
+                "now": datetime.now(timezone.utc),
+            },
+        )
+        await session.commit()
+    return run_id
+
+
+async def get_latest_strategy(brand_id: str) -> dict[str, Any] | None:
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT * FROM agent_runs WHERE brand_id = :brand_id "
+                "AND agent_type = 'strategy' AND status = 'completed' "
+                "ORDER BY completed_at DESC LIMIT 1"
+            ),
+            {"brand_id": brand_id},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+# ── Competitor operations ─────────────────────────────────────────────────
+
+async def store_competitors(brand_id: str, competitors: list[dict[str, Any]]) -> int:
+    """Upsert discovered competitors for a brand. Returns count inserted."""
+    count = 0
+    async with async_session_factory() as session:
+        for comp in competitors:
+            name = comp.get("name", "").strip()
+            if not name:
+                continue
+            # Check if exists
+            existing = await session.execute(
+                text("SELECT id FROM competitors WHERE brand_id = :brand_id AND LOWER(name) = LOWER(:name)"),
+                {"brand_id": brand_id, "name": name},
+            )
+            if existing.first():
+                continue
+            await session.execute(
+                text(
+                    "INSERT INTO competitors (brand_id, name, website_url, social_handles, description, is_active) "
+                    "VALUES (:brand_id, :name, :website_url, :social_handles, :description, true)"
+                ),
+                {
+                    "brand_id": brand_id,
+                    "name": name,
+                    "website_url": comp.get("website_url", ""),
+                    "social_handles": json.dumps(comp.get("social_handles", {})),
+                    "description": comp.get("description", ""),
+                },
+            )
+            count += 1
+        await session.commit()
+    return count
+
+
+# ── Content operations ────────────────────────────────────────────────────
 
 async def get_calendar_item(item_id: str) -> dict[str, Any] | None:
     async with async_session_factory() as session:
@@ -61,29 +221,69 @@ async def get_calendar_item(item_id: str) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
-async def store_content(content: dict[str, Any]) -> str:
+async def store_content(content_data: dict[str, Any]) -> str:
+    """Store generated content in the content table. Marks previous versions as not current."""
+    content_id = str(uuid4())
     async with async_session_factory() as session:
-        result = await session.execute(
+        # Mark any existing content for this calendar item as not current
+        cal_item_id = content_data.get("calendar_item_id")
+        if cal_item_id:
+            await session.execute(
+                text("UPDATE content SET is_current = false WHERE calendar_item_id = :cid AND is_current = true"),
+                {"cid": cal_item_id},
+            )
+        # Parse hashtags: may be a JSON string or a list
+        raw_hashtags = content_data.get("hashtags", [])
+        if isinstance(raw_hashtags, str):
+            try:
+                raw_hashtags = json.loads(raw_hashtags)
+            except (json.JSONDecodeError, TypeError):
+                raw_hashtags = [h.strip() for h in raw_hashtags.split(",") if h.strip()]
+        if not isinstance(raw_hashtags, list):
+            raw_hashtags = []
+
+        # Build generation_metadata with all the extra content info
+        gen_metadata = content_data.get("metadata", {})
+        if content_data.get("platform_adaptations"):
+            gen_metadata["platform_adaptations"] = (
+                json.loads(content_data["platform_adaptations"])
+                if isinstance(content_data["platform_adaptations"], str)
+                else content_data["platform_adaptations"]
+            )
+        if content_data.get("product_image_url"):
+            gen_metadata["product_image_url"] = content_data["product_image_url"]
+        if content_data.get("generated_image_url"):
+            gen_metadata["generated_image_url"] = content_data["generated_image_url"]
+        if content_data.get("hook"):
+            gen_metadata["hook"] = content_data["hook"]
+
+        await session.execute(
             text(
-                "INSERT INTO content_items "
-                "(brand_id, calendar_item_id, hook, caption, hashtags, cta, "
-                " product_image_url, generated_image_url, platform_adaptations, status) "
-                "VALUES (:brand_id, :calendar_item_id, :hook, :caption, :hashtags, :cta, "
-                " :product_image_url, :generated_image_url, :platform_adaptations::jsonb, :status) "
-                "RETURNING id"
+                "INSERT INTO content (id, brand_id, calendar_item_id, headline, caption, "
+                "hashtags, cta_text, generation_metadata, ai_generated, is_current) "
+                "VALUES (:id, :brand_id, :calendar_item_id, :headline, :caption, "
+                ":hashtags, :cta_text, :metadata, true, true)"
             ),
-            content,
+            {
+                "id": content_id,
+                "brand_id": content_data.get("brand_id"),
+                "calendar_item_id": cal_item_id,
+                "headline": (content_data.get("headline") or content_data.get("hook", ""))[:500],
+                "caption": content_data.get("caption") or content_data.get("body_text", ""),
+                "hashtags": raw_hashtags,
+                "cta_text": (content_data.get("cta") or content_data.get("cta_text", ""))[:255],
+                "metadata": json.dumps(gen_metadata, default=str),
+            },
         )
         await session.commit()
-        row = result.first()
-        return str(row[0]) if row else ""
+    return content_id
 
 
 async def get_content_items(brand_id: str, limit: int = 50) -> list[dict[str, Any]]:
     async with async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT * FROM content_items WHERE brand_id = :brand_id "
+                "SELECT * FROM content WHERE brand_id = :brand_id "
                 "ORDER BY created_at DESC LIMIT :limit"
             ),
             {"brand_id": brand_id, "limit": limit},
@@ -91,12 +291,12 @@ async def get_content_items(brand_id: str, limit: int = 50) -> list[dict[str, An
         return [dict(r) for r in result.mappings().all()]
 
 
-# ── Product operations ───────────────────────────────────────────────────
+# ── Product operations ────────────────────────────────────────────────────
 
 async def get_products(brand_id: str) -> list[dict[str, Any]]:
     async with async_session_factory() as session:
         result = await session.execute(
-            text("SELECT * FROM products WHERE brand_id = :brand_id"),
+            text("SELECT * FROM products WHERE brand_id = :brand_id AND is_active = true"),
             {"brand_id": brand_id},
         )
         return [dict(r) for r in result.mappings().all()]
@@ -106,12 +306,12 @@ async def upsert_product(product: dict[str, Any]) -> str:
     async with async_session_factory() as session:
         result = await session.execute(
             text(
-                "INSERT INTO products (id, brand_id, name, sku, vendor, image_url, metadata) "
-                "VALUES (:id, :brand_id, :name, :sku, :vendor, :image_url, :metadata::jsonb) "
+                "INSERT INTO products (brand_id, bc_item_no, name, description, category, "
+                "vendor_no, unit_price, bc_company, bc_location, remaining_qty, is_active) "
+                "VALUES (:brand_id, :bc_item_no, :name, :description, :category, "
+                ":vendor_no, :unit_price, :bc_company, :bc_location, :remaining_qty, true) "
                 "ON CONFLICT (id) DO UPDATE SET "
-                "  name = EXCLUDED.name, sku = EXCLUDED.sku, vendor = EXCLUDED.vendor, "
-                "  image_url = EXCLUDED.image_url, metadata = EXCLUDED.metadata, "
-                "  updated_at = NOW() "
+                "name = EXCLUDED.name, remaining_qty = EXCLUDED.remaining_qty, updated_at = NOW() "
                 "RETURNING id"
             ),
             product,
@@ -121,98 +321,80 @@ async def upsert_product(product: dict[str, Any]) -> str:
         return str(row[0]) if row else ""
 
 
-# ── Strategy / Research operations ───────────────────────────────────────
-
-async def store_research(brand_id: str, research_data: dict[str, Any]) -> str:
-    async with async_session_factory() as session:
-        result = await session.execute(
-            text(
-                "INSERT INTO research_results (brand_id, data) "
-                "VALUES (:brand_id, :data::jsonb) RETURNING id"
-            ),
-            {"brand_id": brand_id, "data": str(research_data)},
-        )
-        await session.commit()
-        row = result.first()
-        return str(row[0]) if row else ""
-
-
-async def get_latest_research(brand_id: str) -> dict[str, Any] | None:
-    async with async_session_factory() as session:
-        result = await session.execute(
-            text(
-                "SELECT * FROM research_results WHERE brand_id = :brand_id "
-                "ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"brand_id": brand_id},
-        )
-        row = result.mappings().first()
-        return dict(row) if row else None
-
-
-async def store_strategy(brand_id: str, strategy_data: dict[str, Any]) -> str:
-    async with async_session_factory() as session:
-        result = await session.execute(
-            text(
-                "INSERT INTO strategies (brand_id, data) "
-                "VALUES (:brand_id, :data::jsonb) RETURNING id"
-            ),
-            {"brand_id": brand_id, "data": str(strategy_data)},
-        )
-        await session.commit()
-        row = result.first()
-        return str(row[0]) if row else ""
-
-
-async def get_latest_strategy(brand_id: str) -> dict[str, Any] | None:
-    async with async_session_factory() as session:
-        result = await session.execute(
-            text(
-                "SELECT * FROM strategies WHERE brand_id = :brand_id "
-                "ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"brand_id": brand_id},
-        )
-        row = result.mappings().first()
-        return dict(row) if row else None
-
-
 # ── Calendar operations ──────────────────────────────────────────────────
 
 async def store_calendar_items(items: list[dict[str, Any]]) -> list[str]:
     ids: list[str] = []
     async with async_session_factory() as session:
         for item in items:
-            result = await session.execute(
+            item_id = str(uuid4())
+            # Parse scheduled_at — LLM may return a string like "2026-04-01"
+            scheduled_at_raw = item.get("scheduled_at")
+            if isinstance(scheduled_at_raw, str) and scheduled_at_raw:
+                try:
+                    scheduled_at_val = datetime.fromisoformat(scheduled_at_raw)
+                except ValueError:
+                    # Handle date-only strings like "2026-04-01" on older Pythons
+                    try:
+                        from datetime import date as _date
+                        d = _date.fromisoformat(scheduled_at_raw[:10])
+                        scheduled_at_val = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+                    except Exception:
+                        scheduled_at_val = datetime.now(timezone.utc)
+            elif isinstance(scheduled_at_raw, datetime):
+                scheduled_at_val = scheduled_at_raw
+            else:
+                scheduled_at_val = datetime.now(timezone.utc)
+
+            # Validate and map item_type (content_type from LLM)
+            VALID_ITEM_TYPES = {"post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"}
+            raw_type = (item.get("content_type") or item.get("item_type") or "post").lower().strip()
+            item_type = raw_type if raw_type in VALID_ITEM_TYPES else "post"
+
+            # Validate channel against DB check constraint
+            VALID_CHANNELS = {"instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"}
+            raw_channel = (item.get("channel") or "instagram").lower().strip()
+            # Map common LLM variants
+            channel_map = {"twitter": "x", "blog": "website_blog", "web": "website_blog"}
+            channel = channel_map.get(raw_channel, raw_channel)
+            if channel not in VALID_CHANNELS:
+                channel = "instagram"
+
+            await session.execute(
                 text(
-                    "INSERT INTO calendar_items "
-                    "(brand_id, campaign_id, scheduled_date, platform, content_type, "
-                    " product_id, theme, status) "
-                    "VALUES (:brand_id, :campaign_id, :scheduled_date, :platform, "
-                    " :content_type, :product_id, :theme, :status) "
-                    "RETURNING id"
+                    "INSERT INTO calendar_items (id, brand_id, campaign_id, title, description, "
+                    "item_type, channel, scheduled_at, status, product_ids) "
+                    "VALUES (:id, :brand_id, :campaign_id, :title, :description, "
+                    ":item_type, :channel, :scheduled_at, 'queued', :product_ids)"
                 ),
-                item,
+                {
+                    "id": item_id,
+                    "brand_id": item.get("brand_id"),
+                    "campaign_id": item.get("campaign_id"),
+                    "title": item.get("title", "")[:500],
+                    "description": item.get("description", ""),
+                    "item_type": item_type,
+                    "channel": channel,
+                    "scheduled_at": scheduled_at_val,
+                    "product_ids": [item["product_id"]] if item.get("product_id") else None,
+                },
             )
-            row = result.first()
-            if row:
-                ids.append(str(row[0]))
+            ids.append(item_id)
         await session.commit()
     return ids
 
 
 # ── Performance / Evaluation operations ──────────────────────────────────
 
-async def get_performance_data(
-    brand_id: str, days: int = 30
-) -> list[dict[str, Any]]:
+async def get_performance_data(brand_id: str, days: int = 30) -> list[dict[str, Any]]:
     async with async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT * FROM content_performance "
-                "WHERE brand_id = :brand_id "
-                "  AND measured_at >= NOW() - make_interval(days => :days) "
-                "ORDER BY measured_at DESC"
+                "SELECT em.*, ci.channel, ci.title FROM engagement_metrics em "
+                "JOIN calendar_items ci ON em.calendar_item_id = ci.id "
+                "WHERE em.brand_id = :brand_id "
+                "AND em.measured_at >= NOW() - make_interval(days => :days) "
+                "ORDER BY em.measured_at DESC"
             ),
             {"brand_id": brand_id, "days": days},
         )
@@ -223,18 +405,24 @@ async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
     ids: list[str] = []
     async with async_session_factory() as session:
         for a in adaptations:
-            result = await session.execute(
+            adapt_id = str(uuid4())
+            await session.execute(
                 text(
-                    "INSERT INTO adaptations "
-                    "(brand_id, tier, description, confidence, data, status) "
-                    "VALUES (:brand_id, :tier, :description, :confidence, :data::jsonb, :status) "
-                    "RETURNING id"
+                    "INSERT INTO adaptations (id, source_content_id, target_channel, "
+                    "adapted_text, adapted_headline, adaptation_notes, status) "
+                    "VALUES (:id, :source_content_id, :target_channel, "
+                    ":adapted_text, :adapted_headline, :notes, 'proposed')"
                 ),
-                a,
+                {
+                    "id": adapt_id,
+                    "source_content_id": a.get("source_content_id"),
+                    "target_channel": a.get("target_channel", "instagram"),
+                    "adapted_text": a.get("adapted_text", ""),
+                    "adapted_headline": a.get("adapted_headline", ""),
+                    "notes": a.get("notes", ""),
+                },
             )
-            row = result.first()
-            if row:
-                ids.append(str(row[0]))
+            ids.append(adapt_id)
         await session.commit()
     return ids
 
@@ -243,9 +431,10 @@ async def get_pending_adaptations(brand_id: str) -> list[dict[str, Any]]:
     async with async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT * FROM adaptations "
-                "WHERE brand_id = :brand_id AND status = 'pending' "
-                "ORDER BY tier, created_at"
+                "SELECT a.* FROM adaptations a "
+                "JOIN content c ON a.source_content_id = c.id "
+                "WHERE c.brand_id = :brand_id AND a.status = 'proposed' "
+                "ORDER BY a.created_at"
             ),
             {"brand_id": brand_id},
         )
@@ -263,9 +452,7 @@ async def update_adaptation_status(adaptation_id: str, status: str) -> None:
 
 # ── Generic query helper ─────────────────────────────────────────────────
 
-async def execute_query(
-    query: str, params: dict[str, Any] | None = None
-) -> list[dict[str, Any]]:
+async def execute_query(query: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     async with async_session_factory() as session:
         result = await session.execute(text(query), params or {})
         return [dict(r) for r in result.mappings().all()]

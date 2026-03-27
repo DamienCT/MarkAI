@@ -18,3 +18,4 @@ class PlanningState(TypedDict, total=False):
     # Generated
     campaigns: list[dict[str, Any]]
     calendar_items: list[dict[str, Any]]
+    calendar_item_ids: list[str]

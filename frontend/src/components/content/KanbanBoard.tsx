@@ -151,14 +151,14 @@ export function KanbanBoard({ items, onStatusChange }: KanbanBoardProps) {
         {/* Row 1: Content Pipeline */}
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Content Pipeline</h3>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
             {ROW1_COLUMNS.map((column) => {
               const columnItems = items.filter((c) => c.status === column.id);
               return (
                 <div key={column.id} className="min-w-0">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-medium truncate">{column.label}</h3>
-                    <Badge variant="secondary" className="text-xs ml-1 flex-shrink-0">
+                    <Badge variant="secondary" className="text-xs ml-1 shrink-0">
                       {columnItems.length}
                     </Badge>
                   </div>
@@ -190,14 +190,14 @@ export function KanbanBoard({ items, onStatusChange }: KanbanBoardProps) {
         {/* Row 2: Publishing Pipeline */}
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Publishing Pipeline</h3>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
             {ROW2_COLUMNS.map((column) => {
               const columnItems = items.filter((c) => c.status === column.id);
               return (
                 <div key={column.id} className="min-w-0">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-medium truncate">{column.label}</h3>
-                    <Badge variant="secondary" className="text-xs ml-1 flex-shrink-0">
+                    <Badge variant="secondary" className="text-xs ml-1 shrink-0">
                       {columnItems.length}
                     </Badge>
                   </div>

@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -57,6 +57,9 @@ class Settings(BaseSettings):
 
     # --- OpenAI (used for model discovery) ---
     OPENAI_API_KEY: str = ""
+
+    # --- Google Gemini (used for product image replacement) ---
+    GEMINI_API_KEY: str = ""
 
     # --- Frontend ---
     FRONTEND_URL: str = ""
@@ -121,3 +124,20 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Warn on startup if critical secrets are still at default values
+_DEFAULTS_TO_CHECK = {
+    "SECRET_KEY": "change-me-to-a-random-string",
+    "POSTGRES_PASSWORD": "change-me",
+    "MINIO_SECRET_KEY": "change-me",
+}
+if settings.MARKAI_ENV == "production":
+    import logging as _log
+    _startup_logger = _log.getLogger("app.config")
+    for _field, _default in _DEFAULTS_TO_CHECK.items():
+        if getattr(settings, _field, None) == _default:
+            _startup_logger.warning(
+                "SECURITY: %s is still set to its default value. "
+                "Set a strong value in .env before deploying to production.",
+                _field,
+            )

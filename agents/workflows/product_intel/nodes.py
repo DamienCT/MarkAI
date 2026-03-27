@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from shared.llm import chat_completion
+from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.browser import extract_page
 from shared.tools.database import get_products, upsert_product
 from shared.tools.fabric import execute_sql
@@ -58,7 +59,7 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
             "identify distinct brands. Some vendors may represent multiple brands, some may be the same brand. "
             "Return JSON: {vendor_name: [{brand_name, brand_website (if known), product_count, category}]}"
         )},
-        {"role": "user", "content": f"Vendor groups:\n{json.dumps({v: [{'name': p['name'], 'sku': p.get('sku')} for p in ps[:20]] for v, ps in vendor_groups.items()}, default=str)[:8000]}"},
+        {"role": "user", "content": f"Vendor groups:\n{sanitize_json_for_prompt({v: [{'name': p['name'], 'sku': p.get('sku')} for p in ps[:20]] for v, ps in vendor_groups.items()}, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.3)
     try:
@@ -95,7 +96,7 @@ async def research_brand(state: ProductIntelState) -> dict[str, Any]:
                             "Extract brand information: description, target_market, price_range, "
                             "brand_values, social_media_links. Return JSON."
                         )},
-                        {"role": "user", "content": f"Brand: {brand_name}\nWebsite data:\n{json.dumps(page_data, default=str)[:5000]}"},
+                        {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nWebsite data:\n{sanitize_json_for_prompt(page_data, max_length=5000)}"},
                     ]
                     analysis = await chat_completion(prompt, temperature=0.3)
                     try:
@@ -126,8 +127,8 @@ async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
             "is_promotable (boolean based on whether it's suitable for social media promotion)."
         )},
         {"role": "user", "content": (
-            f"Products:\n{json.dumps([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in products[:100]], default=str)[:6000]}\n\n"
-            f"Brand mappings:\n{json.dumps(brand_mappings, default=str)[:4000]}"
+            f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in products[:100]], max_length=6000)}\n\n"
+            f"Brand mappings:\n{sanitize_json_for_prompt(brand_mappings, max_length=4000)}"
         )},
     ]
     result = await chat_completion(prompt, temperature=0.2, max_tokens=8192)
@@ -205,7 +206,7 @@ async def flag_promotable(state: ProductIntelState) -> dict[str, Any]:
             "Return a JSON array of objects with: sku, name, promotability_score (0-1), "
             "recommended_platforms, suggested_angle, priority (high/medium/low)."
         )},
-        {"role": "user", "content": f"Products:\n{json.dumps([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in candidates[:50]], default=str)[:6000]}"},
+        {"role": "user", "content": f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in candidates[:50]], max_length=6000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.4)
     try:

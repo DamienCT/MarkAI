@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from shared.llm import chat_completion
+from shared.sanitize import sanitize_json_for_prompt
 from shared.tools.database import (
     get_latest_strategy,
     get_products,
@@ -23,7 +24,7 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
     strategy = await get_latest_strategy(state["brand_id"])
     if not strategy:
         return {"errors": [*(state.get("errors") or []), "No strategy found"], "status": "failed"}
-    return {"strategy": strategy.get("data", strategy)}
+    return {"strategy": strategy.get("output_payload", strategy)}
 
 
 async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
@@ -31,11 +32,13 @@ async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
     strategy = state.get("strategy", {})
     prompt = [
         {"role": "system", "content": (
-            "You are a campaign planner. Based on the strategy, generate specific campaigns "
+            "You are a campaign planner. The brand operates in Mauritius. Consider the local market, "
+            "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
+            "and regional consumer preferences. Based on the strategy, generate specific campaigns "
             "for the next month. Each campaign should have: name, description, start_date, "
             "end_date, pillar, platforms, goal, kpis. Return a JSON array."
         )},
-        {"role": "user", "content": f"Strategy:\n{json.dumps(strategy, default=str)[:8000]}"},
+        {"role": "user", "content": f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}"},
     ]
     result = await chat_completion(prompt, temperature=0.5)
     try:
@@ -60,16 +63,18 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
 
     prompt = [
         {"role": "system", "content": (
-            "You are a content calendar planner. Generate specific calendar items for each campaign. "
+            "You are a content calendar planner. The brand operates in Mauritius. Consider the local market, "
+            "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
+            "and regional consumer preferences. Generate specific calendar items for each campaign. "
             "Each item should have: campaign_name, scheduled_date (YYYY-MM-DD), platform "
             "(instagram/facebook/linkedin), content_type (post/reel/story/carousel), "
             "theme, product_name (from available products if relevant, else null), brief. "
             "Return a JSON array."
         )},
         {"role": "user", "content": (
-            f"Campaigns:\n{json.dumps(campaigns, default=str)[:5000]}\n\n"
-            f"Strategy cadence:\n{json.dumps(strategy.get('cadence', {}), default=str)[:2000]}\n\n"
-            f"Available products:\n{json.dumps(product_summary, default=str)[:3000]}"
+            f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=5000)}\n\n"
+            f"Strategy cadence:\n{sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=2000)}\n\n"
+            f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=3000)}"
         )},
     ]
     result = await chat_completion(prompt, temperature=0.5, max_tokens=8192)
@@ -109,8 +114,10 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
         db_items.append({
             "brand_id": brand_id,
             "campaign_id": None,
-            "scheduled_date": item.get("scheduled_date"),
-            "platform": item.get("platform"),
+            "title": item.get("theme") or item.get("campaign_name", ""),
+            "description": item.get("brief", ""),
+            "channel": item.get("platform", "instagram"),
+            "scheduled_at": item.get("scheduled_date"),
             "content_type": item.get("content_type"),
             "product_id": item.get("product_id"),
             "theme": item.get("theme"),
@@ -120,4 +127,4 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     ids = await store_calendar_items(db_items)
     logger.info("Stored %d calendar items for brand %s", len(ids), brand_id)
 
-    return {"status": "completed"}
+    return {"status": "completed", "calendar_item_ids": ids}

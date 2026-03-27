@@ -16,6 +16,7 @@ services:
       - "8080:8080"
     volumes:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik_certs:/letsencrypt
     labels:
@@ -29,7 +30,7 @@ services:
 
   # ── PostgreSQL ─────────────────────────────────────────────────
   postgres:
-    image: postgres:17-alpine
+    image: postgres:16-alpine
     container_name: markai-postgres
     restart: unless-stopped
     environment:
@@ -59,12 +60,18 @@ services:
       - qdrant_data:/qdrant/storage
     ports:
       - "6333:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333 && echo -e \"GET /readyz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - markai-net
 
   # ── MinIO (Object Storage) ────────────────────────────────────
   minio:
-    image: cgr.dev/chainguard/minio:latest
+    image: minio/minio:latest
     container_name: markai-minio
     restart: unless-stopped
     environment:
@@ -76,6 +83,12 @@ services:
       - "9000:9000"
       - "9001:9001"
     command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - markai-net
 
@@ -88,12 +101,18 @@ services:
       - "6381:6379"
     volumes:
       - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     networks:
       - markai-net
 
   # ── NATS (Message Broker) ──────────────────────────────────────
   nats:
-    image: nats:2.12.5
+    image: nats:2.12.5-alpine
     container_name: markai-nats
     restart: unless-stopped
     command: "-js -m 8222"
@@ -102,6 +121,12 @@ services:
       - "8222:8222"
     volumes:
       - nats_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - markai-net
 
@@ -120,8 +145,15 @@ services:
       VALKEY_HOST: ${VALKEY_HOST:-valkey}
       VALKEY_PORT: ${VALKEY_PORT:-6379}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
-      - valkey
+      valkey:
+        condition: service_healthy
     networks:
       - markai-net
 
@@ -158,6 +190,14 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      MARKAI_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -166,7 +206,7 @@ services:
       minio:
         condition: service_started
       valkey:
-        condition: service_started
+        condition: service_healthy
       nats:
         condition: service_started
       litellm:
@@ -212,11 +252,16 @@ services:
     env_file:
       - .env
     depends_on:
-      - nats
-      - litellm
-      - postgres
-      - qdrant
-      - minio
+      nats:
+        condition: service_started
+      litellm:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
     networks:
       - markai-net
 

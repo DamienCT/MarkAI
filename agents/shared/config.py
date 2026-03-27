@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     LANGCHAIN_PROJECT: str = "markai-agents"
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
 
+    # ── Google Gemini (product image replacement) ────────────────────────
+    GEMINI_API_KEY: str = ""
+
     # ── Social API Tokens ────────────────────────────────────────────────
     INSTAGRAM_ACCESS_TOKEN: str = ""
     FACEBOOK_ACCESS_TOKEN: str = ""

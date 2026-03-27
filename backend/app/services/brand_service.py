@@ -3,9 +3,13 @@ from typing import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.brand import Brand
 from app.schemas.brand import BrandCreate, BrandUpdate
+
+# JSONB columns that need flag_modified to persist changes
+_JSONB_FIELDS = {"brand_guidelines", "target_audience", "color_palette", "bc_locations"}
 
 
 async def list_brands(
@@ -49,6 +53,9 @@ async def update_brand(
     update_data = data.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(brand, key, value)
+        # Force SQLAlchemy to detect JSONB mutations
+        if key in _JSONB_FIELDS:
+            flag_modified(brand, key)
     await db.commit()
     await db.refresh(brand)
     return brand

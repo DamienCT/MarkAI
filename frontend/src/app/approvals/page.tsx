@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -23,7 +24,7 @@ export default function ApprovalsPage() {
       const data = await api.get<Approval[]>("/api/v1/approvals", { status: "pending" });
       setApprovals(data);
     } catch {
-      // Handle error
+      toast.error("Failed to load approvals");
     } finally {
       setLoading(false);
     }
@@ -33,8 +34,12 @@ export default function ApprovalsPage() {
     try {
       await api.put(`/api/v1/approvals/${approvalId}`, { status: action, comments });
       setApprovals((prev) => prev.filter((a) => a.id !== approvalId));
-    } catch {
-      // Handle error
+      toast.success(`Content ${action}`);
+      // Refetch to sync counts
+      fetchApprovals();
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || `Failed to ${action === "approved" ? "approve" : "reject"} content`;
+      toast.error(detail);
     }
   };
 
@@ -83,9 +88,9 @@ export default function ApprovalsPage() {
                 {approval.content && (
                   <div className="rounded-md border p-4">
                     <p className="text-sm whitespace-pre-wrap">{approval.content.caption}</p>
-                    {approval.content.hashtags.length > 0 && (
+                    {approval.content.hashtags && approval.content.hashtags.length > 0 && (
                       <p className="text-sm text-primary mt-2">
-                        {approval.content.hashtags.map((h) => `#${h}`).join(" ")}
+                        {approval.content.hashtags.map((h: string) => `#${h}`).join(" ")}
                       </p>
                     )}
                   </div>

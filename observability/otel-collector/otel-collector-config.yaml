@@ -13,8 +13,8 @@ processors:
 
   memory_limiter:
     check_interval: 5s
-    limit_mib: 512
-    spike_limit_mib: 128
+    limit_mib: 1024
+    spike_limit_mib: 256
 
   resource:
     attributes:
@@ -30,23 +30,25 @@ exporters:
     resource_to_telemetry_conversion:
       enabled: true
 
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
-    default_labels_enabled:
-      exporter: true
-      job: true
-      instance: true
-      level: true
-
   debug:
     verbosity: basic
+
+  otlphttp:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
 
 service:
   telemetry:
     logs:
       level: info
     metrics:
-      address: 0.0.0.0:8888
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 8888
 
   pipelines:
     traces:
@@ -62,4 +64,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [loki]
+      exporters: [otlphttp]

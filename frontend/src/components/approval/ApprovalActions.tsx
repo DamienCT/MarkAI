@@ -37,7 +37,7 @@ export function ApprovalActions({ approvalId, onAction }: ApprovalActionsProps) 
           rows={3}
         />
       </div>
-      <div className="flex gap-2 justify-end">
+      <div className="flex flex-col sm:flex-row gap-2 justify-end">
         <Button
           variant="outline"
           onClick={() => handleAction("rejected")}

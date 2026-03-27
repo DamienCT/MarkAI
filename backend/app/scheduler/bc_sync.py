@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 
@@ -11,6 +12,8 @@ from app.services.product_service import upsert_from_bc
 
 logger = logging.getLogger(__name__)
 
+_sync_lock = asyncio.Lock()
+
 
 async def sync_bc_products() -> None:
     """
@@ -18,6 +21,15 @@ async def sync_bc_products() -> None:
     For each BC-linked brand, pull items filtered by company + locations,
     then upsert into the products table.
     """
+    if _sync_lock.locked():
+        logger.info("BC sync already in progress, skipping")
+        return
+
+    async with _sync_lock:
+        await _sync_bc_products_impl()
+
+
+async def _sync_bc_products_impl() -> None:
     logger.info("Starting Business Central product sync")
 
     async with async_session_factory() as db:

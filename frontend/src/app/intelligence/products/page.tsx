@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -19,7 +20,7 @@ export default function ProductsPage() {
         const data = await api.get<Product[]>("/api/v1/products", { limit: 100 });
         setProducts(data);
       } catch {
-        // Handle error
+        toast.error("Failed to load products");
       } finally {
         setLoading(false);
       }
@@ -27,10 +28,10 @@ export default function ProductsPage() {
     fetchProducts();
   }, []);
 
-  const newArrivals = products.filter((p) => p.status === "new_arrival");
-  const expiring = products.filter((p) => p.status === "expiring");
-  const activeCount = products.filter((p) => p.status === "active").length;
-  const withImages = products.filter((p) => p.image_urls.length > 0).length;
+  const newArrivals = products.filter((p) => p.is_new);
+  const expiring = products.filter((p) => p.is_expiring_soon);
+  const activeCount = products.filter((p) => p.is_active).length;
+  const withImages = products.filter((p) => p.primary_image_url).length;
 
   return (
     <div className="space-y-6">
@@ -91,20 +92,18 @@ export default function ProductsPage() {
                       <TableHead>Product</TableHead>
                       <TableHead>Category</TableHead>
                       <TableHead>Price</TableHead>
-                      <TableHead>Status</TableHead>
+                      <TableHead>Qty</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {expiring.map((product) => (
                       <TableRow key={product.id}>
                         <TableCell className="font-medium">{product.name}</TableCell>
-                        <TableCell>{product.category}</TableCell>
+                        <TableCell>{product.category || "--"}</TableCell>
                         <TableCell>
-                          {product.currency} {product.price.toFixed(2)}
+                          {product.currency || ""} {product.unit_price?.toFixed(2) || "--"}
                         </TableCell>
-                        <TableCell>
-                          <Badge className={statusColor(product.status)}>{product.status}</Badge>
-                        </TableCell>
+                        <TableCell>{product.remaining_qty ?? "--"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -128,7 +127,7 @@ export default function ProductsPage() {
                       <TableHead>Product</TableHead>
                       <TableHead>Category</TableHead>
                       <TableHead>Price</TableHead>
-                      <TableHead>Images</TableHead>
+                      <TableHead>Stock</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Last Synced</TableHead>
                     </TableRow>
@@ -137,18 +136,18 @@ export default function ProductsPage() {
                     {products.map((product) => (
                       <TableRow key={product.id}>
                         <TableCell className="font-medium">{product.name}</TableCell>
-                        <TableCell>{product.category}</TableCell>
+                        <TableCell>{product.category || "--"}</TableCell>
                         <TableCell>
-                          {product.currency} {product.price.toFixed(2)}
+                          {product.currency || ""} {product.unit_price?.toFixed(2) || "--"}
                         </TableCell>
-                        <TableCell>{product.image_urls.length}</TableCell>
+                        <TableCell>{product.remaining_qty ?? "--"}</TableCell>
                         <TableCell>
-                          <Badge className={statusColor(product.status)} variant="outline">
-                            {product.status}
+                          <Badge variant={product.is_active ? "default" : "outline"}>
+                            {product.is_active ? "Active" : "Inactive"}
                           </Badge>
                         </TableCell>
                         <TableCell className="text-muted-foreground text-sm">
-                          {formatDate(product.synced_at)}
+                          {product.bc_last_synced_at ? formatDate(product.bc_last_synced_at) : "--"}
                         </TableCell>
                       </TableRow>
                     ))}

@@ -48,6 +48,7 @@ class Brand(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    website_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     logo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     brand_guidelines: Mapped[dict] = mapped_column(JSONB, default=dict)
     tone_of_voice: Mapped[str | None] = mapped_column(Text, nullable=True)

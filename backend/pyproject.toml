@@ -24,12 +24,17 @@ dependencies = [
     "litellm>=1.60",
     "redis>=7.1",
     "python-multipart>=0.0.18",
+    "google-genai>=1.5",
+    "Pillow>=12.0",
     "bcrypt>=4.0",
     "opentelemetry-api>=1.40",
     "opentelemetry-sdk>=1.40",
     "opentelemetry-instrumentation-fastapi>=0.61b0",
     "opentelemetry-exporter-otlp>=1.40",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
 
 [project.optional-dependencies]
 dev = [

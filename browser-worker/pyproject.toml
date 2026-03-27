@@ -18,6 +18,9 @@ dependencies = [
     "Pillow>=12.1",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
 [project.optional-dependencies]
 dev = [
     "pytest",

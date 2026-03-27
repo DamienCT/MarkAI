@@ -54,6 +54,13 @@ export interface Brand {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  // Optional relationship fields (may not be populated on all responses)
+  competitors?: Competitor[];
+  industry?: string;
+  website_url?: string;
+  status?: string;
+  voice_profile?: VoiceProfile;
+  social_accounts?: SocialAccount[];
 }
 
 export interface VoiceProfile {
@@ -77,6 +84,7 @@ export interface SocialAccount {
 }
 
 export interface Competitor {
+  id?: string;
   name: string;
   website_url?: string;
   social_handles: Record<string, string>;
@@ -230,13 +238,16 @@ export interface AgentRun {
   id: string;
   agent_type: string;
   brand_id?: string;
+  trigger?: string;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
-  input_data?: Record<string, unknown>;
-  output_data?: Record<string, unknown>;
+  input_payload?: Record<string, unknown>;
+  output_payload?: Record<string, unknown>;
   error_message?: string;
+  tokens_used?: number;
+  cost_usd?: number;
+  duration_ms?: number;
   started_at?: string;
   completed_at?: string;
-  duration_seconds?: number;
   created_at: string;
 }
 
@@ -265,7 +276,12 @@ export interface Adaptation {
   adapted_media?: Record<string, unknown> | null;
   adaptation_notes?: string | null;
   ai_model?: string | null;
-  status: "queued" | "working" | "in_review" | "reworking" | "approved" | "scheduled" | "published" | "failed";
+  status: string;
+  tier?: string;
+  category?: string;
+  description?: string;
+  confidence_score: number;
+  evidence?: string[];
   created_by?: string | null;
   created_at: string;
   updated_at: string;

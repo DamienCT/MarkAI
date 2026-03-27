@@ -29,8 +29,8 @@ export function WorkflowMonitor({ runs }: WorkflowMonitorProps) {
               <p className="text-sm font-medium">{run.agent_type}</p>
               <p className="text-xs text-muted-foreground">
                 {run.started_at ? formatRelativeTime(run.started_at) : formatRelativeTime(run.created_at)}
-                {run.duration_seconds !== undefined && run.duration_seconds !== null && (
-                  <span> - {run.duration_seconds.toFixed(1)}s</span>
+                {run.duration_ms !== undefined && run.duration_ms !== null && (
+                  <span> - {((run.duration_ms / 1000).toFixed(1))}s</span>
                 )}
               </p>
             </div>

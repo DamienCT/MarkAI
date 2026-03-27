@@ -27,7 +27,9 @@ class ContentState(TypedDict, total=False):
     # Images
     product_image: str | None
     product_image_source: str | None
+    product_id: str | None
     needs_manual_image: bool
+    is_lifestyle_only: bool
     generated_image: str | None
 
     # Platform adaptations

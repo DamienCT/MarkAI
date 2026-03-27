@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,12 +15,18 @@ export default function NewBrandPage() {
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async (data: Partial<Brand>) => {
+    if (!data.name?.trim()) {
+      toast.error("Brand name is required");
+      return;
+    }
     setSaving(true);
     try {
       const brand = await api.post<Brand>("/api/v1/brands", data);
+      toast.success("Brand created successfully");
       router.push(`/brands/${brand.id}`);
-    } catch {
-      // Handle error
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to create brand";
+      toast.error(detail);
     } finally {
       setSaving(false);
     }

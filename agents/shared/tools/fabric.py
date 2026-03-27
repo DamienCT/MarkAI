@@ -89,11 +89,10 @@ async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str,
 async def get_product_image_from_bc(product_sku: str) -> str | None:
     """Look up a product image URL from Business Central data in Fabric.
 
-    Note: BC item images are not stored in the lakehouse tables, so this
-    currently returns None.  Retained for API compatibility.
+    BC item images are not available in the lakehouse SQL endpoint tables.
+    Product images are sourced via supplier websites and web search instead
+    (see agents/workflows/content/image_sourcing.py).
     """
-    # The lakehouse item table does not contain picture URLs.
-    logger.debug("Image lookup for SKU %s — not available via SQL endpoint", product_sku)
     return None
 
 

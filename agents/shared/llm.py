@@ -8,10 +8,14 @@ it correctly without needing hardcoded model_list entries.
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from shared.config import settings
 
@@ -25,7 +29,7 @@ _CACHE_TTL = 300  # 5 minutes
 _FALLBACK_MODELS: dict[str, str] = {
     "text": "gpt-4o",
     "text-fast": "gpt-4o-mini",
-    "image": "dall-e-3",
+    "image": "gpt-image-1.5",
     "embedding": "text-embedding-3-small",
     "tts": "tts-1",
     "stt": "whisper-1",
@@ -88,6 +92,45 @@ async def get_model_for_category(category: str) -> str:
     return f"openai/{fallback}"
 
 
+def parse_llm_json(text: str, fallback: Any = None) -> Any:
+    """Parse JSON from LLM output, handling markdown fences and common issues.
+
+    Returns the parsed object, or *fallback* if parsing fails.
+    """
+    cleaned = text.strip()
+    # Strip markdown code fences
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1] if "\n" in cleaned else cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse LLM JSON output (length=%d): %s...", len(text), text[:200])
+        return fallback
+
+
+def validate_llm_output(data: Any, required_fields: list[str] | None = None, expect_list: bool = False) -> bool:
+    """Validate that LLM output meets basic structural expectations."""
+    if expect_list:
+        if not isinstance(data, list):
+            logger.warning("Expected list from LLM, got %s", type(data).__name__)
+            return False
+        if required_fields and data:
+            missing = [f for f in required_fields if f not in data[0]]
+            if missing:
+                logger.warning("LLM list items missing fields: %s", missing)
+                return False
+    elif isinstance(data, dict) and required_fields:
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            logger.warning("LLM dict missing fields: %s", missing)
+            return False
+    return True
+
+
 async def chat_completion(
     messages: list[dict[str, str]],
     model: str | None = None,
@@ -104,20 +147,27 @@ async def chat_completion(
     if model is None:
         model = await get_model_for_category(category)
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{settings.LITELLM_BASE_URL}/v1/chat/completions",
-            headers=_auth_headers(),
-            json={
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{settings.LITELLM_BASE_URL}/v1/chat/completions",
+                headers=_auth_headers(),
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+    except httpx.ConnectError:
+        raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
+    except httpx.TimeoutException:
+        raise RuntimeError(f"LiteLLM request timed out after 120s (model={model})")
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(f"LiteLLM returned HTTP {e.response.status_code}: {e.response.text[:200]}")
 
 
 async def get_embedding(
@@ -147,7 +197,10 @@ async def generate_image(
     size: str = "1024x1024",
     n: int = 1,
 ) -> str:
-    """Generate an image via the LiteLLM proxy and return the first image URL."""
+    """Generate an image via the LiteLLM proxy and return the first image URL or data URI.
+
+    Handles both url and b64_json response formats (gpt-image-1.5 returns b64_json).
+    """
     if model is None:
         model = await get_model_for_category(category)
 
@@ -164,4 +217,13 @@ async def generate_image(
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["data"][0]["url"]
+        result = data["data"][0]
+
+        # gpt-image-1.5 and newer return b64_json, older models return url
+        if result.get("url"):
+            return result["url"]
+        elif result.get("b64_json"):
+            # Return as data URI — caller can decode if needed
+            return f"data:image/png;base64,{result['b64_json']}"
+        else:
+            raise ValueError("Image generation returned neither url nor b64_json")

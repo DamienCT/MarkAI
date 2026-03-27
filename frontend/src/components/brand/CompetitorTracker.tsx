@@ -1,15 +1,23 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Globe, ExternalLink } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Globe, ExternalLink, Plus, Pencil, Trash2, Sparkles, Loader2, X, Save,
+} from "lucide-react";
 import { api } from "@/lib/api";
+import { WorkflowStatus } from "@/components/brand/WorkflowStatus";
 import type { Competitor } from "@/types";
 
 interface CompetitorTrackerProps {
   brandId: string;
   competitors: Competitor[];
+  onCompetitorsChange?: () => void;
 }
 
 interface CompetitorInsight {
@@ -20,15 +28,46 @@ interface CompetitorInsight {
   last_updated: string;
 }
 
-export function CompetitorTracker({ brandId, competitors }: CompetitorTrackerProps) {
+type CompetitorWithId = Competitor;
+
+const SOCIAL_PLATFORMS = [
+  { key: "instagram", label: "Instagram" },
+  { key: "facebook", label: "Facebook" },
+  { key: "linkedin", label: "LinkedIn" },
+  { key: "x", label: "X (Twitter)" },
+  { key: "tiktok", label: "TikTok" },
+];
+
+const emptyForm = {
+  name: "",
+  website_url: "",
+  social_handles: {} as Record<string, string>,
+  notes: "",
+};
+
+export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }: CompetitorTrackerProps) {
   const [insights, setInsights] = useState<CompetitorInsight[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState({ ...emptyForm });
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [triggering, setTriggering] = useState(false);
+  const [showWorkflowStatus, setShowWorkflowStatus] = useState(false);
+
+  // Fetch local competitor list with IDs
+  const [competitorList, setCompetitorList] = useState<CompetitorWithId[]>(competitors);
+
+  useEffect(() => {
+    setCompetitorList(competitors);
+  }, [competitors]);
 
   useEffect(() => {
     async function fetchInsights() {
       try {
         const data = await api.get<CompetitorInsight[]>(
-          `/api/v1/intelligence/brands/${brandId}/competitors`
+          `/api/v1/brands/${brandId}/competitors`
         );
         setInsights(data);
       } catch {
@@ -40,26 +79,249 @@ export function CompetitorTracker({ brandId, competitors }: CompetitorTrackerPro
     fetchInsights();
   }, [brandId]);
 
+  // Fetch competitors with IDs from the brand API
+  useEffect(() => {
+    async function fetchCompetitorsFull() {
+      try {
+        const data = await api.get<CompetitorWithId[]>(
+          `/api/v1/brands/${brandId}/competitors`
+        );
+        setCompetitorList(data);
+      } catch {
+        // Fall back to props
+      }
+    }
+    fetchCompetitorsFull();
+  }, [brandId]);
+
+  const resetForm = () => {
+    setForm({ ...emptyForm });
+    setShowForm(false);
+    setEditingId(null);
+  };
+
+  const handleEdit = (comp: CompetitorWithId) => {
+    setForm({
+      name: comp.name,
+      website_url: comp.website_url || "",
+      social_handles: { ...(comp.social_handles || {}) },
+      notes: comp.notes || "",
+    });
+    setEditingId(comp.id || null);
+    setShowForm(true);
+  };
+
+  const handleSocialChange = (platform: string, value: string) => {
+    setForm((prev) => {
+      const handles = { ...prev.social_handles };
+      if (value) {
+        handles[platform] = value;
+      } else {
+        delete handles[platform];
+      }
+      return { ...prev, social_handles: handles };
+    });
+  };
+
+  const handleSubmit = async () => {
+    if (!form.name.trim()) {
+      toast.error("Competitor name is required");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        website_url: form.website_url.trim() || null,
+        social_handles: Object.keys(form.social_handles).length > 0 ? form.social_handles : null,
+        notes: form.notes.trim() || null,
+      };
+
+      if (editingId) {
+        await api.put(`/api/v1/brands/${brandId}/competitors/${editingId}`, payload);
+        toast.success("Competitor updated");
+      } else {
+        await api.post(`/api/v1/brands/${brandId}/competitors`, payload);
+        toast.success("Competitor added");
+      }
+
+      // Refresh list
+      const data = await api.get<CompetitorWithId[]>(`/api/v1/brands/${brandId}/competitors`);
+      setCompetitorList(data);
+      resetForm();
+      onCompetitorsChange?.();
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to save competitor";
+      toast.error(detail);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (competitorId: string) => {
+    if (!confirm("Delete this competitor?")) return;
+    setDeleting(competitorId);
+    try {
+      await api.delete(`/api/v1/brands/${brandId}/competitors/${competitorId}`);
+      toast.success("Competitor deleted");
+      const data = await api.get<CompetitorWithId[]>(`/api/v1/brands/${brandId}/competitors`);
+      setCompetitorList(data);
+      onCompetitorsChange?.();
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to delete competitor";
+      toast.error(detail);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const handleAutoDiscover = async () => {
+    setTriggering(true);
+    try {
+      await api.post(`/api/v1/intelligence/trigger/research`, { brand_id: brandId });
+      toast.success("Auto-discover triggered. Competitors will appear after AI analysis completes.");
+      setShowWorkflowStatus(true);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to trigger auto-discover";
+      toast.error(detail);
+    } finally {
+      setTriggering(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Competitor Tracking</CardTitle>
-          <CardDescription>Monitor competitor activity and performance</CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-lg">Competitor Tracking</CardTitle>
+              <CardDescription>Monitor competitor activity and performance</CardDescription>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={triggering}
+                onClick={handleAutoDiscover}
+              >
+                {triggering ? (
+                  <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                ) : (
+                  <Sparkles className="mr-2 h-3 w-3" />
+                )}
+                Auto-discover
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  resetForm();
+                  setShowForm(true);
+                }}
+              >
+                <Plus className="mr-2 h-3 w-3" />
+                Add Competitor
+              </Button>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
-          {competitors.length === 0 ? (
+          {/* Workflow activity indicator */}
+          {showWorkflowStatus && (
+            <div className="mb-4">
+              <WorkflowStatus brandId={brandId} filterType="research" />
+            </div>
+          )}
+          {/* Inline Form */}
+          {showForm && (
+            <div className="rounded-lg border p-4 mb-4 space-y-4 bg-muted/20">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium">
+                  {editingId ? "Edit Competitor" : "Add Competitor"}
+                </h4>
+                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={resetForm}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <Label className="text-xs">Name *</Label>
+                  <Input
+                    className="h-8 text-sm"
+                    placeholder="Competitor name"
+                    value={form.name}
+                    onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Website URL</Label>
+                  <Input
+                    className="h-8 text-sm"
+                    placeholder="https://competitor.com"
+                    value={form.website_url}
+                    onChange={(e) => setForm((prev) => ({ ...prev, website_url: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-xs mb-2 block">Social Handles</Label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {SOCIAL_PLATFORMS.map((platform) => (
+                    <div key={platform.key} className="space-y-1">
+                      <Label className="text-[10px] text-muted-foreground">{platform.label}</Label>
+                      <Input
+                        className="h-7 text-xs"
+                        placeholder={`@handle`}
+                        value={form.social_handles[platform.key] || ""}
+                        onChange={(e) => handleSocialChange(platform.key, e.target.value)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs">Notes</Label>
+                <Input
+                  className="h-8 text-sm"
+                  placeholder="Any relevant notes..."
+                  value={form.notes}
+                  onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))}
+                />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={resetForm}>
+                  Cancel
+                </Button>
+                <Button size="sm" disabled={saving} onClick={handleSubmit}>
+                  {saving ? (
+                    <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                  ) : (
+                    <Save className="mr-2 h-3 w-3" />
+                  )}
+                  {editingId ? "Update" : "Add"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Competitor List */}
+          {competitorList.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
               No competitors configured for this brand
             </p>
           ) : (
             <div className="space-y-4">
-              {competitors.map((competitor, i) => {
+              {competitorList.map((competitor, i) => {
                 const insight = insights.find(
                   (ins) => ins.competitor_name.toLowerCase() === competitor.name.toLowerCase()
                 );
                 return (
-                  <div key={i} className="rounded-md border p-4 space-y-3">
+                  <div key={competitor.id || i} className="rounded-md border p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <h4 className="font-medium">{competitor.name}</h4>
@@ -75,12 +337,39 @@ export function CompetitorTracker({ brandId, competitors }: CompetitorTrackerPro
                           </a>
                         )}
                       </div>
-                      <div className="flex gap-1">
-                        {Object.entries(competitor.social_handles).map(([platform, handle]) => (
-                          <Badge key={platform} variant="outline" className="text-[10px] capitalize">
-                            {platform}: @{handle}
-                          </Badge>
-                        ))}
+                      <div className="flex items-center gap-2">
+                        <div className="flex gap-1">
+                          {Object.entries(competitor.social_handles || {}).map(([platform, handle]) => (
+                            <Badge key={platform} variant="outline" className="text-[10px] capitalize">
+                              {platform}: @{handle}
+                            </Badge>
+                          ))}
+                        </div>
+                        {competitor.id && (
+                          <div className="flex gap-1 ml-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0"
+                              onClick={() => handleEdit(competitor)}
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                              disabled={deleting === competitor.id}
+                              onClick={() => handleDelete(competitor.id!)}
+                            >
+                              {deleting === competitor.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-3 w-3" />
+                              )}
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     </div>
 

@@ -1,6 +1,5 @@
 import uuid
 from datetime import date, datetime
-from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,19 +13,19 @@ class ProductBase(BaseModel):
     short_description: str | None = None
     sku: str | None = None
     barcode: str | None = None
-    unit_price: Decimal | None = None
+    unit_price: float | None = None
     currency: str | None = None
     category: str | None = None
     subcategory: str | None = None
     attributes: dict | None = None
     tags: list[str] | None = None
-    image_urls: dict | None = None
+    image_urls: dict | list | None = None
     primary_image_url: str | None = None
     vendor_name: str | None = None
     vendor_no: str | None = None
     bc_company: str | None = None
     bc_location: str | None = None
-    remaining_qty: Decimal | None = None
+    remaining_qty: float | None = None
     lot_no: str | None = None
     is_active: bool = True
     is_new: bool = False
@@ -47,19 +46,19 @@ class ProductUpdate(BaseModel):
     short_description: str | None = None
     sku: str | None = None
     barcode: str | None = None
-    unit_price: Decimal | None = None
+    unit_price: float | None = None
     currency: str | None = None
     category: str | None = None
     subcategory: str | None = None
     attributes: dict | None = None
     tags: list[str] | None = None
-    image_urls: dict | None = None
+    image_urls: dict | list | None = None
     primary_image_url: str | None = None
     vendor_name: str | None = None
     vendor_no: str | None = None
     bc_company: str | None = None
     bc_location: str | None = None
-    remaining_qty: Decimal | None = None
+    remaining_qty: float | None = None
     lot_no: str | None = None
     is_active: bool | None = None
     is_new: bool | None = None

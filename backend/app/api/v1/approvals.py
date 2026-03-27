@@ -21,14 +21,23 @@ async def list_approvals(
     current_user: User = Depends(get_current_user),
 ):
     """List approvals, optionally filtered by status."""
-    from sqlalchemy import select
+    from sqlalchemy import select, func
     from app.models.approval import Approval
+    from fastapi.responses import JSONResponse
+
+    # Count total
+    count_stmt = select(func.count(Approval.id))
+    if status:
+        count_stmt = count_stmt.where(Approval.status == status)
+    total = (await db.execute(count_stmt)).scalar() or 0
 
     stmt = select(Approval).order_by(Approval.created_at.desc()).offset(skip).limit(limit)
     if status:
         stmt = stmt.where(Approval.status == status)
     result = await db.execute(stmt)
-    return result.scalars().all()
+    items = result.scalars().all()
+
+    return {"items": items, "total": total, "skip": skip, "limit": limit}
 
 
 @router.get("/pending", response_model=list[ApprovalResponse])

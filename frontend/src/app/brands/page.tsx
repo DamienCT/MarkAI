@@ -52,6 +52,17 @@ export default function BrandsPage() {
       ) : error ? (
         <div className="text-center py-12">
           <p className="text-muted-foreground">{error}</p>
+          <Button
+            variant="outline"
+            className="mt-4"
+            onClick={() => {
+              setError(null);
+              setLoading(true);
+              api.get<Brand[]>("/api/v1/brands").then(setBrands).catch(() => setError("Failed to load brands")).finally(() => setLoading(false));
+            }}
+          >
+            Retry
+          </Button>
         </div>
       ) : brands.length === 0 ? (
         <div className="text-center py-12">

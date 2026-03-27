@@ -1,4 +1,5 @@
 import logging
+import secrets
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -23,7 +24,7 @@ def _verify_webhook_secret(request: Request) -> None:
         logger.warning("N8N_WEBHOOK_SECRET is not configured; webhook auth is disabled")
         return
     incoming_secret = request.headers.get("X-Webhook-Secret", "")
-    if incoming_secret != configured_secret:
+    if not secrets.compare_digest(incoming_secret, configured_secret):
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
 

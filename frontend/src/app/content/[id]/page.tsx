@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -30,7 +31,7 @@ export default function ContentDetailPage() {
         if (contentData.status === "fulfilled") setContent(contentData.value);
         if (approvalData.status === "fulfilled") setApprovals(approvalData.value);
       } catch {
-        // Handle error
+        toast.error("Failed to load content");
       } finally {
         setLoading(false);
       }
@@ -42,8 +43,10 @@ export default function ContentDetailPage() {
     try {
       const updated = await api.put<Content>(`/api/v1/content/${contentId}`, data);
       setContent(updated);
-    } catch {
-      // Handle error
+      toast.success("Content saved");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to save content";
+      toast.error(detail);
     }
   };
 

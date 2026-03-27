@@ -23,7 +23,7 @@ export function BrandSwitcher() {
         const data = await api.get<Brand[]>("/api/v1/brands");
         setBrands(data);
       } catch {
-        // API may not be available yet
+        // Silently fail on initial load — API may not be ready yet
       } finally {
         setLoading(false);
       }

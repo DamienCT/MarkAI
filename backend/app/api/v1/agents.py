@@ -37,6 +37,8 @@ async def list_agent_runs(
             "started_at": run.started_at.isoformat() if run.started_at else None,
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
             "error_message": run.error_message,
+            "output_payload": run.output_payload,
+            "input_payload": run.input_payload,
             "tokens_used": run.tokens_used,
             "cost_usd": float(run.cost_usd) if run.cost_usd else None,
             "duration_ms": run.duration_ms,

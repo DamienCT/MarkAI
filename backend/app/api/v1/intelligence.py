@@ -1,19 +1,68 @@
+import logging
 import uuid
 from datetime import datetime
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
 from app.auth.permissions import role_has_access
+from app.config import settings
 from app.deps import get_current_user, get_db
 from app.models.adaptation import Adaptation
 from app.models.agent_run import AgentRun
 from app.models.competitor import Competitor
-from app.services import nats_service
+from app.services import brand_service, nats_service
 from sqlalchemy import func
+
+
+async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: bool = False) -> str:
+    """Call LLM via LiteLLM proxy, falling back to OpenAI directly if LiteLLM fails."""
+    body: dict = {
+        "model": "gpt-4o-mini",
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Try LiteLLM first
+        if settings.LITELLM_BASE_URL:
+            try:
+                headers = {"Content-Type": "application/json"}
+                if settings.LITELLM_MASTER_KEY:
+                    headers["Authorization"] = f"Bearer {settings.LITELLM_MASTER_KEY}"
+                body_litellm = {**body, "model": "openai/gpt-4o-mini"}
+                resp = await client.post(
+                    settings.LITELLM_BASE_URL.rstrip("/") + "/chat/completions",
+                    headers=headers,
+                    json=body_litellm,
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+            except Exception:
+                pass  # Fall through to direct OpenAI
+
+        # Direct OpenAI fallback
+        if not settings.OPENAI_API_KEY:
+            raise ValueError("No LLM available: LiteLLM failed and OPENAI_API_KEY not set")
+
+        resp = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+            },
+            json=body,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -33,18 +82,92 @@ async def list_intelligence_reports(
     )
     result = await db.execute(stmt)
     runs = result.scalars().all()
-    return [
-        {
+
+    # Map agent_runs to the report format the frontend expects
+    reports = []
+    for r in runs:
+        output = r.output_payload or {}
+        # Build a title from agent type
+        title = f"{r.agent_type.replace('_', ' ').title()} Report"
+        # Extract summary from gaps or personas
+        gaps = output.get("gaps", [])
+        personas = output.get("personas", [])
+        summary_parts = []
+        if gaps:
+            summary_parts.append(f"{len(gaps)} gap(s) identified")
+        if personas:
+            summary_parts.append(f"{len(personas)} persona(s) built")
+        if output.get("competitor_analysis"):
+            summary_parts.append(f"{len(output['competitor_analysis'])} competitor(s) analyzed")
+        summary = ". ".join(summary_parts) if summary_parts else f"Status: {r.status}"
+
+        # Extract insights from gaps
+        insights = [g.get("description", "") for g in gaps[:5]] if gaps else []
+
+        reports.append({
             "id": str(r.id),
-            "agent_type": r.agent_type,
             "brand_id": str(r.brand_id) if r.brand_id else None,
-            "status": r.status,
-            "started_at": r.started_at.isoformat() if r.started_at else None,
-            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-            "duration_ms": r.duration_ms,
-        }
-        for r in runs
-    ]
+            "report_type": r.agent_type,
+            "title": title,
+            "summary": summary,
+            "insights": insights,
+            "created_at": r.created_at.isoformat(),
+        })
+    return reports
+
+
+@router.get("/report/{run_id}")
+async def get_report(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get a single agent run report by ID, including brand info."""
+    from app.models.brand import Brand
+
+    result = await db.execute(
+        select(AgentRun).where(AgentRun.id == run_id)
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    brand_name = None
+    brand_description = None
+    brand_website = None
+    brand_industry = None
+    if run.brand_id:
+        brand_result = await db.execute(
+            select(Brand).where(Brand.id == run.brand_id)
+        )
+        brand = brand_result.scalar_one_or_none()
+        if brand:
+            brand_name = brand.name
+            brand_description = brand.description
+            guidelines = brand.brand_guidelines or {}
+            brand_website = guidelines.get("website_url")
+            brand_industry = guidelines.get("industry")
+
+    return {
+        "id": str(run.id),
+        "agent_type": run.agent_type,
+        "brand_id": str(run.brand_id) if run.brand_id else None,
+        "brand_name": brand_name,
+        "brand_description": brand_description,
+        "brand_website": brand_website,
+        "brand_industry": brand_industry,
+        "status": run.status,
+        "trigger": run.trigger,
+        "input_payload": run.input_payload,
+        "output_payload": run.output_payload,
+        "error_message": run.error_message,
+        "tokens_used": run.tokens_used,
+        "cost_usd": float(run.cost_usd) if run.cost_usd else None,
+        "duration_ms": run.duration_ms,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "created_at": run.created_at.isoformat(),
+    }
 
 
 @router.get("/trends")
@@ -246,3 +369,214 @@ async def trigger_content_generation(
         "message": "Content generation workflow triggered",
         "brand_id": str(trigger.brand_id),
     }
+
+
+# ── AI Field Generation ─────────────────────────────────────────────
+
+
+class AIGenerateFieldRequest(BaseModel):
+    brand_id: uuid.UUID
+    field: str | None = None  # None = generate all empty fields
+    context: dict | None = None  # Extra context (e.g. website URLs)
+
+
+class AIGenerateFieldResponse(BaseModel):
+    fields: dict[str, str]
+
+
+FIELD_PROMPTS: dict[str, str] = {
+    "description": "Write a concise brand description (2-3 sentences) for marketing purposes.",
+    "target_audience": "Describe the ideal target audience for this brand (demographics, interests, pain points).",
+    "tone_of_voice": "Define the brand's tone of voice as comma-separated adjectives (e.g. 'friendly, professional, witty').",
+    "voice_style": "Define the writing style for this brand's content (e.g. 'conversational', 'formal', 'storytelling').",
+    "hashtag_strategy": "Define a hashtag strategy for social media (branded hashtags, community hashtags, trending approach).",
+    "dos": "List 5 content do's for this brand, one per line. These are things the brand should always do in content.",
+    "donts": "List 5 content don'ts for this brand, one per line. These are things the brand should never do in content.",
+}
+
+
+@router.post("/generate-fields", response_model=AIGenerateFieldResponse)
+async def generate_brand_fields(
+    req: AIGenerateFieldRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Use AI to generate one or all empty brand fields based on brand context."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    brand = await brand_service.get_brand(db, req.brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    # Fetch timezone setting for geographic context
+    try:
+        tz_result = await db.execute(
+            text("SELECT value FROM app_settings WHERE key = 'scheduler_timezone' LIMIT 1")
+        )
+        raw_tz = tz_result.scalar()
+        if raw_tz:
+            import json as _json
+            try:
+                timezone_value = _json.loads(raw_tz)
+            except Exception:
+                timezone_value = raw_tz
+        else:
+            timezone_value = "Indian/Mauritius"
+    except Exception:
+        timezone_value = "Indian/Mauritius"
+
+    # Build brand context for the LLM
+    guidelines = brand.brand_guidelines or {}
+    brand_context = (
+        f"Brand Name: {brand.name}\n"
+        f"Description: {brand.description or 'Not set'}\n"
+        f"BC Company: {brand.bc_company or 'Not set'}\n"
+        f"Tone of Voice: {brand.tone_of_voice or 'Not set'}\n"
+        f"Target Audience: {(brand.target_audience or {}).get('description', 'Not set') if isinstance(brand.target_audience, dict) else 'Not set'}\n"
+        f"Voice Style: {guidelines.get('voice_style', 'Not set')}\n"
+        f"Hashtag Strategy: {guidelines.get('hashtag_strategy', 'Not set')}\n"
+        f"Dos: {', '.join(guidelines.get('dos', [])) or 'Not set'}\n"
+        f"Donts: {', '.join(guidelines.get('donts', [])) or 'Not set'}\n"
+        f"Location/Timezone: {timezone_value} (Mauritius, Indian Ocean region)\n"
+    )
+
+    if req.context:
+        for key, val in req.context.items():
+            brand_context += f"{key}: {val}\n"
+
+    # Determine which fields to generate
+    if req.field:
+        fields_to_gen = [req.field] if req.field in FIELD_PROMPTS else []
+    else:
+        # Generate all empty fields
+        fields_to_gen = []
+        if not brand.description:
+            fields_to_gen.append("description")
+        if not brand.tone_of_voice:
+            fields_to_gen.append("tone_of_voice")
+        ta = brand.target_audience
+        if not ta or (isinstance(ta, dict) and not ta.get("description")):
+            fields_to_gen.append("target_audience")
+        if not guidelines.get("voice_style"):
+            fields_to_gen.append("voice_style")
+        if not guidelines.get("hashtag_strategy"):
+            fields_to_gen.append("hashtag_strategy")
+        if not guidelines.get("dos"):
+            fields_to_gen.append("dos")
+        if not guidelines.get("donts"):
+            fields_to_gen.append("donts")
+
+    if not fields_to_gen:
+        return AIGenerateFieldResponse(fields={})
+
+    # Build LLM prompt
+    fields_instructions = "\n".join(
+        f"- {field}: {FIELD_PROMPTS[field]}" for field in fields_to_gen
+    )
+
+    system_prompt = (
+        "You are a brand strategist AI. The brand operates in Mauritius and the Indian Ocean region. "
+        "Consider the local market, bilingual audience (English/French/Creole), local culture, and regional context. "
+        "Given the brand context below, generate the requested field values. "
+        "Return ONLY a JSON object with the field names as keys and generated text as values. "
+        "Do not include any markdown formatting, code blocks, or explanations. Just the raw JSON object."
+    )
+
+    user_prompt = (
+        f"Brand Context:\n{brand_context}\n\n"
+        f"Generate these fields:\n{fields_instructions}\n\n"
+        "Return a JSON object with these exact field names as keys."
+    )
+
+    try:
+        import json
+        content = await _call_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            json_mode=True,
+        )
+        try:
+            generated = json.loads(content)
+        except json.JSONDecodeError:
+            # Try stripping markdown code fences
+            cleaned = content.strip().strip("```json").strip("```").strip()
+            generated = json.loads(cleaned)
+        result = {k: str(v) for k, v in generated.items() if k in fields_to_gen}
+        return AIGenerateFieldResponse(fields=result)
+
+    except json.JSONDecodeError as jde:
+        logger.error("AI field generation returned invalid JSON: %s", jde)
+        raise HTTPException(status_code=502, detail="AI returned invalid JSON response")
+    except Exception as exc:
+        logger.error("AI field generation failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"AI generation failed: {str(exc)}")
+
+
+class AIRewriteFieldRequest(BaseModel):
+    brand_id: uuid.UUID
+    field: str
+    current_value: str
+
+
+class AIRewriteFieldResponse(BaseModel):
+    value: str
+
+
+@router.post("/rewrite-field", response_model=AIRewriteFieldResponse)
+async def rewrite_brand_field(
+    req: AIRewriteFieldRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rewrite/rephrase an existing brand field value using AI."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    brand = await brand_service.get_brand(db, req.brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    guidelines = brand.brand_guidelines or {}
+    brand_context = (
+        f"Brand Name: {brand.name}\n"
+        f"Description: {brand.description or 'Not set'}\n"
+        f"Tone of Voice: {brand.tone_of_voice or 'Not set'}\n"
+        f"Target Audience: {(brand.target_audience or {}).get('description', 'Not set') if isinstance(brand.target_audience, dict) else 'Not set'}\n"
+        f"Location: Mauritius, Indian Ocean region\n"
+    )
+
+    field_label = req.field.replace("_", " ").title()
+
+    system_prompt = (
+        "You are a brand copywriter. The brand operates in Mauritius and the Indian Ocean region. "
+        "Consider the local market, bilingual audience (English/French/Creole), and regional context. "
+        "Rewrite the given text to be more compelling, clear, and professional "
+        "while keeping the same meaning and intent. Match the brand's tone of voice. "
+        "Return ONLY the rewritten text, nothing else — no quotes, no explanation."
+    )
+
+    user_prompt = (
+        f"Brand Context:\n{brand_context}\n\n"
+        f"Field: {field_label}\n"
+        f"Current text to rewrite:\n{req.current_value}\n\n"
+        "Rewrite this to be better while keeping the same meaning."
+    )
+
+    try:
+        content = await _call_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = content.strip()
+        if (content.startswith('"') and content.endswith('"')) or (content.startswith("'") and content.endswith("'")):
+            content = content[1:-1]
+        return AIRewriteFieldResponse(value=content)
+
+    except Exception as exc:
+        logger.error("AI rewrite failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"AI rewrite failed: {str(exc)}")

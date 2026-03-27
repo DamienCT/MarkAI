@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from "react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -8,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
 
-/* ── IANA timezone helpers ────────────────────────────────────────── */
+/* -- IANA timezone helpers ---------------------------------------- */
 
 function getAllTimezones(): string[] {
   try {
@@ -18,7 +19,6 @@ function getAllTimezones(): string[] {
   } catch {
     // fallback below
   }
-  // Comprehensive fallback list
   return [
     "Africa/Abidjan", "Africa/Accra", "Africa/Addis_Ababa", "Africa/Algiers",
     "Africa/Cairo", "Africa/Casablanca", "Africa/Dar_es_Salaam", "Africa/Johannesburg",
@@ -57,7 +57,6 @@ function groupTimezones(timezones: string[]): Record<string, string[]> {
     if (!groups[region]) groups[region] = [];
     groups[region].push(tz);
   }
-  // Sort regions and entries within
   const sorted: Record<string, string[]> = {};
   for (const region of Object.keys(groups).sort()) {
     sorted[region] = groups[region].sort();
@@ -65,7 +64,7 @@ function groupTimezones(timezones: string[]): Record<string, string[]> {
   return sorted;
 }
 
-/* ── Types ────────────────────────────────────────────────────────── */
+/* -- Types -------------------------------------------------------- */
 
 interface AppSettings {
   scheduler_timezone: string;
@@ -93,19 +92,16 @@ const DEFAULTS: AppSettings = {
   notification_channels: ["teams", "portal"],
 };
 
-/* ── Component ────────────────────────────────────────────────────── */
+/* -- Component ---------------------------------------------------- */
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULTS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [tzSearch, setTzSearch] = useState("");
 
   const allTimezones = useMemo(() => getAllTimezones(), []);
-  const groupedTimezones = useMemo(() => {
-    return groupTimezones(allTimezones);
-  }, [allTimezones]);
+  const groupedTimezones = useMemo(() => groupTimezones(allTimezones), [allTimezones]);
 
   useEffect(() => {
     async function fetchSettings() {
@@ -124,7 +120,7 @@ export default function SettingsPage() {
           notification_channels: (data.notification_channels as string[]) ?? DEFAULTS.notification_channels,
         });
       } catch {
-        // Use defaults on error
+        toast.error("Failed to load settings, using defaults");
       } finally {
         setLoading(false);
       }
@@ -134,13 +130,12 @@ export default function SettingsPage() {
 
   const handleSave = async () => {
     setSaving(true);
-    setMessage(null);
     try {
       await api.put("/api/v1/settings", settings);
-      setMessage({ type: "success", text: "Settings saved successfully." });
-      setTimeout(() => setMessage(null), 4000);
-    } catch {
-      setMessage({ type: "error", text: "Failed to save settings. Please try again." });
+      toast.success("Settings saved successfully");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to save settings";
+      toast.error(detail);
     } finally {
       setSaving(false);
     }
@@ -172,22 +167,14 @@ export default function SettingsPage() {
           <h1 className="text-3xl font-bold">Settings</h1>
           <p className="text-muted-foreground">Global application configuration</p>
         </div>
-        <div className="flex items-center gap-3">
-          {message && (
-            <p className={`text-sm font-medium ${message.type === "success" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
-              {message.text}
-            </p>
-          )}
-          <Button onClick={handleSave} disabled={saving} size="lg">
-            {saving ? "Saving..." : "Save Settings"}
-          </Button>
-        </div>
+        <Button onClick={handleSave} disabled={saving} size="lg">
+          {saving ? "Saving..." : "Save Settings"}
+        </Button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-      {/* ── Row 1: Timezone | Scheduler ─────────────────────────── */}
-
+      {/* -- Row 1: Timezone | Scheduler -- */}
       <Card>
         <CardHeader>
           <CardTitle>Timezone</CardTitle>
@@ -199,7 +186,7 @@ export default function SettingsPage() {
             id="tz-region"
             value={tzSearch || settings.scheduler_timezone.split("/")[0]}
             onChange={(e) => setTzSearch(e.target.value)}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&>option]:bg-background [&>option]:text-foreground"
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring [&>option]:bg-background [&>option]:text-foreground"
           >
             {Object.keys(groupedTimezones).map((region) => (
               <option key={region} value={region}>{region}</option>
@@ -210,7 +197,7 @@ export default function SettingsPage() {
             id="tz-select"
             value={settings.scheduler_timezone}
             onChange={(e) => setSettings((s) => ({ ...s, scheduler_timezone: e.target.value }))}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&>option]:bg-background [&>option]:text-foreground"
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring [&>option]:bg-background [&>option]:text-foreground"
           >
             {(groupedTimezones[tzSearch || settings.scheduler_timezone.split("/")[0]] || []).map((tz) => (
               <option key={tz} value={tz}>
@@ -231,40 +218,29 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {/* Morning schedule hour */}
             <div className="space-y-2">
               <Label htmlFor="morning-hour">Morning Schedule Hour</Label>
               <select
                 id="morning-hour"
                 value={settings.morning_schedule_hour}
-                onChange={(e) =>
-                  setSettings((s) => ({ ...s, morning_schedule_hour: Number(e.target.value) }))
-                }
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(e) => setSettings((s) => ({ ...s, morning_schedule_hour: Number(e.target.value) }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {Array.from({ length: 24 }, (_, i) => (
-                  <option key={i} value={i}>
-                    {String(i).padStart(2, "0")}:00
-                  </option>
+                  <option key={i} value={i}>{String(i).padStart(2, "0")}:00</option>
                 ))}
               </select>
             </div>
-
-            {/* Morning schedule minute */}
             <div className="space-y-2">
               <Label htmlFor="morning-minute">Morning Schedule Minute</Label>
               <select
                 id="morning-minute"
                 value={settings.morning_schedule_minute}
-                onChange={(e) =>
-                  setSettings((s) => ({ ...s, morning_schedule_minute: Number(e.target.value) }))
-                }
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(e) => setSettings((s) => ({ ...s, morning_schedule_minute: Number(e.target.value) }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {[0, 15, 30, 45].map((m) => (
-                  <option key={m} value={m}>
-                    :{String(m).padStart(2, "0")}
-                  </option>
+                  <option key={m} value={m}>:{String(m).padStart(2, "0")}</option>
                 ))}
               </select>
             </div>
@@ -273,68 +249,42 @@ export default function SettingsPage() {
           <Separator />
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {/* Publish check interval */}
             <div className="space-y-2">
               <Label htmlFor="publish-interval">Publish Check Interval</Label>
               <select
                 id="publish-interval"
                 value={settings.publish_check_interval_minutes}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    publish_check_interval_minutes: Number(e.target.value),
-                  }))
-                }
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(e) => setSettings((s) => ({ ...s, publish_check_interval_minutes: Number(e.target.value) }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {[5, 10, 15, 30, 60].map((m) => (
-                  <option key={m} value={m}>
-                    {m} minutes
-                  </option>
+                  <option key={m} value={m}>{m} minutes</option>
                 ))}
               </select>
             </div>
-
-            {/* Engagement pull interval */}
             <div className="space-y-2">
               <Label htmlFor="engagement-interval">Engagement Pull Interval</Label>
               <select
                 id="engagement-interval"
                 value={settings.engagement_pull_interval_hours}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    engagement_pull_interval_hours: Number(e.target.value),
-                  }))
-                }
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(e) => setSettings((s) => ({ ...s, engagement_pull_interval_hours: Number(e.target.value) }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {[1, 2, 4, 6, 12, 24].map((h) => (
-                  <option key={h} value={h}>
-                    {h} {h === 1 ? "hour" : "hours"}
-                  </option>
+                  <option key={h} value={h}>{h} {h === 1 ? "hour" : "hours"}</option>
                 ))}
               </select>
             </div>
-
-            {/* BC sync interval */}
             <div className="space-y-2">
               <Label htmlFor="bc-sync-interval">BC Sync Interval</Label>
               <select
                 id="bc-sync-interval"
                 value={settings.bc_sync_interval_hours}
-                onChange={(e) =>
-                  setSettings((s) => ({
-                    ...s,
-                    bc_sync_interval_hours: Number(e.target.value),
-                  }))
-                }
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(e) => setSettings((s) => ({ ...s, bc_sync_interval_hours: Number(e.target.value) }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {[1, 2, 4, 6, 12, 24].map((h) => (
-                  <option key={h} value={h}>
-                    {h} {h === 1 ? "hour" : "hours"}
-                  </option>
+                  <option key={h} value={h}>{h} {h === 1 ? "hour" : "hours"}</option>
                 ))}
               </select>
             </div>
@@ -342,14 +292,11 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* ── Row 2: Auto-Approve Threshold | Max Daily Posts ──────── */}
-
+      {/* -- Row 2: Auto-Approve Threshold | Max Daily Posts -- */}
       <Card>
         <CardHeader>
           <CardTitle>Auto-Approve Threshold</CardTitle>
-          <CardDescription>
-            Content with AI confidence above this threshold will be auto-approved
-          </CardDescription>
+          <CardDescription>Content with AI confidence above this threshold will be auto-approved</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center gap-4">
@@ -359,9 +306,7 @@ export default function SettingsPage() {
               max={100}
               step={1}
               value={settings.auto_approve_threshold}
-              onChange={(e) =>
-                setSettings((s) => ({ ...s, auto_approve_threshold: Number(e.target.value) }))
-              }
+              onChange={(e) => setSettings((s) => ({ ...s, auto_approve_threshold: Number(e.target.value) }))}
               className="flex-1 h-2 accent-primary cursor-pointer"
             />
             <span className="text-lg font-semibold w-14 text-right tabular-nums">
@@ -406,9 +351,7 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* ── Row 3: Default Channels | Notification Channels ──────── */}
-
-      {/* ── Default Channels ─────────────────────────────────────── */}
+      {/* -- Row 3: Default Channels | Notification Channels -- */}
       <Card>
         <CardHeader>
           <CardTitle>Default Channels</CardTitle>
@@ -431,7 +374,7 @@ export default function SettingsPage() {
                   type="checkbox"
                   checked={settings.default_channels.includes(value)}
                   onChange={() => toggleChannel("default_channels", value)}
-                  className="h-4 w-4 rounded border-input accent-primary"
+                  className="h-4 w-4 rounded-sm border-input accent-primary"
                 />
                 <span className="text-sm font-medium">{label}</span>
               </label>
@@ -440,7 +383,6 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* ── Notification Channels ────────────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle>Notification Channels</CardTitle>
@@ -457,7 +399,7 @@ export default function SettingsPage() {
                   type="checkbox"
                   checked={settings.notification_channels.includes(value)}
                   onChange={() => toggleChannel("notification_channels", value)}
-                  className="h-4 w-4 rounded border-input accent-primary flex-shrink-0"
+                  className="h-4 w-4 rounded-sm border-input accent-primary shrink-0"
                 />
                 <span className="text-sm font-medium">{label}</span>
                 <span className="text-xs text-muted-foreground">{desc}</span>

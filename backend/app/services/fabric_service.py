@@ -13,11 +13,21 @@ logger = logging.getLogger(__name__)
 
 _TABLE_NAME_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 
+# Whitelist of allowed table names to prevent SQL injection via config
+_ALLOWED_TABLES = {
+    "itemmodule_item", "itemmodule_itemcategory",
+    "vendormodule_vendor", "itemmodule_itemledgerentry",
+    # Legacy/alternate names
+    "items", "item_categories", "vendors", "item_ledger_entries",
+}
+
 
 def _safe_table_name(name: str) -> str:
-    """Validate table name to prevent SQL injection."""
+    """Validate table name against regex AND whitelist to prevent SQL injection."""
     if not _TABLE_NAME_RE.match(name):
         raise ValueError(f"Invalid table name: {name}")
+    if name not in _ALLOWED_TABLES:
+        raise ValueError(f"Table name not in whitelist: {name}")
     return name
 
 
@@ -86,7 +96,8 @@ async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str,
         rows = cursor.fetchall()
         return [dict(zip(columns, row)) for row in rows]
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 async def list_companies() -> list[str]:
@@ -179,7 +190,7 @@ async def get_vendors(company: str) -> list[dict[str, Any]]:
     )
 
 
-async def get_expiring_items(company: str, locations: list[str], days_ahead: int = 60) -> list[dict[str, Any]]:
+async def get_expiring_items(company: str, locations: list[str], days_ahead: int = 30) -> list[dict[str, Any]]:
     """Get items expiring within the next N days at the given locations."""
     ledger_table = _safe_table_name(settings.BC_TABLE_ITEM_LEDGER_ENTRIES)
     items_table = _safe_table_name(settings.BC_TABLE_ITEMS)

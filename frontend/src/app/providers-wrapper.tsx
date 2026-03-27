@@ -3,25 +3,15 @@
 import React from "react";
 import { SessionProvider, useSession, signIn } from "next-auth/react";
 import { ThemeProvider } from "next-themes";
+import { Toaster } from "sonner";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
-/**
- * When AZURE_AD_CLIENT_ID is not configured (dev mode), skip auth gating.
- * This env var must be prefixed with NEXT_PUBLIC_ to be available client-side.
- */
-const SSO_ENABLED = !!process.env.NEXT_PUBLIC_AZURE_AD_CLIENT_ID;
-
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
-
-  // In dev mode (no Azure AD configured), skip the gate entirely
-  if (!SSO_ENABLED) {
-    return <>{children}</>;
-  }
 
   if (status === "loading") {
     return (
@@ -71,6 +61,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
               <main className="flex-1 overflow-y-auto p-6">{children}</main>
             </div>
           </div>
+          <Toaster position="top-right" richColors closeButton />
         </AuthGate>
       </ThemeProvider>
     </SessionProvider>
