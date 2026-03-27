@@ -162,7 +162,8 @@ async def dispatch_to_n8n(
         **get_platform_credentials(brand, channel),
     }
 
-    n8n_webhook = f"{settings.N8N_WEBHOOK_BASE}/markai/publish/{channel}"
+    # Single unified webhook — n8n routes internally by channel field
+    n8n_webhook = f"{settings.N8N_WEBHOOK_BASE}/markai/publish"
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(n8n_webhook, json=payload)
