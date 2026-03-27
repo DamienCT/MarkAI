@@ -13,6 +13,7 @@ async def _log_job(job_name: str, status: str, error_message: str | None = None)
     async with async_session_factory() as db:
         log = ScheduledJobLog(
             job_name=job_name,
+            job_type="scheduled",
             status=status,
             completed_at=datetime.now() if status != "started" else None,
             error_message=error_message,

@@ -15,7 +15,12 @@ from shared.tools.database import (
     get_latest_strategy,
     store_content,
 )
-from shared.tools.storage import upload_file, ensure_bucket
+from shared.tools.storage import upload_file, ensure_bucket, download_file
+from shared.image_processing import (
+    render_logo_png,
+    overlay_logo_and_text,
+    generate_mockup,
+)
 
 from workflows.content.state import ContentState
 from workflows.content.image_sourcing import source_product_image
@@ -84,6 +89,9 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
             "Start with the provided hook. Keep it engaging, on-brand, and appropriate for the platform. "
             "Naturally integrate French or Kreol Morisien phrases where they add warmth and local flavour "
             "(e.g. greetings, food terms, common expressions). Primary language should be English. "
+            "AIM FOR MEDIUM LENGTH: 3-5 short paragraphs. Include a strong opening hook, "
+            "1-2 paragraphs of substance (product benefits, lifestyle value, or educational insight), "
+            "and a clear CTA with the brand URL. Do NOT be overly long or overly terse. "
             "Return ONLY the caption text."
         )},
         {"role": "user", "content": (
@@ -208,12 +216,23 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     is_lifestyle_only = state.get("is_lifestyle_only", True)
     has_product_image = state.get("product_image") is not None
 
+    # Common composition requirements for logo/text overlay
+    composition_rules = (
+        "IMPORTANT COMPOSITION: The top-right area of the image must be open sky, "
+        "soft blurred background, or a monotone surface (low-contrast, uniform color) — "
+        "this area is reserved for a brand logo overlay. "
+        "The bottom-left area should have some darker or open space for text overlay. "
+        "Do NOT place busy details or high-contrast elements in these corners. "
+    )
+
     if is_lifestyle_only or not has_product_image:
         # Pure lifestyle — no product in the image
         prompt_text = (
             f"Create a clean, professional social media lifestyle image for a {sanitize_for_prompt(item.get('platform', 'instagram'))} post. "
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
             f"Style: modern, aspirational wellness lifestyle in a tropical Mauritius setting. "
+            f"Golden hour or warm natural lighting. Editorial quality, shot on 50mm lens. "
+            f"{composition_rules}"
             f"Do NOT include any products, text, logos, or watermarks. "
             f"Focus on the lifestyle and mood, not products."
         )
@@ -224,6 +243,8 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
             f"Include a generic health/wellness product (a simple pouch or box) placed naturally in the scene. "
             f"Style: modern, aspirational wellness lifestyle in a tropical setting. "
+            f"Golden hour or warm natural lighting. Editorial quality, shot on 50mm lens. "
+            f"{composition_rules}"
             f"The product should be clearly visible and will be replaced with the real product later. "
             f"Do NOT include any text, logos, or watermarks on the product."
         )
@@ -355,19 +376,173 @@ async def _replace_product_in_generated_image(state: ContentState, image_data: b
     return image_data
 
 
+async def apply_branding(state: ContentState) -> dict[str, Any]:
+    """Apply logo overlay and text to the generated image.
+
+    Fetches the brand's SVG logo, renders it to transparent PNG,
+    then composites it onto the best monotone region of the image.
+    Also adds a tagline text bar at the bottom-left.
+    """
+    generated_image_url = state.get("generated_image")
+    if not generated_image_url:
+        return {}
+
+    brand = state.get("brand", {})
+    item = state.get("calendar_item", {})
+    logo_url = brand.get("logo_url")
+
+    # Get the generated image bytes
+    import base64 as _b64
+    import httpx
+
+    try:
+        if generated_image_url.startswith("data:"):
+            _, b64_part = generated_image_url.split(",", 1)
+            image_data = _b64.b64decode(b64_part)
+        elif generated_image_url.startswith("content-images/"):
+            image_data = download_file("content-images", generated_image_url.replace("content-images/", ""))
+        else:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.get(generated_image_url)
+                resp.raise_for_status()
+                image_data = resp.content
+
+        # If we have a real product image, replace the generic product via Gemini first
+        image_data = await _replace_product_in_generated_image(state, image_data)
+
+        # Get or render logo PNG
+        logo_png = state.get("logo_png_data")
+        if not logo_png and logo_url:
+            try:
+                if logo_url.endswith(".svg"):
+                    # Download SVG and render to PNG
+                    if logo_url.startswith("content-images/") or logo_url.startswith("brand-assets/"):
+                        bucket, _, obj = logo_url.partition("/")
+                        svg_bytes = download_file(bucket, obj)
+                    else:
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            resp = await client.get(logo_url)
+                            resp.raise_for_status()
+                            svg_bytes = resp.content
+                    logo_png = render_logo_png(svg_bytes)
+                else:
+                    # Already a raster image — download it
+                    if logo_url.startswith("content-images/") or logo_url.startswith("brand-assets/"):
+                        bucket, _, obj = logo_url.partition("/")
+                        logo_png = download_file(bucket, obj)
+                    else:
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            resp = await client.get(logo_url)
+                            resp.raise_for_status()
+                            logo_png = resp.content
+            except Exception:
+                logger.warning("Failed to fetch logo from %s — skipping branding", logo_url)
+                logo_png = None
+
+        if not logo_png:
+            logger.info("No logo available — skipping branding overlay")
+            return {}
+
+        # Build text overlay lines
+        brand_name = brand.get("name", "")
+        theme = item.get("theme", "")
+        website = brand.get("website_url", "")
+        text_line1 = state.get("hook", theme)[:50]
+        text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
+
+        # Apply overlay
+        branded_bytes = overlay_logo_and_text(
+            image_data, logo_png,
+            text_line1=text_line1,
+            text_line2=text_line2,
+        )
+
+        # Upload branded image to MinIO
+        brand_id = state["brand_id"]
+        ensure_bucket("content-images")
+        branded_obj = f"{brand_id}/{state['calendar_item_id']}/branded.png"
+        upload_file("content-images", branded_obj, branded_bytes, "image/png")
+
+        return {
+            "branded_image": f"content-images/{branded_obj}",
+            "logo_png_data": logo_png,
+        }
+
+    except Exception:
+        logger.exception("Branding overlay failed")
+        return {}
+
+
+async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
+    """Generate social platform mobile mockup previews for the approval UI.
+
+    Creates mockups for Instagram, Facebook, LinkedIn, and X showing how
+    the post would appear in each platform's feed on a mobile device.
+    """
+    branded_url = state.get("branded_image")
+    generated_url = state.get("generated_image")
+    image_source = branded_url or generated_url
+
+    if not image_source:
+        return {"mockup_urls": {}}
+
+    try:
+        # Get image bytes
+        if image_source.startswith("content-images/"):
+            obj_name = image_source.replace("content-images/", "")
+            image_data = download_file("content-images", obj_name)
+        else:
+            import base64 as _b64
+            if image_source.startswith("data:"):
+                _, b64_part = image_source.split(",", 1)
+                image_data = _b64.b64decode(b64_part)
+            else:
+                import httpx
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.get(image_source)
+                    resp.raise_for_status()
+                    image_data = resp.content
+
+        caption = state.get("caption", "")
+        brand = state.get("brand", {})
+        brand_name = brand.get("name", "Healthspan Mauritius")
+        brand_id = state["brand_id"]
+        item_id = state["calendar_item_id"]
+
+        mockup_urls = {}
+        ensure_bucket("content-images")
+
+        for platform in ["instagram", "facebook", "linkedin", "x"]:
+            try:
+                mockup_bytes = generate_mockup(
+                    image_data, caption, platform,
+                    display_name=brand_name,
+                )
+                obj_name = f"{brand_id}/{item_id}/mockup_{platform}.png"
+                upload_file("content-images", obj_name, mockup_bytes, "image/png")
+                mockup_urls[platform] = f"content-images/{obj_name}"
+                logger.info("Generated %s mockup for %s", platform, item_id)
+            except Exception:
+                logger.warning("Failed to generate %s mockup", platform, exc_info=True)
+
+        return {"mockup_urls": mockup_urls}
+
+    except Exception:
+        logger.exception("Mockup generation failed")
+        return {"mockup_urls": {}}
+
+
 async def store_content_node(state: ContentState) -> dict[str, Any]:
     """Persist generated content to the database and upload images to MinIO."""
     brand_id = state["brand_id"]
 
-    # Upload generated image to MinIO if available
+    # Upload raw generated image to MinIO if not already there
     generated_image_url = state.get("generated_image")
-    if generated_image_url:
+    if generated_image_url and not generated_image_url.startswith("content-images/"):
         import base64 as _b64
         import httpx
         try:
-            # Handle both data URIs (gpt-image-1.5) and regular URLs (older models)
             if generated_image_url.startswith("data:"):
-                # Extract base64 data from data URI
                 _, b64_part = generated_image_url.split(",", 1)
                 image_data = _b64.b64decode(b64_part)
             else:
@@ -376,15 +551,15 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
                     resp.raise_for_status()
                     image_data = resp.content
 
-            # If we have a real product image, replace the generic product via Gemini
-            image_data = await _replace_product_in_generated_image(state, image_data)
-
             ensure_bucket("content-images")
             object_name = f"{brand_id}/{state['calendar_item_id']}/background.png"
             upload_file("content-images", object_name, image_data, "image/png")
             generated_image_url = f"content-images/{object_name}"
         except Exception:
             logger.exception("Failed to upload generated image to MinIO")
+
+    # Use branded image as primary if available, fall back to raw generated
+    primary_image = state.get("branded_image") or generated_image_url
 
     content_record = {
         "brand_id": brand_id,
@@ -394,8 +569,14 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
         "hashtags": json.dumps(state.get("hashtags", [])),
         "cta": state.get("cta", ""),
         "product_image_url": state.get("product_image"),
-        "generated_image_url": generated_image_url,
+        "generated_image_url": primary_image,
         "platform_adaptations": json.dumps(state.get("platform_adaptations", {})),
+        # Extra metadata merged into generation_metadata by store_content()
+        "metadata": {
+            "raw_image": generated_image_url,
+            "branded_image": state.get("branded_image"),
+            "mockup_urls": state.get("mockup_urls", {}),
+        },
         "status": "in_review",
     }
 

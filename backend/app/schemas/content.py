@@ -14,9 +14,9 @@ class ContentBase(BaseModel):
     hashtags: list[str] | None = None
     cta_text: str | None = None
     cta_url: str | None = None
-    image_urls: dict | None = None
+    image_urls: dict | list | None = None
     video_url: str | None = None
-    media_assets: dict | None = None
+    media_assets: dict | list | None = None
     platform_metadata: dict | None = None
     ai_generated: bool = False
     ai_model: str | None = None
@@ -38,9 +38,9 @@ class ContentUpdate(BaseModel):
     hashtags: list[str] | None = None
     cta_text: str | None = None
     cta_url: str | None = None
-    image_urls: dict | None = None
+    image_urls: dict | list | None = None
     video_url: str | None = None
-    media_assets: dict | None = None
+    media_assets: dict | list | None = None
     platform_metadata: dict | None = None
     ai_generated: bool | None = None
     ai_model: str | None = None

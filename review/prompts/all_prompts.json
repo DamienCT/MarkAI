@@ -1,0 +1,37 @@
+[
+  {
+    "post": "RingConn",
+    "step": 1,
+    "model": "gpt-image-1",
+    "type": "scene_generation",
+    "prompt": "A premium Instagram lifestyle photograph shot from a 45-degree angle on a dark teak veranda table in Mauritius at golden hour morning light. \n\nMain subject: a sleek silver smart health tracking ring placed on a small white marble dish, angled to catch the warm light. \n\nSupporting elements (keep it balanced, not crowded): - A ceramic cup of green tea with a sprig of mint, slightly behind and to the left. - Two white frangipani flowers resting on the dark wood surface. - Soft golden morning light from the left, casting gentle shadows. - A hint of tropical greenery blurred in the background. \n\nIMPORTANT COMPOSITION: The top-right area must be open sky or soft blurred greenery (monotone, low-contrast) \u2014 this area will be used for a logo overlay. The bottom-left should have some dark space for text overlay. \n\nStyle: Premium lifestyle product photography. Warm tones, clean composition, editorial quality. Shot on 50mm f/2.0 with medium depth of field. No text, no logos, no watermarks."
+  },
+  {
+    "post": "RingConn",
+    "step": 2,
+    "model": "gemini-2.5-flash-image",
+    "type": "product_replacement",
+    "prompt": "Edit Image 1: replace the generic silver ring on the marble dish with the exact RingConn Gen 2 Smart Ring from Image 2. Match its exact shape, titanium/silver finish, inner sensor details, and proportions. Light it consistently with the warm golden scene lighting. Keep everything else identical. The result should look like a real photo."
+  },
+  {
+    "post": "SiBionics",
+    "step": 1,
+    "model": "gpt-image-1",
+    "type": "scene_generation",
+    "prompt": "A warm, natural Instagram lifestyle photograph of a woman in a bright Mauritian kitchen, seen from the side at waist level. \n\nShe has medium-brown skin and is wearing a casual sleeveless top. On the back of her left upper arm, a small round white medical sensor patch is clearly visible (about 3cm diameter, circular, slightly raised). \n\nShe is smiling gently and holding a bowl of fresh tropical fruit salad (papaya, mango, dragon fruit) with both hands. \n\nNO phone, NO screen, NO other devices visible \u2014 just her, the sensor, and the fruit bowl. \n\nIMPORTANT COMPOSITION: The top-right corner must be a plain, monotone blurred wall or window light (low-contrast area for logo overlay). The bottom-left should have some open space for text overlay. \n\nStyle: Warm, intimate editorial lifestyle photography. Natural, empowering. Shot on 50mm f/1.8. No text, logos, or watermarks."
+  },
+  {
+    "post": "SiBionics",
+    "step": 2,
+    "model": "gemini-2.5-flash-image",
+    "type": "product_replacement",
+    "prompt": "Edit Image 1: replace the generic white CGM sensor on the woman's upper arm with the exact SiBionics GS1 sensor from Image 2. Match its exact shape, color, transmitter profile, and adhesive edge appearance. Conform naturally to the arm curvature. Correct lighting and shadow. Keep everything else identical."
+  },
+  {
+    "post": "Educational",
+    "step": 1,
+    "model": "gpt-image-1",
+    "type": "scene_generation",
+    "prompt": "A beautiful Instagram photograph of two women walking together along a tropical coastal path at sunrise. \n\nAn older woman (grandmother, 65+, in a comfortable light outfit) and a younger woman (granddaughter, late 20s, in athleisure) walk side by side. The grandmother's hand rests gently on the younger woman's arm. Both are smiling warmly, captured mid-stride in natural conversation. \n\nBackground: a dramatic mountain silhouette against a pastel pink and gold sunrise sky. Turquoise ocean visible. A few tropical trees framing the path on the right side. \n\nIMPORTANT COMPOSITION: The top-right area must be open sky (pastel tones, low-contrast, monotone) \u2014 reserved for logo overlay. The bottom-left should have some darker space for text overlay. \n\nGolden hour backlighting creating beautiful rim light on their hair. Style: National Geographic portrait quality. Shot on 85mm f/1.4. Warm color grading. No text, logos, or watermarks."
+  }
+]

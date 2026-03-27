@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ContentEditor } from "@/components/content/ContentEditor";
+import { PlatformMockups } from "@/components/content/PlatformMockups";
 import { ApprovalHistory } from "@/components/approval/ApprovalHistory";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
@@ -84,6 +85,12 @@ export default function ContentDetailPage() {
           <ContentEditor content={content} onSave={handleSave} />
         </div>
         <div className="space-y-6">
+          {content.generation_metadata?.mockup_urls != null && (
+            <PlatformMockups
+              mockupUrls={content.generation_metadata.mockup_urls as Record<string, string>}
+              imageBaseUrl={process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}
+            />
+          )}
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Approval History</CardTitle>

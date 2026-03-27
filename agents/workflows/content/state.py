@@ -32,5 +32,12 @@ class ContentState(TypedDict, total=False):
     is_lifestyle_only: bool
     generated_image: str | None
 
+    # Branded image (with logo + text overlay)
+    branded_image: str | None
+    logo_png_data: bytes | None
+
+    # Social mockup previews (for approval UI)
+    mockup_urls: dict[str, str]
+
     # Platform adaptations
     platform_adaptations: dict[str, dict[str, Any]]
