@@ -5,102 +5,53 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "markai/publish",
-        "responseMode": "responseNode",
+        "responseMode": "lastNode",
         "options": {}
       },
-      "id": "webhook-entry",
+      "id": "c1a1a1a1-0001-4000-8000-000000000001",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
-      "position": [250, 500],
+      "position": [250, 400],
       "webhookId": "markai-publish"
     },
     {
       "parameters": {
         "assignments": {
           "assignments": [
-            { "id": "v-content-id", "name": "content_id", "value": "={{ $json.body.content_id }}", "type": "string" },
-            { "id": "v-channel", "name": "channel", "value": "={{ $json.body.channel }}", "type": "string" },
-            { "id": "v-caption", "name": "caption", "value": "={{ $json.body.caption || '' }}", "type": "string" },
-            { "id": "v-headline", "name": "headline", "value": "={{ $json.body.headline || '' }}", "type": "string" },
-            { "id": "v-hashtags", "name": "hashtag_string", "value": "={{ $json.body.hashtags && $json.body.hashtags.length > 0 ? $json.body.hashtags.map(t => '#' + t).join(' ') : '' }}", "type": "string" },
-            { "id": "v-full-text", "name": "full_text", "value": "={{ ($json.body.caption || '') + ($json.body.hashtags && $json.body.hashtags.length > 0 ? '\\n\\n' + $json.body.hashtags.map(t => '#' + t).join(' ') : '') }}", "type": "string" },
-            { "id": "v-image-url", "name": "image_url", "value": "={{ $json.body.image_url || '' }}", "type": "string" },
-            { "id": "v-cta-text", "name": "cta_text", "value": "={{ $json.body.cta_text || '' }}", "type": "string" },
-            { "id": "v-cta-url", "name": "cta_url", "value": "={{ $json.body.cta_url || '' }}", "type": "string" },
-            { "id": "v-meta-token", "name": "meta_access_token", "value": "={{ $json.body.meta_access_token || '' }}", "type": "string" },
-            { "id": "v-ig-account", "name": "instagram_account_id", "value": "={{ $json.body.instagram_account_id || '' }}", "type": "string" },
-            { "id": "v-fb-page", "name": "page_id", "value": "={{ $json.body.page_id || '' }}", "type": "string" },
-            { "id": "v-li-token", "name": "linkedin_access_token", "value": "={{ $json.body.linkedin_access_token || '' }}", "type": "string" },
-            { "id": "v-li-org", "name": "linkedin_org_id", "value": "={{ $json.body.linkedin_org_id || '' }}", "type": "string" },
-            { "id": "v-callback-url", "name": "callback_url", "value": "={{ $env.MARKAI_API_URL || 'http://backend:8000' }}", "type": "string" },
-            { "id": "v-webhook-secret", "name": "webhook_secret", "value": "={{ $env.N8N_WEBHOOK_SECRET || '' }}", "type": "string" }
+            { "id": "a1", "name": "content_id", "value": "={{ $json.body.content_id }}", "type": "stringValue" },
+            { "id": "a2", "name": "channel", "value": "={{ $json.body.channel }}", "type": "stringValue" },
+            { "id": "a3", "name": "full_text", "value": "={{ ($json.body.caption || '') + ($json.body.hashtags && $json.body.hashtags.length > 0 ? '\\n\\n' + $json.body.hashtags.map(t => '#' + t).join(' ') : '') }}", "type": "stringValue" },
+            { "id": "a4", "name": "image_url", "value": "={{ $json.body.image_url || '' }}", "type": "stringValue" },
+            { "id": "a5", "name": "meta_access_token", "value": "={{ $json.body.meta_access_token || '' }}", "type": "stringValue" },
+            { "id": "a6", "name": "instagram_account_id", "value": "={{ $json.body.instagram_account_id || '' }}", "type": "stringValue" },
+            { "id": "a7", "name": "page_id", "value": "={{ $json.body.page_id || '' }}", "type": "stringValue" },
+            { "id": "a8", "name": "linkedin_access_token", "value": "={{ $json.body.linkedin_access_token || '' }}", "type": "stringValue" },
+            { "id": "a9", "name": "linkedin_org_id", "value": "={{ $json.body.linkedin_org_id || '' }}", "type": "stringValue" },
+            { "id": "a10", "name": "callback_url", "value": "={{ $env.MARKAI_API_URL || 'http://backend:8000' }}", "type": "stringValue" },
+            { "id": "a11", "name": "webhook_secret", "value": "={{ $env.N8N_WEBHOOK_SECRET || '' }}", "type": "stringValue" }
           ]
         },
         "options": {}
       },
-      "id": "set-vars",
+      "id": "c1a1a1a1-0001-4000-8000-000000000002",
       "name": "Set Variables",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [470, 500]
+      "position": [470, 400]
     },
     {
       "parameters": {
-        "rules": {
-          "rules": [
-            {
-              "outputKey": "instagram",
-              "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.channel }}", "rightValue": "instagram", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "facebook",
-              "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.channel }}", "rightValue": "facebook", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "linkedin",
-              "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.channel }}", "rightValue": "linkedin", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "youtube",
-              "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.channel }}", "rightValue": "youtube", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "tiktok",
-              "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.channel }}", "rightValue": "tiktok", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "x",
-              "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.channel }}", "rightValue": "x", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            }
-          ],
-          "fallbackOutput": "none"
-        },
+        "mode": "expression",
+        "output": "={{ {'instagram': 0, 'facebook': 1, 'linkedin': 2}[$json.channel] ?? 3 }}",
+        "numberOutputs": 4,
         "options": {}
       },
-      "id": "channel-router",
+      "id": "c1a1a1a1-0001-4000-8000-000000000003",
       "name": "Route by Channel",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
-      "position": [690, 500]
+      "position": [690, 400]
     },
     {
       "parameters": {
@@ -116,7 +67,7 @@
         },
         "options": {}
       },
-      "id": "ig-create-container",
+      "id": "c1a1a1a1-0001-4000-8000-000000000004",
       "name": "IG Create Container",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -135,7 +86,7 @@
         },
         "options": {}
       },
-      "id": "ig-publish",
+      "id": "c1a1a1a1-0001-4000-8000-000000000005",
       "name": "IG Publish",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -144,22 +95,22 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://graph.facebook.com/v25.0/{{ $json.page_id }}/{{ $json.image_url ? 'photos' : 'feed' }}",
+        "url": "=https://graph.facebook.com/v25.0/{{ $json.page_id }}/feed",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
             { "name": "message", "value": "={{ $json.full_text }}" },
-            { "name": "url", "value": "={{ $json.image_url }}" },
+            { "name": "link", "value": "={{ $json.image_url }}" },
             { "name": "access_token", "value": "={{ $json.meta_access_token }}" }
           ]
         },
         "options": {}
       },
-      "id": "fb-publish",
+      "id": "c1a1a1a1-0001-4000-8000-000000000006",
       "name": "FB Publish",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [940, 380]
+      "position": [940, 400]
     },
     {
       "parameters": {
@@ -170,20 +121,20 @@
           "parameters": [
             { "name": "Authorization", "value": "=Bearer {{ $json.linkedin_access_token }}" },
             { "name": "LinkedIn-Version", "value": "202603" },
-            { "name": "X-Restli-Protocol-Version", "value": "2.0.0" },
-            { "name": "Content-Type", "value": "application/json" }
+            { "name": "X-Restli-Protocol-Version", "value": "2.0.0" }
           ]
         },
         "sendBody": true,
+        "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={\n  \"author\": \"urn:li:organization:{{ $json.linkedin_org_id }}\",\n  \"commentary\": {{ JSON.stringify($json.full_text) }},\n  \"visibility\": \"PUBLIC\",\n  \"distribution\": {\n    \"feedDistribution\": \"MAIN_FEED\",\n    \"targetEntities\": [],\n    \"thirdPartyDistributionChannels\": []\n  },\n  \"lifecycleState\": \"PUBLISHED\",\n  \"isReshareDisabledByAuthor\": false\n}",
+        "jsonBody": "={\n  \"author\": \"urn:li:organization:{{ $json.linkedin_org_id }}\",\n  \"commentary\": {{ JSON.stringify($json.full_text) }},\n  \"visibility\": \"PUBLIC\",\n  \"distribution\": { \"feedDistribution\": \"MAIN_FEED\" },\n  \"lifecycleState\": \"PUBLISHED\"\n}",
         "options": {}
       },
-      "id": "li-publish",
+      "id": "c1a1a1a1-0001-4000-8000-000000000007",
       "name": "LinkedIn Publish",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [940, 560]
+      "position": [940, 600]
     },
     {
       "parameters": {
@@ -192,101 +143,59 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" },
-            { "name": "Content-Type", "value": "application/json" }
+            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" }
           ]
         },
         "sendBody": true,
+        "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"published\",\n  \"platform_post_id\": \"{{ $json.id || $json['x-restli-id'] || 'unknown' }}\",\n  \"published_at\": \"{{ new Date().toISOString() }}\"\n}",
+        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"published\",\n  \"platform_post_id\": \"{{ $json.id || 'unknown' }}\",\n  \"published_at\": \"{{ new Date().toISOString() }}\"\n}",
         "options": {}
       },
-      "id": "callback-success",
+      "id": "c1a1a1a1-0001-4000-8000-000000000008",
       "name": "Callback Success",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1380, 380]
+      "position": [1380, 400]
     },
     {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $('Set Variables').item.json.callback_url }}/api/v1/webhooks/publish-result",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"failed\",\n  \"error_message\": \"{{ $json.error?.message || $json.message || 'Publishing failed for channel: ' + $('Set Variables').item.json.channel }}\"\n}",
-        "options": {}
-      },
-      "id": "callback-failure",
-      "name": "Callback Failure",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [1380, 680]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={ \"status\": \"accepted\", \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\", \"channel\": \"{{ $('Set Variables').item.json.channel }}\" }",
-        "options": { "responseCode": 200 }
-      },
-      "id": "respond-ok",
-      "name": "Respond OK",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.5,
-      "position": [1600, 380]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={ \"status\": \"failed\", \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\", \"error\": \"{{ $json.error?.message || 'unknown' }}\" }",
-        "options": { "responseCode": 200 }
-      },
-      "id": "respond-fail",
-      "name": "Respond Fail",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.5,
-      "position": [1600, 680]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={ \"status\": \"skipped\", \"channel\": \"{{ $('Set Variables').item.json.channel }}\", \"message\": \"Channel not yet implemented in n8n\" }",
-        "options": { "responseCode": 200 }
-      },
-      "id": "respond-not-implemented",
+      "parameters": {},
+      "id": "c1a1a1a1-0001-4000-8000-000000000009",
       "name": "Not Implemented",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.5,
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
       "position": [940, 800]
     }
   ],
   "connections": {
-    "Webhook": { "main": [[{ "node": "Set Variables", "type": "main", "index": 0 }]] },
-    "Set Variables": { "main": [[{ "node": "Route by Channel", "type": "main", "index": 0 }]] },
+    "Webhook": {
+      "main": [[{ "node": "Set Variables", "type": "main", "index": 0 }]]
+    },
+    "Set Variables": {
+      "main": [[{ "node": "Route by Channel", "type": "main", "index": 0 }]]
+    },
     "Route by Channel": {
       "main": [
         [{ "node": "IG Create Container", "type": "main", "index": 0 }],
         [{ "node": "FB Publish", "type": "main", "index": 0 }],
         [{ "node": "LinkedIn Publish", "type": "main", "index": 0 }],
-        [{ "node": "Not Implemented", "type": "main", "index": 0 }],
-        [{ "node": "Not Implemented", "type": "main", "index": 0 }],
         [{ "node": "Not Implemented", "type": "main", "index": 0 }]
       ]
     },
-    "IG Create Container": { "main": [[{ "node": "IG Publish", "type": "main", "index": 0 }]] },
-    "IG Publish": { "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]] },
-    "FB Publish": { "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]] },
-    "LinkedIn Publish": { "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]] },
-    "Callback Success": { "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]] },
-    "Callback Failure": { "main": [[{ "node": "Respond Fail", "type": "main", "index": 0 }]] }
+    "IG Create Container": {
+      "main": [[{ "node": "IG Publish", "type": "main", "index": 0 }]]
+    },
+    "IG Publish": {
+      "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]]
+    },
+    "FB Publish": {
+      "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]]
+    },
+    "LinkedIn Publish": {
+      "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]]
+    }
   },
-  "settings": { "executionOrder": "v1" },
-  "pinData": {},
-  "meta": { "templateCredsSetupCompleted": true, "instanceId": "markai" }
+  "settings": {
+    "executionOrder": "v1"
+  }
 }
