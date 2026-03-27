@@ -28,12 +28,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Ensure public exists even if the app has no required public assets at build time
-RUN mkdir -p ./public ./.next
-
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-
 # Set the correct permission for prerender cache
+RUN mkdir -p .next public
 RUN chown nextjs:nodejs .next public
 
 # Automatically leverage output traces to reduce image size
