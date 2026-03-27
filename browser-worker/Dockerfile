@@ -18,7 +18,8 @@ COPY --from=builder /install /usr/local
 # Use a fixed shared path for Playwright browsers so runtime user/home lookup doesn't break
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# Install Playwright Chromium and its OS-level dependencies
+# Install curl for healthcheck + Playwright Chromium and its OS-level dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 RUN playwright install chromium --with-deps
 
 # I-H6: Run as non-root user

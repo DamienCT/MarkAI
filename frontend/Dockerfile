@@ -28,6 +28,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
+# Install curl for healthcheck (Alpine doesn't include it)
+RUN apk add --no-cache curl
+
 # Set the correct permission for prerender cache
 RUN mkdir -p .next public
 RUN chown nextjs:nodejs .next public
