@@ -1,0 +1,79 @@
+# docker-compose.vps.yml — Shared VPS production overlay
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
+#
+# What this does:
+#   1. Disables the bundled Traefik (VPS already has one on 80/443)
+#   2. No host port bindings anywhere — zero port conflicts
+#   3. Connects frontend, backend, n8n to the VPS's external "traefik-public" network
+#   4. Adds Docker labels so the VPS Traefik auto-discovers and routes to MARKAI
+#   5. Disables observability stack (Grafana/Prometheus/Loki/OTel) — optional, enable with --profile observability
+#
+# Prerequisites:
+#   docker network create traefik-public   (if it doesn't already exist)
+
+services:
+  # ── Bundled Traefik — disabled on VPS ─────────────────────────
+  traefik:
+    profiles: ["disabled"]
+
+  # ── Backend — external Traefik labels ─────────────────────────
+  backend:
+    environment:
+      MARKAI_ENV: production
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-public"
+      - "traefik.http.routers.markai-api.rule=Host(`api.${MARKAI_DOMAIN}`)"
+      - "traefik.http.routers.markai-api.entrypoints=websecure"
+      - "traefik.http.routers.markai-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.markai-api.loadbalancer.server.port=8000"
+    networks:
+      - markai-net
+      - traefik-public
+
+  # ── Frontend — external Traefik labels ────────────────────────
+  frontend:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-public"
+      - "traefik.http.routers.markai-frontend.rule=Host(`${MARKAI_DOMAIN}`)"
+      - "traefik.http.routers.markai-frontend.entrypoints=websecure"
+      - "traefik.http.routers.markai-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.markai-frontend.loadbalancer.server.port=3000"
+    networks:
+      - markai-net
+      - traefik-public
+
+  # ── n8n — external Traefik labels ─────────────────────────────
+  n8n:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-public"
+      - "traefik.http.routers.markai-n8n.rule=Host(`n8n.${MARKAI_DOMAIN}`)"
+      - "traefik.http.routers.markai-n8n.entrypoints=websecure"
+      - "traefik.http.routers.markai-n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.services.markai-n8n.loadbalancer.server.port=5678"
+    networks:
+      - markai-net
+      - traefik-public
+
+  # ── Agents — production mode ──────────────────────────────────
+  agents:
+    environment:
+      MARKAI_ENV: production
+
+  # ── Observability — opt-in only ───────────────────────────────
+  grafana:
+    profiles: ["observability"]
+  prometheus:
+    profiles: ["observability"]
+  loki:
+    profiles: ["observability"]
+  otel-collector:
+    profiles: ["observability"]
+
+networks:
+  traefik-public:
+    external: true
