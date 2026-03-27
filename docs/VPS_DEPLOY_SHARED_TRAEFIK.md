@@ -11,10 +11,9 @@ Internet
 VPS Traefik (existing, owns :80/:443)
    │
    ├── markai.srv1191974.hstgr.cloud       → markai-frontend:3000
-   ├── api.markai.srv1191974.hstgr.cloud   → markai-backend:8000
-   └── n8n.markai.srv1191974.hstgr.cloud   → markai-n8n:5678
+   └── api.markai.srv1191974.hstgr.cloud   → markai-backend:8000
    │
-   ▼ (Docker network: traefik-public)
+   ▼ (Docker network: n8n_default)
    │
 MARKAI Internal Network (markai-net) — no ports exposed to host
    ├── postgres:5432
@@ -28,34 +27,28 @@ MARKAI Internal Network (markai-net) — no ports exposed to host
    └── agents (no port — NATS consumer)
 ```
 
-**Key design:** MARKAI does NOT bind any host ports. Everything communicates over the internal `markai-net` Docker network. Only frontend, backend, and n8n are connected to the external `traefik-public` network so the VPS Traefik can route to them.
+**Key design:** MARKAI does NOT bind any host ports. Everything communicates over the internal `markai-net` Docker network. Only frontend and backend are connected to the external `n8n_default` network so the VPS Traefik can route to them. MARKAI uses the existing VPS n8n instance via public URL/env configuration.
 
 ## Prerequisites
 
 1. VPS with Docker and Docker Compose v2 installed
 2. Existing Traefik reverse proxy running on the VPS (owns ports 80/443)
-3. Traefik watches the `traefik-public` Docker network for container labels
+3. Existing VPS Traefik is attached to the `n8n_default` Docker network and uses the `mytlschallenge` cert resolver
 4. DNS records pointing to your VPS IP:
    - `markai.srv1191974.hstgr.cloud` → VPS IP
    - `api.markai.srv1191974.hstgr.cloud` → VPS IP
-   - `n8n.markai.srv1191974.hstgr.cloud` → VPS IP (optional)
 
 ## Step 1: Create the external network (if it doesn't exist)
 
 ```bash
-docker network create traefik-public 2>/dev/null || true
+docker network inspect n8n_default --format '{{range .Containers}}{{.Name}} {{end}}'
 ```
-
-Verify your VPS Traefik is connected to this network:
-```bash
-docker network inspect traefik-public --format '{{range .Containers}}{{.Name}} {{end}}'
-```
-You should see your Traefik container listed.
+You should see your VPS Traefik container listed.
 
 ## Step 2: Clone and configure
 
 ```bash
-cd /opt
+cd /var/www
 git clone https://github.com/DamienCT/MarkAI.git markai
 cd markai
 
@@ -98,8 +91,8 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
 ```
 
 The VPS Traefik will automatically:
-- Detect the new containers via Docker labels
-- Obtain TLS certificates from Let's Encrypt
+- Detect the new containers via Docker labels on `n8n_default`
+- Obtain TLS certificates via the existing `mytlschallenge` resolver
 - Route traffic to the correct services
 
 ## Step 4: Verify
@@ -130,7 +123,7 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml logs frontend --t
 | PostgreSQL | 5432, 5433 | **None** (internal only) |
 | Redis/Valkey | 6379, 6381 | **None** (internal only) |
 | MinIO | 9000, 9001 | **None** (internal only) |
-| n8n | 5678 | **None** (internal only, Traefik routes) |
+| n8n | existing VPS service | **Reused** (MARKAI integrates with existing VPS n8n) |
 | Backend | 8000 | **None** (internal only, Traefik routes) |
 | Frontend | 3000 | **None** (internal only, Traefik routes) |
 | All other services | * | **None** (internal only) |
@@ -176,7 +169,7 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml down -v
 ## Updating
 
 ```bash
-cd /opt/markai
+cd /var/www/markai
 git pull origin main
 docker compose -f docker-compose.yml -f docker-compose.vps.yml build
 docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
@@ -186,8 +179,8 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
 
 **Traefik not routing to MARKAI containers:**
 ```bash
-# Check containers are on traefik-public network
-docker network inspect traefik-public | grep markai
+# Check containers are on n8n_default network
+docker network inspect n8n_default | grep markai
 
 # Check Traefik can see the labels
 docker inspect markai-frontend --format '{{json .Config.Labels}}' | jq
