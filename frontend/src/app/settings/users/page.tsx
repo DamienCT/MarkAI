@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { formatDate, formatRelativeTime } from "@/lib/utils";
-import { useRequireRole } from "@/lib/hooks";
+
 
 interface UserFromAPI {
   id: string;
@@ -40,7 +40,6 @@ interface GrantAccessResult {
 }
 
 export default function UsersPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("admin");
   const [users, setUsers] = useState<UserFromAPI[]>([]);
   const [loading, setLoading] = useState(true);
   const [securityGroupMembers, setSecurityGroupMembers] = useState<Set<string>>(new Set());
@@ -165,15 +164,6 @@ export default function UsersPage() {
   const isSecurityGroupMember = (user: UserFromAPI): boolean => {
     return securityGroupMembers.has(user.entra_id);
   };
-
-  if (roleLoading || !hasAccess) {
-    return (
-      <div className="space-y-6">
-        <h1 className="text-3xl font-bold">Users & Roles</h1>
-        <Skeleton className="h-96" />
-      </div>
-    );
-  }
 
   if (loading) {
     return (

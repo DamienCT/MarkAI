@@ -34,8 +34,8 @@ export default function DashboardPage() {
         ]);
 
         if (dashData.status === "fulfilled") setStats(dashData.value);
-        if (runsData.status === "fulfilled") setRecentRuns(runsData.value);
-        if (postsData.status === "fulfilled") setUpcomingPosts(postsData.value);
+        if (runsData.status === "fulfilled" && Array.isArray(runsData.value)) setRecentRuns(runsData.value);
+        if (postsData.status === "fulfilled" && Array.isArray(postsData.value)) setUpcomingPosts(postsData.value);
       } catch (err) {
         setError("Failed to load dashboard data");
       } finally {
