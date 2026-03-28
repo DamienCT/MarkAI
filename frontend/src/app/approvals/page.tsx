@@ -21,8 +21,8 @@ export default function ApprovalsPage() {
   async function fetchApprovals() {
     setLoading(true);
     try {
-      const data = await api.get<Approval[]>("/api/v1/approvals", { status: "pending" });
-      setApprovals(data);
+      const data = await api.get<{ items: Approval[] } | Approval[]>("/api/v1/approvals", { status: "pending" });
+      setApprovals(Array.isArray(data) ? data : (data as { items: Approval[] }).items || []);
     } catch {
       toast.error("Failed to load approvals");
     } finally {
