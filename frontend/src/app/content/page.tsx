@@ -64,7 +64,7 @@ export default function ContentStudioPage() {
       const params: Record<string, string | number> = {};
       if (brandId) params.brand_id = brandId;
       const data = await api.get<CalendarItem[]>("/api/v1/content/calendar", params, { signal });
-      setItems(data);
+      setItems(Array.isArray(data) ? data : []);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       setItems([]);
@@ -77,7 +77,7 @@ export default function ContentStudioPage() {
   useEffect(() => {
     fetchItems();
     // Fetch brands for the dialog
-    api.get<Brand[]>("/api/v1/brands").then(setBrands).catch(() => {
+    api.get<Brand[]>("/api/v1/brands").then((d) => setBrands(Array.isArray(d) ? d : [])).catch(() => {
       toast.error("Failed to load brands");
     });
 

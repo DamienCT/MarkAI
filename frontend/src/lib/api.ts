@@ -1,6 +1,12 @@
 import { getSession } from "next-auth/react";
 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// NEXT_PUBLIC_API_URL is inlined at build time by Next.js.
+// Ensure the URL always uses HTTPS in production (guard against misconfigured env).
+const _rawApiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE_URL =
+  typeof window !== "undefined" && window.location.protocol === "https:" && _rawApiUrl.startsWith("http://")
+    ? _rawApiUrl.replace("http://", "https://")
+    : _rawApiUrl;
 
 interface ApiError {
   detail: string;
