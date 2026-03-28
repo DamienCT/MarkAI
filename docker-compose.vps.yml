@@ -33,6 +33,12 @@ services:
       - n8n_default
 
   frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://api.${MARKAI_DOMAIN}
+        NEXT_PUBLIC_AZURE_AD_CLIENT_ID: ${NEXT_PUBLIC_AZURE_AD_CLIENT_ID}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=n8n_default"

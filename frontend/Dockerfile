@@ -16,6 +16,12 @@ COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# NEXT_PUBLIC_ vars must be present at build time to be embedded in the bundle
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ARG NEXT_PUBLIC_AZURE_AD_CLIENT_ID=
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_AZURE_AD_CLIENT_ID=$NEXT_PUBLIC_AZURE_AD_CLIENT_ID
+
 RUN npm run build
 
 # Production image, copy all the files and run next
