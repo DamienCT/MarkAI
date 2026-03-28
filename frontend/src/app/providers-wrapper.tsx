@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { SessionProvider, useSession, signIn } from "next-auth/react";
+import { SessionProvider, useSession, signIn, signOut } from "next-auth/react";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
 import { Sidebar } from "@/components/layout/Sidebar";
@@ -13,6 +13,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
 
+  React.useEffect(() => {
+    if (status === "authenticated" && session?.error === "RefreshAccessTokenError") {
+      void signOut({ redirect: false }).then(() => {
+        void signIn("azure-ad", { callbackUrl: "/" });
+      });
+    }
+  }, [session?.error, status]);
+
   if (status === "loading") {
     return (
       <div className="flex h-screen items-center justify-center">
@@ -21,7 +29,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!session) {
+  if (!session || session.error === "RefreshAccessTokenError") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
         <Card className="w-full max-w-md">
