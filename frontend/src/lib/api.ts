@@ -1,10 +1,12 @@
 import { getSession } from "next-auth/react";
 
 // NEXT_PUBLIC_API_URL is inlined at build time by Next.js.
-// Ensure the URL always uses HTTPS in production (guard against misconfigured env).
-const _rawApiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const _rawApiUrl = process.env.NEXT_PUBLIC_API_URL || "https://api.markai.srv1191974.hstgr.cloud";
+
+// Force HTTPS: if the inlined URL starts with http:// and contains a real domain
+// (not localhost), upgrade it. This catches misconfigured env vars at build time.
 export const API_BASE_URL =
-  typeof window !== "undefined" && window.location.protocol === "https:" && _rawApiUrl.startsWith("http://")
+  _rawApiUrl.startsWith("http://") && !_rawApiUrl.includes("localhost")
     ? _rawApiUrl.replace("http://", "https://")
     : _rawApiUrl;
 
