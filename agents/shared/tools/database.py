@@ -324,7 +324,10 @@ async def upsert_product(product: dict[str, Any]) -> str:
 
 # ── Calendar operations ──────────────────────────────────────────────────
 
-async def store_calendar_items(items: list[dict[str, Any]]) -> list[str]:
+async def store_calendar_items(
+    items: list[dict[str, Any]],
+    max_date: datetime | None = None,
+) -> list[str]:
     ids: list[str] = []
     async with async_session_factory() as session:
         for item in items:
@@ -346,6 +349,16 @@ async def store_calendar_items(items: list[dict[str, Any]]) -> list[str]:
                 scheduled_at_val = scheduled_at_raw
             else:
                 scheduled_at_val = datetime.now(timezone.utc)
+
+            # Hard enforcement: skip items scheduled beyond the max_date boundary
+            if max_date is not None:
+                # Ensure both are comparable (tz-aware)
+                max_dt = max_date if max_date.tzinfo else max_date.replace(tzinfo=timezone.utc)
+                sched_dt = scheduled_at_val if scheduled_at_val.tzinfo else scheduled_at_val.replace(tzinfo=timezone.utc)
+                if sched_dt > max_dt:
+                    logger.info("Skipping calendar item '%s' — scheduled_at %s exceeds max_date %s",
+                                item.get("title", ""), scheduled_at_val.isoformat(), max_date.isoformat())
+                    continue
 
             # Validate and map item_type (content_type from LLM)
             VALID_ITEM_TYPES = {"post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"}

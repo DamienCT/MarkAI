@@ -129,6 +129,21 @@ export function OverviewTab({
             </div>
             <div className="flex items-center gap-3">
               {(() => {
+                if (brand.status === 'onboarding') {
+                  return (
+                    <span className="text-sm text-orange-600 dark:text-orange-400">
+                      Status: Setup Required
+                    </span>
+                  );
+                }
+                if (brand.status === 'activating') {
+                  return (
+                    <span className="text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Status: Setting up...
+                    </span>
+                  );
+                }
                 const runningRun = pipelineRuns.find((r) => r.status === "running");
                 const statusText = !brand.is_active
                   ? "Idle"
@@ -141,7 +156,25 @@ export function OverviewTab({
                   </span>
                 );
               })()}
-              {brand.is_active ? (
+              {brand.status === 'onboarding' ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled
+                >
+                  <Play className="mr-1.5 h-4 w-4" />
+                  Start Content Factory
+                </Button>
+              ) : brand.status === 'activating' ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled
+                >
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  Setting up...
+                </Button>
+              ) : brand.is_active ? (
                 <Button
                   size="sm"
                   variant="destructive"
@@ -174,7 +207,25 @@ export function OverviewTab({
           </div>
         </CardHeader>
         <CardContent>
-          {(() => {
+          {brand.status === 'onboarding' && (
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <Rocket className="h-10 w-10 text-orange-500 mb-3" />
+              <p className="text-sm font-medium">Complete setup to start your Content Factory</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Finish the required onboarding steps, then activate to begin automated content generation.
+              </p>
+            </div>
+          )}
+          {brand.status === 'activating' && (
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <Loader2 className="h-10 w-10 text-blue-500 animate-spin mb-3" />
+              <p className="text-sm font-medium">Your Content Factory is being set up...</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                AI agents are initializing. This may take a few moments.
+              </p>
+            </div>
+          )}
+          {brand.status !== 'onboarding' && brand.status !== 'activating' && (() => {
             const PIPELINE_STAGES = [
               { key: "research", label: "Research", icon: <Search className="h-6 w-6" /> },
               { key: "strategy", label: "Strategy", icon: <Target className="h-6 w-6" /> },

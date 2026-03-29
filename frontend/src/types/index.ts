@@ -54,11 +54,13 @@ export interface Brand {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  status: 'onboarding' | 'activating' | 'active' | 'inactive';
+  onboarding_completed_at: string | null;
+  activation_started_at: string | null;
   // Optional relationship fields (may not be populated on all responses)
   competitors?: Competitor[];
   industry?: string;
   website_url?: string;
-  status?: string;
   voice_profile?: VoiceProfile;
   social_accounts?: SocialAccount[];
 }

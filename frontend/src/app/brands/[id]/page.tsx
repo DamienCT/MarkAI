@@ -261,35 +261,8 @@ export default function BrandDetailPage() {
     setTogglingFactory(true);
     try {
       if (turnOn) {
-        await api.put(`/api/v1/brands/${brandId}`, { is_active: true });
-
-        const PIPELINE_CHAIN: { key: string; trigger: string }[] = [
-          { key: "research", trigger: "research" },
-          { key: "strategy", trigger: "strategy" },
-          { key: "planning", trigger: "planning" },
-          { key: "content", trigger: "content" },
-        ];
-
-        const latestByType: Record<string, AgentRun> = {};
-        for (const run of pipelineRuns) {
-          const t = run.agent_type;
-          if (!latestByType[t] || new Date(run.created_at) > new Date(latestByType[t].created_at)) {
-            latestByType[t] = run;
-          }
-        }
-
-        const nextStep = PIPELINE_CHAIN.find((step) => {
-          const run = latestByType[step.key];
-          return !run || run.status !== "completed";
-        });
-
-        if (nextStep) {
-          await api.post(`/api/v1/intelligence/trigger/${nextStep.trigger}`, { brand_id: brandId });
-          toast.success(`Content Factory started. Running ${nextStep.key}...`);
-        } else {
-          toast.info("All pipeline stages already completed. Use Intelligence tab to regenerate specific documents.");
-        }
-
+        await api.post(`/api/v1/brands/${brandId}/activate`);
+        toast.success("Content Factory started. AI agents are now working on your brand.");
         const updated = await api.get<Brand>(`/api/v1/brands/${brandId}`);
         setBrand(updated);
         setTimeout(fetchPipelineRuns, 3000);
@@ -306,7 +279,7 @@ export default function BrandDetailPage() {
     } finally {
       setTogglingFactory(false);
     }
-  }, [brandId, pipelineRuns, fetchPipelineRuns]);
+  }, [brandId, fetchPipelineRuns]);
 
   const handleSave = useCallback(async (data: Partial<Brand>) => {
     setSaving(true);
@@ -439,6 +412,13 @@ export default function BrandDetailPage() {
       setTriggeringWorkflow(null);
     }
   }, [brandId, fetchIntelligence]);
+
+  // Auto-open onboarding dialog when brand is in onboarding status
+  useEffect(() => {
+    if (brand && brand.status === 'onboarding') {
+      setOnboardingOpen(true);
+    }
+  }, [brand?.status]);
 
   // Compute onboarding progress
   const onboardingProgress = (() => {
@@ -692,8 +672,12 @@ export default function BrandDetailPage() {
             <div>
               <div className="flex items-center gap-3">
                 <h1 className="text-3xl font-bold">{brand.name}</h1>
-                {brand.is_active && enabledChannels.length > 0 ? (
+                {brand.status === 'active' ? (
                   <span className="h-2.5 w-2.5 rounded-full bg-green-500" title="Active" />
+                ) : brand.status === 'activating' ? (
+                  <span className="h-2.5 w-2.5 rounded-full bg-cyan-500 animate-pulse" title="Setting up..." />
+                ) : brand.status === 'onboarding' ? (
+                  <span className="h-2.5 w-2.5 rounded-full bg-orange-500" title="Setup required" />
                 ) : (
                   <span className="h-2.5 w-2.5 rounded-full bg-gray-400" title="Inactive" />
                 )}

@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +15,8 @@ router = APIRouter()
 async def list_agent_runs(
     skip: int = 0,
     limit: int = 10,
+    brand_id: uuid.UUID | None = None,
+    trigger: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -23,6 +27,10 @@ async def list_agent_runs(
         .offset(skip)
         .limit(limit)
     )
+    if brand_id:
+        stmt = stmt.where(AgentRun.brand_id == brand_id)
+    if trigger:
+        stmt = stmt.where(AgentRun.trigger == trigger)
 
     result = await db.execute(stmt)
     runs = result.scalars().all()

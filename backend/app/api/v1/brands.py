@@ -71,6 +71,9 @@ async def create_brand(
     existing = await brand_service.get_brand_by_slug(db, data.slug)
     if existing:
         raise HTTPException(status_code=409, detail="Brand slug already exists")
+    # Force new brands to onboarding status
+    data.is_active = False
+    data.status = "onboarding"
     return await brand_service.create_brand(db, data)
 
 
@@ -83,6 +86,9 @@ async def update_brand(
 ):
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+    # Sync is_active with status if status is provided
+    if data.status is not None:
+        data.is_active = data.status == "active"
     # Check if is_active is being set to false so we can cancel running agents
     deactivating = data.is_active is False
 
@@ -108,6 +114,86 @@ async def update_brand(
     except Exception:
         await db.rollback()
         raise
+
+
+@router.post("/{brand_id}/complete-onboarding", response_model=BrandResponse)
+async def complete_onboarding(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Validate and mark onboarding as complete."""
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    # Validate required onboarding steps
+    missing = []
+    if not brand.name or not brand.description:
+        missing.append("Brand name and description")
+    if not brand.tone_of_voice:
+        missing.append("Voice profile")
+
+    # Check at least one channel enabled
+    channels = (brand.brand_guidelines or {}).get("channels", {})
+    has_channel = any(ch.get("enabled") for ch in channels.values() if isinstance(ch, dict))
+    if not has_channel:
+        missing.append("At least one enabled channel")
+
+    # Check at least one logo
+    logos = (brand.brand_guidelines or {}).get("logos", {})
+    if not logos:
+        missing.append("At least one logo")
+
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Onboarding incomplete. Missing: {', '.join(missing)}",
+        )
+
+    from datetime import datetime, timezone
+    brand.onboarding_completed_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(brand)
+    return brand
+
+
+@router.post("/{brand_id}/activate")
+async def activate_content_factory(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Start the Content Factory pipeline: research → strategy → plan → content."""
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    if not brand.onboarding_completed_at:
+        raise HTTPException(status_code=422, detail="Complete onboarding first")
+
+    if brand.status == "activating":
+        raise HTTPException(status_code=409, detail="Activation already in progress")
+
+    from datetime import datetime, timezone
+    brand.status = "activating"
+    brand.is_active = False
+    brand.activation_started_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    # Trigger the research pipeline (worker chains: research → strategy → planning → content)
+    from app.services import nats_service
+    await nats_service.publish("research.trigger", {
+        "brand_id": str(brand_id),
+        "trigger": "activation",
+        "scope_weeks": 2,
+    })
+
+    return {
+        "status": "activating",
+        "brand_id": str(brand_id),
+        "message": "Content Factory pipeline started. Research → Strategy → Plan → Content (2 weeks).",
+    }
 
 
 @router.get("/{brand_id}/channels")

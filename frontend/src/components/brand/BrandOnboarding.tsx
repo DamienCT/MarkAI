@@ -80,7 +80,7 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
   const setupSteps = Object.entries(stepComplete).filter(([k]) => k !== "review");
   const completedCount = setupSteps.filter(([, v]) => v).length;
   const totalSteps = setupSteps.length;
-  const requiredComplete = stepComplete.basic_info;
+  const requiredComplete = stepComplete.basic_info && stepComplete.voice_profile && stepComplete.channels && stepComplete.logos;
   const progressPercent = Math.round((completedCount / totalSteps) * 100);
 
   const handleAutoFillAll = async () => {
@@ -134,8 +134,8 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
   const handleActivate = async () => {
     setActivating(true);
     try {
-      await api.put(`/api/v1/brands/${brand.id}`, { is_active: true });
-      await api.post(`/api/v1/intelligence/trigger/research`, { brand_id: brand.id });
+      await api.post(`/api/v1/brands/${brand.id}/complete-onboarding`);
+      await api.post(`/api/v1/brands/${brand.id}/activate`);
       toast.success("Content factory activated! AI agents are now working on your brand.");
       onComplete();
     } catch (err: unknown) {
@@ -360,12 +360,16 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
           </div>
         );
 
-      case "review":
+      case "review": {
+        const requiredStepIds = ["basic_info", "voice_profile", "channels", "logos"];
+        const missingSteps = STEPS.slice(0, 7).filter(
+          (s) => requiredStepIds.includes(s.id) && !stepComplete[s.id]
+        );
         return (
           <div className="space-y-4">
             <div className="space-y-2">
               {STEPS.slice(0, 7).map((step) => {
-                const isRecommended = step.id === "products" || step.id === "competitors" || step.id === "channels";
+                const isRecommended = step.id === "products" || step.id === "competitors" || step.id === "business_central";
                 return (
                   <div key={step.id} className="flex items-center gap-2 text-sm">
                     {stepComplete[step.id] ? (
@@ -388,13 +392,10 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
               })}
             </div>
             {!requiredComplete && (
-              <p className="text-sm text-muted-foreground">
-                Complete the required step (Basic Info) before activating.
+              <p className="text-sm text-destructive">
+                Missing required steps: {missingSteps.map((s) => s.label).join(", ")}
               </p>
             )}
-            <p className="text-xs text-muted-foreground">
-              Channels are needed for publishing but not for research, strategy, and content generation.
-            </p>
             <Button
               size="lg"
               className="w-full"
@@ -406,10 +407,11 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
               ) : (
                 <Rocket className="mr-2 h-4 w-4" />
               )}
-              {activating ? "Activating..." : "Activate Content Factory"}
+              {activating ? "Activating..." : "Start Content Factory"}
             </Button>
           </div>
         );
+      }
 
       default:
         return null;

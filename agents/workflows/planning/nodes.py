@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from shared.llm import chat_completion, parse_llm_json
@@ -30,12 +31,17 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
 async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
     """Generate campaign plans from the strategy using LLM."""
     strategy = state.get("strategy", {})
+    scope_weeks = state.get("scope_weeks", 4)
+    start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime("%Y-%m-%d")
+
     prompt = [
         {"role": "system", "content": (
             "You are a campaign planner. The brand operates in Mauritius. Consider the local market, "
             "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
             "and regional consumer preferences. Based on the strategy, generate specific campaigns "
-            "for the next month. Each campaign should have: name, description, start_date, "
+            f"for the period {start_date} to {end_date} ({scope_weeks} weeks). "
+            "Each campaign should have: name, description, start_date, "
             "end_date, pillar, platforms, goal, kpis. Return a JSON array."
         )},
         {"role": "user", "content": f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}"},
@@ -50,6 +56,9 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
     brand_id = state["brand_id"]
     campaigns = state.get("campaigns", [])
     strategy = state.get("strategy", {})
+    scope_weeks = state.get("scope_weeks", 4)
+    start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime("%Y-%m-%d")
 
     # Load real products for product-aware content planning
     products = await get_products(brand_id)
@@ -62,7 +71,9 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
         {"role": "system", "content": (
             "You are a content calendar planner. The brand operates in Mauritius. Consider the local market, "
             "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
-            "and regional consumer preferences. Generate specific calendar items for each campaign. "
+            "and regional consumer preferences. Generate content for the period "
+            f"{start_date} to {end_date} ({scope_weeks} weeks). "
+            "Generate specific calendar items for each campaign. "
             "Each item should have: campaign_name, scheduled_date (YYYY-MM-DD), platform "
             "(instagram/facebook/linkedin), content_type (post/reel/story/carousel), "
             "theme, product_name (from available products if relevant, else null), brief. "
@@ -102,6 +113,8 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     """Persist calendar items to the database."""
     brand_id = state["brand_id"]
     items = state.get("calendar_items", [])
+    scope_weeks = state.get("scope_weeks", 4)
+    max_date = datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)
 
     db_items = []
     for item in items:
@@ -118,7 +131,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             "status": "planned",
         })
 
-    ids = await store_calendar_items(db_items)
+    ids = await store_calendar_items(db_items, max_date=max_date)
     logger.info("Stored %d calendar items for brand %s", len(ids), brand_id)
 
     return {"status": "completed", "calendar_item_ids": ids}

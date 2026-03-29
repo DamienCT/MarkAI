@@ -54,7 +54,14 @@ class Brand(Base):
     tone_of_voice: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_audience: Mapped[dict] = mapped_column(JSONB, default=dict)
     color_palette: Mapped[dict] = mapped_column(JSONB, default=dict)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="onboarding")
+    onboarding_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    activation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     is_bc_linked: Mapped[bool] = mapped_column(Boolean, default=False)
     bc_company: Mapped[str | None] = mapped_column(String(255), nullable=True)
     bc_locations: Mapped[dict] = mapped_column(JSONB, default=list)

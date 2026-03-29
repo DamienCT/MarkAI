@@ -12,6 +12,9 @@ class PlanningState(TypedDict, total=False):
     errors: list[str]
     messages: list[dict[str, str]]
 
+    # Configuration
+    scope_weeks: int  # Planning horizon in weeks (default 4, activation uses 2)
+
     # Loaded data
     strategy: dict[str, Any]
 

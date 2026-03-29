@@ -35,7 +35,11 @@ CREATE TABLE brands (
     tone_of_voice   TEXT,
     target_audience JSONB DEFAULT '{}',
     color_palette   JSONB DEFAULT '{}',
-    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    is_active       BOOLEAN NOT NULL DEFAULT FALSE,
+    status          VARCHAR(50) NOT NULL DEFAULT 'onboarding'
+                    CHECK (status IN ('onboarding', 'activating', 'active', 'inactive')),
+    onboarding_completed_at TIMESTAMPTZ,
+    activation_started_at   TIMESTAMPTZ,
     is_bc_linked    BOOLEAN NOT NULL DEFAULT FALSE,
     bc_company      VARCHAR(255),
     bc_locations    JSONB DEFAULT '[]',
@@ -44,9 +48,9 @@ CREATE TABLE brands (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- idx_brands_slug removed: UNIQUE constraint already creates an index
 CREATE INDEX idx_brands_created_by ON brands (created_by);
 CREATE INDEX idx_brands_bc_company ON brands (bc_company);
+CREATE INDEX idx_brands_status ON brands (status);
 
 -- ── Products ────────────────────────────────────────────────────
 CREATE TABLE products (

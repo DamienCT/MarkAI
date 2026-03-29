@@ -158,6 +158,20 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         safe_result = json.loads(json.dumps(result, default=str))
         await complete_agent_run(run_id, output_payload=safe_result, status="completed")
         logger.info("Workflow %s completed for brand %s", agent_type, brand_id)
+
+        # ── Activation: mark brand as active once the planning pipeline finishes
+        if agent_type == "planning" and payload.get("trigger") == "activation":
+            if brand_id:
+                try:
+                    from shared.tools.database import execute_query
+                    await execute_query(
+                        "UPDATE brands SET status = 'active', is_active = true WHERE id = :id",
+                        {"id": brand_id},
+                    )
+                    logger.info("Brand %s activated after planning pipeline", brand_id)
+                except Exception as act_exc:
+                    logger.error("Failed to activate brand %s: %s", brand_id, act_exc)
+
         await msg.ack()
 
         # ── Chain: auto-trigger the next workflow in the pipeline ─────
@@ -230,12 +244,15 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     calendar_item_ids = (result or {}).get("calendar_item_ids", [])
                     if calendar_item_ids:
                         for cid in calendar_item_ids:
-                            item_payload = json.dumps({
+                            item_msg: dict[str, Any] = {
                                 "brand_id": brand_id,
                                 "calendar_item_id": cid,
-                                "trigger": "event",
+                                "trigger": payload.get("trigger", "event"),
                                 "chain_depth": current_depth + 1,
-                            }).encode()
+                            }
+                            if payload.get("scope_weeks") is not None:
+                                item_msg["scope_weeks"] = payload["scope_weeks"]
+                            item_payload = json.dumps(item_msg).encode()
                             await _consumer.js.publish(next_subject, item_payload)
                         logger.info(
                             "Chained planning -> content.generate for %d calendar items (brand %s)",
@@ -244,12 +261,15 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     else:
                         logger.warning("Planning completed but no calendar_item_ids in result — skipping content chain")
                 else:
-                    # Standard single-message chain
-                    chain_payload = json.dumps({
+                    # Standard single-message chain — propagate trigger & scope_weeks
+                    chain_msg: dict[str, Any] = {
                         "brand_id": brand_id,
-                        "trigger": "event",
+                        "trigger": payload.get("trigger", "event"),
                         "chain_depth": current_depth + 1,
-                    }).encode()
+                    }
+                    if payload.get("scope_weeks") is not None:
+                        chain_msg["scope_weeks"] = payload["scope_weeks"]
+                    chain_payload = json.dumps(chain_msg).encode()
                     await _consumer.js.publish(next_subject, chain_payload)
                     logger.info("Chained %s -> %s for brand %s (depth %d)", agent_type, next_subject, brand_id, current_depth + 1)
             except Exception as chain_exc:

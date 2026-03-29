@@ -87,10 +87,20 @@ export function BrandCard({ brand }: BrandCardProps) {
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="font-semibold truncate">{brand.name}</h3>
-                {brand.is_active && enabledChannels.length > 0 ? (
+                {brand.status === 'active' ? (
                   <span className="h-2.5 w-2.5 rounded-full bg-green-500 shrink-0" title="Active" />
+                ) : brand.status === 'activating' ? (
+                  <span className="flex items-center gap-1.5 shrink-0">
+                    <span className="h-2.5 w-2.5 rounded-full bg-cyan-500 animate-pulse shrink-0" title="Setting up..." />
+                    <span className="text-[10px] text-cyan-600 dark:text-cyan-400 font-medium">Setting up...</span>
+                  </span>
+                ) : brand.status === 'onboarding' ? (
+                  <span className="flex items-center gap-1.5 shrink-0">
+                    <span className="h-2.5 w-2.5 rounded-full bg-orange-500 shrink-0" title="Setup required" />
+                    <span className="text-[10px] text-orange-600 dark:text-orange-400 font-medium">Setup required</span>
+                  </span>
                 ) : (
-                  <span className="h-2.5 w-2.5 rounded-full bg-gray-400 shrink-0" title={enabledChannels.length === 0 ? "No channels configured" : "Inactive"} />
+                  <span className="h-2.5 w-2.5 rounded-full bg-gray-400 shrink-0" title="Inactive" />
                 )}
               </div>
               {brand.description && (
