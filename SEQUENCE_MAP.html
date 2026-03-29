@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MARKAI - Application Sequence Map</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+--bg:#0f1117;--surface:#1a1d27;--surface2:#222633;--surface3:#2a2f3f;
+--border:#333a4d;--text:#e4e8f1;--text2:#9ca3b8;--text3:#6b7280;
+--blue:#3b82f6;--blue2:#2563eb;--green:#22c55e;--green2:#16a34a;
+--orange:#f59e0b;--orange2:#d97706;--purple:#a855f7;--purple2:#9333ea;
+--red:#ef4444;--cyan:#06b6d4;--pink:#ec4899;
+--sidebar-w:260px;
+}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh;overflow-x:hidden}
+a{color:var(--blue);text-decoration:none}
+
+/* Sidebar */
+.sidebar{width:var(--sidebar-w);min-height:100vh;background:var(--surface);border-right:1px solid var(--border);position:fixed;top:0;left:0;z-index:100;display:flex;flex-direction:column;transition:transform .3s}
+.sidebar-header{padding:20px 18px 14px;border-bottom:1px solid var(--border)}
+.sidebar-header h1{font-size:18px;font-weight:700;letter-spacing:1px}
+.sidebar-header h1 span{color:var(--blue)}
+.sidebar-header p{font-size:11px;color:var(--text3);margin-top:4px;text-transform:uppercase;letter-spacing:1.5px}
+.sidebar-nav{flex:1;overflow-y:auto;padding:10px 0}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 18px;cursor:pointer;font-size:13px;color:var(--text2);transition:all .15s;border-left:3px solid transparent}
+.nav-item:hover{background:var(--surface2);color:var(--text)}
+.nav-item.active{background:var(--surface2);color:var(--blue);border-left-color:var(--blue)}
+.nav-item .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.nav-item .num{font-size:10px;color:var(--text3);min-width:18px}
+.sidebar-footer{padding:14px 18px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)}
+
+/* Toggle */
+.sidebar-toggle{display:none;position:fixed;top:12px;left:12px;z-index:200;background:var(--surface2);border:1px solid var(--border);color:var(--text);width:36px;height:36px;border-radius:8px;cursor:pointer;font-size:18px;line-height:36px;text-align:center}
+
+/* Main */
+.main{margin-left:var(--sidebar-w);flex:1;padding:28px 32px 60px;max-width:1100px}
+.main-header{margin-bottom:28px}
+.main-header h2{font-size:24px;font-weight:700;margin-bottom:6px}
+.main-header p{color:var(--text2);font-size:14px}
+
+/* Legend */
+.legend{display:flex;flex-wrap:wrap;gap:14px;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:28px}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)}
+.legend-color{width:12px;height:12px;border-radius:3px}
+
+/* Section */
+.section{margin-bottom:16px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface);transition:box-shadow .2s}
+.section:hover{box-shadow:0 0 0 1px var(--border)}
+.section-header{display:flex;align-items:center;gap:12px;padding:16px 20px;cursor:pointer;user-select:none;transition:background .15s}
+.section-header:hover{background:var(--surface2)}
+.section-num{font-size:11px;font-weight:700;color:var(--text3);min-width:22px}
+.section-title{font-size:15px;font-weight:600;flex:1}
+.section-badge{font-size:10px;padding:3px 8px;border-radius:4px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.section-arrow{font-size:12px;color:var(--text3);transition:transform .25s}
+.section.open .section-arrow{transform:rotate(90deg)}
+.section-body{display:none;padding:0 20px 20px;animation:fadeIn .2s}
+.section.open .section-body{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+
+/* Flow */
+.flow{display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px;margin:12px 0}
+.flow-node{position:relative;padding:10px 14px;border-radius:8px;font-size:12px;font-weight:500;border:1px solid;max-width:200px;line-height:1.4}
+.flow-node.backend{background:rgba(59,130,246,.1);border-color:rgba(59,130,246,.3);color:#93bbfc}
+.flow-node.agent{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.3);color:#86efac}
+.flow-node.frontend{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3);color:#fcd68d}
+.flow-node.external{background:rgba(168,85,247,.1);border-color:rgba(168,85,247,.3);color:#d8b4fe}
+.flow-node.trigger{background:rgba(6,182,212,.1);border-color:rgba(6,182,212,.3);color:#67e8f9}
+.flow-node.state{background:rgba(236,72,153,.1);border-color:rgba(236,72,153,.3);color:#f9a8d4}
+.flow-node small{display:block;font-size:10px;opacity:.7;margin-top:2px}
+
+.flow-arrow{display:flex;align-items:center;color:var(--text3);font-size:16px;flex-shrink:0;padding:0 2px}
+
+/* NATS label */
+.nats-label{display:inline-flex;align-items:center;gap:5px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);border-radius:6px;padding:4px 10px;font-size:11px;color:#d8b4fe;margin:8px 0;font-family:monospace}
+.nats-label::before{content:"NATS";font-size:9px;font-weight:700;background:var(--purple2);color:#fff;padding:1px 5px;border-radius:3px}
+
+/* State machine */
+.state-machine{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0}
+.state-node{padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;border:1px solid}
+.state-node.s-queued{background:rgba(107,114,128,.15);border-color:rgba(107,114,128,.3);color:#9ca3af}
+.state-node.s-working{background:rgba(59,130,246,.15);border-color:rgba(59,130,246,.3);color:#93c5fd}
+.state-node.s-review{background:rgba(245,158,11,.15);border-color:rgba(245,158,11,.3);color:#fcd34d}
+.state-node.s-approved{background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.3);color:#86efac}
+.state-node.s-scheduled{background:rgba(6,182,212,.15);border-color:rgba(6,182,212,.3);color:#67e8f9}
+.state-node.s-published{background:rgba(168,85,247,.15);border-color:rgba(168,85,247,.3);color:#d8b4fe}
+.state-node.s-failed{background:rgba(239,68,68,.15);border-color:rgba(239,68,68,.3);color:#fca5a5}
+
+.desc{font-size:13px;color:var(--text2);line-height:1.7;margin:8px 0}
+.desc strong{color:var(--text);font-weight:600}
+.sub-title{font-size:13px;font-weight:600;color:var(--text);margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--border)}
+
+/* Pages grid */
+.pages-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:10px 0}
+.page-card{padding:10px 12px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:12px;font-weight:500;transition:all .15s;cursor:default}
+.page-card:hover{border-color:var(--blue);background:rgba(59,130,246,.06)}
+.page-card small{display:block;color:var(--text3);font-size:10px;margin-top:3px}
+
+/* Steps list */
+.steps{margin:10px 0;padding-left:0;list-style:none;counter-reset:step}
+.steps li{counter-increment:step;display:flex;align-items:flex-start;gap:10px;padding:8px 0;font-size:13px;color:var(--text2);border-bottom:1px solid rgba(51,58,77,.4)}
+.steps li::before{content:counter(step);font-size:10px;font-weight:700;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;background:var(--surface3);border-radius:5px;color:var(--text3);flex-shrink:0}
+.steps li:last-child{border-bottom:none}
+
+/* Interrupt badge */
+.interrupt{display:inline-block;font-size:10px;padding:2px 7px;border-radius:4px;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);color:#fcd34d;font-weight:600;margin-left:4px}
+
+/* Responsive */
+@media(max-width:860px){
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:translateX(0)}
+  .sidebar-toggle{display:block}
+  .main{margin-left:0;padding:18px 16px 60px}
+  .flow{gap:4px}
+  .legend{gap:10px}
+}
+</style>
+</head>
+<body>
+
+<button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <h1>MARK<span>AI</span></h1>
+    <p>Sequence Map</p>
+  </div>
+  <nav class="sidebar-nav" id="sidebarNav"></nav>
+  <div class="sidebar-footer">v1.0 &mdash; Generated 2026-03-27</div>
+</aside>
+
+<main class="main">
+  <div class="main-header">
+    <h2>Application Sequence Map</h2>
+    <p>Complete flow visualization of every workflow, trigger, and data path in the MARKAI system.</p>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-color" style="background:var(--blue)"></div>Backend / API</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--green)"></div>AI Agents</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--orange)"></div>Frontend</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--purple)"></div>External (NATS / MinIO / n8n)</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--cyan)"></div>Trigger / Scheduler</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--pink)"></div>Status / State</div>
+  </div>
+
+  <div id="sections"></div>
+</main>
+
+<script>
+const DATA = [
+  {
+    id:"auth", num:"01", title:"Authentication", badge:"SSO", badgeColor:"var(--blue)",
+    dot:"var(--blue)",
+    html:`
+      <p class="desc">Single sign-on via <strong>Microsoft Entra ID</strong>. The backend validates JWT tokens, provisions users on first login, and assigns roles based on security group membership.</p>
+      <div class="flow">
+        <div class="flow-node external">Microsoft Entra ID<small>OAuth 2.0 / OIDC</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">SSO Redirect<small>/auth/sso/callback</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">JWT Validation<small>Verify id_token</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">User Provisioning<small>Create or update</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Role Assignment<small>admin / viewer</small></div>
+      </div>
+      <p class="sub-title">Role Assignment Logic</p>
+      <ul class="steps">
+        <li>Check if user's <strong>oid</strong> exists in the security group configured in Entra</li>
+        <li>If member of security group &rarr; assign <strong>admin</strong> role</li>
+        <li>Otherwise &rarr; assign <strong>viewer</strong> role (read-only)</li>
+        <li>Fallback: call <strong>Microsoft Graph API</strong> <code>/memberOf</code> to verify group membership if token claims are missing</li>
+      </ul>
+    `
+  },
+  {
+    id:"brand", num:"02", title:"Brand Lifecycle", badge:"CRUD", badgeColor:"var(--green)",
+    dot:"var(--green)",
+    html:`
+      <p class="desc">A brand moves through <strong>onboarding</strong> to <strong>active</strong> status. Completing onboarding validates all required data and triggers the full pipeline.</p>
+      <div class="flow">
+        <div class="flow-node frontend">Create Brand<small>status: onboarding</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node frontend">8-Step Onboarding<small>Wizard UI</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Validate Required<small>All 8 steps complete</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Activate Brand<small>status: active</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node trigger">Trigger Pipeline<small>Research &rarr; Strategy &rarr; Planning</small></div>
+      </div>
+      <p class="sub-title">Onboarding Steps</p>
+      <ul class="steps">
+        <li><strong>Basic Info</strong> &mdash; Brand name, description, industry, website URL</li>
+        <li><strong>Business Central Link</strong> &mdash; Connect BC tenant for product sync</li>
+        <li><strong>Logos &amp; Assets</strong> &mdash; Upload primary/secondary logos, brand colors, fonts</li>
+        <li><strong>Voice Profile</strong> &mdash; Tone, personality attributes, do/don't guidelines</li>
+        <li><strong>Channels</strong> &mdash; Enable Instagram, Facebook, LinkedIn, X (checkboxes)</li>
+        <li><strong>Products</strong> &mdash; Initial product catalog (or synced via BC)</li>
+        <li><strong>Competitors</strong> &mdash; Add competitor brands/URLs for analysis</li>
+        <li><strong>Review &amp; Complete</strong> &mdash; Summary screen, validate all required fields</li>
+      </ul>
+    `
+  },
+  {
+    id:"research", num:"03", title:"Research Workflow", badge:"AGENTS", badgeColor:"var(--green)",
+    dot:"var(--green)",
+    html:`
+      <div class="nats-label">research.trigger</div>
+      <p class="desc">AI agents crawl the brand's web presence, analyze competitors, identify content gaps, and build audience personas. Results are stored in both PostgreSQL and <strong>Qdrant</strong> vector DB.</p>
+      <div class="flow">
+        <div class="flow-node trigger">NATS Trigger<small>research.trigger</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">crawl_website<small>Scrape brand site</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">analyze_social<small>Existing social profiles</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">analyze_competitors<small>DB + web discovery</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">identify_gaps<small>Content opportunity map</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">build_personas<small>Audience archetypes</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">store_results<small>DB + Qdrant vectors</small></div>
+      </div>
+      <p class="sub-title">Data Stores</p>
+      <ul class="steps">
+        <li><strong>PostgreSQL</strong> &mdash; Structured research reports (JSON), competitor records, persona definitions</li>
+        <li><strong>Qdrant</strong> &mdash; Vectorized research embeddings for semantic retrieval during content generation</li>
+      </ul>
+    `
+  },
+  {
+    id:"strategy", num:"04", title:"Strategy Workflow", badge:"AGENTS", badgeColor:"var(--green)",
+    dot:"var(--green)",
+    html:`
+      <div class="nats-label">strategy.trigger</div>
+      <p class="desc">Loads research output and generates a full content strategy: brand positioning, content pillars, target audiences, posting cadence, and monthly themes. Supports an optional <strong>human review interrupt</strong>.</p>
+      <div class="flow">
+        <div class="flow-node trigger">NATS Trigger<small>strategy.trigger</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">load_research<small>From DB + vectors</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_positioning<small>Brand positioning statement</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">define_pillars<small>Content pillars</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">define_audiences<small>Target segments</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">plan_cadence<small>Posting schedule</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_themes<small>Monthly themes</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node frontend">human_review <span class="interrupt">INTERRUPT</span><small>Optional approval gate</small></div>
+      </div>
+    `
+  },
+  {
+    id:"planning", num:"05", title:"Planning Workflow", badge:"AGENTS", badgeColor:"var(--green)",
+    dot:"var(--green)",
+    html:`
+      <div class="nats-label">planning.trigger</div>
+      <p class="desc">Generates campaigns with a <strong>year-long strategy document</strong>, then creates a content calendar with <strong>1 post per channel per day</strong>, evenly distributing content types. Only enabled channels are included, and items are scoped to the <code>days_ahead</code> window.</p>
+      <div class="flow">
+        <div class="flow-node trigger">NATS Trigger<small>planning.trigger</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">load_strategy<small>+ enabled channels</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_campaigns<small>+ year-long strategy doc</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_calendar<small>1 post/channel/day</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">assign_products<small>Map products to posts</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">store_calendar<small>Enabled channels only</small></div>
+      </div>
+      <p class="sub-title">Calendar Rules</p>
+      <ul class="steps">
+        <li>Generate exactly <strong>1 post per enabled channel per day</strong></li>
+        <li>Even distribution of content types across the calendar (educational, promotional, engagement, etc.)</li>
+        <li>Only store calendar items for <strong>enabled channels</strong></li>
+        <li>Scope generation to the configured <strong>days_ahead</strong> window</li>
+        <li>Products are assigned to relevant posts based on campaign themes</li>
+      </ul>
+    `
+  },
+  {
+    id:"content", num:"06", title:"Content Generation", badge:"SEQUENTIAL", badgeColor:"var(--orange)",
+    dot:"var(--orange)",
+    html:`
+      <div class="nats-label">content.generate</div>
+      <p class="desc">Processes <strong>one item at a time</strong> sequentially. Each item flows through hook, caption, hashtag generation, then image creation with <strong>GPT Image</strong>, branding overlay, platform adaptation, and mockup rendering. On completion, chains to the next queued item.</p>
+      <div class="flow">
+        <div class="flow-node trigger">NATS Trigger<small>content.generate</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">load_context<small>status &rarr; working</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_hook<small>Attention grabber</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_caption<small>Platform-tuned copy</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_hashtags<small>Relevant tags</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">source_product_image<small>From catalog</small></div>
+      </div>
+      <div class="flow" style="margin-top:0">
+        <div class="flow-arrow" style="visibility:hidden">&rarr;</div>
+        <div class="flow-node external">generate_background<small>GPT Image API</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">apply_branding<small>Logo + text overlay</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">adapt_platforms<small>Enabled channels only</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_mockups<small>IG / FB / LI / X</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">store_content<small>status &rarr; in_review</small></div>
+      </div>
+      <p class="sub-title">Chaining Behavior</p>
+      <p class="desc">On completion of each item, the system checks <code>remaining_queue</code> and chains the next content item for generation. This ensures sequential, non-overlapping execution to manage API rate limits and resource usage.</p>
+      <p class="sub-title">Status Transitions</p>
+      <div class="state-machine">
+        <div class="state-node s-queued">queued</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="state-node s-working">working</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="state-node s-review">in_review</div>
+      </div>
+    `
+  },
+  {
+    id:"approval", num:"07", title:"Approval & Scheduling", badge:"UI", badgeColor:"var(--orange)",
+    dot:"var(--orange)",
+    html:`
+      <p class="desc">Content Studio provides a visual review interface with <strong>platform mockup previews</strong>. Reviewers approve content, then schedule it with a specific date and time for publishing.</p>
+      <div class="flow">
+        <div class="flow-node frontend">Content Studio<small>Review mockups</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node frontend">Approve<small>Mark as approved</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node frontend">Schedule<small>Set date &amp; time</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Update Status<small>Store schedule</small></div>
+      </div>
+      <p class="sub-title">Status Transitions</p>
+      <div class="state-machine">
+        <div class="state-node s-review">in_review</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="state-node s-approved">approved</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="state-node s-scheduled">scheduled</div>
+      </div>
+    `
+  },
+  {
+    id:"publishing", num:"08", title:"Publishing", badge:"SCHEDULER", badgeColor:"var(--cyan)",
+    dot:"var(--cyan)",
+    html:`
+      <p class="desc">A scheduler runs <strong>every 5 minutes</strong>, finds content items due for publishing, dispatches them to <strong>n8n</strong> via a unified webhook, which routes to the appropriate platform API. A callback updates the content status.</p>
+      <div class="flow">
+        <div class="flow-node trigger">Scheduler<small>Every 5 min</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">publish_checker<small>Find due items</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node external">dispatch_to_n8n<small>/markai/publish</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node external">n8n Router<small>Route by channel</small></div>
+      </div>
+      <p class="sub-title">Platform APIs (via n8n)</p>
+      <div class="flow">
+        <div class="flow-node external">Instagram<small>Graph API v25</small></div>
+        <div class="flow-node external">Facebook<small>Graph API v25</small></div>
+        <div class="flow-node external">LinkedIn<small>REST Posts API</small></div>
+      </div>
+      <div class="flow" style="margin-top:10px">
+        <div class="flow-node external">n8n Callback<small>/webhooks/publish-result</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Update Status<small>published or failed</small></div>
+      </div>
+      <p class="sub-title">Status Transitions</p>
+      <div class="state-machine">
+        <div class="state-node s-scheduled">scheduled</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="state-node s-published">published</div>
+      </div>
+      <div class="state-machine" style="margin-top:6px">
+        <div class="state-node s-scheduled">scheduled</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="state-node s-failed">failed</div>
+      </div>
+    `
+  },
+  {
+    id:"engagement", num:"09", title:"Engagement Tracking", badge:"SCHEDULER", badgeColor:"var(--cyan)",
+    dot:"var(--cyan)",
+    html:`
+      <p class="desc">Metrics are pulled <strong>every 4 hours</strong> plus a dedicated <strong>morning run</strong>. The system fetches likes, comments, shares, reach, and impressions from each platform API and stores them as <code>EngagementMetric</code> records.</p>
+      <div class="flow">
+        <div class="flow-node trigger">Scheduler<small>Every 4h + morning</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Pull Metrics<small>Per published item</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node external">Instagram API<small>Insights endpoint</small></div>
+      </div>
+      <div class="flow">
+        <div class="flow-node external">Facebook API<small>Page insights</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node external">LinkedIn API<small>Share statistics</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Store Metrics<small>EngagementMetric table</small></div>
+      </div>
+    `
+  },
+  {
+    id:"evaluation", num:"10", title:"Evaluation Workflow", badge:"DAILY", badgeColor:"var(--pink)",
+    dot:"var(--pink)",
+    html:`
+      <div class="nats-label">evaluation.trigger</div>
+      <p class="desc">Runs <strong>daily</strong>. Analyzes content performance data, identifies patterns, generates actionable recommendations, and classifies them into adaptation tiers.</p>
+      <div class="flow">
+        <div class="flow-node trigger">NATS Trigger<small>evaluation.trigger (daily)</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">load_performance<small>Engagement data</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">analyze_patterns<small>Trend detection</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">generate_recommendations<small>Action items</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">classify_adaptations<small>Tier 1 / 2 / 3</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">store_adaptations<small>Adaptation records</small></div>
+      </div>
+      <p class="sub-title">Adaptation Tiers</p>
+      <ul class="steps">
+        <li><strong>Tier 1</strong> &mdash; Minor adjustments (hashtags, posting times) &mdash; applied automatically</li>
+        <li><strong>Tier 2</strong> &mdash; Moderate changes (content mix, tone shifts) &mdash; requires human review</li>
+        <li><strong>Tier 3</strong> &mdash; Major strategy changes (new pillars, audience pivot) &mdash; requires human review</li>
+      </ul>
+    `
+  },
+  {
+    id:"adaptation", num:"11", title:"Adaptation Workflow", badge:"FEEDBACK", badgeColor:"var(--pink)",
+    dot:"var(--pink)",
+    html:`
+      <div class="nats-label">adaptation.trigger</div>
+      <p class="desc">Processes classified adaptations. Tier 1 changes are applied automatically. Tier 2 and 3 present a <strong>human review interrupt</strong>. If approved, they re-trigger the planning workflow to regenerate the calendar.</p>
+      <div class="flow">
+        <div class="flow-node trigger">NATS Trigger<small>adaptation.trigger</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">load_adaptations<small>From evaluation</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">apply_tier1<small>Auto-apply</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node frontend">propose_tier2 <span class="interrupt">INTERRUPT</span><small>Human review</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node frontend">propose_tier3 <span class="interrupt">INTERRUPT</span><small>Human review</small></div>
+      </div>
+      <p class="sub-title">Feedback Loop</p>
+      <div class="flow">
+        <div class="flow-node frontend">Tier 2/3 Approved<small>Human decision</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node trigger">Re-trigger Planning<small>planning.trigger</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node agent">Regenerate Calendar<small>Updated strategy</small></div>
+      </div>
+    `
+  },
+  {
+    id:"morning", num:"12", title:"Daily Morning Job", badge:"CRON", badgeColor:"var(--cyan)",
+    dot:"var(--cyan)",
+    html:`
+      <p class="desc">A comprehensive daily job that runs each morning to keep the system current. Syncs products, pulls engagement metrics, triggers evaluation, and ensures the content queue stays topped up.</p>
+      <div class="flow">
+        <div class="flow-node trigger">Morning CRON<small>Daily schedule</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node external">BC Product Sync<small>Business Central API</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Engagement Pull<small>All platforms</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node trigger">Evaluation Trigger<small>evaluation.trigger</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node backend">Content Top-Up<small>Check queued items</small></div>
+      </div>
+      <p class="sub-title">Content Top-Up Logic</p>
+      <ul class="steps">
+        <li>Check number of <strong>queued</strong> content items within the <code>days_ahead</code> window</li>
+        <li>If below threshold &rarr; trigger <strong>content.generate</strong> for pending calendar items</li>
+        <li>Ensures there is always content ready for review and scheduling</li>
+      </ul>
+    `
+  },
+  {
+    id:"frontend", num:"13", title:"Frontend Pages", badge:"UI", badgeColor:"var(--orange)",
+    dot:"var(--orange)",
+    html:`
+      <p class="desc">The frontend is a React SPA with <strong>15 main pages</strong>, organized into content operations, intelligence, and system administration.</p>
+      <p class="sub-title">Content Operations</p>
+      <div class="pages-grid">
+        <div class="page-card">Dashboard<small>Overview &amp; KPIs</small></div>
+        <div class="page-card">Brands<small>Brand management</small></div>
+        <div class="page-card">Content Studio<small>Create &amp; edit content</small></div>
+        <div class="page-card">Calendar<small>Visual schedule</small></div>
+        <div class="page-card">Approvals<small>Review queue</small></div>
+        <div class="page-card">Product Images<small>Image catalog</small></div>
+      </div>
+      <p class="sub-title">Intelligence &amp; Analytics</p>
+      <div class="pages-grid">
+        <div class="page-card">Intelligence<small>4 report types</small></div>
+        <div class="page-card">Analytics<small>Performance data</small></div>
+        <div class="page-card">Learning<small>AI learning feed</small></div>
+        <div class="page-card">Prompt Lab<small>Prompt engineering</small></div>
+      </div>
+      <p class="sub-title">System Administration</p>
+      <div class="pages-grid">
+        <div class="page-card">AI Providers<small>LLM configuration</small></div>
+        <div class="page-card">System<small>Health &amp; config</small></div>
+        <div class="page-card">Audit Log<small>Activity history</small></div>
+        <div class="page-card">Settings<small>App preferences</small></div>
+        <div class="page-card">Users<small>User management</small></div>
+      </div>
+    `
+  }
+];
+
+/* Full status lifecycle */
+const STATUS_SECTION = {
+  id:"status", num:"--", title:"Complete Content Status Lifecycle", badge:"STATES", badgeColor:"var(--pink)",
+  dot:"var(--pink)",
+  html:`
+    <p class="desc">The end-to-end lifecycle of a single content item, from calendar generation through publication.</p>
+    <div class="state-machine" style="flex-wrap:wrap;gap:8px">
+      <div class="state-node s-queued">queued</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="state-node s-working">working</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="state-node s-review">in_review</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="state-node s-approved">approved</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="state-node s-scheduled">scheduled</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="state-node s-published">published</div>
+    </div>
+    <div class="state-machine" style="margin-top:10px">
+      <div class="state-node s-scheduled">scheduled</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="state-node s-failed">failed</div>
+      <div class="flow-arrow" style="font-size:13px">(retry)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="state-node s-scheduled">scheduled</div>
+    </div>
+    <p class="sub-title">Transition Triggers</p>
+    <ul class="steps">
+      <li><strong>queued &rarr; working</strong> &mdash; content.generate picks item from queue</li>
+      <li><strong>working &rarr; in_review</strong> &mdash; content generation completes successfully</li>
+      <li><strong>in_review &rarr; approved</strong> &mdash; human approves in Content Studio</li>
+      <li><strong>approved &rarr; scheduled</strong> &mdash; human sets publish date/time</li>
+      <li><strong>scheduled &rarr; published</strong> &mdash; n8n callback confirms success</li>
+      <li><strong>scheduled &rarr; failed</strong> &mdash; n8n callback reports error; can be retried</li>
+    </ul>
+  `
+};
+
+DATA.push(STATUS_SECTION);
+
+// Render
+const sectionsEl = document.getElementById('sections');
+const navEl = document.getElementById('sidebarNav');
+
+DATA.forEach((s, i) => {
+  // Section
+  const div = document.createElement('div');
+  div.className = 'section' + (i === 0 ? ' open' : '');
+  div.id = 'section-' + s.id;
+  div.innerHTML = `
+    <div class="section-header" onclick="toggleSection('${s.id}')">
+      <span class="section-num">${s.num}</span>
+      <span class="section-title">${s.title}</span>
+      <span class="section-badge" style="background:${s.badgeColor}22;color:${s.badgeColor};border:1px solid ${s.badgeColor}44">${s.badge}</span>
+      <span class="section-arrow">&#9654;</span>
+    </div>
+    <div class="section-body">${s.html}</div>
+  `;
+  sectionsEl.appendChild(div);
+
+  // Nav
+  const nav = document.createElement('div');
+  nav.className = 'nav-item' + (i === 0 ? ' active' : '');
+  nav.setAttribute('data-id', s.id);
+  nav.innerHTML = `<div class="dot" style="background:${s.dot}"></div><span class="num">${s.num}</span>${s.title}`;
+  nav.onclick = () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    nav.classList.add('active');
+    const target = document.getElementById('section-' + s.id);
+    if (!target.classList.contains('open')) toggleSection(s.id);
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  navEl.appendChild(nav);
+});
+
+function toggleSection(id) {
+  const el = document.getElementById('section-' + id);
+  el.classList.toggle('open');
+}
+
+// Mobile sidebar toggle
+document.getElementById('sidebarToggle').onclick = () => {
+  document.getElementById('sidebar').classList.toggle('open');
+};
+
+// Expand all / collapse all on double-click header
+document.querySelector('.main-header').ondblclick = () => {
+  const sections = document.querySelectorAll('.section');
+  const allOpen = [...sections].every(s => s.classList.contains('open'));
+  sections.forEach(s => {
+    if (allOpen) s.classList.remove('open');
+    else s.classList.add('open');
+  });
+};
+</script>
+</body>
+</html>

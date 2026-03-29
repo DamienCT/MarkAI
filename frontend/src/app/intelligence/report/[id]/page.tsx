@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import ReactMarkdown from "react-markdown";
 import {
   ArrowLeft,
   Printer,
@@ -37,6 +38,11 @@ import {
   Heart,
   ShoppingCart,
   FileText,
+  Compass,
+  CalendarDays,
+  BookOpen,
+  Megaphone,
+  LayoutGrid,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -63,6 +69,7 @@ interface ReportData {
 }
 
 interface OutputPayload {
+  // Research fields
   gaps?: MarketGap[];
   personas?: Persona[];
   competitor_analysis?: CompetitorAnalysis[];
@@ -71,7 +78,60 @@ interface OutputPayload {
   social_profiles?: SocialProfile[];
   errors?: string[];
   recommendations?: string[];
+  // Strategy fields
+  positioning?: string;
+  content_pillars?: ContentPillar[];
+  target_audiences?: TargetAudience[];
+  posting_cadence?: Record<string, unknown> | string;
+  monthly_themes?: MonthlyTheme[];
+  themes?: unknown[];
+  // Planning fields
+  campaigns?: Campaign[];
+  calendar_summary?: string;
+  calendar?: Record<string, unknown> | string;
+  // Content calendar strategy fields
+  strategy_document?: string;
+  markdown?: string;
+  content?: string;
   [key: string]: unknown;
+}
+
+interface ContentPillar {
+  name?: string;
+  title?: string;
+  description?: string;
+  topics?: string[];
+  content_types?: string[];
+  frequency?: string;
+}
+
+interface TargetAudience {
+  name?: string;
+  segment?: string;
+  description?: string;
+  platforms?: string[];
+  content_preferences?: string[];
+}
+
+interface MonthlyTheme {
+  month?: string;
+  theme?: string;
+  name?: string;
+  description?: string;
+  focus_areas?: string[];
+  campaigns?: string[];
+}
+
+interface Campaign {
+  name?: string;
+  title?: string;
+  description?: string;
+  start_date?: string;
+  end_date?: string;
+  channels?: string[];
+  objectives?: string[];
+  status?: string;
+  budget?: string;
 }
 
 interface MarketGap {
@@ -223,6 +283,9 @@ export default function ReportPage() {
   }
 
   const output = report.output_payload || {};
+  const agentType = report.agent_type;
+
+  // Research fields
   const gaps = output.gaps || [];
   const personas = output.personas || [];
   const competitorAnalysis = output.competitor_analysis || [];
@@ -231,6 +294,20 @@ export default function ReportPage() {
   const socialProfiles = output.social_profiles || [];
   const errors = output.errors || [];
   const recommendations = output.recommendations || [];
+
+  // Strategy fields
+  const positioning = output.positioning;
+  const contentPillars = output.content_pillars || [];
+  const targetAudiences = output.target_audiences || [];
+  const postingCadence = output.posting_cadence;
+  const monthlyThemes = output.monthly_themes || [];
+
+  // Planning fields
+  const campaigns = output.campaigns || [];
+  const calendarSummary = output.calendar_summary || output.calendar;
+
+  // Content calendar strategy fields
+  const strategyDocument = output.strategy_document || output.markdown || output.content;
 
   // Executive summary stats
   const gapCount = gaps.length;
@@ -243,6 +320,11 @@ export default function ReportPage() {
   const reportTitle = `${formatAgentType(report.agent_type)} Report${
     report.brand_name ? ` \u2014 ${report.brand_name}` : ""
   }`;
+
+  const isResearch = agentType === "research";
+  const isStrategy = agentType === "strategy";
+  const isPlanning = agentType === "planning";
+  const isContentCalendar = agentType === "content_calendar_strategy";
 
   return (
     <>
@@ -305,66 +387,181 @@ export default function ReportPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* Stats grid */}
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <div className="rounded-lg border p-4 text-center">
-                <p className="text-2xl font-bold text-primary">{gapCount}</p>
-                <p className="text-xs text-muted-foreground">Market Gaps</p>
-              </div>
-              <div className="rounded-lg border p-4 text-center">
-                <p className="text-2xl font-bold text-primary">{personaCount}</p>
-                <p className="text-xs text-muted-foreground">Personas</p>
-              </div>
-              <div className="rounded-lg border p-4 text-center">
-                <p className="text-2xl font-bold text-primary">{competitorCount}</p>
-                <p className="text-xs text-muted-foreground">Competitors</p>
-              </div>
-              <div className="rounded-lg border p-4 text-center">
-                <p className="text-2xl font-bold text-red-600">{highPriorityGaps}</p>
-                <p className="text-xs text-muted-foreground">High Priority</p>
-              </div>
-            </div>
+            {/* Research stats */}
+            {isResearch && (
+              <>
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{gapCount}</p>
+                    <p className="text-xs text-muted-foreground">Market Gaps</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{personaCount}</p>
+                    <p className="text-xs text-muted-foreground">Personas</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{competitorCount}</p>
+                    <p className="text-xs text-muted-foreground">Competitors</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-red-600">{highPriorityGaps}</p>
+                    <p className="text-xs text-muted-foreground">High Priority</p>
+                  </div>
+                </div>
+                {(gapCount > 0 || personaCount > 0 || competitorCount > 0) && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-semibold">Key Findings</h4>
+                    <ul className="space-y-1.5 text-sm text-muted-foreground">
+                      {gapCount > 0 && (
+                        <li className="flex items-start gap-2">
+                          <Target className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                          <span>
+                            Identified <strong>{gapCount}</strong> market gap{gapCount !== 1 ? "s" : ""}
+                            {highPriorityGaps > 0 && (
+                              <>, including <strong className="text-red-600">{highPriorityGaps}</strong> high-priority</>
+                            )}
+                          </span>
+                        </li>
+                      )}
+                      {personaCount > 0 && (
+                        <li className="flex items-start gap-2">
+                          <Users className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                          <span>
+                            Built <strong>{personaCount}</strong> audience persona{personaCount !== 1 ? "s" : ""} with detailed demographics and psychographics
+                          </span>
+                        </li>
+                      )}
+                      {competitorCount > 0 && (
+                        <li className="flex items-start gap-2">
+                          <TrendingUp className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                          <span>
+                            Analyzed <strong>{competitorCount}</strong> competitor{competitorCount !== 1 ? "s" : ""}
+                          </span>
+                        </li>
+                      )}
+                      {socialAnalysis?.analysis && (
+                        <li className="flex items-start gap-2">
+                          <Share2 className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                          <span>Social media analysis completed</span>
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
 
-            {/* Key findings */}
-            {(gapCount > 0 || personaCount > 0 || competitorCount > 0) && (
-              <div className="space-y-2">
-                <h4 className="text-sm font-semibold">Key Findings</h4>
-                <ul className="space-y-1.5 text-sm text-muted-foreground">
-                  {gapCount > 0 && (
-                    <li className="flex items-start gap-2">
-                      <Target className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
-                      <span>
-                        Identified <strong>{gapCount}</strong> market gap{gapCount !== 1 ? "s" : ""}
-                        {highPriorityGaps > 0 && (
-                          <>, including <strong className="text-red-600">{highPriorityGaps}</strong> high-priority</>
-                        )}
-                      </span>
-                    </li>
-                  )}
-                  {personaCount > 0 && (
-                    <li className="flex items-start gap-2">
-                      <Users className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
-                      <span>
-                        Built <strong>{personaCount}</strong> audience persona{personaCount !== 1 ? "s" : ""} with detailed demographics and psychographics
-                      </span>
-                    </li>
-                  )}
-                  {competitorCount > 0 && (
-                    <li className="flex items-start gap-2">
-                      <TrendingUp className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
-                      <span>
-                        Analyzed <strong>{competitorCount}</strong> competitor{competitorCount !== 1 ? "s" : ""}
-                      </span>
-                    </li>
-                  )}
-                  {socialAnalysis?.analysis && (
-                    <li className="flex items-start gap-2">
-                      <Share2 className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
-                      <span>Social media analysis completed</span>
-                    </li>
-                  )}
-                </ul>
-              </div>
+            {/* Strategy stats */}
+            {isStrategy && (
+              <>
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{contentPillars.length}</p>
+                    <p className="text-xs text-muted-foreground">Content Pillars</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{targetAudiences.length}</p>
+                    <p className="text-xs text-muted-foreground">Target Audiences</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{monthlyThemes.length}</p>
+                    <p className="text-xs text-muted-foreground">Monthly Themes</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{positioning ? "1" : "0"}</p>
+                    <p className="text-xs text-muted-foreground">Positioning</p>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold">Strategy Overview</h4>
+                  <ul className="space-y-1.5 text-sm text-muted-foreground">
+                    {positioning && (
+                      <li className="flex items-start gap-2">
+                        <Compass className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                        <span>Brand positioning defined</span>
+                      </li>
+                    )}
+                    {contentPillars.length > 0 && (
+                      <li className="flex items-start gap-2">
+                        <LayoutGrid className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                        <span><strong>{contentPillars.length}</strong> content pillar{contentPillars.length !== 1 ? "s" : ""} established</span>
+                      </li>
+                    )}
+                    {postingCadence && (
+                      <li className="flex items-start gap-2">
+                        <CalendarDays className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                        <span>Posting cadence configured</span>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              </>
+            )}
+
+            {/* Planning stats */}
+            {isPlanning && (
+              <>
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{campaigns.length}</p>
+                    <p className="text-xs text-muted-foreground">Campaigns</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{calendarSummary ? "1" : "0"}</p>
+                    <p className="text-xs text-muted-foreground">Calendar</p>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold">Plan Overview</h4>
+                  <ul className="space-y-1.5 text-sm text-muted-foreground">
+                    {campaigns.length > 0 && (
+                      <li className="flex items-start gap-2">
+                        <Megaphone className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                        <span><strong>{campaigns.length}</strong> campaign{campaigns.length !== 1 ? "s" : ""} planned</span>
+                      </li>
+                    )}
+                    {calendarSummary && (
+                      <li className="flex items-start gap-2">
+                        <CalendarDays className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                        <span>Calendar summary available</span>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              </>
+            )}
+
+            {/* Content Calendar Strategy stats */}
+            {isContentCalendar && (
+              <>
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{monthlyThemes.length || 12}</p>
+                    <p className="text-xs text-muted-foreground">Monthly Themes</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{strategyDocument ? "1" : "0"}</p>
+                    <p className="text-xs text-muted-foreground">Strategy Doc</p>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold">Content Calendar Overview</h4>
+                  <ul className="space-y-1.5 text-sm text-muted-foreground">
+                    {strategyDocument && (
+                      <li className="flex items-start gap-2">
+                        <BookOpen className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                        <span>Year-long strategy document generated</span>
+                      </li>
+                    )}
+                    {monthlyThemes.length > 0 && (
+                      <li className="flex items-start gap-2">
+                        <LayoutGrid className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                        <span><strong>{monthlyThemes.length}</strong> monthly theme{monthlyThemes.length !== 1 ? "s" : ""} defined</span>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              </>
             )}
 
             {report.error_message && (
@@ -378,8 +575,12 @@ export default function ReportPage() {
           </CardContent>
         </Card>
 
+        {/* ════════════════════════════════════════════════════════════
+            RESEARCH REPORT SECTIONS
+            ════════════════════════════════════════════════════════════ */}
+
         {/* ── Section 1: Market Gaps ──────────────────────────────── */}
-        {gapCount > 0 && (
+        {isResearch && gapCount > 0 && (
           <Card className="print-break">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -481,7 +682,7 @@ export default function ReportPage() {
         )}
 
         {/* ── Section 2: Audience Personas ────────────────────────── */}
-        {personaCount > 0 && (
+        {isResearch && personaCount > 0 && (
           <Card className="print-break">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -697,7 +898,7 @@ export default function ReportPage() {
         )}
 
         {/* ── Section 3: Competitor Intelligence ──────────────────── */}
-        <Card className="print-break">
+        {isResearch && <Card className="print-break">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-primary" />
@@ -824,10 +1025,10 @@ export default function ReportPage() {
               </div>
             )}
           </CardContent>
-        </Card>
+        </Card>}
 
         {/* ── Section 4: Social Media Analysis ────────────────────── */}
-        {(socialAnalysis?.analysis ||
+        {isResearch && (socialAnalysis?.analysis ||
           socialAnalysis?.summary ||
           socialProfiles.length > 0) && (
           <Card className="print-break">
@@ -899,6 +1100,377 @@ export default function ReportPage() {
                   </div>
                 </div>
               )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ════════════════════════════════════════════════════════════
+            STRATEGY REPORT SECTIONS
+            ════════════════════════════════════════════════════════════ */}
+
+        {/* ── Positioning ──────────────────────────────────────────── */}
+        {isStrategy && positioning && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Compass className="h-5 w-5 text-primary" />
+                Brand Positioning
+              </CardTitle>
+              <CardDescription>Strategic market positioning statement</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="prose prose-sm max-w-none dark:prose-invert">
+                <p className="text-sm leading-relaxed whitespace-pre-line">
+                  {typeof positioning === "string" ? positioning : JSON.stringify(positioning, null, 2)}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Content Pillars ─────────────────────────────────────── */}
+        {isStrategy && contentPillars.length > 0 && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <LayoutGrid className="h-5 w-5 text-primary" />
+                Content Pillars
+              </CardTitle>
+              <CardDescription>
+                {contentPillars.length} pillar{contentPillars.length !== 1 ? "s" : ""} defining content strategy
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {contentPillars.map((pillar, idx) => (
+                  <div key={idx} className="rounded-lg border p-4 space-y-3">
+                    <h4 className="font-semibold flex items-center gap-2">
+                      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-bold">
+                        {idx + 1}
+                      </div>
+                      {typeof pillar === "string" ? pillar : (pillar.name || pillar.title || `Pillar ${idx + 1}`)}
+                    </h4>
+                    {typeof pillar === "object" && pillar.description && (
+                      <p className="text-sm text-muted-foreground">{pillar.description}</p>
+                    )}
+                    {typeof pillar === "object" && pillar.topics && pillar.topics.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {pillar.topics.map((t: string, i: number) => (
+                          <Badge key={i} variant="secondary" className="text-xs">{t}</Badge>
+                        ))}
+                      </div>
+                    )}
+                    {typeof pillar === "object" && pillar.content_types && pillar.content_types.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-muted-foreground">Content Types</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {pillar.content_types.map((ct: string, i: number) => (
+                            <Badge key={i} variant="outline" className="text-xs">{ct}</Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {typeof pillar === "object" && pillar.frequency && (
+                      <p className="text-xs text-muted-foreground flex items-center gap-1">
+                        <CalendarDays className="h-3 w-3" /> {pillar.frequency}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Target Audiences ────────────────────────────────────── */}
+        {isStrategy && targetAudiences.length > 0 && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Users className="h-5 w-5 text-primary" />
+                Target Audiences
+              </CardTitle>
+              <CardDescription>
+                {targetAudiences.length} audience segment{targetAudiences.length !== 1 ? "s" : ""} identified
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {targetAudiences.map((audience, idx) => (
+                  <div key={idx} className="rounded-lg border p-4 space-y-3">
+                    <h4 className="font-semibold">
+                      {typeof audience === "string" ? audience : (audience.name || audience.segment || `Audience ${idx + 1}`)}
+                    </h4>
+                    {typeof audience === "object" && audience.description && (
+                      <p className="text-sm text-muted-foreground">{audience.description}</p>
+                    )}
+                    {typeof audience === "object" && audience.platforms && audience.platforms.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {audience.platforms.map((p: string, i: number) => (
+                          <Badge key={i} variant="secondary" className="text-xs">{p}</Badge>
+                        ))}
+                      </div>
+                    )}
+                    {typeof audience === "object" && audience.content_preferences && audience.content_preferences.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-muted-foreground">Content Preferences</p>
+                        <ul className="text-xs text-muted-foreground space-y-0.5">
+                          {audience.content_preferences.map((cp: string, i: number) => (
+                            <li key={i} className="flex items-start gap-1.5">
+                              <span className="text-primary mt-0.5">&bull;</span> {cp}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Posting Cadence ─────────────────────────────────────── */}
+        {isStrategy && postingCadence && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <CalendarDays className="h-5 w-5 text-primary" />
+                Posting Cadence
+              </CardTitle>
+              <CardDescription>Recommended posting frequency and schedule</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {typeof postingCadence === "string" ? (
+                <p className="text-sm leading-relaxed whitespace-pre-line">{postingCadence}</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {Object.entries(postingCadence).map(([platform, schedule]) => (
+                    <div key={platform} className="rounded-md border p-3">
+                      <p className="text-sm font-medium capitalize">{platform}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {typeof schedule === "string" ? schedule : JSON.stringify(schedule)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Monthly Themes (Strategy) ───────────────────────────── */}
+        {isStrategy && monthlyThemes.length > 0 && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <LayoutGrid className="h-5 w-5 text-primary" />
+                Monthly Themes
+              </CardTitle>
+              <CardDescription>{monthlyThemes.length} month{monthlyThemes.length !== 1 ? "s" : ""} themed</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {monthlyThemes.map((theme, idx) => (
+                  <div key={idx} className="rounded-lg border p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-semibold">
+                        {typeof theme === "string" ? theme : (theme.month || `Month ${idx + 1}`)}
+                      </h4>
+                      {typeof theme === "object" && (theme.theme || theme.name) && (
+                        <Badge variant="outline" className="text-xs">{theme.theme || theme.name}</Badge>
+                      )}
+                    </div>
+                    {typeof theme === "object" && theme.description && (
+                      <p className="text-xs text-muted-foreground">{theme.description}</p>
+                    )}
+                    {typeof theme === "object" && theme.focus_areas && theme.focus_areas.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {theme.focus_areas.map((fa: string, i: number) => (
+                          <Badge key={i} variant="secondary" className="text-[10px]">{fa}</Badge>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ════════════════════════════════════════════════════════════
+            PLANNING REPORT SECTIONS
+            ════════════════════════════════════════════════════════════ */}
+
+        {/* ── Campaigns ───────────────────────────────────────────── */}
+        {isPlanning && campaigns.length > 0 && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Megaphone className="h-5 w-5 text-primary" />
+                Campaigns
+              </CardTitle>
+              <CardDescription>
+                {campaigns.length} campaign{campaigns.length !== 1 ? "s" : ""} planned
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {campaigns.map((campaign, idx) => (
+                  <div key={idx} className="rounded-lg border p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <h4 className="font-semibold">
+                        {typeof campaign === "string" ? campaign : (campaign.name || campaign.title || `Campaign ${idx + 1}`)}
+                      </h4>
+                      {typeof campaign === "object" && campaign.status && (
+                        <Badge variant="outline">{campaign.status}</Badge>
+                      )}
+                    </div>
+                    {typeof campaign === "object" && campaign.description && (
+                      <p className="text-sm text-muted-foreground">{campaign.description}</p>
+                    )}
+                    {typeof campaign === "object" && (campaign.start_date || campaign.end_date) && (
+                      <p className="text-xs text-muted-foreground flex items-center gap-1">
+                        <CalendarDays className="h-3 w-3" />
+                        {campaign.start_date && <span>Start: {campaign.start_date}</span>}
+                        {campaign.start_date && campaign.end_date && <span className="mx-1">-</span>}
+                        {campaign.end_date && <span>End: {campaign.end_date}</span>}
+                      </p>
+                    )}
+                    {typeof campaign === "object" && campaign.channels && campaign.channels.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {campaign.channels.map((ch: string, i: number) => (
+                          <Badge key={i} variant="secondary" className="text-xs">{ch}</Badge>
+                        ))}
+                      </div>
+                    )}
+                    {typeof campaign === "object" && campaign.objectives && campaign.objectives.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-muted-foreground">Objectives</p>
+                        <ul className="text-xs text-muted-foreground space-y-0.5">
+                          {campaign.objectives.map((obj: string, i: number) => (
+                            <li key={i} className="flex items-start gap-1.5">
+                              <span className="text-primary mt-0.5">&bull;</span> {obj}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Calendar Summary ────────────────────────────────────── */}
+        {isPlanning && calendarSummary && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <CalendarDays className="h-5 w-5 text-primary" />
+                Calendar Summary
+              </CardTitle>
+              <CardDescription>Overview of planned content schedule</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {typeof calendarSummary === "string" ? (
+                <div className="prose prose-sm max-w-none dark:prose-invert">
+                  <ReactMarkdown>{calendarSummary}</ReactMarkdown>
+                </div>
+              ) : (
+                <pre className="text-xs bg-muted rounded-lg p-4 overflow-x-auto whitespace-pre-wrap">
+                  {JSON.stringify(calendarSummary, null, 2)}
+                </pre>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ════════════════════════════════════════════════════════════
+            CONTENT CALENDAR STRATEGY SECTIONS
+            ════════════════════════════════════════════════════════════ */}
+
+        {/* ── Strategy Document (Markdown) ────────────────────────── */}
+        {isContentCalendar && strategyDocument && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <BookOpen className="h-5 w-5 text-primary" />
+                Strategy Document
+              </CardTitle>
+              <CardDescription>Full year-long content calendar strategy</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:text-foreground prose-p:text-muted-foreground prose-strong:text-foreground prose-li:text-muted-foreground">
+                <ReactMarkdown>{typeof strategyDocument === "string" ? strategyDocument : JSON.stringify(strategyDocument, null, 2)}</ReactMarkdown>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Monthly Themes (Content Calendar) ───────────────────── */}
+        {isContentCalendar && monthlyThemes.length > 0 && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <LayoutGrid className="h-5 w-5 text-primary" />
+                Monthly Themes
+              </CardTitle>
+              <CardDescription>{monthlyThemes.length} month{monthlyThemes.length !== 1 ? "s" : ""} planned</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {monthlyThemes.map((theme, idx) => (
+                  <div key={idx} className="rounded-lg border p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-semibold">
+                        {typeof theme === "string" ? theme : (theme.month || `Month ${idx + 1}`)}
+                      </h4>
+                      {typeof theme === "object" && (theme.theme || theme.name) && (
+                        <Badge variant="outline" className="text-xs">{theme.theme || theme.name}</Badge>
+                      )}
+                    </div>
+                    {typeof theme === "object" && theme.description && (
+                      <p className="text-xs text-muted-foreground">{theme.description}</p>
+                    )}
+                    {typeof theme === "object" && theme.focus_areas && theme.focus_areas.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {theme.focus_areas.map((fa: string, i: number) => (
+                          <Badge key={i} variant="secondary" className="text-[10px]">{fa}</Badge>
+                        ))}
+                      </div>
+                    )}
+                    {typeof theme === "object" && theme.campaigns && theme.campaigns.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {theme.campaigns.map((c: string, i: number) => (
+                          <Badge key={i} variant="outline" className="text-[10px]">{c}</Badge>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ════════════════════════════════════════════════════════════
+            GENERIC FALLBACK — raw output for unknown types
+            ════════════════════════════════════════════════════════════ */}
+        {!isResearch && !isStrategy && !isPlanning && !isContentCalendar && output && Object.keys(output).length > 0 && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5 text-primary" />
+                Report Output
+              </CardTitle>
+              <CardDescription>Raw output data from agent run</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <pre className="text-xs bg-muted rounded-lg p-4 overflow-x-auto whitespace-pre-wrap">
+                {JSON.stringify(output, null, 2)}
+              </pre>
             </CardContent>
           </Card>
         )}

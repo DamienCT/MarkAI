@@ -70,13 +70,24 @@ router = APIRouter()
 @router.get("/reports")
 async def list_intelligence_reports(
     limit: int = 20,
+    type: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List recent agent run reports (research, strategy, product intel)."""
+    """List recent agent run reports (research, strategy, planning, content_calendar_strategy, product_intel).
+
+    Pass ?type=research to filter by a single agent_type.
+    """
+    allowed_types = ["research", "strategy", "planning", "content_calendar_strategy", "product_intel"]
+
+    if type:
+        filter_types = [type] if type in allowed_types else allowed_types
+    else:
+        filter_types = allowed_types
+
     stmt = (
         select(AgentRun)
-        .where(AgentRun.agent_type.in_(["research", "strategy", "product_intel"]))
+        .where(AgentRun.agent_type.in_(filter_types))
         .order_by(AgentRun.created_at.desc())
         .limit(limit)
     )
@@ -89,29 +100,67 @@ async def list_intelligence_reports(
         output = r.output_payload or {}
         # Build a title from agent type
         title = f"{r.agent_type.replace('_', ' ').title()} Report"
-        # Extract summary from gaps or personas
-        gaps = output.get("gaps", [])
-        personas = output.get("personas", [])
+        # Extract summary depending on report type
         summary_parts = []
-        if gaps:
-            summary_parts.append(f"{len(gaps)} gap(s) identified")
-        if personas:
-            summary_parts.append(f"{len(personas)} persona(s) built")
-        if output.get("competitor_analysis"):
-            summary_parts.append(f"{len(output['competitor_analysis'])} competitor(s) analyzed")
+
+        if r.agent_type == "research":
+            gaps = output.get("gaps", [])
+            personas = output.get("personas", [])
+            if gaps:
+                summary_parts.append(f"{len(gaps)} gap(s) identified")
+            if personas:
+                summary_parts.append(f"{len(personas)} persona(s) built")
+            if output.get("competitor_analysis"):
+                summary_parts.append(f"{len(output['competitor_analysis'])} competitor(s) analyzed")
+        elif r.agent_type == "strategy":
+            if output.get("content_pillars"):
+                summary_parts.append(f"{len(output['content_pillars'])} content pillar(s)")
+            if output.get("target_audiences"):
+                summary_parts.append(f"{len(output['target_audiences'])} target audience(s)")
+            if output.get("positioning"):
+                summary_parts.append("Positioning defined")
+            if output.get("posting_cadence"):
+                summary_parts.append("Posting cadence set")
+        elif r.agent_type == "planning":
+            if output.get("campaigns"):
+                summary_parts.append(f"{len(output['campaigns'])} campaign(s)")
+            if output.get("calendar_summary") or output.get("calendar"):
+                summary_parts.append("Calendar summary available")
+        elif r.agent_type == "content_calendar_strategy":
+            # Markdown document — just note its presence
+            if output.get("strategy_document") or output.get("markdown"):
+                summary_parts.append("Year-long strategy document")
+            if output.get("monthly_themes"):
+                summary_parts.append(f"{len(output['monthly_themes'])} monthly theme(s)")
+
+        if not summary_parts:
+            # Fallback: generic summary from gaps (legacy)
+            gaps = output.get("gaps", [])
+            personas = output.get("personas", [])
+            if gaps:
+                summary_parts.append(f"{len(gaps)} gap(s) identified")
+            if personas:
+                summary_parts.append(f"{len(personas)} persona(s) built")
+            if output.get("competitor_analysis"):
+                summary_parts.append(f"{len(output['competitor_analysis'])} competitor(s) analyzed")
+
         summary = ". ".join(summary_parts) if summary_parts else f"Status: {r.status}"
 
         # Extract insights from gaps
+        gaps = output.get("gaps", [])
         insights = [g.get("description", "") for g in gaps[:5]] if gaps else []
 
         reports.append({
             "id": str(r.id),
             "brand_id": str(r.brand_id) if r.brand_id else None,
             "report_type": r.agent_type,
+            "status": r.status,
             "title": title,
             "summary": summary,
             "insights": insights,
+            "output_payload": output,
             "created_at": r.created_at.isoformat(),
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         })
     return reports
 
