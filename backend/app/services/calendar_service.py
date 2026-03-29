@@ -4,9 +4,16 @@ from typing import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.calendar_item import CalendarItem
 from app.schemas.calendar_item import CalendarItemCreate, CalendarItemUpdate
+
+
+def _attach_brand_name(item: CalendarItem) -> CalendarItem:
+    """Set brand_name transient attribute from the loaded brand relationship."""
+    item.brand_name = item.brand.name if getattr(item, "brand", None) else None  # type: ignore[attr-defined]
+    return item
 
 
 async def list_calendar_items(
@@ -21,6 +28,7 @@ async def list_calendar_items(
 ) -> Sequence[CalendarItem]:
     stmt = (
         select(CalendarItem)
+        .options(selectinload(CalendarItem.brand))
         .offset(skip)
         .limit(limit)
         .order_by(CalendarItem.scheduled_at.asc())
@@ -34,16 +42,22 @@ async def list_calendar_items(
     if status is not None:
         stmt = stmt.where(CalendarItem.status == status)
     result = await db.execute(stmt)
-    return result.scalars().all()
+    items = result.scalars().all()
+    for item in items:
+        _attach_brand_name(item)
+    return items
 
 
 async def get_calendar_item(
     db: AsyncSession, item_id: uuid.UUID
 ) -> CalendarItem | None:
     result = await db.execute(
-        select(CalendarItem).where(CalendarItem.id == item_id)
+        select(CalendarItem)
+        .options(selectinload(CalendarItem.brand))
+        .where(CalendarItem.id == item_id)
     )
-    return result.scalar_one_or_none()
+    item = result.scalar_one_or_none()
+    return _attach_brand_name(item) if item else None
 
 
 async def create_calendar_item(
@@ -52,8 +66,8 @@ async def create_calendar_item(
     item = CalendarItem(**data.model_dump())
     db.add(item)
     await db.commit()
-    await db.refresh(item)
-    return item
+    await db.refresh(item, attribute_names=["brand"])
+    return _attach_brand_name(item)
 
 
 async def update_calendar_item(
@@ -66,8 +80,8 @@ async def update_calendar_item(
     for key, value in update_data.items():
         setattr(item, key, value)
     await db.commit()
-    await db.refresh(item)
-    return item
+    await db.refresh(item, attribute_names=["brand"])
+    return _attach_brand_name(item)
 
 
 async def delete_calendar_item(db: AsyncSession, item_id: uuid.UUID) -> bool:
@@ -97,5 +111,6 @@ async def reorder_calendar_items(
 
     await db.commit()
     for item in updated:
-        await db.refresh(item)
+        await db.refresh(item, attribute_names=["brand"])
+        _attach_brand_name(item)
     return updated

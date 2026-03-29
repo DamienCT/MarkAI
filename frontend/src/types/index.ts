@@ -137,6 +137,7 @@ export interface PlatformAdaptation {
 export interface CalendarItem {
   id: string;
   brand_id: string;
+  brand_name?: string;
   campaign_id?: string | null;
   title: string;
   description?: string | null;

@@ -8,12 +8,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from shared.llm import chat_completion, parse_llm_json
-from shared.sanitize import sanitize_json_for_prompt
+from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
+    get_brand,
     get_brand_config,
     get_latest_strategy,
     get_products,
     store_calendar_items,
+    store_strategy,
 )
 
 from workflows.planning.state import PlanningState
@@ -53,12 +55,16 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
 
 
 async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
-    """Generate campaign plans from the strategy using LLM."""
+    """Generate campaign plans from the strategy using LLM, plus a year-long strategy document."""
+    brand_id = state["brand_id"]
     strategy = state.get("strategy", {})
     scope_weeks = state.get("scope_weeks", 4)
     enabled_channels = state.get("enabled_channels", ["instagram"])
     start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime("%Y-%m-%d")
+
+    # Load brand info for strategy document (get_brand returns name, etc.)
+    brand = await get_brand(brand_id) or {}
 
     channels_str = ", ".join(enabled_channels)
     prompt = [
@@ -76,7 +82,33 @@ async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
     ]
     result = await chat_completion(prompt, temperature=0.5)
     campaigns = parse_llm_json(result, fallback=[{"name": "General Campaign", "description": result}])
-    return {"campaigns": campaigns}
+
+    # ── Generate year-long content calendar strategy document ──────────────
+    strategy_doc_prompt = [
+        {"role": "system", "content": (
+            "You are a senior content strategist. Create a comprehensive Content Calendar Strategy Document "
+            "that covers the full year. This document will be the reference guide for daily content generation. "
+            "Include: monthly themes, seasonal hooks, content pillars rotation, key dates and holidays relevant to "
+            "Mauritius and the Indian Ocean region (Independence Day March 12, Diwali, Eid, Chinese New Year, "
+            "Christmas, Cavadee, Abolition of Slavery Feb 1, Thaipoosam Cavadee, Maha Shivaratri, Ugadi, "
+            "Ganesh Chaturthi, Pere Laval Pilgrimage Sep 9, etc.), content mix ratios, and the strategic rationale "
+            "for the content sequencing. Format as structured markdown."
+        )},
+        {"role": "user", "content": (
+            f"Brand: {sanitize_for_prompt(brand.get('name', '') or '')}\n"
+            f"Positioning: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=1000)}\n"
+            f"Pillars: {sanitize_json_for_prompt(strategy.get('pillars', []), max_length=1000)}\n"
+            f"Audiences: {sanitize_json_for_prompt(strategy.get('audiences', []), max_length=1000)}\n"
+            f"Cadence: {sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=500)}\n"
+            f"Themes: {sanitize_json_for_prompt(strategy.get('themes', []), max_length=1000)}\n"
+            f"Enabled Channels: {channels_str}\n"
+            f"Generate a full 12-month content calendar strategy document."
+        )},
+    ]
+    strategy_document = await chat_completion(strategy_doc_prompt, temperature=0.6)
+    logger.info("Generated year-long strategy document for brand %s (%d chars)", brand_id, len(strategy_document))
+
+    return {"campaigns": campaigns, "strategy_document": strategy_document}
 
 
 async def generate_calendar(state: PlanningState) -> dict[str, Any]:
@@ -84,10 +116,15 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
     brand_id = state["brand_id"]
     campaigns = state.get("campaigns", [])
     strategy = state.get("strategy", {})
+    strategy_document = state.get("strategy_document", "")
     scope_weeks = state.get("scope_weeks", 4)
     enabled_channels = state.get("enabled_channels", ["instagram"])
-    start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime("%Y-%m-%d")
+    start_date_dt = datetime.now(timezone.utc)
+    end_date_dt = start_date_dt + timedelta(weeks=scope_weeks)
+    start_date = start_date_dt.strftime("%Y-%m-%d")
+    end_date = end_date_dt.strftime("%Y-%m-%d")
+    total_days = (end_date_dt - start_date_dt).days
+    total_items = len(enabled_channels) * total_days
 
     # Load real products for product-aware content planning
     products = await get_products(brand_id)
@@ -105,6 +142,11 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
             f"{start_date} to {end_date} ({scope_weeks} weeks). "
             f"Generate content ONLY for these platforms: {channels_str}. "
             "Do NOT generate content for any other platforms. "
+            "CRITICAL: Generate EXACTLY 1 post per enabled channel per day, for EVERY day in the date range. "
+            f"No gaps — every single day from {start_date} to {end_date} must have content for each enabled channel. "
+            f"There are {len(enabled_channels)} enabled channel(s) and {total_days} days, "
+            f"so generate exactly {total_items} items total. "
+            "Distribute content evenly — do NOT cluster posts on certain days or skip weekends. "
             "Generate specific calendar items for each campaign. "
             "Each item should have: campaign_name, scheduled_date (YYYY-MM-DD), platform "
             f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
@@ -114,6 +156,8 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
         {"role": "user", "content": (
             f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=5000)}\n\n"
             f"Strategy cadence:\n{sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=2000)}\n\n"
+            f"Strategy document (use as reference for themes and seasonal hooks):\n"
+            f"{sanitize_for_prompt(strategy_document, max_length=3000)}\n\n"
             f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=3000)}"
         )},
     ]
@@ -142,9 +186,10 @@ async def assign_products(state: PlanningState) -> dict[str, Any]:
 
 
 async def store_calendar(state: PlanningState) -> dict[str, Any]:
-    """Persist calendar items to the database."""
+    """Persist calendar items and strategy document to the database."""
     brand_id = state["brand_id"]
     items = state.get("calendar_items", [])
+    strategy_document = state.get("strategy_document", "")
     enabled_channels = state.get("enabled_channels", [])
     scope_weeks = state.get("scope_weeks", 4)
     max_date = datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)
@@ -166,5 +211,19 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
 
     ids = await store_calendar_items(db_items, max_date=max_date, enabled_channels=enabled_channels)
     logger.info("Stored %d calendar items for brand %s", len(ids), brand_id)
+
+    # Persist year-long strategy document as an agent_run artifact
+    if strategy_document:
+        try:
+            await store_strategy(brand_id, {
+                "type": "content_calendar_strategy",
+                "document": strategy_document,
+                "scope_weeks": scope_weeks,
+                "enabled_channels": enabled_channels,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.info("Stored year-long strategy document for brand %s", brand_id)
+        except Exception:
+            logger.exception("Failed to store strategy document for brand %s", brand_id)
 
     return {"status": "completed", "calendar_item_ids": ids}

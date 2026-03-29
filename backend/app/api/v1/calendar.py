@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.auth.models import User
 from app.auth.permissions import role_has_access
@@ -36,6 +37,7 @@ async def upcoming_calendar_items(
     now = datetime.now(timezone.utc)
     stmt = (
         select(CalendarItem)
+        .options(selectinload(CalendarItem.brand))
         .where(CalendarItem.scheduled_at >= now)
         .order_by(CalendarItem.scheduled_at.asc())
         .limit(limit)
@@ -47,6 +49,7 @@ async def upcoming_calendar_items(
         {
             "id": str(item.id),
             "brand_id": str(item.brand_id),
+            "brand_name": item.brand.name if item.brand else None,
             "campaign_id": str(item.campaign_id) if item.campaign_id else None,
             "title": item.title,
             "description": item.description,

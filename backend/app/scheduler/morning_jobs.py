@@ -1,5 +1,7 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import text
 
 from app.auth.models import ScheduledJobLog
 from app.models.base import async_session_factory
@@ -76,5 +78,62 @@ async def run_morning_jobs() -> None:
         logger.error("NATS evaluation trigger failed: %s", e)
         await notify_failure("morning_jobs.evaluation_trigger", None, e)
 
+    # 4. Daily content top-up — generate content for upcoming calendar items
+    try:
+        await _topup_content_generation()
+    except Exception as e:
+        logger.error("Content top-up failed in morning jobs: %s", e)
+        await notify_failure("morning_jobs.content_topup", None, e)
+
     await _log_job("morning_jobs", "completed")
     logger.info("Morning jobs completed")
+
+
+async def _topup_content_generation() -> None:
+    """
+    Check for calendar items within the content_generation_days_ahead window
+    that are still in 'queued' or 'planned' status and trigger content
+    generation for the nearest one (sequential, one per run).
+    """
+    from app.scheduler import get_app_setting
+
+    days_ahead = await get_app_setting("content_generation_days_ahead", default=7)
+    try:
+        days_ahead = int(days_ahead)
+    except (TypeError, ValueError):
+        days_ahead = 7
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=days_ahead)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT id, brand_id, title, scheduled_at "
+                "FROM calendar_items "
+                "WHERE status IN ('queued', 'planned') "
+                "  AND scheduled_at IS NOT NULL "
+                "  AND scheduled_at BETWEEN :now AND :horizon "
+                "ORDER BY scheduled_at ASC "
+                "LIMIT 1"
+            ),
+            {"now": now, "horizon": horizon},
+        )
+        row = result.first()
+
+    if row is None:
+        logger.info("Content top-up: no queued/planned items within %d-day window", days_ahead)
+        return
+
+    calendar_item_id, brand_id, title, scheduled_at = row
+    logger.info(
+        "Content top-up: triggering generation for calendar item %s (%s) scheduled at %s",
+        calendar_item_id, title, scheduled_at,
+    )
+
+    await nats_service.publish("content.generate", {
+        "brand_id": str(brand_id),
+        "calendar_item_id": str(calendar_item_id),
+        "triggered_by": "morning_jobs.content_topup",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })

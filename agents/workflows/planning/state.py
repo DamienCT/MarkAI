@@ -21,5 +21,6 @@ class PlanningState(TypedDict, total=False):
 
     # Generated
     campaigns: list[dict[str, Any]]
+    strategy_document: str  # Year-long content calendar strategy document (markdown)
     calendar_items: list[dict[str, Any]]
     calendar_item_ids: list[str]

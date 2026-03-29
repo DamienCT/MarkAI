@@ -30,6 +30,34 @@ const CHANNEL_PREFIX: Record<string, string> = {
   teams: "TM",
 };
 
+const CHANNEL_COLORS: Record<string, string> = {
+  instagram: "bg-pink-200 text-pink-800 dark:bg-pink-900 dark:text-pink-200",
+  facebook: "bg-blue-200 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  linkedin: "bg-sky-200 text-sky-800 dark:bg-sky-900 dark:text-sky-200",
+  youtube: "bg-red-200 text-red-800 dark:bg-red-900 dark:text-red-200",
+  tiktok: "bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200",
+  x: "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200",
+  website_blog: "bg-emerald-200 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200",
+  teams: "bg-violet-200 text-violet-800 dark:bg-violet-900 dark:text-violet-200",
+};
+
+// Color palette for brand-based color coding
+const BRAND_COLORS = [
+  "border-l-blue-400",
+  "border-l-green-400",
+  "border-l-purple-400",
+  "border-l-orange-400",
+  "border-l-pink-400",
+  "border-l-cyan-400",
+  "border-l-amber-400",
+  "border-l-rose-400",
+];
+
+function getBrandColor(brandId: string): string {
+  const hash = brandId.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+  return BRAND_COLORS[hash % BRAND_COLORS.length];
+}
+
 interface CalendarViewProps {
   items: CalendarItem[];
   onReschedule?: (itemId: string, newDate: string) => Promise<void>;
@@ -92,22 +120,34 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
 
   function renderItem(item: CalendarItem) {
     const style = getStatusStyle(item.status);
+    const brandColor = getBrandColor(item.brand_id);
     return (
       <div
         key={item.id}
         draggable
         onDragStart={() => handleDragStart(item)}
         className={cn(
-          "rounded-sm px-1.5 py-0.5 text-[10px] leading-tight truncate cursor-move transition-opacity hover:opacity-80",
+          "rounded-sm px-1.5 py-0.5 text-[10px] leading-tight cursor-move transition-opacity hover:opacity-80 border-l-2",
           style.bg,
-          style.text
+          style.text,
+          brandColor,
         )}
-        title={`${item.title || "Untitled"} \u2014 ${style.label}${item.channel ? ` (${item.channel})` : ""}`}
+        title={`${item.brand_name ? `[${item.brand_name}] ` : ""}${item.title || "Untitled"} \u2014 ${style.label}${item.channel ? ` (${item.channel})` : ""}`}
       >
-        {item.channel && (
-          <span className="font-semibold uppercase">{CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)} </span>
+        <div className="flex items-center gap-1">
+          {item.channel && (
+            <span className={cn(
+              "inline-flex items-center rounded px-1 py-px text-[8px] font-bold uppercase shrink-0",
+              CHANNEL_COLORS[item.channel] || "bg-gray-200 text-gray-700"
+            )}>
+              {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
+            </span>
+          )}
+          <span className="truncate">{item.title || "Untitled"}</span>
+        </div>
+        {item.brand_name && (
+          <div className="text-[8px] opacity-60 truncate">{item.brand_name}</div>
         )}
-        {item.title || "Untitled"}
       </div>
     );
   }
@@ -223,26 +263,36 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
             <div className="space-y-1">
               {getItemsForDay(expandedDay).map((item) => {
                 const style = getStatusStyle(item.status);
+                const brandColor = getBrandColor(item.brand_id);
                 return (
                   <div
                     key={item.id}
                     className={cn(
-                      "rounded-sm px-2 py-1.5 text-xs",
+                      "rounded-sm px-2 py-1.5 text-xs border-l-2",
                       style.bg,
-                      style.text
+                      style.text,
+                      brandColor,
                     )}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-medium truncate">
+                      <div className="flex items-center gap-1.5 truncate">
                         {item.channel && (
-                          <span className="font-semibold uppercase mr-1">
+                          <span className={cn(
+                            "inline-flex items-center rounded px-1 py-px text-[9px] font-bold uppercase shrink-0",
+                            CHANNEL_COLORS[item.channel] || "bg-gray-200 text-gray-700"
+                          )}>
                             {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
                           </span>
                         )}
-                        {item.title || "Untitled"}
-                      </span>
+                        <span className="font-medium truncate">
+                          {item.title || "Untitled"}
+                        </span>
+                      </div>
                       <span className="text-[10px] opacity-70 ml-2 shrink-0">{style.label}</span>
                     </div>
+                    {item.brand_name && (
+                      <div className="text-[10px] opacity-60 mt-0.5">{item.brand_name}</div>
+                    )}
                   </div>
                 );
               })}

@@ -48,6 +48,9 @@ export function ContentCard({ item }: ContentCardProps) {
             )}
           </div>
           <h3 className="font-medium text-sm line-clamp-2">{item.title || "Untitled"}</h3>
+          {item.brand_name && (
+            <p className="text-xs text-primary/70 mt-0.5">{item.brand_name}</p>
+          )}
           {item.description && (
             <p className="text-xs text-muted-foreground line-clamp-2 mt-1">{item.description}</p>
           )}

@@ -7,6 +7,27 @@ from app.config import settings
 scheduler = AsyncIOScheduler(timezone=settings.SCHEDULER_TIMEZONE)
 
 
+async def get_app_setting(key: str, default=None):
+    """Read a setting from the app_settings table at runtime (not cached)."""
+    from app.models.base import async_session_factory
+    from sqlalchemy import text
+
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                text("SELECT value FROM app_settings WHERE key = :key"),
+                {"key": key},
+            )
+            row = result.first()
+            if row:
+                import json
+
+                return json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    except Exception:
+        pass
+    return default
+
+
 def setup_scheduler() -> None:
     """Register all scheduled jobs. Called on FastAPI startup."""
     from app.scheduler.morning_jobs import run_morning_jobs
