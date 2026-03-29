@@ -7,11 +7,9 @@ can load images without mixed-content or DNS resolution issues.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from app.auth.models import User
-from app.deps import get_current_user
 from app.services import minio_service
 
 logger = logging.getLogger(__name__)
@@ -20,11 +18,12 @@ router = APIRouter()
 
 
 @router.get("/{file_path:path}")
-async def serve_file(
-    file_path: str,
-    current_user: User = Depends(get_current_user),
-):
-    """Proxy a file from MinIO to the browser."""
+async def serve_file(file_path: str):
+    """Proxy a file from MinIO to the browser.
+
+    No auth required — object paths contain UUIDs and are not guessable.
+    Images loaded via <img src> can't send Bearer tokens anyway.
+    """
     try:
         data = minio_service.download_file(file_path)
     except Exception:

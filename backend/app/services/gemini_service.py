@@ -56,22 +56,27 @@ async def search_product_images(
         query = f"{product_name} {product_description[:50]} product photo"
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     }
 
     image_urls: list[str] = []
 
+    # Strategy 1: DuckDuckGo image API
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            # DuckDuckGo image search API
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             resp = await client.get(
                 "https://duckduckgo.com/",
                 params={"q": query, "iax": "images", "ia": "images"},
                 headers=headers,
             )
-            vqd_match = re.search(r'vqd=([^&"]+)', resp.text)
-            if vqd_match:
-                vqd = vqd_match.group(1)
+            # Try multiple vqd patterns (DuckDuckGo changes these)
+            vqd = None
+            for pattern in [r'vqd=([^&"\']+)', r'vqd%3D([^&"\']+)', r'"vqd":"([^"]+)"']:
+                m = re.search(pattern, resp.text)
+                if m:
+                    vqd = m.group(1)
+                    break
+            if vqd:
                 img_resp = await client.get(
                     "https://duckduckgo.com/i.js",
                     params={"l": "us-en", "o": "json", "q": query, "vqd": vqd, "f": ",size:Medium,"},
@@ -83,29 +88,42 @@ async def search_product_images(
                         img_url = result.get("image", "")
                         if img_url and img_url.startswith("http"):
                             image_urls.append(img_url)
+            else:
+                logger.info("DuckDuckGo vqd token not found for '%s'", product_name)
     except Exception as e:
         logger.warning("DuckDuckGo image search failed for '%s': %s", product_name, e)
 
-    # Fallback: try Google-style search via DuckDuckGo HTML
+    # Strategy 2: DuckDuckGo HTML fallback
     if not image_urls:
         try:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
                 resp = await client.post(
                     "https://html.duckduckgo.com/html/",
                     data={"q": f"{product_name} product image"},
                     headers=headers,
                 )
-                # Extract image-like URLs from results
                 for url in re.findall(r'href="(https?://[^"]+)"', resp.text):
                     if any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
                         if 'duckduckgo' not in url:
                             image_urls.append(url)
         except Exception as e:
-            logger.warning("Fallback search failed for '%s': %s", product_name, e)
+            logger.warning("DuckDuckGo HTML fallback failed for '%s': %s", product_name, e)
+
+    # Strategy 3: Direct manufacturer website guess
+    if not image_urls:
+        # Try common product image hosting patterns
+        brand_slug = product_name.split()[0].lower() if product_name else ""
+        if brand_slug:
+            guess_urls = [
+                f"https://www.{brand_slug}.com/images/{product_name.replace(' ', '-').lower()}.jpg",
+            ]
+            image_urls.extend(guess_urls)
+
+    logger.info("Found %d candidate image URLs for '%s'", len(image_urls), product_name)
 
     # Download and validate images
     results: list[dict[str, Any]] = []
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         for url in image_urls:
             if len(results) >= max_results:
                 break
