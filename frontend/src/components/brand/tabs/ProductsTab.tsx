@@ -50,6 +50,7 @@ export interface ProductsTabProps {
   onSetSelectedProductIds: (ids: Set<string>) => void;
   onBatchFetchSelected: () => Promise<void>;
   onBatchFetchNoImage: () => Promise<void>;
+  onSearchWebImages: (product: Product) => Promise<void>;
   getFilteredProducts: () => Product[];
 }
 
@@ -82,6 +83,7 @@ export function ProductsTab({
   onSetSelectedProductIds,
   onBatchFetchSelected,
   onBatchFetchNoImage,
+  onSearchWebImages,
   getFilteredProducts,
 }: ProductsTabProps) {
   if (!brand?.bc_company) {
@@ -469,7 +471,7 @@ export function ProductsTab({
               variant="outline"
               disabled={fetchingImages === galleryProduct?.id}
               onClick={async () => {
-                if (galleryProduct) onOpenGallery(galleryProduct);
+                if (galleryProduct) await onSearchWebImages(galleryProduct);
               }}
             >
               {fetchingImages === galleryProduct?.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}

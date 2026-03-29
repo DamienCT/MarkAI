@@ -570,6 +570,19 @@ export default function BrandDetailPage() {
     }
   }, [galleryProduct, openGallery, fetchProducts]);
 
+  const handleSearchWebImages = useCallback(async (product: Product) => {
+    setFetchingImages(product.id);
+    try {
+      await api.post(`/api/v1/products/${product.id}/fetch-images`);
+      await openGallery(product);
+      await fetchProducts();
+    } catch {
+      toast.error("Web search failed");
+    } finally {
+      setFetchingImages(null);
+    }
+  }, [openGallery, fetchProducts]);
+
   const handleBatchFetchSelected = useCallback(async () => {
     const ids = Array.from(selectedProductIds);
     if (ids.length === 0) { toast.info("Select products first"); return; }
@@ -797,6 +810,7 @@ export default function BrandDetailPage() {
             onDeleteGalleryImage={handleDeleteGalleryImage}
             onSetPrimaryImage={handleSetPrimaryImage}
             onUploadProductImage={handleUploadProductImage}
+            onSearchWebImages={handleSearchWebImages}
             onSetGalleryProduct={setGalleryProduct}
             onToggleProductSelection={toggleProductSelection}
             onSetSelectedProductIds={setSelectedProductIds}

@@ -161,10 +161,20 @@ async def upload_product_image(
 
     minio_service.upload_file(object_name, file_data, content_type)
 
-    product_update = ProductUpdate(
-        primary_image_url=object_name,
-    )
-    return await product_service.update_product(db, product_id, product_update)
+    # Add to image gallery and set as primary
+    gallery = list(product.image_urls) if isinstance(product.image_urls, list) else []
+    gallery.append({
+        "url": object_name,
+        "object_name": object_name,
+        "source": "upload",
+        "original_filename": file.filename,
+    })
+    product.image_urls = gallery
+    product.primary_image_url = object_name
+    flag_modified(product, "image_urls")
+    await db.commit()
+    await db.refresh(product)
+    return product
 
 
 @router.post("/sync", status_code=status.HTTP_202_ACCEPTED)
