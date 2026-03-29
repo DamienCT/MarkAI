@@ -9,6 +9,7 @@ from typing import Any
 from shared.llm import chat_completion, generate_image, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
+    execute_update,
     get_brand,
     get_brand_config,
     get_calendar_item,
@@ -44,6 +45,12 @@ async def load_context(state: ContentState) -> dict[str, Any]:
         return {"errors": [*(state.get("errors") or []), "Brand not found"], "status": "failed"}
     if not calendar_item:
         return {"errors": [*(state.get("errors") or []), "Calendar item not found"], "status": "failed"}
+
+    # Transition calendar item status to 'working'
+    await execute_update(
+        "UPDATE calendar_items SET status = 'working' WHERE id = :id AND status = 'queued'",
+        {"id": item_id},
+    )
 
     return {
         "brand": brand,
@@ -278,12 +285,28 @@ PLATFORM_SPECS = {
 
 
 async def adapt_platforms(state: ContentState) -> dict[str, Any]:
-    """Create platform-specific adaptations of the content via LLM for all 8 channels."""
+    """Create platform-specific adaptations of the content via LLM for enabled channels."""
     source_platform = state.get("calendar_item", {}).get("channel", "instagram")
 
-    # Build per-platform spec block for the prompt
+    # Determine which channels to adapt for based on brand config
+    brand = state.get("brand", {})
+    channels_cfg = (brand.get("brand_guidelines") or {})
+    if isinstance(channels_cfg, str):
+        try:
+            channels_cfg = json.loads(channels_cfg)
+        except (json.JSONDecodeError, TypeError):
+            channels_cfg = {}
+    channels_cfg = channels_cfg.get("channels", {})
+    enabled = [
+        ch for ch, cfg in channels_cfg.items()
+        if isinstance(cfg, dict) and cfg.get("enabled")
+    ]
+    channels_to_adapt = enabled if enabled else ALL_CHANNELS
+
+    # Build per-platform spec block only for enabled channels
     spec_lines = "\n".join(
         f"- {name}: {spec}" for name, spec in PLATFORM_SPECS.items()
+        if name in channels_to_adapt
     )
 
     prompt = [
@@ -306,7 +329,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
             f"Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
             f"Caption: {sanitize_for_prompt(state.get('caption', ''))}\n"
             f"Hashtags: {sanitize_json_for_prompt(state.get('hashtags', []))}\n"
-            f"Adapt for these platforms: {', '.join(ALL_CHANNELS)}"
+            f"Adapt for these platforms: {', '.join(channels_to_adapt)}"
         )},
     ]
     result = await chat_completion(prompt, temperature=0.5)
@@ -583,6 +606,13 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
 
     content_id = await store_content(content_record)
     logger.info("Stored content %s for calendar item %s", content_id, state["calendar_item_id"])
+
+    # Transition calendar item status to 'in_review'
+    if state.get("calendar_item_id"):
+        await execute_update(
+            "UPDATE calendar_items SET status = 'in_review' WHERE id = :id",
+            {"id": state["calendar_item_id"]},
+        )
 
     return {
         "status": "in_review",

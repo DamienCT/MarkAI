@@ -174,6 +174,27 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
         await msg.ack()
 
+        # ── Sequential content chaining: after content completes, queue next item
+        if agent_type == "content" and payload.get("remaining_queue") and _consumer is not None:
+            remaining = payload["remaining_queue"]
+            if remaining:
+                next_id = remaining[0]
+                rest = remaining[1:]
+                next_msg: dict[str, Any] = {
+                    "brand_id": brand_id,
+                    "calendar_item_id": next_id,
+                    "trigger": payload.get("trigger", "event"),
+                    "chain_depth": current_depth + 1,
+                    "remaining_queue": rest,
+                }
+                if payload.get("scope_weeks") is not None:
+                    next_msg["scope_weeks"] = payload["scope_weeks"]
+                try:
+                    await _consumer.js.publish("content.generate", json.dumps(next_msg).encode())
+                    logger.info("Sequential content: queued next item %s (%d remaining)", next_id, len(rest))
+                except Exception as seq_exc:
+                    logger.error("Failed to queue next sequential content item %s: %s", next_id, seq_exc)
+
         # ── Chain: auto-trigger the next workflow in the pipeline ─────
         # Full pipeline chain only runs for "activation" triggers.
         # Regular triggers (manual research, auto-discover) run standalone.
@@ -245,24 +266,35 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
         if next_subject and brand_id and _consumer is not None:
             try:
-                # ── Planning -> Content fan-out: publish one message per calendar item
+                # ── Planning -> Content sequential: publish ONE item at a time
                 if agent_type == "planning" and next_subject == "content.generate":
                     calendar_item_ids = (result or {}).get("calendar_item_ids", [])
                     if calendar_item_ids:
-                        for cid in calendar_item_ids:
-                            item_msg: dict[str, Any] = {
-                                "brand_id": brand_id,
-                                "calendar_item_id": cid,
-                                "trigger": payload.get("trigger", "event"),
-                                "chain_depth": current_depth + 1,
-                            }
-                            if payload.get("scope_weeks") is not None:
-                                item_msg["scope_weeks"] = payload["scope_weeks"]
-                            item_payload = json.dumps(item_msg).encode()
-                            await _consumer.js.publish(next_subject, item_payload)
+                        # Sort by scheduled_at (nearest first) so content is generated in order
+                        from shared.tools.database import execute_query as _eq
+                        items = await _eq(
+                            "SELECT id FROM calendar_items WHERE id = ANY(:ids) ORDER BY scheduled_at ASC",
+                            {"ids": calendar_item_ids},
+                        )
+                        sorted_ids = [str(r["id"]) for r in items] if items else [str(c) for c in calendar_item_ids]
+
+                        # Publish only the FIRST item; remaining are chained via remaining_queue
+                        first_id = sorted_ids[0]
+                        remaining_ids = sorted_ids[1:]
+
+                        item_msg: dict[str, Any] = {
+                            "brand_id": brand_id,
+                            "calendar_item_id": first_id,
+                            "trigger": payload.get("trigger", "event"),
+                            "chain_depth": current_depth + 1,
+                            "remaining_queue": remaining_ids,
+                        }
+                        if payload.get("scope_weeks") is not None:
+                            item_msg["scope_weeks"] = payload["scope_weeks"]
+                        await _consumer.js.publish(next_subject, json.dumps(item_msg).encode())
                         logger.info(
-                            "Chained planning -> content.generate for %d calendar items (brand %s)",
-                            len(calendar_item_ids), brand_id,
+                            "Sequential content: queued first item %s (%d remaining) for brand %s",
+                            first_id, len(remaining_ids), brand_id,
                         )
                     else:
                         logger.warning("Planning completed but no calendar_item_ids in result — skipping content chain")

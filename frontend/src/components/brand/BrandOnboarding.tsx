@@ -43,6 +43,7 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
   const [activating, setActivating] = useState(false);
   const [hasProducts, setHasProducts] = useState(false);
   const [checkingProducts, setCheckingProducts] = useState(true);
+  const [competitorCount, setCompetitorCount] = useState(0);
 
   // Check if products exist
   useEffect(() => {
@@ -59,6 +60,13 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
     checkProducts();
   }, [brand.id]);
 
+  // Check if competitors exist
+  useEffect(() => {
+    api.get<any[]>(`/api/v1/brands/${brand.id}/competitors`)
+      .then(data => setCompetitorCount(Array.isArray(data) ? data.length : 0))
+      .catch(() => setCompetitorCount(0));
+  }, [brand.id]);
+
   const logos = (brand.brand_guidelines as Record<string, unknown>)?.logos as Record<string, unknown> | undefined;
   const channels = (brand.brand_guidelines as Record<string, unknown>)?.channels as Record<string, { enabled?: boolean; configured?: boolean }> | undefined;
   const enabledChannels = channels
@@ -72,7 +80,7 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
     voice_profile: !!brand.tone_of_voice,
     channels: enabledChannels.length > 0,
     products: hasProducts,
-    competitors: !!(brand.competitors && brand.competitors.length > 0),
+    competitors: competitorCount > 0,
     review: brand.is_active && !!(brand.name && brand.description),
   };
 
@@ -320,8 +328,8 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
         return (
           <div className="space-y-3">
             <div className="text-sm">
-              {brand.competitors && brand.competitors.length > 0 ? (
-                <span className="font-medium">{brand.competitors.length} competitor(s) tracked</span>
+              {competitorCount > 0 ? (
+                <span className="font-medium">{competitorCount} competitor(s) tracked</span>
               ) : (
                 <span className="text-muted-foreground italic">No competitors tracked</span>
               )}

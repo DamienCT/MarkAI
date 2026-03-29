@@ -14,6 +14,7 @@ class PlanningState(TypedDict, total=False):
 
     # Configuration
     scope_weeks: int  # Planning horizon in weeks (default 4, activation uses 2)
+    enabled_channels: list[str]  # Channels enabled in brand config
 
     # Loaded data
     strategy: dict[str, Any]

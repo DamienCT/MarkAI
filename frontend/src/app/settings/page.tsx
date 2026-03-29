@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -75,6 +76,7 @@ interface AppSettings {
   bc_sync_interval_hours: number;
   max_daily_posts: number;
   auto_approve_threshold: number;
+  content_generation_days_ahead: number;
   default_channels: string[];
   notification_channels: string[];
 }
@@ -88,6 +90,7 @@ const DEFAULTS: AppSettings = {
   bc_sync_interval_hours: 6,
   max_daily_posts: 3,
   auto_approve_threshold: 90,
+  content_generation_days_ahead: 7,
   default_channels: ["instagram", "facebook", "linkedin"],
   notification_channels: ["teams", "portal"],
 };
@@ -116,6 +119,7 @@ export default function SettingsPage() {
           bc_sync_interval_hours: Number(data.bc_sync_interval_hours ?? DEFAULTS.bc_sync_interval_hours),
           max_daily_posts: Number(data.max_daily_posts ?? DEFAULTS.max_daily_posts),
           auto_approve_threshold: Number(data.auto_approve_threshold ?? DEFAULTS.auto_approve_threshold),
+          content_generation_days_ahead: Number(data.content_generation_days_ahead ?? DEFAULTS.content_generation_days_ahead),
           default_channels: (data.default_channels as string[]) ?? DEFAULTS.default_channels,
           notification_channels: (data.notification_channels as string[]) ?? DEFAULTS.notification_channels,
         });
@@ -347,6 +351,27 @@ export default function SettingsPage() {
                 {n}
               </label>
             ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* -- Row 2b: Content Queue Window -- */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Content Queue Window</CardTitle>
+          <CardDescription>How many days ahead to generate content for</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-4">
+            <Input
+              type="number"
+              min={1}
+              max={30}
+              value={settings.content_generation_days_ahead}
+              onChange={(e) => setSettings(s => ({ ...s, content_generation_days_ahead: Number(e.target.value) || 7 }))}
+              className="w-20"
+            />
+            <span className="text-sm text-muted-foreground">days</span>
           </div>
         </CardContent>
       </Card>

@@ -171,30 +171,55 @@ async def get_report(
 
 
 @router.get("/trends")
-async def list_intelligence_trends(
-    limit: int = 20,
+async def get_trending_topics(
+    brand_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List recent competitor analysis and market trends."""
+    """Get trending topics from the latest strategy output."""
     stmt = (
-        select(Competitor)
-        .where(Competitor.is_active == True)
-        .order_by(Competitor.updated_at.desc())
-        .limit(limit)
+        select(AgentRun)
+        .where(
+            AgentRun.agent_type == "strategy",
+            AgentRun.status == "completed",
+        )
+        .order_by(AgentRun.completed_at.desc())
+        .limit(1)
     )
+
+    if brand_id:
+        stmt = stmt.where(AgentRun.brand_id == brand_id)
+
     result = await db.execute(stmt)
-    competitors = result.scalars().all()
-    return [
-        {
-            "id": str(c.id),
-            "brand_id": str(c.brand_id),
-            "name": c.name,
-            "website_url": c.website_url,
-            "updated_at": c.updated_at.isoformat() if c.updated_at else None,
-        }
-        for c in competitors
-    ]
+    run = result.scalar_one_or_none()
+
+    if not run or not run.output_payload:
+        return []
+
+    # Extract themes from strategy output
+    payload = run.output_payload if isinstance(run.output_payload, dict) else {}
+    themes = payload.get("themes", [])
+
+    trends = []
+    for i, theme in enumerate(themes):
+        if isinstance(theme, dict):
+            trends.append({
+                "topic": theme.get("name", theme.get("theme", f"Theme {i+1}")),
+                "platform": theme.get("platform", "all"),
+                "relevance_score": theme.get("relevance", theme.get("score", 0.8)),
+                "description": theme.get("description", ""),
+                "discovered_at": run.completed_at.isoformat() if run.completed_at else None,
+            })
+        elif isinstance(theme, str):
+            trends.append({
+                "topic": theme,
+                "platform": "all",
+                "relevance_score": 0.8,
+                "description": "",
+                "discovered_at": run.completed_at.isoformat() if run.completed_at else None,
+            })
+
+    return trends
 
 
 class WorkflowTrigger(BaseModel):

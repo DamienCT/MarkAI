@@ -10,6 +10,7 @@ from typing import Any
 from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_json_for_prompt
 from shared.tools.database import (
+    get_brand_config,
     get_latest_strategy,
     get_products,
     store_calendar_items,
@@ -21,26 +22,53 @@ logger = logging.getLogger(__name__)
 
 
 async def load_strategy(state: PlanningState) -> dict[str, Any]:
-    """Load the latest approved strategy from the database."""
-    strategy = await get_latest_strategy(state["brand_id"])
+    """Load the latest approved strategy and enabled channels from the database."""
+    brand_id = state["brand_id"]
+    strategy = await get_latest_strategy(brand_id)
     if not strategy:
         return {"errors": [*(state.get("errors") or []), "No strategy found"], "status": "failed"}
-    return {"strategy": strategy.get("output_payload", strategy)}
+
+    # Load enabled channels from brand config
+    brand_config = await get_brand_config(brand_id)
+    channels_cfg = (brand_config or {}).get("brand_guidelines", {})
+    # brand_guidelines may be stored as a JSON string
+    if isinstance(channels_cfg, str):
+        try:
+            channels_cfg = json.loads(channels_cfg)
+        except (json.JSONDecodeError, TypeError):
+            channels_cfg = {}
+    channels_cfg = channels_cfg.get("channels", {})
+    enabled_channels = [
+        ch for ch, cfg in channels_cfg.items()
+        if isinstance(cfg, dict) and cfg.get("enabled")
+    ]
+    if not enabled_channels:
+        enabled_channels = ["instagram"]  # fallback
+    logger.info("Enabled channels for brand %s: %s", brand_id, enabled_channels)
+
+    return {
+        "strategy": strategy.get("output_payload", strategy),
+        "enabled_channels": enabled_channels,
+    }
 
 
 async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
     """Generate campaign plans from the strategy using LLM."""
     strategy = state.get("strategy", {})
     scope_weeks = state.get("scope_weeks", 4)
+    enabled_channels = state.get("enabled_channels", ["instagram"])
     start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime("%Y-%m-%d")
 
+    channels_str = ", ".join(enabled_channels)
     prompt = [
         {"role": "system", "content": (
             "You are a campaign planner. The brand operates in Mauritius. Consider the local market, "
             "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
             "and regional consumer preferences. Based on the strategy, generate specific campaigns "
             f"for the period {start_date} to {end_date} ({scope_weeks} weeks). "
+            f"Generate content ONLY for these platforms: {channels_str}. "
+            "Do NOT generate content for any other platforms. "
             "Each campaign should have: name, description, start_date, "
             "end_date, pillar, platforms, goal, kpis. Return a JSON array."
         )},
@@ -57,6 +85,7 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
     campaigns = state.get("campaigns", [])
     strategy = state.get("strategy", {})
     scope_weeks = state.get("scope_weeks", 4)
+    enabled_channels = state.get("enabled_channels", ["instagram"])
     start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime("%Y-%m-%d")
 
@@ -67,15 +96,18 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
         for p in products[:50]
     ]
 
+    channels_str = ", ".join(enabled_channels)
     prompt = [
         {"role": "system", "content": (
             "You are a content calendar planner. The brand operates in Mauritius. Consider the local market, "
             "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
             "and regional consumer preferences. Generate content for the period "
             f"{start_date} to {end_date} ({scope_weeks} weeks). "
+            f"Generate content ONLY for these platforms: {channels_str}. "
+            "Do NOT generate content for any other platforms. "
             "Generate specific calendar items for each campaign. "
             "Each item should have: campaign_name, scheduled_date (YYYY-MM-DD), platform "
-            "(instagram/facebook/linkedin), content_type (post/reel/story/carousel), "
+            f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
             "theme, product_name (from available products if relevant, else null), brief. "
             "Return a JSON array."
         )},
@@ -113,6 +145,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     """Persist calendar items to the database."""
     brand_id = state["brand_id"]
     items = state.get("calendar_items", [])
+    enabled_channels = state.get("enabled_channels", [])
     scope_weeks = state.get("scope_weeks", 4)
     max_date = datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)
 
@@ -131,7 +164,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             "status": "planned",
         })
 
-    ids = await store_calendar_items(db_items, max_date=max_date)
+    ids = await store_calendar_items(db_items, max_date=max_date, enabled_channels=enabled_channels)
     logger.info("Stored %d calendar items for brand %s", len(ids), brand_id)
 
     return {"status": "completed", "calendar_item_ids": ids}

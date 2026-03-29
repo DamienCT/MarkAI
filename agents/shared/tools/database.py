@@ -327,10 +327,24 @@ async def upsert_product(product: dict[str, Any]) -> str:
 async def store_calendar_items(
     items: list[dict[str, Any]],
     max_date: datetime | None = None,
+    enabled_channels: list[str] | None = None,
 ) -> list[str]:
     ids: list[str] = []
     async with async_session_factory() as session:
         for item in items:
+            # Validate channel early so we can filter before doing more work
+            VALID_CHANNELS = {"instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"}
+            raw_channel = (item.get("channel") or "instagram").lower().strip()
+            channel_map = {"twitter": "x", "blog": "website_blog", "web": "website_blog"}
+            channel = channel_map.get(raw_channel, raw_channel)
+            if channel not in VALID_CHANNELS:
+                channel = "instagram"
+
+            # Skip items for channels that are not enabled
+            if enabled_channels and channel not in enabled_channels:
+                logger.info("Skipping calendar item for disabled channel: %s", channel)
+                continue
+
             item_id = str(uuid4())
             # Parse scheduled_at — LLM may return a string like "2026-04-01"
             scheduled_at_raw = item.get("scheduled_at")
@@ -364,15 +378,6 @@ async def store_calendar_items(
             VALID_ITEM_TYPES = {"post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"}
             raw_type = (item.get("content_type") or item.get("item_type") or "post").lower().strip()
             item_type = raw_type if raw_type in VALID_ITEM_TYPES else "post"
-
-            # Validate channel against DB check constraint
-            VALID_CHANNELS = {"instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"}
-            raw_channel = (item.get("channel") or "instagram").lower().strip()
-            # Map common LLM variants
-            channel_map = {"twitter": "x", "blog": "website_blog", "web": "website_blog"}
-            channel = channel_map.get(raw_channel, raw_channel)
-            if channel not in VALID_CHANNELS:
-                channel = "instagram"
 
             await session.execute(
                 text(
@@ -499,3 +504,14 @@ async def execute_query(query: str, params: dict[str, Any] | None = None) -> lis
     async with async_session_factory() as session:
         result = await session.execute(text(query), params or {})
         return [dict(r) for r in result.mappings().all()]
+
+
+async def execute_update(query: str, params: dict[str, Any] | None = None) -> int:
+    """Execute a non-SELECT statement (UPDATE, INSERT, DELETE) and commit.
+
+    Returns the number of rows affected.
+    """
+    async with async_session_factory() as session:
+        result = await session.execute(text(query), params or {})
+        await session.commit()
+        return result.rowcount

@@ -87,6 +87,8 @@ async def analyze_social(state: ResearchState) -> dict[str, Any]:
 
 async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
     """Identify and analyse competitors using browser-worker and LLM."""
+    from shared.tools.database import execute_query
+
     brand = await get_brand(state["brand_id"])
     brand_name = brand.get("name", "") if brand else ""
     website_data = state.get("website_data", [])
@@ -96,10 +98,24 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
     brand_guidelines = brand.get("brand_guidelines", {}) or {}
     brand_context = brand_guidelines.get("industry", "") or ""
 
+    # Load existing competitors from DB
+    existing = await execute_query(
+        "SELECT name, website_url, description, social_handles FROM competitors "
+        "WHERE brand_id = :brand_id AND is_active = true",
+        {"brand_id": state["brand_id"]}
+    )
+    existing_competitors = [dict(r) for r in existing] if existing else []
+
+    # Include existing competitors in the prompt context
+    existing_info = ""
+    if existing_competitors:
+        names = [c.get("name", "") for c in existing_competitors]
+        existing_info = f"\n\nAlready known competitors: {', '.join(names)}. Include these and discover additional ones."
+
     # Ask LLM to identify competitors from website data
     identify_prompt = [
         {"role": "system", "content": "You are a competitive intelligence analyst. The brand operates in Mauritius and the Indian Ocean region. Focus ONLY on direct competitors in Mauritius and the Indian Ocean region. Do NOT include comparison websites, blog sites, review aggregators, or international companies unless they operate locally in Mauritius. Given the brand's website content, identify their top 5 LOCAL competitors. Return a JSON array of objects with 'name' and 'website' fields."},
-        {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nIndustry context: {sanitize_for_prompt(brand_industry)} {sanitize_for_prompt(brand_context)}\n\nWebsite content:\n{sanitize_json_for_prompt(website_data[:5], max_length=8000)}"},
+        {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nIndustry context: {sanitize_for_prompt(brand_industry)} {sanitize_for_prompt(brand_context)}{existing_info}\n\nWebsite content:\n{sanitize_json_for_prompt(website_data[:5], max_length=8000)}"},
     ]
     competitor_text = await chat_completion(identify_prompt, temperature=0.3)
 
@@ -177,8 +193,22 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
             "social_handles": {},
         })
 
-    logger.info("Found %d competitors for brand %s", len(analyses), brand_name)
-    return {"competitor_analysis": analyses, "competitor_urls": [c.get("website", "") for c in competitors[:5]]}
+    # Merge existing competitors with newly discovered ones (avoid duplicates)
+    discovered_names = {a["name"].lower() for a in analyses}
+    for ec in existing_competitors:
+        ec_name = ec.get("name", "").strip()
+        if ec_name and ec_name.lower() not in discovered_names:
+            analyses.append({
+                "name": ec_name,
+                "website": ec.get("website_url", ""),
+                "website_url": ec.get("website_url", ""),
+                "description": ec.get("description", ""),
+                "social_handles": ec.get("social_handles", {}) if isinstance(ec.get("social_handles"), dict) else {},
+            })
+            discovered_names.add(ec_name.lower())
+
+    logger.info("Found %d competitors for brand %s (%d existing, %d new)", len(analyses), brand_name, len(existing_competitors), len(analyses) - len(existing_competitors))
+    return {"competitor_analysis": analyses, "competitor_urls": [c.get("website", c.get("website_url", "")) for c in analyses]}
 
 
 async def identify_gaps(state: ResearchState) -> dict[str, Any]:

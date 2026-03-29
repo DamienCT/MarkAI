@@ -472,7 +472,8 @@ INSERT INTO app_settings (key, value) VALUES
     ('max_daily_posts', '3'),
     ('auto_approve_threshold', '90'),
     ('default_channels', '["instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"]'),
-    ('notification_channels', '["teams", "portal"]');
+    ('notification_channels', '["teams", "portal"]'),
+    ('content_generation_days_ahead', '7');
 
 -- ── Updated-at trigger function ─────────────────────────────────
 CREATE OR REPLACE FUNCTION update_updated_at_column()
