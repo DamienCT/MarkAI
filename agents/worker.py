@@ -175,12 +175,18 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         await msg.ack()
 
         # ── Chain: auto-trigger the next workflow in the pipeline ─────
-        CHAIN_NEXT: dict[str, str] = {
-            "research": "strategy.trigger",
-            "strategy": "planning.trigger",
-            "planning": "content.generate",
-            "evaluation": "adaptation.trigger",
-        }
+        # Full pipeline chain only runs for "activation" triggers.
+        # Regular triggers (manual research, auto-discover) run standalone.
+        trigger_type = payload.get("trigger", "")
+        CHAIN_NEXT: dict[str, str] = {}
+        if trigger_type == "activation":
+            CHAIN_NEXT = {
+                "research": "strategy.trigger",
+                "strategy": "planning.trigger",
+                "planning": "content.generate",
+            }
+        # Evaluation always chains to adaptation regardless of trigger
+        CHAIN_NEXT["evaluation"] = "adaptation.trigger"
 
         # Track chain depth to prevent infinite loops
         current_depth = payload.get("chain_depth", 0)

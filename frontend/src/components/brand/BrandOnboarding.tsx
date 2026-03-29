@@ -334,10 +334,20 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
                 onClick={async () => {
                   setTriggering("discover");
                   try {
-                    await api.post("/api/v1/intelligence/trigger/research", { brand_id: brand.id });
-                    toast.success("Competitor discovery triggered");
+                    const result = await api.post<{ fields: Record<string, string> }>("/api/v1/intelligence/generate-fields", {
+                      brand_id: brand.id,
+                      fields: ["competitors"],
+                      context: `Brand: ${brand.name}. ${brand.description || ""}`,
+                    });
+                    const suggested = result.fields?.competitors;
+                    if (suggested) {
+                      toast.success("AI suggested competitors — add them using '+ Add Competitor'");
+                      toast.info(suggested, { duration: 10000 });
+                    } else {
+                      toast.info("No competitor suggestions found. Add manually.");
+                    }
                   } catch (err: unknown) {
-                    const detail = (err as { detail?: string })?.detail || "Failed to trigger discovery";
+                    const detail = (err as { detail?: string })?.detail || "Failed to discover competitors";
                     toast.error(detail);
                   } finally {
                     setTriggering(null);
