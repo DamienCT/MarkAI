@@ -164,10 +164,16 @@ export function apiUrl(path: string): string {
 
 /** Resolve a MinIO object path to a proxied file URL via the backend.
  *  e.g. "products/abc/image.png" → "https://api.../api/v1/files/products/abc/image.png"
- *  Also handles legacy presigned URLs (starts with http) by returning as-is.
+ *  Also rewrites legacy presigned URLs (http://minio:9000/bucket/path) to use the proxy.
  */
 export function fileUrl(path: string): string {
   if (!path) return "";
+  // Rewrite legacy MinIO presigned URLs to proxy through backend
+  if (path.includes("minio:9000") || path.includes("minio%3A9000")) {
+    // Extract the object path from: http://minio:9000/bucket-name/object/path?signature...
+    const match = path.match(/minio:9000\/[^/]+\/(.+?)(\?|$)/);
+    if (match) return `${API_BASE_URL}/api/v1/files/${match[1]}`;
+  }
   if (path.startsWith("http")) return path;
   if (path.startsWith("/")) return `${API_BASE_URL}${path}`;
   return `${API_BASE_URL}/api/v1/files/${path}`;
