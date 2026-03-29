@@ -33,7 +33,7 @@ const navigation = [
   { name: "Content Studio", href: "/content", icon: FileText, exact: true },
   { name: "Calendar", href: "/content/calendar", icon: Calendar },
   { name: "Approvals", href: "/approvals", icon: CheckSquare },
-  { name: "Intelligence", href: "/intelligence", icon: Search },
+  { name: "Intelligence", href: "/intelligence", icon: Search, exact: true },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Learning", href: "/learning", icon: Brain },
   { name: "AI Providers", href: "/providers", icon: Cpu },
