@@ -161,3 +161,14 @@ export function apiUrl(path: string): string {
   if (path.startsWith("http")) return path;
   return `${API_BASE_URL}${path}`;
 }
+
+/** Resolve a MinIO object path to a proxied file URL via the backend.
+ *  e.g. "products/abc/image.png" → "https://api.../api/v1/files/products/abc/image.png"
+ *  Also handles legacy presigned URLs (starts with http) by returning as-is.
+ */
+export function fileUrl(path: string): string {
+  if (!path) return "";
+  if (path.startsWith("http")) return path;
+  if (path.startsWith("/")) return `${API_BASE_URL}${path}`;
+  return `${API_BASE_URL}/api/v1/files/${path}`;
+}

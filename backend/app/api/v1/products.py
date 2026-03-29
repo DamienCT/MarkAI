@@ -160,10 +160,9 @@ async def upload_product_image(
     content_type = file.content_type or "image/jpeg"
 
     minio_service.upload_file(object_name, file_data, content_type)
-    presigned_url = minio_service.get_presigned_url(object_name)
 
     product_update = ProductUpdate(
-        primary_image_url=presigned_url,
+        primary_image_url=object_name,
     )
     return await product_service.update_product(db, product_id, product_update)
 
@@ -240,10 +239,9 @@ async def fetch_product_images(
 
         minio_service.ensure_bucket()
         minio_service.upload_file(object_name, img["image_data"], img["content_type"])
-        presigned_url = minio_service.get_presigned_url(object_name)
 
         entry = {
-            "url": presigned_url,
+            "url": object_name,
             "object_name": object_name,
             "source": "web_search",
             "source_url": img["url"],
@@ -256,7 +254,7 @@ async def fetch_product_images(
     product.image_urls = gallery
     flag_modified(product, "image_urls")
     if not product.primary_image_url and gallery:
-        product.primary_image_url = gallery[0]["url"]
+        product.primary_image_url = gallery[0]["object_name"]
     await db.commit()
     await db.refresh(product)
 
@@ -297,9 +295,8 @@ async def batch_fetch_product_images(
             object_name = f"products/{pid}/gallery/web_{len(gallery) + i + 1}.{ext}"
             minio_service.ensure_bucket()
             minio_service.upload_file(object_name, img["image_data"], img["content_type"])
-            presigned_url = minio_service.get_presigned_url(object_name)
             gallery.append({
-                "url": presigned_url,
+                "url": object_name,
                 "object_name": object_name,
                 "source": "web_search",
                 "source_url": img["url"],

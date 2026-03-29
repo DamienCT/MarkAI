@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { formatRelativeTime } from "@/lib/utils";
+import { fileUrl } from "@/lib/api";
 import type { Brand, Product } from "@/types";
 
 export interface ProductsTabProps {
@@ -308,7 +309,7 @@ export function ProductsTab({
                                 className="flex items-center justify-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
                                 onClick={(e) => { e.stopPropagation(); onOpenGallery(product); }}
                               >
-                                <img src={product.primary_image_url} alt="" className="h-8 w-8 rounded-sm object-cover ring-1 ring-border" loading="lazy" />
+                                <img src={fileUrl(product.primary_image_url)} alt="" className="h-8 w-8 rounded-sm object-cover ring-1 ring-border" loading="lazy" />
                                 <span className="text-[10px] text-muted-foreground">
                                   {Array.isArray(product.image_urls) ? product.image_urls.length : 0}
                                 </span>
@@ -436,7 +437,7 @@ export function ProductsTab({
               {galleryImages.map((img, i) => (
                 <div key={i} className="relative group aspect-square rounded-lg overflow-hidden border bg-muted">
                   <img
-                    src={typeof img === "string" ? img : img.url}
+                    src={fileUrl(typeof img === "string" ? img : img.url)}
                     alt=""
                     className="w-full h-full object-cover"
                     loading="lazy"

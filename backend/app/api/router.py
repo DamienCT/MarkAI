@@ -9,6 +9,7 @@ from app.api.v1 import (
     campaigns,
     content,
     dashboard,
+    files,
     intelligence,
     learning,
     notifications,
@@ -44,6 +45,7 @@ api_router.include_router(
     notifications.router, prefix="/notifications", tags=["notifications"]
 )
 api_router.include_router(learning.router, prefix="/learning", tags=["learning"])
+api_router.include_router(files.router, prefix="/files", tags=["files"])
 api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
 
 # Alias: frontend calls /api/v1/audit directly
