@@ -249,7 +249,7 @@ CREATE TABLE agent_runs (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     agent_type      VARCHAR(100) NOT NULL,
     trigger         VARCHAR(100) NOT NULL
-                    CHECK (trigger IN ('scheduled', 'manual', 'event', 'webhook')),
+                    CHECK (trigger IN ('scheduled', 'manual', 'event', 'webhook', 'activation')),
     status          VARCHAR(50) NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
     input_payload   JSONB DEFAULT '{}',
