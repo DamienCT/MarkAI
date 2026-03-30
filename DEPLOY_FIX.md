@@ -2,61 +2,75 @@
 
 This deploy wipes all existing data and starts fresh with the latest codebase.
 
-## Pre-flight Checklist
-
-Before deploying, ensure your `.env` on the VPS has:
-
-```
-AZURE_AD_TENANT_ID=...
-AZURE_AD_CLIENT_ID=...
-AZURE_AD_CLIENT_SECRET=...
-OPENAI_API_KEY=...
-GEMINI_API_KEY=...
-LITELLM_MASTER_KEY=...
-MARKAI_DOMAIN=...
-NEXTAUTH_SECRET=...
-NEXTAUTH_URL=https://${MARKAI_DOMAIN}
-FRONTEND_URL=https://${MARKAI_DOMAIN}
-```
-
-## Deploy Steps
+## Step 1 — Pull Latest Code
 
 ```bash
 cd /var/www/markai
 git pull origin main
+```
 
-# Stop all services
+## Step 2 — Tear Down Everything
+
+```bash
+cd /var/www/markai
 docker compose -f docker-compose.yml -f docker-compose.vps.yml down
-
-# Remove old data volumes (FRESH START — wipes DB, vectors, stored files, cache)
 docker volume rm markai_pgdata markai_qdrant_data markai_minio_data markai_valkey_data markai_nats_data || true
+```
 
-# Rebuild all application services
+## Step 3 — Rebuild and Start
+
+```bash
+cd /var/www/markai
 docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend frontend agents
-
-# Start everything (init.sql runs automatically on fresh postgres)
 docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
+```
 
-# Wait for postgres to initialize
-sleep 15
+## Step 4 — Wait and Verify
 
-# Verify DB schema has new calendar_items columns
-docker exec markai-postgres psql -U markai -d markai -c 'SELECT column_name FROM information_schema.columns WHERE table_name = '\''calendar_items'\'' AND column_name IN ('\''pillar'\'', '\''theme'\'', '\''target_audience'\'', '\''content_brief'\'') ORDER BY column_name;'
+Wait 20 seconds for postgres to finish init.sql, then run each check separately.
 
-# Verify model categories (should show 5: text, text-fast, image, embedding, vision)
-docker exec markai-postgres psql -U markai -d markai -c 'SELECT slug FROM ai_model_categories ORDER BY slug;'
+```bash
+sleep 20
+```
 
-# Verify all services healthy
+Check all containers are running:
+
+```bash
+cd /var/www/markai
 docker compose -f docker-compose.yml -f docker-compose.vps.yml ps
 ```
 
-## Post-Deploy Verification
+Check postgres is up and schema is correct:
 
-1. **Frontend loads** — visit `https://${MARKAI_DOMAIN}`, sign in via Azure AD
-2. **Providers page** — `/providers` shows 5 model categories with active selections
-3. **Create a brand** — complete onboarding (name, description, tone, logo, channels)
-4. **Activate** — triggers research → strategy → planning → content pipeline
-5. **System page** — `/system` shows all services green
+```bash
+docker exec markai-postgres psql -U markai -d markai -c "SELECT count(*) FROM ai_model_categories"
+```
+
+Check backend is healthy:
+
+```bash
+docker logs markai-backend --tail 10
+```
+
+Check frontend is healthy:
+
+```bash
+docker logs markai-frontend --tail 10
+```
+
+Check agents are healthy:
+
+```bash
+docker logs markai-agents --tail 10
+```
+
+## Expected Results
+
+- All containers show `Up` and `healthy` in `docker compose ps`
+- `ai_model_categories` count returns **5** (text, text-fast, image, embedding, vision)
+- Backend logs show `Uvicorn running on http://0.0.0.0:8000`
+- Frontend logs show `Ready on http://0.0.0.0:3000`
+- Agents logs show `Connected to NATS` or similar startup message
 
 ## What's Included (Latest)
 
