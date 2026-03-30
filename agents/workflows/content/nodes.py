@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from shared.llm import chat_completion, generate_image, parse_llm_json
+from shared.llm import chat_completion, generate_image, get_model_for_category, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
     build_brand_intelligence,
@@ -675,8 +675,9 @@ async def _replace_product_in_generated_image(state: ContentState, image_data: b
 
         product_name = state.get("calendar_item", {}).get("product_name", "product")
 
+        image_model = await get_model_for_category("vision")
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash-image",
+            model=image_model,
             contents=[
                 f"Replace the generic product in Image 1 with the real product from Image 2 ('{product_name}'). "
                 f"Keep everything else exactly the same. Match lighting and perspective.",

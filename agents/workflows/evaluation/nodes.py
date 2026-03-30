@@ -103,21 +103,25 @@ async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
 
 async def store_adaptations_node(state: EvaluationState) -> dict[str, Any]:
     """Persist classified adaptations to the database."""
-    brand_id = state["brand_id"]
-    adaptations = state.get("adaptations", [])
+    try:
+        brand_id = state["brand_id"]
+        adaptations = state.get("adaptations", [])
 
-    db_records = []
-    for a in adaptations:
-        db_records.append({
-            "brand_id": brand_id,
-            "tier": a.get("tier", 2),
-            "description": a.get("description", a.get("title", "")),
-            "confidence": a.get("confidence", 0.5),
-            "data": json.dumps(a),
-            "status": "auto_applied" if a.get("tier") == 1 else "pending",
-        })
+        db_records = []
+        for a in adaptations:
+            db_records.append({
+                "brand_id": brand_id,
+                "tier": a.get("tier", 2),
+                "description": a.get("description", a.get("title", "")),
+                "confidence": a.get("confidence", 0.5),
+                "data": json.dumps(a),
+                "status": "auto_applied" if a.get("tier") == 1 else "pending",
+            })
 
-    ids = await store_adaptations(db_records)
-    logger.info("Stored %d adaptations for brand %s", len(ids), brand_id)
+        ids = await store_adaptations(db_records)
+        logger.info("Stored %d adaptations for brand %s", len(ids), brand_id)
 
-    return {"status": "completed"}
+        return {"status": "completed"}
+    except Exception as exc:
+        logger.error("store_adaptations_node failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"store_adaptations failed: {exc}"]}

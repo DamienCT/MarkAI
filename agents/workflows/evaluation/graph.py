@@ -32,6 +32,6 @@ builder.add_conditional_edges("load_performance", _check_failed, {"end": END, "c
 builder.add_conditional_edges("analyze_patterns", _check_failed, {"end": END, "continue": "generate_recommendations"})
 builder.add_conditional_edges("generate_recommendations", _check_failed, {"end": END, "continue": "classify_adaptations"})
 builder.add_conditional_edges("classify_adaptations", _check_failed, {"end": END, "continue": "store_adaptations"})
-builder.add_edge("store_adaptations", END)
+builder.add_conditional_edges("store_adaptations", _check_failed, {"end": END, "continue": END})
 
 evaluation_graph = builder.compile()

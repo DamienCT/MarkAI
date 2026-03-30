@@ -8,7 +8,7 @@ class UserBase(BaseModel):
     email: str
     display_name: str
     role: str = "viewer"
-    is_active: bool = True
+    is_active: bool = False
 
 
 class UserCreate(UserBase):

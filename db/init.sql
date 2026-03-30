@@ -457,10 +457,6 @@ INSERT INTO ai_model_categories (slug, display_name, description) VALUES
     ('text-fast',  'Text / Chat (Fast)',      'Faster, cheaper language models for simple tasks'),
     ('image',      'Image Generation',        'Models for generating images from text prompts'),
     ('embedding',  'Text Embedding',          'Models for generating vector embeddings'),
-    ('tts',        'Text-to-Speech',          'Models for converting text to audio'),
-    ('stt',        'Speech-to-Text',          'Models for transcribing audio to text'),
-    ('video',      'Video Generation',        'Models for generating video content'),
-    ('moderation', 'Content Moderation',      'Models for detecting harmful content'),
     ('vision',     'Vision / Image Analysis', 'Models for analyzing and understanding images');
 
 -- ── App Settings ──────────────────────────────────────────────────

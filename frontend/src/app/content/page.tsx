@@ -248,7 +248,7 @@ export default function ContentStudioPage() {
               <p className="text-sm text-muted-foreground mt-1">Create your first piece of content to get started</p>
             </div>
           ) : (
-            items.map((item) => <ContentCard key={item.id} item={item} />)
+            (Array.isArray(items) ? items : []).map((item) => <ContentCard key={item.id} item={item} />)
           )}
         </div>
       )}

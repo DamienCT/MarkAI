@@ -27,7 +27,7 @@ class Content(Base):
     hashtags: Mapped[list | None] = mapped_column(ARRAY(String), nullable=True)
     cta_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
     cta_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    image_urls: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    image_urls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     video_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_assets: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     platform_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

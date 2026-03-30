@@ -47,6 +47,7 @@ const ROW1_COLUMNS: { id: string; label: string; color: string }[] = [
 const ROW2_COLUMNS: { id: string; label: string; color: string }[] = [
   { id: "approved", label: "Approved", color: "bg-cyan-50 dark:bg-cyan-950" },
   { id: "scheduled", label: "Scheduled", color: "bg-blue-50 dark:bg-blue-950" },
+  { id: "publishing", label: "Publishing", color: "bg-violet-50 dark:bg-violet-950" },
   { id: "published", label: "Published", color: "bg-green-50 dark:bg-green-950" },
   { id: "failed", label: "Failed", color: "bg-red-50 dark:bg-red-950" },
 ];
@@ -86,6 +87,16 @@ function KanbanCard({ item }: { item: CalendarItem }) {
           {item.channel && (
             <Badge variant="outline" className="text-[10px]">
               {CHANNEL_DISPLAY_NAMES[item.channel] || item.channel}
+            </Badge>
+          )}
+          {item.pillar && (
+            <Badge variant="secondary" className="text-[10px] bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300">
+              {item.pillar}
+            </Badge>
+          )}
+          {item.target_audience && (
+            <Badge variant="secondary" className="text-[10px] bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-300">
+              {item.target_audience}
             </Badge>
           )}
           {item.priority != null && item.priority > 0 && (
@@ -190,7 +201,7 @@ export function KanbanBoard({ items, onStatusChange }: KanbanBoardProps) {
         {/* Row 2: Publishing Pipeline */}
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Publishing Pipeline</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
             {ROW2_COLUMNS.map((column) => {
               const columnItems = items.filter((c) => c.status === column.id);
               return (

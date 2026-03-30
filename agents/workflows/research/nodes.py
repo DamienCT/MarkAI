@@ -50,6 +50,9 @@ async def crawl_website(state: ResearchState) -> dict[str, Any]:
         except Exception as exc:
             logger.warning("Failed to crawl %s: %s", url, exc)
 
+    if not all_pages:
+        return {"status": "failed", "website_url": urls[0], "website_data": [], "errors": [*(state.get("errors") or []), "All website crawls failed — no content gathered"]}
+
     return {"website_url": urls[0], "website_data": all_pages}
 
 
@@ -190,7 +193,8 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
                     {"role": "user", "content": f"Business: {sanitize_for_prompt(comp_name)}, Website: {sanitize_for_prompt(comp_website)}"},
                 ], temperature=0.3)
                 description = desc_text.strip()[:300]
-            except Exception:
+            except Exception as exc:
+                logger.warning("Failed to generate description for competitor %s: %s", comp_name, exc)
                 description = "Local competitor in Mauritius"
 
         analyses.append({
@@ -216,7 +220,7 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
             discovered_names.add(ec_name.lower())
 
     logger.info("Found %d competitors for brand %s (%d existing, %d new)", len(analyses), brand_name, len(existing_competitors), len(analyses) - len(existing_competitors))
-    return {"competitor_analysis": analyses, "competitor_urls": [c.get("website", c.get("website_url", "")) for c in analyses]}
+    return {"status": "completed", "competitor_analysis": analyses, "competitor_urls": [c.get("website", c.get("website_url", "")) for c in analyses]}
 
 
 async def identify_gaps(state: ResearchState) -> dict[str, Any]:

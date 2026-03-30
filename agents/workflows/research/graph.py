@@ -35,6 +35,6 @@ builder.add_conditional_edges("analyze_social", _check_failed, {"end": END, "con
 builder.add_conditional_edges("analyze_competitors", _check_failed, {"end": END, "continue": "identify_gaps"})
 builder.add_conditional_edges("identify_gaps", _check_failed, {"end": END, "continue": "build_personas"})
 builder.add_conditional_edges("build_personas", _check_failed, {"end": END, "continue": "store_results"})
-builder.add_edge("store_results", END)
+builder.add_conditional_edges("store_results", _check_failed, {"end": END, "continue": END})
 
 research_graph = builder.compile()

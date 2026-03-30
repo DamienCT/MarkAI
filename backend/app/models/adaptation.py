@@ -17,9 +17,9 @@ class Adaptation(Base):
     source_content_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("content.id"), nullable=False
     )
-    target_channel: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_channel: Mapped[str] = mapped_column(String(50), nullable=False)
     adapted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    adapted_headline: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    adapted_headline: Mapped[str | None] = mapped_column(String(500), nullable=True)
     adapted_hashtags: Mapped[list | None] = mapped_column(ARRAY(String), nullable=True)
     adapted_media: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     adaptation_notes: Mapped[str | None] = mapped_column(Text, nullable=True)

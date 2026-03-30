@@ -31,6 +31,6 @@ builder.add_conditional_edges("discover_brands", _check_failed, {"end": END, "co
 builder.add_conditional_edges("research_brand", _check_failed, {"end": END, "continue": "match_products_to_brands"})
 builder.add_conditional_edges("match_products_to_brands", _check_failed, {"end": END, "continue": "source_product_images"})
 builder.add_conditional_edges("source_product_images", _check_failed, {"end": END, "continue": "flag_promotable"})
-builder.add_edge("flag_promotable", END)
+builder.add_conditional_edges("flag_promotable", _check_failed, {"end": END, "continue": END})
 
 product_intel_graph = builder.compile()

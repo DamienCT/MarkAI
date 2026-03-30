@@ -76,8 +76,11 @@ async def _check_minio() -> str:
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check(db: AsyncSession = Depends(get_db)):
-    """Public health check endpoint with dependency status."""
+async def health_check(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Authenticated health check endpoint with dependency status."""
     from app.config import settings
 
     deps: dict[str, str] = {}

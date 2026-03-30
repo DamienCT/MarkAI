@@ -72,44 +72,48 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
 
 async def research_brand(state: ProductIntelState) -> dict[str, Any]:
     """Research each discovered brand via browser-worker and LLM."""
-    brand_mappings = state.get("brand_mappings", {})
-    enriched: dict[str, list[dict[str, Any]]] = {}
+    try:
+        brand_mappings = state.get("brand_mappings", {})
+        enriched: dict[str, list[dict[str, Any]]] = {}
 
-    for vendor, brands in brand_mappings.items():
-        enriched_brands = []
-        for brand_info in brands:
-            brand_name = brand_info.get("brand_name", vendor)
-            website = brand_info.get("brand_website")
+        for vendor, brands in brand_mappings.items():
+            enriched_brands = []
+            for brand_info in brands:
+                brand_name = brand_info.get("brand_name", vendor)
+                website = brand_info.get("brand_website")
 
-            # Search for brand website if not known
-            if not website:
-                results = await web_search(f"{brand_name} official website")
-                if results:
-                    website = results[0].url
+                # Search for brand website if not known
+                if not website:
+                    results = await web_search(f"{brand_name} official website")
+                    if results:
+                        website = results[0].url
 
-            # Extract brand info from website
-            if website:
-                try:
-                    page_data = await extract_page(website)
-                    prompt = [
-                        {"role": "system", "content": (
-                            "Extract brand information: description, target_market, price_range, "
-                            "brand_values, social_media_links. Return JSON."
-                        )},
-                        {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nWebsite data:\n{sanitize_json_for_prompt(page_data, max_length=5000)}"},
-                    ]
-                    analysis = await chat_completion(prompt, temperature=0.3)
-                    brand_data = parse_llm_json(analysis, fallback={"description": analysis})
+                # Extract brand info from website
+                if website:
+                    try:
+                        page_data = await extract_page(website)
+                        prompt = [
+                            {"role": "system", "content": (
+                                "Extract brand information: description, target_market, price_range, "
+                                "brand_values, social_media_links. Return JSON."
+                            )},
+                            {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nWebsite data:\n{sanitize_json_for_prompt(page_data, max_length=5000)}"},
+                        ]
+                        analysis = await chat_completion(prompt, temperature=0.3)
+                        brand_data = parse_llm_json(analysis, fallback={"description": analysis})
 
-                    brand_info.update(brand_data)
-                    brand_info["brand_website"] = website
-                except Exception:
-                    logger.exception("Failed to research brand %s", brand_name)
+                        brand_info.update(brand_data)
+                        brand_info["brand_website"] = website
+                    except Exception:
+                        logger.exception("Failed to research brand %s", brand_name)
 
-            enriched_brands.append(brand_info)
-        enriched[vendor] = enriched_brands
+                enriched_brands.append(brand_info)
+            enriched[vendor] = enriched_brands
 
-    return {"brand_mappings": enriched}
+        return {"brand_mappings": enriched}
+    except Exception as exc:
+        logger.error("research_brand failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"research_brand failed: {exc}"]}
 
 
 async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:

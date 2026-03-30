@@ -32,6 +32,6 @@ builder.add_conditional_edges("load_strategy", _check_failed, {"end": END, "cont
 builder.add_conditional_edges("generate_campaigns", _check_failed, {"end": END, "continue": "generate_calendar"})
 builder.add_conditional_edges("generate_calendar", _check_failed, {"end": END, "continue": "assign_products"})
 builder.add_conditional_edges("assign_products", _check_failed, {"end": END, "continue": "store_calendar"})
-builder.add_edge("store_calendar", END)
+builder.add_conditional_edges("store_calendar", _check_failed, {"end": END, "continue": END})
 
 planning_graph = builder.compile()

@@ -360,9 +360,6 @@ async def get_active_model(category_slug: str) -> str:
         "text-fast": "gpt-5.4-mini",
         "image": "gpt-image-1.5",
         "embedding": "text-embedding-3-small",
-        "tts": "tts-1",
-        "stt": "whisper-1",
-        "moderation": "omni-moderation-latest",
         "vision": "gpt-5.4",
     }
     fallback = defaults.get(category_slug, "gpt-5.4")

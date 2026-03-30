@@ -241,25 +241,29 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
 async def assign_products(state: PlanningState) -> dict[str, Any]:
     """Match calendar items to real products from the database."""
-    brand_id = state["brand_id"]
-    items = state.get("calendar_items", [])
     try:
-        products = await get_products(brand_id)
+        brand_id = state["brand_id"]
+        items = state.get("calendar_items", [])
+        try:
+            products = await get_products(brand_id)
+        except Exception as exc:
+            logger.warning("Failed to load products for brand %s: %s", brand_id, exc)
+            products = []
+
+        product_map = {p["name"].lower(): p for p in products if p.get("name")}
+
+        updated_items = []
+        for item in items:
+            product_name = (item.get("product_name") or "").lower()
+            if product_name and product_name in product_map:
+                item["product_id"] = product_map[product_name].get("id")
+                item["product_sku"] = product_map[product_name].get("sku")
+            updated_items.append(item)
+
+        return {"calendar_items": updated_items}
     except Exception as exc:
-        logger.warning("Failed to load products for brand %s: %s", brand_id, exc)
-        products = []
-
-    product_map = {p["name"].lower(): p for p in products if p.get("name")}
-
-    updated_items = []
-    for item in items:
-        product_name = (item.get("product_name") or "").lower()
-        if product_name and product_name in product_map:
-            item["product_id"] = product_map[product_name].get("id")
-            item["product_sku"] = product_map[product_name].get("sku")
-        updated_items.append(item)
-
-    return {"calendar_items": updated_items}
+        logger.error("assign_products failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"assign_products failed: {exc}"]}
 
 
 async def store_calendar(state: PlanningState) -> dict[str, Any]:

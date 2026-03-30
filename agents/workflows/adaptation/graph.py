@@ -29,7 +29,7 @@ builder.set_entry_point("load_adaptations")
 builder.add_conditional_edges("load_adaptations", _check_failed, {"end": END, "continue": "apply_tier1"})
 builder.add_conditional_edges("apply_tier1", _check_failed, {"end": END, "continue": "propose_tier2"})
 builder.add_conditional_edges("propose_tier2", _check_failed, {"end": END, "continue": "propose_tier3"})
-builder.add_edge("propose_tier3", END)
+builder.add_conditional_edges("propose_tier3", _check_failed, {"end": END, "continue": END})
 
 # Compile with checkpointer to support interrupt/resume at tier2 and tier3
 adaptation_graph = builder.compile(checkpointer=MemorySaver())

@@ -39,7 +39,7 @@ builder.add_conditional_edges("define_pillars", _check_failed, {"end": END, "con
 builder.add_conditional_edges("define_audiences", _check_failed, {"end": END, "continue": "plan_cadence"})
 builder.add_conditional_edges("plan_cadence", _check_failed, {"end": END, "continue": "generate_themes"})
 builder.add_conditional_edges("generate_themes", _check_failed, {"end": END, "continue": "human_review"})
-builder.add_edge("human_review", END)
+builder.add_conditional_edges("human_review", _check_failed, {"end": END, "continue": END})
 
 # Compile with checkpointer to support interrupt/resume
 strategy_graph = builder.compile(checkpointer=MemorySaver())

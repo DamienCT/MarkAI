@@ -47,6 +47,6 @@ builder.add_conditional_edges("generate_background", _check_failed, {"end": END,
 builder.add_conditional_edges("apply_branding", _check_failed, {"end": END, "continue": "adapt_platforms"})
 builder.add_conditional_edges("adapt_platforms", _check_failed, {"end": END, "continue": "generate_mockups"})
 builder.add_conditional_edges("generate_mockups", _check_failed, {"end": END, "continue": "store_content"})
-builder.add_edge("store_content", END)
+builder.add_conditional_edges("store_content", _check_failed, {"end": END, "continue": END})
 
 content_graph = builder.compile()
