@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── MARKAI VPS Redeploy Script ──────────────────────────────────────
+# Run this ON the VPS: bash /var/www/markai/scripts/vps-redeploy.sh
+
+cd /var/www/markai
+
+echo "=== Step 1: Pull latest code ==="
+git pull origin main
+
+echo "=== Step 2: Generate and add missing env vars ==="
+ENV_FILE=".env"
+
+add_env_if_missing() {
+  local key="$1"
+  local value="$2"
+  if ! grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    echo "${key}=${value}" >> "$ENV_FILE"
+    echo "  Added ${key}"
+  else
+    echo "  ${key} already set"
+  fi
+}
+
+# Generate random passwords
+RAND1=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)
+RAND2=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)
+RAND3=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
+
+add_env_if_missing "QDRANT_API_KEY" "$RAND1"
+add_env_if_missing "VALKEY_PASSWORD" "$RAND2"
+add_env_if_missing "GF_SECURITY_ADMIN_PASSWORD" "$RAND3"
+
+# Traefik dashboard auth — generate htpasswd format (user: admin)
+if ! grep -q "^TRAEFIK_DASHBOARD_AUTH=" "$ENV_FILE" 2>/dev/null; then
+  TRAEFIK_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+  # Use openssl for htpasswd-compatible bcrypt
+  if command -v htpasswd &>/dev/null; then
+    HTPASSWD=$(htpasswd -nbB admin "$TRAEFIK_PASS")
+  else
+    # Fallback: apr1 hash via openssl
+    HTPASSWD=$(printf "admin:$(openssl passwd -apr1 "$TRAEFIK_PASS")")
+  fi
+  echo "TRAEFIK_DASHBOARD_AUTH=${HTPASSWD}" >> "$ENV_FILE"
+  echo "  Added TRAEFIK_DASHBOARD_AUTH (password: ${TRAEFIK_PASS} — save this!)"
+else
+  echo "  TRAEFIK_DASHBOARD_AUTH already set"
+fi
+
+echo ""
+echo "=== Step 3: Stop everything ==="
+docker compose -f docker-compose.yml -f docker-compose.vps.yml down
+
+echo "=== Step 4: Wipe DB volumes (schema changes require fresh init) ==="
+docker volume rm markai_pgdata markai_qdrant_data 2>/dev/null || true
+
+echo "=== Step 5: Rebuild all services ==="
+docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend frontend agents browser-worker notifications
+
+echo "=== Step 6: Start everything ==="
+docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
+
+echo "=== Step 7: Wait for services ==="
+echo "Waiting 30s for services to start..."
+sleep 30
+
+echo "=== Step 8: Service status ==="
+docker compose -f docker-compose.yml -f docker-compose.vps.yml ps
+
+echo "=== Step 9: Health checks ==="
+echo "Backend health:"
+curl -sf http://localhost:8000/health || echo "FAILED"
+
+echo ""
+echo "Backend metrics:"
+curl -sf http://localhost:8000/metrics 2>/dev/null | head -3 || echo "FAILED"
+
+echo ""
+echo "=== Step 10: Recent logs (last 20 lines each) ==="
+echo "--- backend ---"
+docker compose -f docker-compose.yml -f docker-compose.vps.yml logs --tail=20 backend
+
+echo "--- agents ---"
+docker compose -f docker-compose.yml -f docker-compose.vps.yml logs --tail=20 agents
+
+echo "--- frontend ---"
+docker compose -f docker-compose.yml -f docker-compose.vps.yml logs --tail=20 frontend
+
+echo ""
+echo "=== Deploy complete ==="
