@@ -131,16 +131,23 @@ export function OverviewTab({
               {(() => {
                 if (brand.status === 'onboarding') {
                   return (
-                    <span className="text-sm text-orange-600 dark:text-orange-400">
-                      Status: Setup Required
+                    <span className={`text-sm ${onboardingProgress.isComplete ? "text-green-600 dark:text-green-400" : "text-orange-600 dark:text-orange-400"}`}>
+                      Status: {onboardingProgress.isComplete ? "Ready to activate" : "Setup Required"}
                     </span>
                   );
                 }
                 if (brand.status === 'activating') {
+                  const runningRun = pipelineRuns.find((r) => r.status === "running");
+                  const completedCount = pipelineRuns.filter((r) => r.status === "completed").length;
+                  const statusDetail = runningRun
+                    ? `Running ${runningRun.agent_type}...`
+                    : completedCount > 0
+                    ? `${completedCount} stage${completedCount !== 1 ? "s" : ""} done`
+                    : "Setting up...";
                   return (
                     <span className="text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      Status: Setting up...
+                      Status: {statusDetail}
                     </span>
                   );
                 }
@@ -156,13 +163,27 @@ export function OverviewTab({
                   </span>
                 );
               })()}
-              {brand.status === 'onboarding' ? (
+              {brand.status === 'onboarding' && !onboardingProgress.isComplete ? (
                 <Button
                   size="sm"
                   variant="outline"
                   disabled
                 >
                   <Play className="mr-1.5 h-4 w-4" />
+                  Start Content Factory
+                </Button>
+              ) : brand.status === 'onboarding' && onboardingProgress.isComplete ? (
+                <Button
+                  size="sm"
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                  disabled={togglingFactory}
+                  onClick={() => onToggleContentFactory(true)}
+                >
+                  {togglingFactory ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Play className="mr-1.5 h-4 w-4" />
+                  )}
                   Start Content Factory
                 </Button>
               ) : brand.status === 'activating' ? (
@@ -207,7 +228,7 @@ export function OverviewTab({
           </div>
         </CardHeader>
         <CardContent>
-          {brand.status === 'onboarding' && (
+          {brand.status === 'onboarding' && !onboardingProgress.isComplete && (
             <div className="flex flex-col items-center justify-center py-8 text-center">
               <Rocket className="h-10 w-10 text-orange-500 mb-3" />
               <p className="text-sm font-medium">Complete setup to start your Content Factory</p>
@@ -216,16 +237,16 @@ export function OverviewTab({
               </p>
             </div>
           )}
-          {brand.status === 'activating' && (
+          {brand.status === 'onboarding' && onboardingProgress.isComplete && pipelineRuns.length === 0 && (
             <div className="flex flex-col items-center justify-center py-8 text-center">
-              <Loader2 className="h-10 w-10 text-blue-500 animate-spin mb-3" />
-              <p className="text-sm font-medium">Your Content Factory is being set up...</p>
+              <Rocket className="h-10 w-10 text-green-500 mb-3" />
+              <p className="text-sm font-medium">Ready to launch your Content Factory</p>
               <p className="text-xs text-muted-foreground mt-1">
-                AI agents are initializing. This may take a few moments.
+                Setup is complete. Click Start Content Factory above to begin automated content generation.
               </p>
             </div>
           )}
-          {brand.status !== 'onboarding' && brand.status !== 'activating' && (() => {
+          {(brand.status !== 'onboarding' || pipelineRuns.length > 0) && (() => {
             const PIPELINE_STAGES = [
               { key: "research", label: "Research", icon: <Search className="h-6 w-6" /> },
               { key: "strategy", label: "Strategy", icon: <Target className="h-6 w-6" /> },
