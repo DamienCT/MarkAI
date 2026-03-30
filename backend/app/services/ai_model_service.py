@@ -251,6 +251,8 @@ async def discover_models() -> dict[str, int]:
             }
             if created_ts:
                 capabilities["created"] = created_ts
+            if len(category_slugs) > 1:
+                capabilities["additional_categories"] = category_slugs[1:]
 
             if model_id in existing_models:
                 # Update existing model
