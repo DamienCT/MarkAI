@@ -14,6 +14,7 @@ from shared.tools.database import (
     get_brand_config,
     get_latest_strategy,
     get_products,
+    get_recent_calendar_items,
     store_calendar_items,
     store_strategy,
 )
@@ -54,9 +55,18 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
             strategy_data = json.loads(strategy_data)
         except (json.JSONDecodeError, TypeError):
             strategy_data = {}
+
+    # Load existing calendar items for deduplication context
+    try:
+        existing_items = await get_recent_calendar_items(brand_id, days=90)
+    except Exception as exc:
+        logger.warning("Failed to load existing calendar items for brand %s: %s", brand_id, exc)
+        existing_items = []
+
     return {
         "strategy": strategy_data,
         "enabled_channels": enabled_channels,
+        "existing_items": existing_items,
     }
 
 
@@ -80,6 +90,18 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     # Load brand info for strategy document (get_brand returns name, etc.)
     brand = await get_brand(brand_id) or {}
 
+    # Load products for product-aware campaign planning
+    try:
+        products = await get_products(brand_id)
+    except Exception as exc:
+        logger.warning("Failed to load products for brand %s: %s", brand_id, exc)
+        products = []
+    product_summary = sanitize_json_for_prompt(
+        [{"name": p.get("name"), "category": p.get("category"), "vendor": p.get("vendor"),
+          "description": (p.get("description") or "")[:200]} for p in products[:50]],
+        max_length=3000,
+    )
+
     channels_str = ", ".join(enabled_channels)
     prompt = [
         {"role": "system", "content": (
@@ -90,9 +112,17 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
             f"Generate content ONLY for these platforms: {channels_str}. "
             "Do NOT generate content for any other platforms. "
             "Each campaign should have: name, description, start_date, "
-            "end_date, pillar, platforms, goal, kpis. Return a JSON array."
+            "end_date, pillar, platforms, goal, kpis, "
+            "target_metrics (object with reach, engagement_rate targets), "
+            "creative_direction (2-3 sentences describing the visual/tonal approach), "
+            "content_format_mix (object with content_type percentages e.g. {reel: 40, carousel: 30, static: 20, story: 10}), "
+            "target_audience (primary persona name from strategy). "
+            "Return a JSON array."
         )},
-        {"role": "user", "content": f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}"},
+        {"role": "user", "content": (
+            f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}\n\n"
+            f"Available Products:\n{product_summary}"
+        )},
     ]
     result = await chat_completion(prompt, temperature=0.5)
     campaigns = parse_llm_json(result, fallback=[{"name": "General Campaign", "description": result}])
@@ -110,16 +140,16 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
         )},
         {"role": "user", "content": (
             f"Brand: {sanitize_for_prompt(brand.get('name', '') or '')}\n"
-            f"Positioning: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=1000)}\n"
-            f"Pillars: {sanitize_json_for_prompt(strategy.get('pillars', []), max_length=1000)}\n"
-            f"Audiences: {sanitize_json_for_prompt(strategy.get('audiences', []), max_length=1000)}\n"
-            f"Cadence: {sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=500)}\n"
-            f"Themes: {sanitize_json_for_prompt(strategy.get('themes', []), max_length=1000)}\n"
+            f"Positioning: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=3000)}\n"
+            f"Pillars: {sanitize_json_for_prompt(strategy.get('pillars', []), max_length=3000)}\n"
+            f"Audiences: {sanitize_json_for_prompt(strategy.get('audiences', []), max_length=3000)}\n"
+            f"Cadence: {sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=3000)}\n"
+            f"Themes: {sanitize_json_for_prompt(strategy.get('themes', []), max_length=3000)}\n"
             f"Enabled Channels: {channels_str}\n"
             f"Generate a full 12-month content calendar strategy document."
         )},
     ]
-    strategy_document = await chat_completion(strategy_doc_prompt, temperature=0.6)
+    strategy_document = await chat_completion(strategy_doc_prompt, temperature=0.6, max_tokens=16384)
     logger.info("Generated year-long strategy document for brand %s (%d chars)", brand_id, len(strategy_document))
 
     return {"campaigns": campaigns, "strategy_document": strategy_document}
@@ -141,6 +171,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     strategy_document = state.get("strategy_document", "")
     scope_weeks = state.get("scope_weeks", 4)
     enabled_channels = state.get("enabled_channels", ["instagram"])
+    existing_items = state.get("existing_items", [])
     start_date_dt = datetime.now(timezone.utc)
     end_date_dt = start_date_dt + timedelta(weeks=scope_weeks)
     start_date = start_date_dt.strftime("%Y-%m-%d")
@@ -154,6 +185,17 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         {"name": p.get("name"), "sku": p.get("sku"), "vendor": p.get("vendor")}
         for p in products[:50]
     ]
+
+    # Build deduplication context from existing calendar items
+    existing_summary = "\n".join(
+        f"{i.get('scheduled_at', '')[:10] if isinstance(i.get('scheduled_at'), str) else str(i.get('scheduled_at', ''))[:10]} | "
+        f"{i.get('channel', '')} | {i.get('theme') or i.get('title', '')}"
+        for i in existing_items[:50]
+    )
+    dedup_context = (
+        f"EXISTING CALENDAR ITEMS (do NOT duplicate themes or topics):\n{existing_summary}\n\n"
+        if existing_summary else ""
+    )
 
     channels_str = ", ".join(enabled_channels)
     prompt = [
@@ -170,20 +212,29 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
             f"so generate exactly {total_items} items total. "
             "Distribute content evenly — do NOT cluster posts on certain days or skip weekends. "
             "Generate specific calendar items for each campaign. "
-            "Each item should have: campaign_name, scheduled_date (YYYY-MM-DD), platform "
+            "Each item MUST include ALL of these fields: "
+            "campaign_name, scheduled_date (YYYY-MM-DD), platform "
             f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
-            "theme, product_name (from available products if relevant, else null), brief. "
+            "pillar (which content pillar from strategy), "
+            "theme (monthly theme name), "
+            "weekly_sub_theme (specific sub-theme for this week), "
+            "target_audience (primary persona for this post), "
+            "content_brief (2-3 sentences describing EXACTLY what this post should communicate), "
+            "product_name (from available products if relevant, else null), "
+            "visual_direction (1 sentence on visual style for the image), "
+            "cta_type (what action to drive: shop, learn, engage, or share). "
             "Return a JSON array."
         )},
         {"role": "user", "content": (
+            f"{dedup_context}"
             f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=5000)}\n\n"
             f"Strategy cadence:\n{sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=2000)}\n\n"
             f"Strategy document (use as reference for themes and seasonal hooks):\n"
-            f"{sanitize_for_prompt(strategy_document, max_length=3000)}\n\n"
+            f"{sanitize_for_prompt(strategy_document, max_length=5000)}\n\n"
             f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=3000)}"
         )},
     ]
-    result = await chat_completion(prompt, temperature=0.5, max_tokens=8192)
+    result = await chat_completion(prompt, temperature=0.5, max_tokens=16384)
     items = parse_llm_json(result, fallback=[])
     return {"calendar_items": items}
 
@@ -226,12 +277,18 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             "brand_id": brand_id,
             "campaign_id": None,
             "title": item.get("theme") or item.get("campaign_name", ""),
-            "description": item.get("brief", ""),
+            "description": item.get("content_brief") or item.get("brief", ""),
             "channel": item.get("platform", "instagram"),
             "scheduled_at": item.get("scheduled_date"),
             "content_type": item.get("content_type"),
             "product_id": item.get("product_id"),
             "theme": item.get("theme"),
+            "pillar": item.get("pillar"),
+            "target_audience": item.get("target_audience"),
+            "weekly_sub_theme": item.get("weekly_sub_theme"),
+            "content_brief": item.get("content_brief"),
+            "visual_direction": item.get("visual_direction"),
+            "cta_type": item.get("cta_type"),
             "status": "planned",
         })
 

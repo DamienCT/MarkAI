@@ -80,6 +80,9 @@ interface OutputPayload {
   recommendations?: string[];
   // Strategy fields
   positioning?: string;
+  brand_archetype?: string;
+  emotional_territory?: string;
+  competitive_differentiation?: { dimension?: string; brand?: string; competitors?: string }[];
   content_pillars?: ContentPillar[];
   target_audiences?: TargetAudience[];
   posting_cadence?: Record<string, unknown> | string;
@@ -103,6 +106,11 @@ interface ContentPillar {
   topics?: string[];
   content_types?: string[];
   frequency?: string;
+  audience_alignment?: string;
+  seasonal_emphasis?: string;
+  platform_fit?: string;
+  visual_style?: string;
+  pillar_rationale?: string;
 }
 
 interface TargetAudience {
@@ -136,6 +144,7 @@ interface Campaign {
 
 interface MarketGap {
   category?: string;
+  title?: string;
   priority?: string;
   description?: string;
   opportunity?: string;
@@ -143,6 +152,11 @@ interface MarketGap {
   tier?: string;
   confidence_score?: number;
   evidence?: string[];
+  estimated_impact?: string;
+  implementation_effort?: string;
+  recommended_timeline?: string;
+  target_audience?: string;
+  success_metrics?: string[];
 }
 
 interface Persona {
@@ -164,17 +178,26 @@ interface Persona {
   preferred_platforms?: string[];
   pain_points?: string[];
   buying_triggers?: string[];
-  content_preferences?: string[];
+  content_preferences?: string[] | {
+    formats?: string[];
+    topics?: string[];
+    tone?: string;
+    language_mix?: string;
+  };
+  best_engagement_times?: string[];
+  content_avoidance?: string[];
   description?: string;
 }
 
 interface CompetitorAnalysis {
   name?: string;
   website_url?: string;
+  positioning?: string;
   strengths?: string[];
   weaknesses?: string[];
   social_presence?: Record<string, string>;
   content_strategy?: string;
+  threat_level?: string;
   notes?: string;
 }
 
@@ -201,6 +224,21 @@ function priorityColor(priority: string | undefined): string {
       return "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300";
     case "medium":
       return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300";
+    case "low":
+      return "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300";
+    default:
+      return "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300";
+  }
+}
+
+function threatLevelColor(level: string | undefined): string {
+  if (!level) return "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300";
+  switch (level.toLowerCase()) {
+    case "high":
+    case "critical":
+      return "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300";
+    case "medium":
+      return "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300";
     case "low":
       return "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300";
     default:
@@ -618,6 +656,10 @@ export default function ReportPage() {
                       )}
                     </div>
 
+                    {gap.title && (
+                      <h5 className="text-sm font-semibold">{gap.title}</h5>
+                    )}
+
                     {gap.description && (
                       <p className="text-sm leading-relaxed">{gap.description}</p>
                     )}
@@ -672,6 +714,38 @@ export default function ReportPage() {
                         <span className="text-xs text-muted-foreground">
                           {Math.round(gap.confidence_score * 100)}% confidence
                         </span>
+                      </div>
+                    )}
+
+                    {/* Enriched gap fields */}
+                    {(gap.estimated_impact || gap.implementation_effort || gap.recommended_timeline || gap.target_audience) && (
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {gap.estimated_impact && (
+                          <Badge variant="outline" className="text-xs">Impact: {gap.estimated_impact}</Badge>
+                        )}
+                        {gap.implementation_effort && (
+                          <Badge variant="outline" className="text-xs">Effort: {gap.implementation_effort}</Badge>
+                        )}
+                        {gap.recommended_timeline && (
+                          <Badge variant="outline" className="text-xs">Timeline: {gap.recommended_timeline}</Badge>
+                        )}
+                        {gap.target_audience && (
+                          <Badge variant="secondary" className="text-xs">Audience: {gap.target_audience}</Badge>
+                        )}
+                      </div>
+                    )}
+
+                    {gap.success_metrics && gap.success_metrics.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-muted-foreground">Success Metrics</p>
+                        <ul className="text-xs text-muted-foreground space-y-0.5">
+                          {gap.success_metrics.map((m, i) => (
+                            <li key={i} className="flex items-start gap-1.5">
+                              <span className="text-primary mt-0.5 shrink-0">&bull;</span>
+                              {m}
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     )}
                   </div>
@@ -875,12 +949,12 @@ export default function ReportPage() {
                       )}
 
                     {/* Content preferences */}
-                    {persona.content_preferences &&
-                      persona.content_preferences.length > 0 && (
-                        <div className="space-y-1.5">
-                          <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                            <Heart className="h-3 w-3" /> Content Preferences
-                          </h5>
+                    {persona.content_preferences && (
+                      <div className="space-y-1.5">
+                        <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                          <Heart className="h-3 w-3" /> Content Preferences
+                        </h5>
+                        {Array.isArray(persona.content_preferences) ? (
                           <div className="flex flex-wrap gap-1.5">
                             {persona.content_preferences.map((cp, i) => (
                               <Badge key={i} variant="outline" className="text-xs">
@@ -888,8 +962,67 @@ export default function ReportPage() {
                               </Badge>
                             ))}
                           </div>
+                        ) : (
+                          <div className="space-y-1 text-sm">
+                            {persona.content_preferences.formats && persona.content_preferences.formats.length > 0 && (
+                              <div>
+                                <span className="text-xs font-medium text-muted-foreground">Formats: </span>
+                                <span>{persona.content_preferences.formats.join(", ")}</span>
+                              </div>
+                            )}
+                            {persona.content_preferences.topics && persona.content_preferences.topics.length > 0 && (
+                              <div>
+                                <span className="text-xs font-medium text-muted-foreground">Topics: </span>
+                                <span>{persona.content_preferences.topics.join(", ")}</span>
+                              </div>
+                            )}
+                            {persona.content_preferences.tone && (
+                              <div>
+                                <span className="text-xs font-medium text-muted-foreground">Tone: </span>
+                                <span>{persona.content_preferences.tone}</span>
+                              </div>
+                            )}
+                            {persona.content_preferences.language_mix && (
+                              <div>
+                                <span className="text-xs font-medium text-muted-foreground">Language Mix: </span>
+                                <span>{persona.content_preferences.language_mix}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Best engagement times */}
+                    {persona.best_engagement_times && persona.best_engagement_times.length > 0 && (
+                      <div className="space-y-1.5">
+                        <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                          <Clock className="h-3 w-3" /> Best Engagement Times
+                        </h5>
+                        <div className="flex flex-wrap gap-1.5">
+                          {persona.best_engagement_times.map((t, i) => (
+                            <Badge key={i} variant="secondary" className="text-xs">{t}</Badge>
+                          ))}
                         </div>
-                      )}
+                      </div>
+                    )}
+
+                    {/* Content avoidance */}
+                    {persona.content_avoidance && persona.content_avoidance.length > 0 && (
+                      <div className="space-y-1.5">
+                        <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" /> Content to Avoid
+                        </h5>
+                        <ul className="text-sm space-y-1">
+                          {persona.content_avoidance.map((ca, i) => (
+                            <li key={i} className="flex items-start gap-1.5 text-muted-foreground">
+                              <span className="text-orange-500 mt-0.5 shrink-0">&bull;</span>
+                              {ca}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -927,9 +1060,16 @@ export default function ReportPage() {
                     className="rounded-lg border p-4 space-y-3"
                   >
                     <div className="flex items-center justify-between">
-                      <h4 className="font-semibold">
-                        {comp.name || `Competitor ${idx + 1}`}
-                      </h4>
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-semibold">
+                          {comp.name || `Competitor ${idx + 1}`}
+                        </h4>
+                        {comp.threat_level && (
+                          <Badge className={threatLevelColor(comp.threat_level)}>
+                            {comp.threat_level} threat
+                          </Badge>
+                        )}
+                      </div>
                       {comp.website_url && (
                         <a
                           href={comp.website_url}
@@ -942,6 +1082,13 @@ export default function ReportPage() {
                         </a>
                       )}
                     </div>
+
+                    {comp.positioning && (
+                      <p className="text-sm">
+                        <span className="text-xs font-semibold text-muted-foreground">Positioning: </span>
+                        {comp.positioning}
+                      </p>
+                    )}
 
                     {comp.content_strategy && (
                       <p className="text-sm text-muted-foreground">
@@ -1118,12 +1265,55 @@ export default function ReportPage() {
               </CardTitle>
               <CardDescription>Strategic market positioning statement</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-4">
               <div className="prose prose-sm max-w-none dark:prose-invert">
                 <p className="text-sm leading-relaxed whitespace-pre-line">
                   {typeof positioning === "string" ? positioning : JSON.stringify(positioning, null, 2)}
                 </p>
               </div>
+
+              {(output.brand_archetype || output.emotional_territory) && (
+                <div className="flex flex-wrap gap-3">
+                  {output.brand_archetype && (
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs font-semibold text-muted-foreground mb-1">Brand Archetype</p>
+                      <p className="text-sm font-medium">{output.brand_archetype}</p>
+                    </div>
+                  )}
+                  {output.emotional_territory && (
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs font-semibold text-muted-foreground mb-1">Emotional Territory</p>
+                      <p className="text-sm font-medium">{output.emotional_territory}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {output.competitive_differentiation && output.competitive_differentiation.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold">Competitive Differentiation</h4>
+                  <div className="rounded-md border overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-muted/50">
+                          <th className="text-left p-2 font-semibold text-muted-foreground">Dimension</th>
+                          <th className="text-left p-2 font-semibold text-muted-foreground">Brand</th>
+                          <th className="text-left p-2 font-semibold text-muted-foreground">Competitors</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {output.competitive_differentiation.map((cd, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="p-2 font-medium">{cd.dimension}</td>
+                            <td className="p-2 text-muted-foreground">{cd.brand}</td>
+                            <td className="p-2 text-muted-foreground">{cd.competitors}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -1174,6 +1364,25 @@ export default function ReportPage() {
                       <p className="text-xs text-muted-foreground flex items-center gap-1">
                         <CalendarDays className="h-3 w-3" /> {pillar.frequency}
                       </p>
+                    )}
+                    {typeof pillar === "object" && pillar.pillar_rationale && (
+                      <p className="text-xs text-muted-foreground italic">{pillar.pillar_rationale}</p>
+                    )}
+                    {typeof pillar === "object" && (pillar.audience_alignment || pillar.seasonal_emphasis || pillar.platform_fit || pillar.visual_style) && (
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {pillar.audience_alignment && (
+                          <Badge variant="outline" className="text-[10px]">Audience: {pillar.audience_alignment}</Badge>
+                        )}
+                        {pillar.seasonal_emphasis && (
+                          <Badge variant="outline" className="text-[10px]">Season: {pillar.seasonal_emphasis}</Badge>
+                        )}
+                        {pillar.platform_fit && (
+                          <Badge variant="outline" className="text-[10px]">Platform: {pillar.platform_fit}</Badge>
+                        )}
+                        {pillar.visual_style && (
+                          <Badge variant="outline" className="text-[10px]">Visual: {pillar.visual_style}</Badge>
+                        )}
+                      </div>
                     )}
                   </div>
                 ))}

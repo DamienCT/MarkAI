@@ -141,6 +141,13 @@ CREATE TABLE calendar_items (
                     CHECK (status IN ('queued', 'working', 'in_review', 'reworking',
                                        'approved', 'scheduled', 'publishing', 'published', 'failed')),
     assigned_to     UUID REFERENCES users(id),
+    pillar          VARCHAR(100),
+    theme           VARCHAR(255),
+    target_audience VARCHAR(255),
+    weekly_sub_theme VARCHAR(255),
+    content_brief   TEXT,
+    visual_direction TEXT,
+    cta_type        VARCHAR(50),
     product_ids     UUID[] DEFAULT '{}',
     tags            TEXT[] DEFAULT '{}',
     priority        SMALLINT DEFAULT 0 CHECK (priority BETWEEN 0 AND 5),
@@ -152,6 +159,9 @@ CREATE TABLE calendar_items (
 CREATE INDEX idx_calendar_items_brand_id ON calendar_items (brand_id);
 CREATE INDEX idx_calendar_items_campaign_id ON calendar_items (campaign_id);
 CREATE INDEX idx_calendar_items_channel ON calendar_items (channel);
+CREATE INDEX idx_calendar_items_pillar ON calendar_items (pillar);
+CREATE INDEX idx_calendar_items_theme ON calendar_items (theme);
+CREATE INDEX idx_calendar_items_brand_scheduled ON calendar_items (brand_id, scheduled_at DESC);
 CREATE INDEX idx_calendar_items_status ON calendar_items (status);
 CREATE INDEX idx_calendar_items_scheduled_at ON calendar_items (scheduled_at);
 CREATE INDEX idx_calendar_items_assigned_to ON calendar_items (assigned_to);

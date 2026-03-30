@@ -34,6 +34,13 @@ class CalendarItem(Base):
     assigned_to: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
+    pillar: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    theme: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_audience: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    weekly_sub_theme: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_brief: Mapped[str | None] = mapped_column(Text, nullable=True)
+    visual_direction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cta_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     product_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=True)
     tags: Mapped[list | None] = mapped_column(ARRAY(String), nullable=True)
     priority: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)

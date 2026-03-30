@@ -132,7 +132,7 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
           style.text,
           brandColor,
         )}
-        title={`${item.brand_name ? `[${item.brand_name}] ` : ""}${item.title || "Untitled"} \u2014 ${style.label}${item.channel ? ` (${item.channel})` : ""}`}
+        title={`${item.brand_name ? `[${item.brand_name}] ` : ""}${item.title || "Untitled"} \u2014 ${style.label}${item.channel ? ` (${item.channel})` : ""}${item.pillar ? ` | Pillar: ${item.pillar}` : ""}${item.target_audience ? ` | Audience: ${item.target_audience}` : ""}`}
       >
         <div className="flex items-center gap-1">
           {item.channel && (
@@ -292,6 +292,20 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
                     </div>
                     {item.brand_name && (
                       <div className="text-[10px] opacity-60 mt-0.5">{item.brand_name}</div>
+                    )}
+                    {(item.pillar || item.target_audience) && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {item.pillar && (
+                          <span className="inline-flex items-center rounded px-1 py-px text-[9px] bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300">
+                            {item.pillar}
+                          </span>
+                        )}
+                        {item.target_audience && (
+                          <span className="inline-flex items-center rounded px-1 py-px text-[9px] bg-cyan-100 text-cyan-700 dark:bg-cyan-900 dark:text-cyan-300">
+                            {item.target_audience}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 );

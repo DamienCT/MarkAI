@@ -14,6 +14,13 @@ class CalendarItemBase(BaseModel):
     scheduled_at: datetime | None = None
     status: str = "queued"
     assigned_to: uuid.UUID | None = None
+    pillar: str | None = None
+    theme: str | None = None
+    target_audience: str | None = None
+    weekly_sub_theme: str | None = None
+    content_brief: str | None = None
+    visual_direction: str | None = None
+    cta_type: str | None = None
     product_ids: list[uuid.UUID] | None = None
     tags: list[str] | None = None
     priority: int | None = None
@@ -32,6 +39,13 @@ class CalendarItemUpdate(BaseModel):
     scheduled_at: datetime | None = None
     status: str | None = None
     assigned_to: uuid.UUID | None = None
+    pillar: str | None = None
+    theme: str | None = None
+    target_audience: str | None = None
+    weekly_sub_theme: str | None = None
+    content_brief: str | None = None
+    visual_direction: str | None = None
+    cta_type: str | None = None
     product_ids: list[uuid.UUID] | None = None
     tags: list[str] | None = None
     priority: int | None = None

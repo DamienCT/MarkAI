@@ -151,6 +151,10 @@ export interface CalendarItem {
   product_ids?: string[];
   tags?: string[];
   priority?: number;
+  pillar?: string;
+  theme?: string;
+  target_audience?: string;
+  content_brief?: string;
   created_by?: string | null;
   created_at?: string;
   updated_at?: string;

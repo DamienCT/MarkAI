@@ -18,6 +18,7 @@ class PlanningState(TypedDict, total=False):
 
     # Loaded data
     strategy: dict[str, Any]
+    existing_items: list[dict[str, Any]]  # Recent calendar items for deduplication
 
     # Generated
     campaigns: list[dict[str, Any]]

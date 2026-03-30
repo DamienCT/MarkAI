@@ -382,9 +382,11 @@ async def store_calendar_items(
             await session.execute(
                 text(
                     "INSERT INTO calendar_items (id, brand_id, campaign_id, title, description, "
-                    "item_type, channel, scheduled_at, status, product_ids) "
+                    "item_type, channel, scheduled_at, status, product_ids, "
+                    "pillar, theme, target_audience, weekly_sub_theme, content_brief, visual_direction, cta_type) "
                     "VALUES (:id, :brand_id, :campaign_id, :title, :description, "
-                    ":item_type, :channel, :scheduled_at, 'queued', :product_ids)"
+                    ":item_type, :channel, :scheduled_at, 'queued', :product_ids, "
+                    ":pillar, :theme, :target_audience, :weekly_sub_theme, :content_brief, :visual_direction, :cta_type)"
                 ),
                 {
                     "id": item_id,
@@ -396,6 +398,13 @@ async def store_calendar_items(
                     "channel": channel,
                     "scheduled_at": scheduled_at_val,
                     "product_ids": [item["product_id"]] if item.get("product_id") else None,
+                    "pillar": item.get("pillar"),
+                    "theme": item.get("theme"),
+                    "target_audience": item.get("target_audience"),
+                    "weekly_sub_theme": item.get("weekly_sub_theme"),
+                    "content_brief": item.get("content_brief"),
+                    "visual_direction": item.get("visual_direction"),
+                    "cta_type": item.get("cta_type"),
                 },
             )
             ids.append((item_id, scheduled_at_val))
@@ -519,3 +528,143 @@ async def execute_update(query: str, params: dict[str, Any] | None = None) -> in
         result = await session.execute(text(query), params or {})
         await session.commit()
         return result.rowcount
+
+
+# ── Recent calendar items helper ─────────────────────────────────────────
+
+async def get_recent_calendar_items(brand_id: str, days: int = 90, limit: int = 50) -> list[dict[str, Any]]:
+    """Return recent calendar items for a brand within the last N days."""
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT id, title, theme, pillar, target_audience, channel, scheduled_at, status "
+                "FROM calendar_items WHERE brand_id = :brand_id "
+                "AND scheduled_at > NOW() - make_interval(days => :days) "
+                "ORDER BY scheduled_at DESC LIMIT :limit"
+            ),
+            {"brand_id": brand_id, "days": days, "limit": limit},
+        )
+        return [dict(r) for r in result.mappings().all()]
+
+
+# ── Brand Intelligence ───────────────────────────────────────────────────
+
+def _parse_payload(raw: Any) -> dict[str, Any]:
+    """Parse an output_payload that may be a JSON string or already a dict."""
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
+    """Build consolidated context package for all AI workflows.
+
+    Loads brand config, products, latest research/strategy/planning outputs,
+    recent calendar items, and top-performing content into a single dict.
+    """
+    # 1. Brand config
+    brand = await get_brand(brand_id)
+    if not brand:
+        return {}
+
+    brand_guidelines = brand.get("brand_guidelines", {})
+    if isinstance(brand_guidelines, str):
+        try:
+            brand_guidelines = json.loads(brand_guidelines)
+        except (json.JSONDecodeError, TypeError):
+            brand_guidelines = {}
+
+    # Derive enabled channels from brand_guidelines
+    channels_cfg = brand_guidelines.get("channels", {})
+    enabled_channels = [
+        ch for ch, cfg in channels_cfg.items()
+        if isinstance(cfg, dict) and cfg.get("enabled")
+    ]
+    if not enabled_channels:
+        enabled_channels = ["instagram"]
+
+    brand_info = {
+        "name": brand.get("name", ""),
+        "description": brand.get("description", ""),
+        "website_url": brand.get("website_url", ""),
+        "industry": brand.get("industry", ""),
+        "tone_of_voice": brand.get("tone_of_voice", ""),
+        "brand_guidelines": brand_guidelines,
+        "enabled_channels": enabled_channels,
+    }
+
+    # 2. Active products
+    products = await get_products(brand_id)
+
+    # 3. Latest completed research
+    research_run = await get_latest_research(brand_id)
+    research_data = _parse_payload((research_run or {}).get("output_payload"))
+
+    # 4. Latest completed strategy
+    strategy_run = await get_latest_strategy(brand_id)
+    strategy_data = _parse_payload((strategy_run or {}).get("output_payload"))
+
+    # 5. Latest completed planning
+    async with async_session_factory() as session:
+        planning_result = await session.execute(
+            text(
+                "SELECT output_payload FROM agent_runs WHERE brand_id = :brand_id "
+                "AND agent_type = 'planning' AND status = 'completed' "
+                "ORDER BY completed_at DESC LIMIT 1"
+            ),
+            {"brand_id": brand_id},
+        )
+        planning_row = planning_result.mappings().first()
+    planning_data = _parse_payload((planning_row or {}).get("output_payload") if planning_row else None)
+
+    # 6. Latest content_calendar_strategy
+    async with async_session_factory() as session:
+        strategy_doc_result = await session.execute(
+            text(
+                "SELECT output_payload FROM agent_runs WHERE brand_id = :brand_id "
+                "AND agent_type = 'content_calendar_strategy' AND status = 'completed' "
+                "ORDER BY completed_at DESC LIMIT 1"
+            ),
+            {"brand_id": brand_id},
+        )
+        strategy_doc_row = strategy_doc_result.mappings().first()
+    strategy_doc_data = _parse_payload((strategy_doc_row or {}).get("output_payload") if strategy_doc_row else None)
+
+    # 7. Recent calendar items (last 90 days)
+    recent_posts = await get_recent_calendar_items(brand_id, days=90, limit=50)
+
+    # 8. Top performing content (last 90 days)
+    async with async_session_factory() as session:
+        top_result = await session.execute(
+            text(
+                "SELECT ci.title, ci.channel, em.engagement_rate, em.likes, em.comments, "
+                "LEFT(c.caption, 200) AS caption_snippet "
+                "FROM calendar_items ci "
+                "JOIN engagement_metrics em ON em.calendar_item_id = ci.id "
+                "LEFT JOIN content c ON c.calendar_item_id = ci.id AND c.is_current = true "
+                "WHERE ci.brand_id = :brand_id "
+                "AND ci.scheduled_at > NOW() - INTERVAL '90 days' "
+                "ORDER BY em.engagement_rate DESC LIMIT 10"
+            ),
+            {"brand_id": brand_id},
+        )
+        top_performing = [dict(r) for r in top_result.mappings().all()]
+
+    return {
+        "brand": {**brand_info, "products": products},
+        "research": research_data,
+        "strategy": strategy_data,
+        "planning": {
+            "strategy_document": strategy_doc_data.get("document", ""),
+            "campaigns": planning_data.get("campaigns", []),
+        },
+        "recent_posts": recent_posts,
+        "top_performing": top_performing,
+    }
