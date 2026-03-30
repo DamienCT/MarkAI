@@ -1277,60 +1277,64 @@ export default function ReportPage() {
                 <div className="prose prose-sm max-w-none dark:prose-invert">
                   <p className="text-sm leading-relaxed whitespace-pre-line">{positioning}</p>
                 </div>
-              ) : typeof positioning === "object" && positioning !== null ? (
+              ) : typeof positioning === "object" && positioning !== null ? (() => {
+                const pos = positioning as Record<string, unknown>;
+                const brandVoice = pos.brand_voice ? String(pos.brand_voice) : null;
+                const valueProp = pos.value_proposition ? String(pos.value_proposition) : null;
+                const keyMessages = Array.isArray(pos.key_messages) ? (pos.key_messages as string[]) : null;
+                const extraKeys = Object.entries(pos)
+                  .filter(([k]) => !["brand_voice", "value_proposition", "key_messages", "brand_archetype", "emotional_territory", "competitive_differentiation"].includes(k));
+                return (
                 <div className="space-y-4">
-                  {/* Brand voice */}
-                  {(positioning as Record<string, unknown>).brand_voice && (
+                  {brandVoice && (
                     <blockquote className="border-l-4 border-primary/30 pl-4 italic text-sm text-muted-foreground">
-                      {String((positioning as Record<string, unknown>).brand_voice)}
+                      {brandVoice}
                     </blockquote>
                   )}
-                  {/* Value proposition */}
-                  {(positioning as Record<string, unknown>).value_proposition && (
+                  {valueProp && (
                     <div className="rounded-md bg-primary/5 border border-primary/20 p-3">
                       <p className="text-xs font-semibold text-muted-foreground mb-1">Value Proposition</p>
-                      <p className="text-sm">{String((positioning as Record<string, unknown>).value_proposition)}</p>
+                      <p className="text-sm">{valueProp}</p>
                     </div>
                   )}
-                  {/* Key messages */}
-                  {Array.isArray((positioning as Record<string, unknown>).key_messages) && (
+                  {keyMessages && (
                     <div className="space-y-1">
                       <p className="text-xs font-semibold text-muted-foreground">Key Messages</p>
                       <ol className="list-decimal list-inside space-y-1 text-sm">
-                        {((positioning as Record<string, unknown>).key_messages as string[]).map((msg, i) => (
+                        {keyMessages.map((msg, i) => (
                           <li key={i}>{msg}</li>
                         ))}
                       </ol>
                     </div>
                   )}
-                  {/* Render remaining keys via SafeValue */}
-                  {Object.entries(positioning as Record<string, unknown>)
-                    .filter(([k]) => !["brand_voice", "value_proposition", "key_messages", "brand_archetype", "emotional_territory", "competitive_differentiation"].includes(k))
-                    .map(([k, v]) => (
-                      <div key={k}>
-                        <p className="text-xs font-semibold text-muted-foreground capitalize mb-1">{k.replace(/_/g, " ")}</p>
-                        <div className="text-sm"><SafeValue value={v} /></div>
-                      </div>
-                    ))}
+                  {extraKeys.map(([k, v]) => (
+                    <div key={k}>
+                      <p className="text-xs font-semibold text-muted-foreground capitalize mb-1">{k.replace(/_/g, " ")}</p>
+                      <div className="text-sm"><SafeValue value={v} /></div>
+                    </div>
+                  ))}
                 </div>
-              ) : null}
+                );
+              })() : null}
 
               {(() => {
                 const pos = typeof positioning === "object" && positioning !== null ? positioning as Record<string, unknown> : {};
                 const archetype = output.brand_archetype || pos.brand_archetype;
                 const territory = output.emotional_territory || pos.emotional_territory;
-                return (archetype || territory) ? (
+                const archetypeStr = archetype ? String(archetype) : null;
+                const territoryStr = territory ? String(territory) : null;
+                return (archetypeStr || territoryStr) ? (
                   <div className="flex flex-wrap gap-3">
-                    {archetype && (
+                    {archetypeStr && (
                       <div className="rounded-md border p-3">
                         <p className="text-xs font-semibold text-muted-foreground mb-1">Brand Archetype</p>
-                        <p className="text-sm font-medium">{String(archetype)}</p>
+                        <p className="text-sm font-medium">{archetypeStr}</p>
                       </div>
                     )}
-                    {territory && (
+                    {territoryStr && (
                       <div className="rounded-md border p-3">
                         <p className="text-xs font-semibold text-muted-foreground mb-1">Emotional Territory</p>
-                        <p className="text-sm font-medium">{String(territory)}</p>
+                        <p className="text-sm font-medium">{territoryStr}</p>
                       </div>
                     )}
                   </div>
