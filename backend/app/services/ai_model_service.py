@@ -65,7 +65,8 @@ def _categorize_model(model_id: str) -> list[str]:
             categories.append("text")
 
     # Vision — multimodal models (gpt-5.x have vision built-in, plus legacy gpt-X-vision-*)
-    if re.match(r"^gpt-\d+-vision-", mid) or re.match(r"^gpt-5(\.\d+)?($|-)", mid):
+    # Exclude mini/nano — those are text-fast primary, vision secondary
+    if re.match(r"^gpt-\d+-vision-", mid) or (re.match(r"^gpt-5(\.\d+)?($|-)", mid) and not re.search(r"(mini|nano)", mid)):
         categories.append("vision")
 
     # Text-fast — smaller/cheaper models (mini, nano)
@@ -494,10 +495,13 @@ async def list_models_by_category(
     stmt = select(AIModel).where(AIModel.is_available == True)
 
     if category_slug:
-        # Join with category to filter by slug
+        # Match primary category OR additional_categories in capabilities JSONB
         stmt = (
-            stmt.join(AIModelCategory, AIModel.category_id == AIModelCategory.id)
-            .where(AIModelCategory.slug == category_slug)
+            stmt.outerjoin(AIModelCategory, AIModel.category_id == AIModelCategory.id)
+            .where(
+                (AIModelCategory.slug == category_slug)
+                | (AIModel.capabilities["additional_categories"].astext.contains(f'"{category_slug}"'))
+            )
         )
 
     stmt = stmt.order_by(AIModel.model_id)
