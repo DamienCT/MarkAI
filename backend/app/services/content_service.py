@@ -66,9 +66,10 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
     "in_review": ["approved", "reworking"],
     "reworking": ["in_review"],
     "approved": ["scheduled"],
-    "scheduled": ["published", "failed"],
+    "scheduled": ["publishing", "failed"],
+    "publishing": ["published", "failed", "scheduled"],
     "published": [],
-    "failed": [],
+    "failed": ["scheduled"],
 }
 
 # Any status can be reset back to queued

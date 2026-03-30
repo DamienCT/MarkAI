@@ -323,7 +323,6 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
       target_audience: targetAudience ? { description: targetAudience } : {},
       brand_guidelines: newGuidelines,
       color_palette: {},
-      is_active: true,
       is_bc_linked: !!bcCompany,
       bc_company: bcCompany || null,
       bc_locations: bcLocations,

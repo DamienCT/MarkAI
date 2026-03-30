@@ -19,6 +19,7 @@ from typing import Any
 
 import nats.aio.msg
 
+from langgraph.errors import GraphInterrupt
 from shared.config import settings
 
 # Maximum time (seconds) a single workflow invocation may run before being cancelled
@@ -174,6 +175,9 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
         await msg.ack()
 
+        # Track chain depth (used by sequential chaining and pipeline chaining)
+        current_depth = payload.get("chain_depth", 0)
+
         # ── Sequential content chaining: after content completes, queue next item
         if agent_type == "content" and payload.get("remaining_queue") and _consumer is not None:
             remaining = payload["remaining_queue"]
@@ -209,9 +213,6 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         # Evaluation always chains to adaptation regardless of trigger
         CHAIN_NEXT["evaluation"] = "adaptation.trigger"
 
-        # Track chain depth to prevent infinite loops
-        current_depth = payload.get("chain_depth", 0)
-
         next_subject = CHAIN_NEXT.get(agent_type)
 
         # ── Product intel conditional chain ───────────────────────
@@ -245,7 +246,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             has_higher_tier = any(
                 c.get("tier") in (2, 3) for c in applied_changes
             )
-            if has_higher_tier and current_depth < MAX_CHAIN_DEPTH:
+            if has_higher_tier and current_depth + 1 < MAX_CHAIN_DEPTH:
                 next_subject = "planning.trigger"
                 logger.info(
                     "Adaptation -> planning re-plan chain (depth %d/%d) for brand %s",
@@ -325,6 +326,16 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         if run_id:
             await complete_agent_run(run_id, status="failed", error_message=f"Timed out after {WORKFLOW_TIMEOUT}s")
         await msg.nak(delay=60)
+
+    except GraphInterrupt as gi:
+        logger.info("Workflow %s paused for human review (brand %s)", agent_type, brand_id)
+        if run_id:
+            await complete_agent_run(
+                run_id,
+                status="paused_for_review",
+                output_payload=gi.value if hasattr(gi, "value") else {"reason": str(gi)},
+            )
+        await msg.ack()
 
     except Exception as exc:
         logger.exception("Workflow %s failed for brand %s", agent_type, brand_id)

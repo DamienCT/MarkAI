@@ -14,7 +14,7 @@ CREATE TABLE users (
     avatar_url      TEXT,
     role            VARCHAR(50) NOT NULL DEFAULT 'viewer'
                     CHECK (role IN ('admin', 'manager', 'editor', 'viewer')),
-    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    is_active       BOOLEAN NOT NULL DEFAULT FALSE,
     last_login_at   TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -248,9 +248,9 @@ CREATE TABLE agent_runs (
     tokens_used     INTEGER DEFAULT 0,
     cost_usd        NUMERIC(10,6) DEFAULT 0,
     duration_ms     INTEGER,
-    prompt_version_id UUID REFERENCES prompt_versions(id),
-    brand_id        UUID REFERENCES brands(id),
-    initiated_by    UUID REFERENCES users(id),
+    prompt_version_id UUID REFERENCES prompt_versions(id) ON DELETE SET NULL,
+    brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    initiated_by    UUID REFERENCES users(id) ON DELETE SET NULL,
     started_at      TIMESTAMPTZ,
     completed_at    TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()

@@ -398,9 +398,13 @@ async def store_calendar_items(
                     "product_ids": [item["product_id"]] if item.get("product_id") else None,
                 },
             )
-            ids.append(item_id)
+            ids.append((item_id, scheduled_at_val))
         await session.commit()
-    return ids
+    # Sort by scheduled_at ASC and return only IDs (ensure tz-aware for comparison)
+    def _tz_aware(dt: datetime) -> datetime:
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    ids.sort(key=lambda x: _tz_aware(x[1]))
+    return [item_id for item_id, _ in ids]
 
 
 # ── Performance / Evaluation operations ──────────────────────────────────

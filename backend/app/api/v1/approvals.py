@@ -97,9 +97,9 @@ async def decide_approval(
 ):
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    if decision.status not in ("approved", "revision_requested"):
+    if decision.status not in ("approved", "rejected", "revision_requested"):
         raise HTTPException(
-            status_code=422, detail="Decision must be 'approved' or 'revision_requested'"
+            status_code=422, detail="Decision must be 'approved', 'rejected', or 'revision_requested'"
         )
     try:
         approval = await approval_service.resolve_approval(db, approval_id, decision)

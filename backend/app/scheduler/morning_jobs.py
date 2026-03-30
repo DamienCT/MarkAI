@@ -111,7 +111,7 @@ async def _topup_content_generation() -> None:
             text(
                 "SELECT id, brand_id, title, scheduled_at "
                 "FROM calendar_items "
-                "WHERE status IN ('queued', 'planned') "
+                "WHERE status = 'queued' "
                 "  AND scheduled_at IS NOT NULL "
                 "  AND scheduled_at BETWEEN :now AND :horizon "
                 "ORDER BY scheduled_at ASC "
@@ -122,7 +122,7 @@ async def _topup_content_generation() -> None:
         row = result.first()
 
     if row is None:
-        logger.info("Content top-up: no queued/planned items within %d-day window", days_ahead)
+        logger.info("Content top-up: no queued items within %d-day window", days_ahead)
         return
 
     calendar_item_id, brand_id, title, scheduled_at = row

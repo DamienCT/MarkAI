@@ -203,6 +203,10 @@ export default function BrandDetailPage() {
     api.get<Product[]>("/api/v1/products", { brand_id: brandId }, { signal }).then(setProducts).catch(() => {});
     // Fetch pipeline runs for Overview tab
     api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }, { signal }).then(setPipelineRuns).catch(() => {});
+    // Fetch competitors for onboarding progress calculation
+    api.get<{ competitors: CompetitorData[] }>(`/api/v1/intelligence/research/${brandId}`, {}, { signal })
+      .then(data => setCompetitors(data.competitors || []))
+      .catch(() => {});
 
     return () => {
       abortRef.current?.abort();
@@ -434,7 +438,7 @@ export default function BrandDetailPage() {
       !!brand.tone_of_voice,
       configuredChannels.length > 0,
       products.length > 0,
-      !!(brand.competitors && brand.competitors.length > 0),
+      competitors.length > 0,
     ];
     const completed = checks.filter(Boolean).length;
     return { completed, total: checks.length, isComplete: completed === checks.length };

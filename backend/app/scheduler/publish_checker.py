@@ -55,10 +55,10 @@ async def check_due_content() -> None:
             brand = content.brand
 
             try:
-                await dispatch_to_n8n(content, calendar_item, brand)
-
                 calendar_item.status = "publishing"
                 await db.commit()
+
+                await dispatch_to_n8n(content, calendar_item, brand)
 
                 log = ScheduledJobLog(
                     job_name="publish_dispatch",
@@ -80,6 +80,9 @@ async def check_due_content() -> None:
                     calendar_item.channel,
                 )
             except Exception as e:
+                # Mark as failed so it can be retried via failed→scheduled transition
+                calendar_item.status = "failed"
+                await db.commit()
                 logger.error(
                     "Publish dispatch failed for content %s: %s",
                     content.id,

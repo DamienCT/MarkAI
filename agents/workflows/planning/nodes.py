@@ -48,14 +48,28 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
         enabled_channels = ["instagram"]  # fallback
     logger.info("Enabled channels for brand %s: %s", brand_id, enabled_channels)
 
+    strategy_data = strategy.get("output_payload", strategy)
+    if isinstance(strategy_data, str):
+        try:
+            strategy_data = json.loads(strategy_data)
+        except (json.JSONDecodeError, TypeError):
+            strategy_data = {}
     return {
-        "strategy": strategy.get("output_payload", strategy),
+        "strategy": strategy_data,
         "enabled_channels": enabled_channels,
     }
 
 
 async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
     """Generate campaign plans from the strategy using LLM, plus a year-long strategy document."""
+    try:
+        return await _generate_campaigns_inner(state)
+    except Exception as exc:
+        logger.error("generate_campaigns failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_campaigns failed: {exc}"]}
+
+
+async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     brand_id = state["brand_id"]
     strategy = state.get("strategy", {})
     scope_weeks = state.get("scope_weeks", 4)
@@ -113,6 +127,14 @@ async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
 
 async def generate_calendar(state: PlanningState) -> dict[str, Any]:
     """Generate individual calendar items from campaigns, incorporating product awareness."""
+    try:
+        return await _generate_calendar_inner(state)
+    except Exception as exc:
+        logger.error("generate_calendar failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_calendar failed: {exc}"]}
+
+
+async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     brand_id = state["brand_id"]
     campaigns = state.get("campaigns", [])
     strategy = state.get("strategy", {})
@@ -170,7 +192,11 @@ async def assign_products(state: PlanningState) -> dict[str, Any]:
     """Match calendar items to real products from the database."""
     brand_id = state["brand_id"]
     items = state.get("calendar_items", [])
-    products = await get_products(brand_id)
+    try:
+        products = await get_products(brand_id)
+    except Exception as exc:
+        logger.warning("Failed to load products for brand %s: %s", brand_id, exc)
+        products = []
 
     product_map = {p["name"].lower(): p for p in products if p.get("name")}
 

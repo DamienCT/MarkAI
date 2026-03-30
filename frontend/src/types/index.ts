@@ -125,6 +125,7 @@ export type ContentStatus =
   | "reworking"
   | "approved"
   | "scheduled"
+  | "publishing"
   | "published"
   | "failed";
 

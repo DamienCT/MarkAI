@@ -24,6 +24,9 @@ async def serve_file(file_path: str):
     No auth required — object paths contain UUIDs and are not guessable.
     Images loaded via <img src> can't send Bearer tokens anyway.
     """
+    # Block path traversal attempts
+    if ".." in file_path or file_path.startswith("/"):
+        raise HTTPException(status_code=403, detail="Invalid file path")
     try:
         data = minio_service.download_file(file_path)
     except Exception:

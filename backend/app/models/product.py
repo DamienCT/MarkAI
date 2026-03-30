@@ -43,7 +43,7 @@ class Product(Base):
     subcategory: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attributes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     tags: Mapped[list | None] = mapped_column(ARRAY(String), nullable=True)
-    image_urls: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    image_urls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     primary_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     vendor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     vendor_no: Mapped[str | None] = mapped_column(String(255), nullable=True)

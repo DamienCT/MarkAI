@@ -27,72 +27,92 @@ async def load_research(state: StrategyState) -> dict[str, Any]:
 
 async def generate_positioning(state: StrategyState) -> dict[str, Any]:
     """Generate brand positioning via LLM based on research data."""
-    research = state.get("research_data", {})
-    prompt = [
-        {"role": "system", "content": "You are a brand strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Based on the research data, define a clear brand positioning. Return JSON with: value_proposition, differentiators, brand_voice, tone_attributes, key_messages."},
-        {"role": "user", "content": f"Research data:\n{sanitize_json_for_prompt(research, max_length=8000)}"},
-    ]
-    result = await chat_completion(prompt, temperature=0.5)
-    positioning = parse_llm_json(result, fallback={"raw": result})
-    return {"positioning": positioning}
+    try:
+        research = state.get("research_data", {})
+        prompt = [
+            {"role": "system", "content": "You are a brand strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Based on the research data, define a clear brand positioning. Return JSON with: value_proposition, differentiators, brand_voice, tone_attributes, key_messages."},
+            {"role": "user", "content": f"Research data:\n{sanitize_json_for_prompt(research, max_length=8000)}"},
+        ]
+        result = await chat_completion(prompt, temperature=0.5)
+        positioning = parse_llm_json(result, fallback={"raw": result})
+        return {"positioning": positioning}
+    except Exception as exc:
+        logger.error("generate_positioning failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_positioning failed: {exc}"]}
 
 
 async def define_pillars(state: StrategyState) -> dict[str, Any]:
     """Define content pillars based on positioning and research."""
-    prompt = [
-        {"role": "system", "content": "You are a content strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Define 4-6 content pillars for this brand. Each pillar should have: name, description, content_types, percentage_of_content, example_topics. Return a JSON array."},
-        {"role": "user", "content": (
-            f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
-            f"Research:\n{sanitize_json_for_prompt(state.get('research_data', {}), max_length=5000)}"
-        )},
-    ]
-    result = await chat_completion(prompt, temperature=0.5)
-    pillars = parse_llm_json(result, fallback=[{"name": "General", "description": result}])
-    return {"pillars": pillars}
+    try:
+        prompt = [
+            {"role": "system", "content": "You are a content strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Define 4-6 content pillars for this brand. Each pillar should have: name, description, content_types, percentage_of_content, example_topics. Return a JSON array."},
+            {"role": "user", "content": (
+                f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
+                f"Research:\n{sanitize_json_for_prompt(state.get('research_data', {}), max_length=5000)}"
+            )},
+        ]
+        result = await chat_completion(prompt, temperature=0.5)
+        pillars = parse_llm_json(result, fallback=[{"name": "General", "description": result}])
+        return {"pillars": pillars}
+    except Exception as exc:
+        logger.error("define_pillars failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"define_pillars failed: {exc}"]}
 
 
 async def define_audiences(state: StrategyState) -> dict[str, Any]:
     """Define target audiences with platform-specific strategies."""
-    prompt = [
-        {"role": "system", "content": "You are a marketing strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Define 3-5 target audience segments. Each should have: segment_name, description, demographics, platforms, content_preferences, engagement_strategy, best_times. Return a JSON array."},
-        {"role": "user", "content": (
-            f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
-            f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}\n\n"
-            f"Research:\n{sanitize_json_for_prompt(state.get('research_data', {}), max_length=4000)}"
-        )},
-    ]
-    result = await chat_completion(prompt, temperature=0.5)
-    audiences = parse_llm_json(result, fallback=[{"segment_name": "Primary", "description": result}])
-    return {"audiences": audiences}
+    try:
+        prompt = [
+            {"role": "system", "content": "You are a marketing strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Define 3-5 target audience segments. Each should have: segment_name, description, demographics, platforms, content_preferences, engagement_strategy, best_times. Return a JSON array."},
+            {"role": "user", "content": (
+                f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
+                f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}\n\n"
+                f"Research:\n{sanitize_json_for_prompt(state.get('research_data', {}), max_length=4000)}"
+            )},
+        ]
+        result = await chat_completion(prompt, temperature=0.5)
+        audiences = parse_llm_json(result, fallback=[{"segment_name": "Primary", "description": result}])
+        return {"audiences": audiences}
+    except Exception as exc:
+        logger.error("define_audiences failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"define_audiences failed: {exc}"]}
 
 
 async def plan_cadence(state: StrategyState) -> dict[str, Any]:
     """Plan posting cadence per platform."""
-    prompt = [
-        {"role": "system", "content": "You are a social media strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Create a posting cadence plan. Return JSON with platforms as keys, each having: posts_per_week, best_days, best_times, content_mix (mapping pillar to percentage)."},
-        {"role": "user", "content": (
-            f"Audiences:\n{sanitize_json_for_prompt(state.get('audiences', []))}\n\n"
-            f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}"
-        )},
-    ]
-    result = await chat_completion(prompt, temperature=0.4)
-    cadence = parse_llm_json(result, fallback={"raw": result})
-    return {"cadence": cadence}
+    try:
+        prompt = [
+            {"role": "system", "content": "You are a social media strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Create a posting cadence plan. Return JSON with platforms as keys, each having: posts_per_week, best_days, best_times, content_mix (mapping pillar to percentage)."},
+            {"role": "user", "content": (
+                f"Audiences:\n{sanitize_json_for_prompt(state.get('audiences', []))}\n\n"
+                f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}"
+            )},
+        ]
+        result = await chat_completion(prompt, temperature=0.4)
+        cadence = parse_llm_json(result, fallback={"raw": result})
+        return {"cadence": cadence}
+    except Exception as exc:
+        logger.error("plan_cadence failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"plan_cadence failed: {exc}"]}
 
 
 async def generate_themes(state: StrategyState) -> dict[str, Any]:
     """Generate monthly content themes for the next quarter."""
-    prompt = [
-        {"role": "system", "content": "You are a content strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events (e.g. Mauritian Independence Day, Diwali, Eid, Chinese Spring Festival, Thaipoosam Cavadee, Christmas), and regional consumer preferences. Generate monthly themes for the next 3 months. Each month should have: month, theme_name, description, sub_themes, key_campaigns, pillar_focus. Return a JSON array."},
-        {"role": "user", "content": (
-            f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
-            f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}\n\n"
-            f"Cadence:\n{sanitize_json_for_prompt(state.get('cadence', {}))}"
-        )},
-    ]
-    result = await chat_completion(prompt, temperature=0.6)
-    themes = parse_llm_json(result, fallback=[{"month": "current", "theme_name": "General", "description": result}])
-    return {"themes": themes}
+    try:
+        prompt = [
+            {"role": "system", "content": "You are a content strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events (e.g. Mauritian Independence Day, Diwali, Eid, Chinese Spring Festival, Thaipoosam Cavadee, Christmas), and regional consumer preferences. Generate monthly themes for the next 3 months. Each month should have: month, theme_name, description, sub_themes, key_campaigns, pillar_focus. Return a JSON array."},
+            {"role": "user", "content": (
+                f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
+                f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}\n\n"
+                f"Cadence:\n{sanitize_json_for_prompt(state.get('cadence', {}))}"
+            )},
+        ]
+        result = await chat_completion(prompt, temperature=0.6)
+        themes = parse_llm_json(result, fallback=[{"month": "current", "theme_name": "General", "description": result}])
+        return {"themes": themes}
+    except Exception as exc:
+        logger.error("generate_themes failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_themes failed: {exc}"]}
 
 
 async def human_review(state: StrategyState) -> dict[str, Any]:

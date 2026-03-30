@@ -25,7 +25,7 @@ async def crawl_website(state: ResearchState) -> dict[str, Any]:
     """
     brand = await get_brand(state["brand_id"])
     if not brand:
-        return {"errors": [*(state.get("errors") or []), "Brand not found"]}
+        return {"status": "failed", "errors": [*(state.get("errors") or []), "Brand not found"]}
 
     # Collect all brand URLs
     urls: list[str] = []
@@ -38,7 +38,7 @@ async def crawl_website(state: ResearchState) -> dict[str, Any]:
             urls.extend([u for u in extra_websites if u and isinstance(u, str)])
 
     if not urls:
-        return {"errors": [*(state.get("errors") or []), "No website URLs configured for this brand"]}
+        return {"status": "failed", "errors": [*(state.get("errors") or []), "No website URLs configured for this brand"]}
 
     logger.info("Crawling %d website(s) for brand %s: %s", len(urls), state["brand_id"], urls)
 
@@ -59,7 +59,7 @@ async def analyze_social(state: ResearchState) -> dict[str, Any]:
     """
     config = await get_brand_config(state["brand_id"])
     if not config:
-        return {"social_analysis": {}, "errors": [*(state.get("errors") or []), "No brand config found"]}
+        return {"status": "failed", "social_analysis": {}, "errors": [*(state.get("errors") or []), "No brand config found"]}
 
     # Extract handles from brand_guidelines.channels (regardless of enabled status)
     guidelines = config.get("brand_guidelines", {}) or {}
@@ -73,16 +73,20 @@ async def analyze_social(state: ResearchState) -> dict[str, Any]:
     profiles = await get_social_profiles(ig_handle, fb_id, li_id)
     engagement = await get_engagement_data(ig_handle, fb_id, li_id)
 
-    analysis_prompt = [
-        {"role": "system", "content": "You are a social media analyst. Analyze the following social media data and provide insights on content performance, audience engagement patterns, posting frequency, and content themes. The brand operates in Mauritius and the Indian Ocean region. Consider local social media landscape: Facebook and Instagram are dominant platforms in Mauritius, WhatsApp is widely used for business communication, and content often needs to work in English, French, and Creole. Factor in local peak usage times (GMT+4 timezone)."},
-        {"role": "user", "content": f"Social profiles:\n{sanitize_json_for_prompt(profiles)}\n\nRecent engagement data:\n{sanitize_json_for_prompt(engagement)}"},
-    ]
-    analysis_text = await chat_completion(analysis_prompt)
+    try:
+        analysis_prompt = [
+            {"role": "system", "content": "You are a social media analyst. Analyze the following social media data and provide insights on content performance, audience engagement patterns, posting frequency, and content themes. The brand operates in Mauritius and the Indian Ocean region. Consider local social media landscape: Facebook and Instagram are dominant platforms in Mauritius, WhatsApp is widely used for business communication, and content often needs to work in English, French, and Creole. Factor in local peak usage times (GMT+4 timezone)."},
+            {"role": "user", "content": f"Social profiles:\n{sanitize_json_for_prompt(profiles)}\n\nRecent engagement data:\n{sanitize_json_for_prompt(engagement)}"},
+        ]
+        analysis_text = await chat_completion(analysis_prompt)
 
-    return {
-        "social_profiles": profiles,
-        "social_analysis": {"raw_profiles": profiles, "raw_engagement": engagement, "analysis": analysis_text},
-    }
+        return {
+            "social_profiles": profiles,
+            "social_analysis": {"raw_profiles": profiles, "raw_engagement": engagement, "analysis": analysis_text},
+        }
+    except Exception as exc:
+        logger.error("analyze_social failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"analyze_social failed: {exc}"]}
 
 
 async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
@@ -117,7 +121,11 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
         {"role": "system", "content": "You are a competitive intelligence analyst. The brand operates in Mauritius and the Indian Ocean region. Focus ONLY on direct competitors in Mauritius and the Indian Ocean region. Do NOT include comparison websites, blog sites, review aggregators, or international companies unless they operate locally in Mauritius. Given the brand's website content, identify their top 5 LOCAL competitors. Return a JSON array of objects with 'name' and 'website' fields."},
         {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nIndustry context: {sanitize_for_prompt(brand_industry)} {sanitize_for_prompt(brand_context)}{existing_info}\n\nWebsite content:\n{sanitize_json_for_prompt(website_data[:5], max_length=8000)}"},
     ]
-    competitor_text = await chat_completion(identify_prompt, temperature=0.3)
+    try:
+        competitor_text = await chat_completion(identify_prompt, temperature=0.3)
+    except Exception as exc:
+        logger.error("analyze_competitors failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"analyze_competitors failed: {exc}"]}
 
     # Parse competitor list
     competitors = parse_llm_json(competitor_text, fallback=[])
@@ -213,34 +221,40 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
 
 async def identify_gaps(state: ResearchState) -> dict[str, Any]:
     """Use LLM to identify content and positioning gaps from all collected data."""
-    prompt = [
-        {"role": "system", "content": "You are a strategic marketing analyst. Based on the brand's website, social media analysis, and competitor analysis, identify gaps and opportunities. Consider the Mauritian market, Indian Ocean region demographics, and local consumer behavior. Return a JSON array of gap objects with 'category', 'description', 'opportunity', and 'priority' (high/medium/low) fields."},
-        {"role": "user", "content": (
-            f"Website data summary: {sanitize_json_for_prompt(state.get('website_data', [])[:3], max_length=3000)}\n\n"
-            f"Social analysis: {sanitize_json_for_prompt(state.get('social_analysis', {}), max_length=3000)}\n\n"
-            f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=3000)}"
-        )},
-    ]
-    result = await chat_completion(prompt, temperature=0.4)
-    gaps = parse_llm_json(result, fallback=[{"category": "general", "description": result, "opportunity": "", "priority": "medium"}])
-
-    return {"gaps": gaps}
+    try:
+        prompt = [
+            {"role": "system", "content": "You are a strategic marketing analyst. Based on the brand's website, social media analysis, and competitor analysis, identify gaps and opportunities. Consider the Mauritian market, Indian Ocean region demographics, and local consumer behavior. Return a JSON array of gap objects with 'category', 'description', 'opportunity', and 'priority' (high/medium/low) fields."},
+            {"role": "user", "content": (
+                f"Website data summary: {sanitize_json_for_prompt(state.get('website_data', [])[:3], max_length=3000)}\n\n"
+                f"Social analysis: {sanitize_json_for_prompt(state.get('social_analysis', {}), max_length=3000)}\n\n"
+                f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=3000)}"
+            )},
+        ]
+        result = await chat_completion(prompt, temperature=0.4)
+        gaps = parse_llm_json(result, fallback=[{"category": "general", "description": result, "opportunity": "", "priority": "medium"}])
+        return {"gaps": gaps}
+    except Exception as exc:
+        logger.error("identify_gaps failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"identify_gaps failed: {exc}"]}
 
 
 async def build_personas(state: ResearchState) -> dict[str, Any]:
     """Build audience personas from research data using LLM."""
-    prompt = [
-        {"role": "system", "content": "You are a marketing strategist. Build 3-5 detailed audience personas based on the research data. Create personas that reflect the Mauritian market. Use local demographics (Mauritius population ~1.3M, diverse ethnic groups, multilingual - English/French/Creole). Consider Indian Ocean region consumer behavior, local income levels, popular local platforms, and cultural context. Do NOT create personas from US cities. Each persona should have: name, demographics, psychographics, pain_points, content_preferences, platforms, buying_triggers. Return a JSON array."},
-        {"role": "user", "content": (
-            f"Social analysis: {sanitize_json_for_prompt(state.get('social_analysis', {}), max_length=3000)}\n\n"
-            f"Gaps identified: {sanitize_json_for_prompt(state.get('gaps', []), max_length=2000)}\n\n"
-            f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=2000)}"
-        )},
-    ]
-    result = await chat_completion(prompt, temperature=0.5)
-    personas = parse_llm_json(result, fallback=[{"name": "Primary Audience", "description": result}])
-
-    return {"personas": personas}
+    try:
+        prompt = [
+            {"role": "system", "content": "You are a marketing strategist. Build 3-5 detailed audience personas based on the research data. Create personas that reflect the Mauritian market. Use local demographics (Mauritius population ~1.3M, diverse ethnic groups, multilingual - English/French/Creole). Consider Indian Ocean region consumer behavior, local income levels, popular local platforms, and cultural context. Do NOT create personas from US cities. Each persona should have: name, demographics, psychographics, pain_points, content_preferences, platforms, buying_triggers. Return a JSON array."},
+            {"role": "user", "content": (
+                f"Social analysis: {sanitize_json_for_prompt(state.get('social_analysis', {}), max_length=3000)}\n\n"
+                f"Gaps identified: {sanitize_json_for_prompt(state.get('gaps', []), max_length=2000)}\n\n"
+                f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=2000)}"
+            )},
+        ]
+        result = await chat_completion(prompt, temperature=0.5)
+        personas = parse_llm_json(result, fallback=[{"name": "Primary Audience", "description": result}])
+        return {"personas": personas}
+    except Exception as exc:
+        logger.error("build_personas failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"build_personas failed: {exc}"]}
 
 
 async def store_results(state: ResearchState) -> dict[str, Any]:
@@ -263,7 +277,10 @@ async def store_results(state: ResearchState) -> dict[str, Any]:
 
     # Try vector store but don't fail if Qdrant is down
     try:
-        await async_create_collection("brand_research", vector_size=1536)
+        try:
+            await async_create_collection("brand_research", vector_size=1536)
+        except Exception:
+            pass  # Collection likely already exists
         texts_to_embed = []
         payloads_list = []
         for gap in state.get("gaps", []):

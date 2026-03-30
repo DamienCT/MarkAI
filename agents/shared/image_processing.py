@@ -114,8 +114,8 @@ def find_best_logo_position(
     best_var = float("inf")
 
     for name, (cx, cy) in candidates.items():
-        cx = max(0, min(cx, w - logo_w))
-        cy = max(0, min(cy, h - logo_h))
+        cx = max(0, min(cx, max(0, w - logo_w)))
+        cy = max(0, min(cy, max(0, h - logo_h)))
         region = arr[cy:cy + logo_h, cx:cx + logo_w]
         var = float(np.var(region))
         if var < best_var:
@@ -155,7 +155,7 @@ def overlay_logo_and_text(
         # Still apply text overlay below, so don't return early
         logo = None
     logo_w = int(base.width * logo_scale) if logo else 0
-    logo_h = int(logo.height * (logo_w / logo.width)) if (logo and logo_w > 0) else 0
+    logo_h = int(logo.height * (logo_w / logo.width)) if (logo and logo_w > 0 and logo.width > 0) else 0
     if logo and logo_w > 0 and logo_h > 0:
         logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
     else:

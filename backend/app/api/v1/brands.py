@@ -88,7 +88,11 @@ async def update_brand(
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     # Sync is_active with status if status is provided
     if data.status is not None:
-        data.is_active = data.status == "active"
+        data.is_active = data.status in ("active", "activating")
+    elif data.is_active is not None:
+        # Sync status with is_active if only is_active is provided
+        if not data.is_active:
+            data.status = "inactive"
     # Check if is_active is being set to false so we can cancel running agents
     deactivating = data.is_active is False
 
@@ -177,7 +181,7 @@ async def activate_content_factory(
 
     from datetime import datetime, timezone
     brand.status = "activating"
-    brand.is_active = False
+    brand.is_active = True
     brand.activation_started_at = datetime.now(timezone.utc)
     await db.commit()
 

@@ -3,6 +3,12 @@ import AzureADProvider from "next-auth/providers/azure-ad";
 import type { JWT } from "next-auth/jwt";
 
 const REFRESH_BUFFER_SECONDS = 5 * 60;
+
+// Validate required auth environment variables
+if (!process.env.AZURE_AD_TENANT_ID || !process.env.AZURE_AD_CLIENT_ID || !process.env.AZURE_AD_CLIENT_SECRET) {
+  console.error("FATAL: Missing required Azure AD environment variables (AZURE_AD_TENANT_ID, AZURE_AD_CLIENT_ID, AZURE_AD_CLIENT_SECRET)");
+}
+
 const TOKEN_ENDPOINT = `https://login.microsoftonline.com/${process.env.AZURE_AD_TENANT_ID}/oauth2/v2.0/token`;
 
 type RefreshResult = JWT & {

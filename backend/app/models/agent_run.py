@@ -27,8 +27,8 @@ class AgentRun(Base):
     prompt_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("prompt_versions.id"), nullable=True
     )
-    brand_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("brands.id"), nullable=True
+    brand_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
     )
     initiated_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True

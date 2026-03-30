@@ -61,87 +61,99 @@ async def load_context(state: ContentState) -> dict[str, Any]:
 
 async def generate_hook(state: ContentState) -> dict[str, Any]:
     """Generate an attention-grabbing hook via LLM."""
-    brand = state.get("brand", {})
-    item = state.get("calendar_item", {})
-    strategy = state.get("strategy", {})
+    try:
+        brand = state.get("brand", {})
+        item = state.get("calendar_item", {})
+        strategy = state.get("strategy", {})
 
-    prompt = [
-        {"role": "system", "content": (
-            "You are a social media copywriter. Create content appropriate for the Mauritian market. "
-            "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
-            "Write a compelling hook (opening line) for a social media post. The hook should stop the scroll and be under 15 words. "
-            "Naturally weave in French or Kreol Morisien phrases where appropriate for local resonance. "
-            "Return ONLY the hook text, nothing else."
-        )},
-        {"role": "user", "content": (
-            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
-            f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
-            f"Content type: {sanitize_for_prompt(item.get('item_type', ''))}\n"
-            f"Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
-            f"Brand voice: {sanitize_json_for_prompt(strategy.get('positioning', {}).get('brand_voice', ''))}"
-        )},
-    ]
-    hook = await chat_completion(prompt, temperature=0.8)
-    return {"hook": hook.strip().strip('"')}
+        prompt = [
+            {"role": "system", "content": (
+                "You are a social media copywriter. Create content appropriate for the Mauritian market. "
+                "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
+                "Write a compelling hook (opening line) for a social media post. The hook should stop the scroll and be under 15 words. "
+                "Naturally weave in French or Kreol Morisien phrases where appropriate for local resonance. "
+                "Return ONLY the hook text, nothing else."
+            )},
+            {"role": "user", "content": (
+                f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
+                f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
+                f"Content type: {sanitize_for_prompt(item.get('item_type', ''))}\n"
+                f"Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
+                f"Brand voice: {sanitize_json_for_prompt(strategy.get('positioning', {}).get('brand_voice', ''))}"
+            )},
+        ]
+        hook = await chat_completion(prompt, temperature=0.8)
+        return {"hook": hook.strip().strip('"')}
+    except Exception as exc:
+        logger.error("generate_hook failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_hook failed: {exc}"]}
 
 
 async def generate_caption(state: ContentState) -> dict[str, Any]:
     """Generate the full caption body via LLM."""
-    brand = state.get("brand", {})
-    item = state.get("calendar_item", {})
-    strategy = state.get("strategy", {})
+    try:
+        brand = state.get("brand", {})
+        item = state.get("calendar_item", {})
+        strategy = state.get("strategy", {})
 
-    prompt = [
-        {"role": "system", "content": (
-            "You are a social media copywriter. Create content appropriate for the Mauritian market. "
-            "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
-            "Write a compelling caption for a social media post. "
-            "Start with the provided hook. Keep it engaging, on-brand, and appropriate for the platform. "
-            "Naturally integrate French or Kreol Morisien phrases where they add warmth and local flavour "
-            "(e.g. greetings, food terms, common expressions). Primary language should be English. "
-            "AIM FOR MEDIUM LENGTH: 3-5 short paragraphs. Include a strong opening hook, "
-            "1-2 paragraphs of substance (product benefits, lifestyle value, or educational insight), "
-            "and a clear CTA with the brand URL. Do NOT be overly long or overly terse. "
-            "Return ONLY the caption text."
-        )},
-        {"role": "user", "content": (
-            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
-            f"Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
-            f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
-            f"Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
-            f"Brand voice: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=2000)}"
-        )},
-    ]
-    caption = await chat_completion(prompt, temperature=0.7)
-    return {"caption": caption.strip()}
+        prompt = [
+            {"role": "system", "content": (
+                "You are a social media copywriter. Create content appropriate for the Mauritian market. "
+                "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
+                "Write a compelling caption for a social media post. "
+                "Start with the provided hook. Keep it engaging, on-brand, and appropriate for the platform. "
+                "Naturally integrate French or Kreol Morisien phrases where they add warmth and local flavour "
+                "(e.g. greetings, food terms, common expressions). Primary language should be English. "
+                "AIM FOR MEDIUM LENGTH: 3-5 short paragraphs. Include a strong opening hook, "
+                "1-2 paragraphs of substance (product benefits, lifestyle value, or educational insight), "
+                "and a clear CTA with the brand URL. Do NOT be overly long or overly terse. "
+                "Return ONLY the caption text."
+            )},
+            {"role": "user", "content": (
+                f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
+                f"Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
+                f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
+                f"Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
+                f"Brand voice: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=2000)}"
+            )},
+        ]
+        caption = await chat_completion(prompt, temperature=0.7)
+        return {"caption": caption.strip()}
+    except Exception as exc:
+        logger.error("generate_caption failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_caption failed: {exc}"]}
 
 
 async def generate_hashtags(state: ContentState) -> dict[str, Any]:
     """Generate relevant hashtags via LLM."""
-    brand = state.get("brand", {})
-    item = state.get("calendar_item", {})
+    try:
+        brand = state.get("brand", {})
+        item = state.get("calendar_item", {})
 
-    prompt = [
-        {"role": "system", "content": (
-            "You are a social media strategist. Create content appropriate for the Mauritian market. "
-            "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
-            "Generate 15-25 relevant hashtags for this post. "
-            "Mix broad, niche, and branded hashtags. Include relevant local hashtags (e.g. Mauritius, MauritiusIsland, IndianOcean). "
-            "Include a few French/Kreol hashtags where appropriate (e.g. IleMaurice, LaVieMorisien, BienEtre). "
-            "Return ONLY a JSON array of strings (no # prefix)."
-        )},
-        {"role": "user", "content": (
-            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
-            f"Caption: {sanitize_for_prompt(state.get('caption', '')[:500])}\n"
-            f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
-            f"Theme: {sanitize_for_prompt(item.get('theme', ''))}"
-        )},
-    ]
-    result = await chat_completion(prompt, temperature=0.6)
-    hashtags = parse_llm_json(result, fallback=None)
-    if hashtags is None:
-        hashtags = [tag.strip().strip("#") for tag in result.split() if tag.strip()]
-    return {"hashtags": hashtags}
+        prompt = [
+            {"role": "system", "content": (
+                "You are a social media strategist. Create content appropriate for the Mauritian market. "
+                "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
+                "Generate 15-25 relevant hashtags for this post. "
+                "Mix broad, niche, and branded hashtags. Include relevant local hashtags (e.g. Mauritius, MauritiusIsland, IndianOcean). "
+                "Include a few French/Kreol hashtags where appropriate (e.g. IleMaurice, LaVieMorisien, BienEtre). "
+                "Return ONLY a JSON array of strings (no # prefix)."
+            )},
+            {"role": "user", "content": (
+                f"Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
+                f"Caption: {sanitize_for_prompt(state.get('caption', '')[:500])}\n"
+                f"Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
+                f"Theme: {sanitize_for_prompt(item.get('theme', ''))}"
+            )},
+        ]
+        result = await chat_completion(prompt, temperature=0.6)
+        hashtags = parse_llm_json(result, fallback=None)
+        if hashtags is None:
+            hashtags = [tag.strip().strip("#") for tag in result.split() if tag.strip()]
+        return {"hashtags": hashtags}
+    except Exception as exc:
+        logger.error("generate_hashtags failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_hashtags failed: {exc}"]}
 
 
 async def source_product_image_node(state: ContentState) -> dict[str, Any]:
@@ -156,26 +168,37 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     brand = state.get("brand", {})
     brand_id = state["brand_id"]
 
+    # Calendar items store product_ids (UUID array), not product_sku/product_name
+    product_ids = item.get("product_ids") or []
     product_sku = item.get("product_sku")
-    product_name = item.get("product_name") or item.get("theme", "")
+    product_name = item.get("product_name") or item.get("title", "")
 
-    if not product_sku and not product_name:
+    if not product_sku and not product_name and not product_ids:
         return {"product_image": None, "needs_manual_image": False, "is_lifestyle_only": True}
 
     # Try to find the product in the database and check its image gallery
     from shared.tools.database import execute_query
 
-    products = await execute_query(
-        "SELECT id, name, image_urls, primary_image_url FROM products "
-        "WHERE brand_id = :brand_id AND is_active = true AND ("
-        "  bc_item_no = :sku OR LOWER(name) LIKE LOWER(:name_pattern)"
-        ") LIMIT 1",
-        {
-            "brand_id": brand_id,
-            "sku": product_sku or "",
-            "name_pattern": f"%{product_name[:30]}%" if product_name else "%",
-        },
-    )
+    # First try by product_ids (from calendar item), then fallback to sku/name
+    if product_ids:
+        pid = product_ids[0] if isinstance(product_ids, list) else product_ids
+        products = await execute_query(
+            "SELECT id, name, image_urls, primary_image_url FROM products "
+            "WHERE id = :pid AND is_active = true LIMIT 1",
+            {"pid": str(pid)},
+        )
+    else:
+        products = await execute_query(
+            "SELECT id, name, image_urls, primary_image_url FROM products "
+            "WHERE brand_id = :brand_id AND is_active = true AND ("
+            "  bc_item_no = :sku OR LOWER(name) LIKE LOWER(:name_pattern)"
+            ") LIMIT 1",
+            {
+                "brand_id": brand_id,
+                "sku": product_sku or "",
+                "name_pattern": f"%{product_name[:30]}%" if product_name else "%",
+            },
+        )
 
     if not products:
         logger.info("No matching product found for '%s' — lifestyle only", product_name)
@@ -301,7 +324,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
         ch for ch, cfg in channels_cfg.items()
         if isinstance(cfg, dict) and cfg.get("enabled")
     ]
-    channels_to_adapt = enabled if enabled else ALL_CHANNELS
+    channels_to_adapt = enabled if enabled else ["instagram"]
 
     # Build per-platform spec block only for enabled channels
     spec_lines = "\n".join(
@@ -332,14 +355,18 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
             f"Adapt for these platforms: {', '.join(channels_to_adapt)}"
         )},
     ]
-    result = await chat_completion(prompt, temperature=0.5)
-    adaptations = parse_llm_json(result, fallback={source_platform: {"caption": state.get("caption", ""), "hashtags": state.get("hashtags", [])}})
+    try:
+        result = await chat_completion(prompt, temperature=0.5)
+        adaptations = parse_llm_json(result, fallback={source_platform: {"caption": state.get("caption", ""), "hashtags": state.get("hashtags", [])}})
 
-    # Extract CTA from the primary platform adaptation
-    primary = adaptations.get(source_platform, {})
-    cta = primary.get("cta", "")
+        # Extract CTA from the primary platform adaptation
+        primary = adaptations.get(source_platform, {})
+        cta = primary.get("cta", "")
 
-    return {"platform_adaptations": adaptations, "cta": cta}
+        return {"platform_adaptations": adaptations, "cta": cta}
+    except Exception as exc:
+        logger.error("adapt_platforms failed: %s", exc)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"adapt_platforms failed: {exc}"]}
 
 
 async def _replace_product_in_generated_image(state: ContentState, image_data: bytes) -> bytes:

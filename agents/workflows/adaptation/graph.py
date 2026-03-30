@@ -13,6 +13,11 @@ from workflows.adaptation.nodes import (
     propose_tier3,
 )
 
+def _check_failed(state: AdaptationState) -> str:
+    """Route to END early if a prior node set status='failed'."""
+    return "end" if state.get("status") == "failed" else "continue"
+
+
 builder = StateGraph(AdaptationState)
 
 builder.add_node("load_adaptations", load_adaptations)
@@ -21,9 +26,9 @@ builder.add_node("propose_tier2", propose_tier2)
 builder.add_node("propose_tier3", propose_tier3)
 
 builder.set_entry_point("load_adaptations")
-builder.add_edge("load_adaptations", "apply_tier1")
-builder.add_edge("apply_tier1", "propose_tier2")
-builder.add_edge("propose_tier2", "propose_tier3")
+builder.add_conditional_edges("load_adaptations", _check_failed, {"end": END, "continue": "apply_tier1"})
+builder.add_conditional_edges("apply_tier1", _check_failed, {"end": END, "continue": "propose_tier2"})
+builder.add_conditional_edges("propose_tier2", _check_failed, {"end": END, "continue": "propose_tier3"})
 builder.add_edge("propose_tier3", END)
 
 # Compile with checkpointer to support interrupt/resume at tier2 and tier3

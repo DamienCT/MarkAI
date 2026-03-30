@@ -21,8 +21,8 @@ def _verify_webhook_secret(request: Request) -> None:
     """Validate X-Webhook-Secret header against configured secret."""
     configured_secret = settings.N8N_WEBHOOK_SECRET
     if not configured_secret:
-        logger.warning("N8N_WEBHOOK_SECRET is not configured; webhook auth is disabled")
-        return
+        logger.error("N8N_WEBHOOK_SECRET is not configured; rejecting webhook call")
+        raise HTTPException(status_code=503, detail="Webhook secret not configured")
     incoming_secret = request.headers.get("X-Webhook-Secret", "")
     if not secrets.compare_digest(incoming_secret, configured_secret):
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
@@ -58,6 +58,8 @@ async def publish_result(
         raise HTTPException(status_code=404, detail="Content not found")
 
     if payload.status == "published":
+        if not payload.platform_post_id:
+            logger.warning("Published callback for content %s missing platform_post_id", content_id)
         content.platform_post_id = payload.platform_post_id
 
         # Update the associated calendar item's status and published_at

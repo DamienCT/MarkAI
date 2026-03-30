@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 class AgentRunBase(BaseModel):
     agent_type: str
     trigger: str
-    brand_id: uuid.UUID | None = None
+    brand_id: uuid.UUID
 
 
 class AgentRunCreate(AgentRunBase):

@@ -29,9 +29,9 @@ builder.add_node("store_calendar", store_calendar)
 
 builder.set_entry_point("load_strategy")
 builder.add_conditional_edges("load_strategy", _check_failed, {"end": END, "continue": "generate_campaigns"})
-builder.add_edge("generate_campaigns", "generate_calendar")
-builder.add_edge("generate_calendar", "assign_products")
-builder.add_edge("assign_products", "store_calendar")
+builder.add_conditional_edges("generate_campaigns", _check_failed, {"end": END, "continue": "generate_calendar"})
+builder.add_conditional_edges("generate_calendar", _check_failed, {"end": END, "continue": "assign_products"})
+builder.add_conditional_edges("assign_products", _check_failed, {"end": END, "continue": "store_calendar"})
 builder.add_edge("store_calendar", END)
 
 planning_graph = builder.compile()

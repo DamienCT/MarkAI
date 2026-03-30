@@ -64,7 +64,7 @@ class Brand(Base):
     )
     is_bc_linked: Mapped[bool] = mapped_column(Boolean, default=False)
     bc_company: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    bc_locations: Mapped[dict] = mapped_column(JSONB, default=list)
+    bc_locations: Mapped[list] = mapped_column(JSONB, default=list)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
