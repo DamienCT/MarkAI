@@ -12,6 +12,17 @@ git pull origin main
 echo "=== Step 2: Generate and add missing env vars ==="
 ENV_FILE=".env"
 
+# Fix any previously written TRAEFIK_DASHBOARD_AUTH that has unescaped $ signs
+# (from the first failed deploy attempt). Docker Compose needs $$ not $.
+if grep -q "^TRAEFIK_DASHBOARD_AUTH=" "$ENV_FILE" 2>/dev/null; then
+  EXISTING=$(grep "^TRAEFIK_DASHBOARD_AUTH=" "$ENV_FILE" | head -1)
+  # If it contains single $ but not $$, it needs escaping
+  if echo "$EXISTING" | grep -q '\$[^$]'; then
+    sed -i '/^TRAEFIK_DASHBOARD_AUTH=/d' "$ENV_FILE"
+    echo "  Removed bad TRAEFIK_DASHBOARD_AUTH (will regenerate)"
+  fi
+fi
+
 add_env_if_missing() {
   local key="$1"
   local value="$2"
@@ -42,7 +53,9 @@ if ! grep -q "^TRAEFIK_DASHBOARD_AUTH=" "$ENV_FILE" 2>/dev/null; then
     # Fallback: apr1 hash via openssl
     HTPASSWD=$(printf "admin:$(openssl passwd -apr1 "$TRAEFIK_PASS")")
   fi
-  echo "TRAEFIK_DASHBOARD_AUTH=${HTPASSWD}" >> "$ENV_FILE"
+  # Double all $ signs so Docker Compose doesn't interpolate them as variables
+  HTPASSWD_ESCAPED="${HTPASSWD//\$/\$\$}"
+  echo "TRAEFIK_DASHBOARD_AUTH=${HTPASSWD_ESCAPED}" >> "$ENV_FILE"
   echo "  Added TRAEFIK_DASHBOARD_AUTH (password: ${TRAEFIK_PASS} — save this!)"
 else
   echo "  TRAEFIK_DASHBOARD_AUTH already set"
