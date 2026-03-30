@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -22,6 +22,8 @@ import {
   Cpu,
   FlaskConical,
   Image as ImageIcon,
+  Menu,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BrandSwitcher } from "./BrandSwitcher";
@@ -54,36 +56,17 @@ function isNavActive(pathname: string, href: string, exact?: boolean): boolean {
   return pathname === href || pathname.startsWith(href + "/");
 }
 
-export function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
-  const pathname = usePathname();
-
+function SidebarContent({
+  collapsed,
+  pathname,
+  onNavClick,
+}: {
+  collapsed: boolean;
+  pathname: string;
+  onNavClick?: () => void;
+}) {
   return (
-    <div
-      className={cn(
-        "flex flex-col border-r bg-card transition-all duration-300",
-        collapsed ? "w-16" : "w-64"
-      )}
-    >
-      <div className="flex h-16 items-center justify-between border-b px-4">
-        {!collapsed && (
-          <Link href="/" className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-sm">
-              M
-            </div>
-            <span className="text-lg font-bold">MARKAI</span>
-          </Link>
-        )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => setCollapsed(!collapsed)}
-          className={cn(collapsed && "mx-auto")}
-        >
-          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-        </Button>
-      </div>
-
+    <>
       {!collapsed && (
         <div className="px-3 py-3 border-b">
           <BrandSwitcher />
@@ -97,6 +80,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              onClick={onNavClick}
               className={cn(
                 "flex items-center gap-3 mx-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                 active
@@ -112,6 +96,91 @@ export function Sidebar() {
           );
         })}
       </nav>
-    </div>
+    </>
+  );
+}
+
+export function Sidebar() {
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const pathname = usePathname();
+
+  // Close mobile drawer on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
+  return (
+    <>
+      {/* Mobile hamburger button — fixed top-left, visible only below md */}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="fixed top-3 left-3 z-50 md:hidden"
+        onClick={() => setMobileOpen(true)}
+        aria-label="Open navigation menu"
+      >
+        <Menu className="h-5 w-5" />
+      </Button>
+
+      {/* Mobile overlay + slide-in drawer */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => setMobileOpen(false)}
+          />
+          {/* Drawer */}
+          <div className="absolute inset-y-0 left-0 w-64 flex flex-col bg-card border-r shadow-lg animate-in slide-in-from-left duration-200">
+            <div className="flex h-16 items-center justify-between border-b px-4">
+              <Link href="/" className="flex items-center gap-2" onClick={() => setMobileOpen(false)}>
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-sm">
+                  M
+                </div>
+                <span className="text-lg font-bold">MARKAI</span>
+              </Link>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setMobileOpen(false)}
+                aria-label="Close navigation menu"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <SidebarContent collapsed={false} pathname={pathname} onNavClick={() => setMobileOpen(false)} />
+          </div>
+        </div>
+      )}
+
+      {/* Desktop sidebar — hidden below md */}
+      <div
+        className={cn(
+          "hidden md:flex flex-col border-r bg-card transition-all duration-300",
+          collapsed ? "w-16" : "w-64"
+        )}
+      >
+        <div className="flex h-16 items-center justify-between border-b px-4">
+          {!collapsed && (
+            <Link href="/" className="flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-sm">
+                M
+              </div>
+              <span className="text-lg font-bold">MARKAI</span>
+            </Link>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setCollapsed(!collapsed)}
+            className={cn(collapsed && "mx-auto")}
+          >
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+          </Button>
+        </div>
+        <SidebarContent collapsed={collapsed} pathname={pathname} />
+      </div>
+    </>
   );
 }

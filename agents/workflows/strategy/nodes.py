@@ -22,7 +22,14 @@ async def load_research(state: StrategyState) -> dict[str, Any]:
     research = await get_latest_research(state["brand_id"])
     if not research:
         return {"errors": [*(state.get("errors") or []), "No research data found"], "status": "failed"}
-    return {"research_data": research.get("output_payload", research)}
+    research_data = research.get("output_payload", research)
+    # output_payload may come back as a JSON string from the database
+    if isinstance(research_data, str):
+        try:
+            research_data = json.loads(research_data)
+        except (json.JSONDecodeError, TypeError):
+            research_data = {"raw": research_data}
+    return {"research_data": research_data}
 
 
 async def generate_positioning(state: StrategyState) -> dict[str, Any]:
@@ -33,7 +40,7 @@ async def generate_positioning(state: StrategyState) -> dict[str, Any]:
             {"role": "system", "content": "You are a brand strategist. The brand operates in Mauritius. Consider the local market, Indian Ocean region, bilingual (English/French) content needs, local holidays and events, and regional consumer preferences. Based on the research data, define a clear brand positioning. Return JSON with: value_proposition, differentiators, brand_voice, tone_attributes, key_messages, brand_archetype (the brand's Jungian archetype, e.g. Caregiver, Sage, Creator), emotional_territory (the emotional space the brand owns), competitive_differentiation (array of objects comparing this brand vs top 3 competitors across 5 dimensions, each object having: dimension, brand_score (1-5), competitor_scores (object with competitor name as key and score 1-5 as value))."},
             {"role": "user", "content": f"Research data:\n{sanitize_json_for_prompt(research, max_length=8000)}"},
         ]
-        result = await chat_completion(prompt, temperature=0.5)
+        result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         positioning = parse_llm_json(result, fallback={"raw": result})
         return {"positioning": positioning}
     except Exception as exc:
@@ -51,7 +58,7 @@ async def define_pillars(state: StrategyState) -> dict[str, Any]:
                 f"Research:\n{sanitize_json_for_prompt(state.get('research_data', {}), max_length=5000)}"
             )},
         ]
-        result = await chat_completion(prompt, temperature=0.5)
+        result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         pillars = parse_llm_json(result, fallback=[{"name": "General", "description": result}])
         return {"pillars": pillars}
     except Exception as exc:
@@ -75,7 +82,7 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
                 f"Research:\n{sanitize_json_for_prompt(research_data, max_length=4000)}"
             )},
         ]
-        result = await chat_completion(prompt, temperature=0.5)
+        result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         audiences = parse_llm_json(result, fallback=[{"segment_name": "Primary", "description": result}])
         return {"audiences": audiences}
     except Exception as exc:
@@ -93,7 +100,7 @@ async def plan_cadence(state: StrategyState) -> dict[str, Any]:
                 f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}"
             )},
         ]
-        result = await chat_completion(prompt, temperature=0.4)
+        result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
         cadence = parse_llm_json(result, fallback={"raw": result})
         return {"cadence": cadence}
     except Exception as exc:
@@ -113,7 +120,7 @@ async def generate_themes(state: StrategyState) -> dict[str, Any]:
                 f"Cadence:\n{sanitize_json_for_prompt(state.get('cadence', {}))}"
             )},
         ]
-        result = await chat_completion(prompt, temperature=0.65, max_tokens=8192)
+        result = await chat_completion(prompt, temperature=0.65, max_tokens=8192, response_format={"type": "json_object"})
         themes = parse_llm_json(result, fallback=[{"month": "current", "theme_name": "General", "description": result, "sub_themes": [], "key_dates": [], "pillar_rotation": ""}])
         return {"themes": themes}
     except Exception as exc:

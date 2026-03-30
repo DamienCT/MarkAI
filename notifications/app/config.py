@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # --- Valkey ---
     VALKEY_HOST: str = "valkey"
     VALKEY_PORT: int = 6379
+    VALKEY_PASSWORD: str = ""
 
     # --- Microsoft Teams ---
     TEAMS_WEBHOOK_URL: str = ""

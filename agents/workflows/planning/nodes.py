@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
+
+from pydantic import BaseModel, field_validator
 
 from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
@@ -22,6 +24,56 @@ from shared.tools.database import (
 from workflows.planning.state import PlanningState
 
 logger = logging.getLogger(__name__)
+
+VALID_CHANNELS = {"instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"}
+VALID_CONTENT_TYPES = {"post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"}
+
+
+class CalendarItemValidator(BaseModel):
+    """Validates LLM-generated calendar items before DB insert."""
+    scheduled_date: str
+    platform: str = "instagram"
+    content_type: str = "post"
+    campaign_name: Optional[str] = None
+    theme: Optional[str] = None
+    pillar: Optional[str] = None
+    target_audience: Optional[str] = None
+    weekly_sub_theme: Optional[str] = None
+    content_brief: Optional[str] = None
+    visual_direction: Optional[str] = None
+    cta_type: Optional[str] = None
+    product_name: Optional[str] = None
+    product_id: Optional[str] = None
+    product_sku: Optional[str] = None
+
+    @field_validator("scheduled_date")
+    @classmethod
+    def validate_date(cls, v: str) -> str:
+        try:
+            datetime.fromisoformat(v)
+        except (ValueError, TypeError):
+            # Try date-only format
+            from datetime import date as _date
+            _date.fromisoformat(v[:10])
+        return v
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, v: str) -> str:
+        v = v.lower().strip()
+        channel_map = {"twitter": "x", "blog": "website_blog", "web": "website_blog"}
+        v = channel_map.get(v, v)
+        if v not in VALID_CHANNELS:
+            v = "instagram"
+        return v
+
+    @field_validator("content_type")
+    @classmethod
+    def validate_content_type(cls, v: str) -> str:
+        v = v.lower().strip()
+        return v if v in VALID_CONTENT_TYPES else "post"
+
+    model_config = {"extra": "allow"}
 
 
 async def load_strategy(state: PlanningState) -> dict[str, Any]:
@@ -124,7 +176,7 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
             f"Available Products:\n{product_summary}"
         )},
     ]
-    result = await chat_completion(prompt, temperature=0.5)
+    result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
     campaigns = parse_llm_json(result, fallback=[{"name": "General Campaign", "description": result}])
 
     # ── Generate year-long content calendar strategy document ──────────────
@@ -234,7 +286,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
             f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=3000)}"
         )},
     ]
-    result = await chat_completion(prompt, temperature=0.5, max_tokens=16384)
+    result = await chat_completion(prompt, temperature=0.5, max_tokens=16384, response_format={"type": "json_object"})
     items = parse_llm_json(result, fallback=[])
     return {"calendar_items": items}
 
@@ -276,25 +328,35 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     max_date = datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)
 
     db_items = []
+    skipped = 0
     for item in items:
+        # Validate with Pydantic before DB insert
+        try:
+            validated = CalendarItemValidator(**item)
+        except Exception as ve:
+            logger.warning("Skipping invalid calendar item: %s — %s", item.get("theme", ""), ve)
+            skipped += 1
+            continue
         db_items.append({
             "brand_id": brand_id,
             "campaign_id": None,
-            "title": item.get("theme") or item.get("campaign_name", ""),
-            "description": item.get("content_brief") or item.get("brief", ""),
-            "channel": item.get("platform", "instagram"),
-            "scheduled_at": item.get("scheduled_date"),
-            "content_type": item.get("content_type"),
-            "product_id": item.get("product_id"),
-            "theme": item.get("theme"),
-            "pillar": item.get("pillar"),
-            "target_audience": item.get("target_audience"),
-            "weekly_sub_theme": item.get("weekly_sub_theme"),
-            "content_brief": item.get("content_brief"),
-            "visual_direction": item.get("visual_direction"),
-            "cta_type": item.get("cta_type"),
+            "title": validated.theme or validated.campaign_name or "",
+            "description": validated.content_brief or item.get("brief", ""),
+            "channel": validated.platform,
+            "scheduled_at": validated.scheduled_date,
+            "content_type": validated.content_type,
+            "product_id": validated.product_id,
+            "theme": validated.theme,
+            "pillar": validated.pillar,
+            "target_audience": validated.target_audience,
+            "weekly_sub_theme": validated.weekly_sub_theme,
+            "content_brief": validated.content_brief,
+            "visual_direction": validated.visual_direction,
+            "cta_type": validated.cta_type,
             "status": "planned",
         })
+    if skipped:
+        logger.warning("Skipped %d invalid calendar items for brand %s", skipped, brand_id)
 
     ids = await store_calendar_items(db_items, max_date=max_date, enabled_channels=enabled_channels)
     logger.info("Stored %d calendar items for brand %s", len(ids), brand_id)
@@ -308,7 +370,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
                 "scope_weeks": scope_weeks,
                 "enabled_channels": enabled_channels,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-            })
+            }, agent_type="content_calendar")
             logger.info("Stored year-long strategy document for brand %s", brand_id)
         except Exception:
             logger.exception("Failed to store strategy document for brand %s", brand_id)

@@ -72,10 +72,14 @@ async def upsert_from_bc(
     db: AsyncSession,
     bc_item_no: str,
     data: dict,
+    *,
+    _batch_mode: bool = False,
 ) -> Product:
     """
     Upsert a product from Business Central sync data.
     Creates if not existing, updates if it does.
+
+    When ``_batch_mode`` is True, the caller is responsible for committing.
     """
     product = await get_product_by_bc_item_no(db, bc_item_no)
     if product is None:
@@ -86,6 +90,24 @@ async def upsert_from_bc(
             if hasattr(product, key):
                 setattr(product, key, value)
     product.bc_last_synced_at = datetime.now(timezone.utc)
-    await db.commit()
-    await db.refresh(product)
+    if not _batch_mode:
+        await db.commit()
+        await db.refresh(product)
     return product
+
+
+async def batch_upsert_from_bc(
+    db: AsyncSession,
+    items: list[tuple[str, dict]],
+    batch_size: int = 50,
+) -> list[Product]:
+    """Upsert multiple products from Business Central, committing every *batch_size* items."""
+    products: list[Product] = []
+    for i, (bc_item_no, data) in enumerate(items, 1):
+        product = await upsert_from_bc(db, bc_item_no, data, _batch_mode=True)
+        products.append(product)
+        if i % batch_size == 0:
+            await db.commit()
+    # Final commit for remaining items
+    await db.commit()
+    return products

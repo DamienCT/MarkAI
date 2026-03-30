@@ -31,6 +31,10 @@ dependencies = [
     "opentelemetry-sdk>=1.40",
     "opentelemetry-instrumentation-fastapi>=0.61b0",
     "opentelemetry-exporter-otlp>=1.40",
+    "slowapi>=0.1.9",
+    "prometheus-fastapi-instrumentator>=7.0",
+    "python-json-logger>=3.0",
+    "tenacity>=8.2",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -40,6 +44,7 @@ packages = ["app"]
 dev = [
     "pytest",
     "pytest-asyncio",
+    "anyio[trio]",
     "httpx",
     "ruff",
 ]

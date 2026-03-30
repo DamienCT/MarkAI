@@ -66,7 +66,43 @@ class Settings(BaseSettings):
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
+    # ── Runtime environment ───────────────────────────────────────────────
+    MARKAI_ENV: str = "development"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()
+
+# ── Startup validation for production ──────────────────────────────────
+_DEFAULTS_TO_CHECK = {
+    "POSTGRES_PASSWORD": "",
+    "MINIO_SECRET_KEY": "",
+    "LITELLM_MASTER_KEY": "",
+}
+if settings.MARKAI_ENV == "production":
+    import logging as _log
+    _startup_logger = _log.getLogger("agents.config")
+    _insecure_defaults = []
+    for _field, _default in _DEFAULTS_TO_CHECK.items():
+        if getattr(settings, _field, None) == _default:
+            _insecure_defaults.append(_field)
+            _startup_logger.critical(
+                "SECURITY: %s is still set to its default value. "
+                "Set a strong value in .env before deploying to production.",
+                _field,
+            )
+    if _insecure_defaults:
+        raise RuntimeError(
+            f"Refusing to start agents in production with default secrets: "
+            f"{', '.join(_insecure_defaults)}. "
+            f"Set strong values in .env for these settings."
+        )
+    # Validate required service URLs
+    _REQUIRED_URLS = ["NATS_URL", "BACKEND_URL", "LITELLM_BASE_URL"]
+    _missing_urls = [f for f in _REQUIRED_URLS if not getattr(settings, f, "")]
+    if _missing_urls:
+        raise RuntimeError(
+            f"Refusing to start agents in production without service URLs: "
+            f"{', '.join(_missing_urls)}. Set these in .env."
+        )

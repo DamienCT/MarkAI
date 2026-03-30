@@ -1,7 +1,19 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
+
+ChannelType = Literal[
+    "instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"
+]
+ItemType = Literal[
+    "post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"
+]
+CalendarItemStatus = Literal[
+    "queued", "working", "in_review", "reworking",
+    "approved", "scheduled", "publishing", "published", "failed"
+]
 
 
 class CalendarItemBase(BaseModel):
@@ -9,10 +21,10 @@ class CalendarItemBase(BaseModel):
     campaign_id: uuid.UUID | None = None
     title: str
     description: str | None = None
-    item_type: str
-    channel: str
+    item_type: ItemType
+    channel: ChannelType
     scheduled_at: datetime | None = None
-    status: str = "queued"
+    status: CalendarItemStatus = "queued"
     assigned_to: uuid.UUID | None = None
     pillar: str | None = None
     theme: str | None = None
@@ -34,10 +46,10 @@ class CalendarItemUpdate(BaseModel):
     campaign_id: uuid.UUID | None = None
     title: str | None = None
     description: str | None = None
-    item_type: str | None = None
-    channel: str | None = None
+    item_type: ItemType | None = None
+    channel: ChannelType | None = None
     scheduled_at: datetime | None = None
-    status: str | None = None
+    status: CalendarItemStatus | None = None
     assigned_to: uuid.UUID | None = None
     pillar: str | None = None
     theme: str | None = None

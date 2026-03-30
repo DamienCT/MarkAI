@@ -1,7 +1,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -13,6 +13,10 @@ from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
 from app.services import fabric_service, minio_service, product_service
 from app.services.brand_service import get_brand
 from app.services.product_service import upsert_from_bc
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+_limiter = Limiter(key_func=get_remote_address)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,7 @@ async def list_products(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(limit, 200)
     products = await product_service.list_products(
         db,
         brand_id=brand_id,
@@ -141,7 +146,9 @@ async def update_product(
 
 
 @router.post("/{product_id}/upload-image", response_model=ProductResponse)
+@_limiter.limit("20/minute")
 async def upload_product_image(
+    request: Request,
     product_id: uuid.UUID,
     file: UploadFile,
     db: AsyncSession = Depends(get_db),
@@ -155,11 +162,20 @@ async def upload_product_image(
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    # Validate content type — images only
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+
     file_data = await file.read()
+
+    # Validate file size — max 5 MB
+    if len(file_data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size must be under 5MB")
+
     object_name = f"products/{product_id}/{file.filename}"
     content_type = file.content_type or "image/jpeg"
 
-    minio_service.upload_file(object_name, file_data, content_type)
+    await minio_service.upload_file(object_name, file_data, content_type)
 
     # Add to image gallery and set as primary
     gallery = list(product.image_urls) if isinstance(product.image_urls, list) else []
@@ -247,8 +263,8 @@ async def fetch_product_images(
         ext = "jpg" if "jpeg" in img["content_type"] else img["content_type"].split("/")[-1]
         object_name = f"products/{product_id}/gallery/web_{len(gallery) + i + 1}.{ext}"
 
-        minio_service.ensure_bucket()
-        minio_service.upload_file(object_name, img["image_data"], img["content_type"])
+        await minio_service.ensure_bucket()
+        await minio_service.upload_file(object_name, img["image_data"], img["content_type"])
 
         entry = {
             "url": object_name,
@@ -303,8 +319,8 @@ async def batch_fetch_product_images(
         for i, img in enumerate(images):
             ext = "jpg" if "jpeg" in img["content_type"] else img["content_type"].split("/")[-1]
             object_name = f"products/{pid}/gallery/web_{len(gallery) + i + 1}.{ext}"
-            minio_service.ensure_bucket()
-            minio_service.upload_file(object_name, img["image_data"], img["content_type"])
+            await minio_service.ensure_bucket()
+            await minio_service.upload_file(object_name, img["image_data"], img["content_type"])
             gallery.append({
                 "url": object_name,
                 "object_name": object_name,
@@ -374,7 +390,7 @@ async def delete_product_image(
     obj_name = removed.get("object_name") if isinstance(removed, dict) else None
     if obj_name:
         try:
-            minio_service.delete_file(obj_name)
+            await minio_service.delete_file(obj_name)
         except Exception:
             pass
 

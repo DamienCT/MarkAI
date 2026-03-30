@@ -72,18 +72,20 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const controller = new AbortController();
     async function fetchBrands() {
       try {
-        const data = await api.get<Brand[]>("/api/v1/brands");
+        const data = await api.get<Brand[]>("/api/v1/brands", undefined, { signal: controller.signal });
         setBrands(data);
       } catch {
         // Brands may fail silently; analytics still loads for "all"
       }
     }
     fetchBrands();
+    return () => controller.abort();
   }, []);
 
-  const fetchAnalytics = useCallback(async () => {
+  const fetchAnalytics = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
       const params: Record<string, string | number> = { days };
@@ -92,10 +94,10 @@ export default function AnalyticsPage() {
       }
 
       const [tsData, hmData, contentData, summaryData] = await Promise.allSettled([
-        api.get<AnalyticsTimeSeries[]>("/api/v1/analytics/engagement/timeseries", params),
-        api.get<HeatmapData[]>("/api/v1/analytics/posting/heatmap", params),
-        api.get<TopContent[]>("/api/v1/analytics/content/top", { ...params, limit: 10 }),
-        api.get<AnalyticsSummary>("/api/v1/analytics/summary", params),
+        api.get<AnalyticsTimeSeries[]>("/api/v1/analytics/engagement/timeseries", params, { signal }),
+        api.get<HeatmapData[]>("/api/v1/analytics/posting/heatmap", params, { signal }),
+        api.get<TopContent[]>("/api/v1/analytics/content/top", { ...params, limit: 10 }, { signal }),
+        api.get<AnalyticsSummary>("/api/v1/analytics/summary", params, { signal }),
       ]);
       if (tsData.status === "fulfilled") setTimeSeries(tsData.value);
       else setTimeSeries([]);
@@ -113,7 +115,9 @@ export default function AnalyticsPage() {
   }, [selectedBrandId, days]);
 
   useEffect(() => {
-    fetchAnalytics();
+    const controller = new AbortController();
+    fetchAnalytics(controller.signal);
+    return () => controller.abort();
   }, [fetchAnalytics]);
 
   return (

@@ -38,6 +38,7 @@ async def list_notifications(
     current_user: User = Depends(get_current_user),
 ):
     """Return notifications for the current user, optionally filtered by read status."""
+    limit = min(limit, 200)
     stmt = (
         select(Notification)
         .where(Notification.user_id == current_user.id)

@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 from datetime import timedelta
@@ -24,15 +25,16 @@ def get_client() -> Minio:
     return _client
 
 
-def ensure_bucket() -> None:
+async def ensure_bucket() -> None:
     """Create the default bucket if it doesn't exist."""
     client = get_client()
-    if not client.bucket_exists(settings.MINIO_BUCKET):
-        client.make_bucket(settings.MINIO_BUCKET)
+    exists = await asyncio.to_thread(client.bucket_exists, settings.MINIO_BUCKET)
+    if not exists:
+        await asyncio.to_thread(client.make_bucket, settings.MINIO_BUCKET)
         logger.info("Created MinIO bucket: %s", settings.MINIO_BUCKET)
 
 
-def upload_file(
+async def upload_file(
     object_name: str,
     data: bytes,
     content_type: str = "application/octet-stream",
@@ -43,24 +45,20 @@ def upload_file(
     """
     client = get_client()
     bucket = bucket or settings.MINIO_BUCKET
-    client.put_object(
+    await asyncio.to_thread(
+        client.put_object,
         bucket,
         object_name,
         io.BytesIO(data),
-        length=len(data),
-        content_type=content_type,
+        len(data),
+        content_type,
     )
     logger.info("Uploaded %s to bucket %s", object_name, bucket)
     return object_name
 
 
-def download_file(
-    object_name: str,
-    bucket: str | None = None,
-) -> bytes:
-    """Download a file from MinIO. Returns the raw bytes."""
-    client = get_client()
-    bucket = bucket or settings.MINIO_BUCKET
+def _download_sync(client: Minio, bucket: str, object_name: str) -> bytes:
+    """Blocking download helper for asyncio.to_thread."""
     response = client.get_object(bucket, object_name)
     try:
         return response.read()
@@ -69,7 +67,17 @@ def download_file(
         response.release_conn()
 
 
-def get_presigned_url(
+async def download_file(
+    object_name: str,
+    bucket: str | None = None,
+) -> bytes:
+    """Download a file from MinIO. Returns the raw bytes."""
+    client = get_client()
+    bucket = bucket or settings.MINIO_BUCKET
+    return await asyncio.to_thread(_download_sync, client, bucket, object_name)
+
+
+async def get_presigned_url(
     object_name: str,
     expires: timedelta = timedelta(hours=1),
     bucket: str | None = None,
@@ -77,10 +85,12 @@ def get_presigned_url(
     """Generate a presigned GET URL for an object."""
     client = get_client()
     bucket = bucket or settings.MINIO_BUCKET
-    return client.presigned_get_object(bucket, object_name, expires=expires)
+    return await asyncio.to_thread(
+        client.presigned_get_object, bucket, object_name, expires=expires,
+    )
 
 
-def get_presigned_upload_url(
+async def get_presigned_upload_url(
     object_name: str,
     expires: timedelta = timedelta(hours=1),
     bucket: str | None = None,
@@ -88,15 +98,17 @@ def get_presigned_upload_url(
     """Generate a presigned PUT URL for uploading."""
     client = get_client()
     bucket = bucket or settings.MINIO_BUCKET
-    return client.presigned_put_object(bucket, object_name, expires=expires)
+    return await asyncio.to_thread(
+        client.presigned_put_object, bucket, object_name, expires=expires,
+    )
 
 
-def delete_file(
+async def delete_file(
     object_name: str,
     bucket: str | None = None,
 ) -> None:
     """Delete a file from MinIO."""
     client = get_client()
     bucket = bucket or settings.MINIO_BUCKET
-    client.remove_object(bucket, object_name)
+    await asyncio.to_thread(client.remove_object, bucket, object_name)
     logger.info("Deleted %s from bucket %s", object_name, bucket)

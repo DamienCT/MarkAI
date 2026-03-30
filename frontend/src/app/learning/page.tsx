@@ -18,9 +18,12 @@ export default function LearningPage() {
   const [bulkApproving, setBulkApproving] = useState(false);
 
   useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+
     async function fetchAdaptations() {
       try {
-        const data = await api.get<Adaptation[]>("/api/v1/learning/adaptations", { limit: 50 });
+        const data = await api.get<Adaptation[]>("/api/v1/learning/adaptations", { limit: 50 }, { signal });
         setAdaptations(data);
       } catch {
         toast.error("Failed to load adaptations");
@@ -29,6 +32,8 @@ export default function LearningPage() {
       }
     }
     fetchAdaptations();
+
+    return () => controller.abort();
   }, []);
 
   const handleApprove = async (id: string) => {

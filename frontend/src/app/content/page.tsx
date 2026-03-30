@@ -63,7 +63,7 @@ export default function ContentStudioPage() {
     try {
       const params: Record<string, string | number> = {};
       if (brandId) params.brand_id = brandId;
-      const data = await api.get<CalendarItem[]>("/api/v1/content/calendar", params, { signal });
+      const data = await api.get<CalendarItem[]>("/api/v1/calendar", params, { signal });
       setItems(Array.isArray(data) ? data : []);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;

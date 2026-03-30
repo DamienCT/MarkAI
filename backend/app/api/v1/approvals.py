@@ -21,6 +21,7 @@ async def list_approvals(
     current_user: User = Depends(get_current_user),
 ):
     """List approvals, optionally filtered by status."""
+    limit = min(limit, 200)
     from sqlalchemy import select, func
     from app.models.approval import Approval
 
@@ -47,6 +48,7 @@ async def list_pending_approvals(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(limit, 200)
     return await approval_service.list_pending_approvals(
         db, reviewer_id=reviewer_id, skip=skip, limit=limit
     )
@@ -60,6 +62,7 @@ async def list_content_approvals(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(limit, 200)
     return await approval_service.list_approvals_for_content(
         db, content_id, skip=skip, limit=limit
     )

@@ -21,6 +21,7 @@ import { statusColor } from "@/lib/utils";
 import type { ServiceStatus, AgentRun, SchedulerJob, QueueInfo, Brand } from "@/types";
 import { Activity, ChevronDown, ChevronRight, Play } from "lucide-react";
 import { formatRelativeTime } from "@/lib/utils";
+import { useRequireRole } from "@/lib/hooks";
 
 const WORKFLOW_TYPES = [
   "content_generation",
@@ -31,6 +32,7 @@ const WORKFLOW_TYPES = [
 ] as const;
 
 export default function SystemPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("admin");
   const [services, setServices] = useState<ServiceStatus[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [jobs, setJobs] = useState<SchedulerJob[]>([]);

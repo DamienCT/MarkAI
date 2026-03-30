@@ -10,9 +10,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/utils";
+import { useRequireRole } from "@/lib/hooks";
 import type { AuditLogEntry } from "@/types";
 
 export default function AuditLogPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("manager");
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionFilter, setActionFilter] = useState<string>("all");

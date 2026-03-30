@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime
 
@@ -7,8 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
 from app.deps import get_current_user, get_db
+from app.services.ai_model_service import _cache_get, _cache_set
 
 router = APIRouter()
+
+_ANALYTICS_CACHE_TTL = 300  # 5 minutes
 
 
 @router.get("/summary")
@@ -17,42 +21,37 @@ async def get_analytics_summary(
     current_user: User = Depends(get_current_user),
 ):
     """High-level analytics summary for the dashboard."""
-    total_impressions = (
-        await db.execute(text("SELECT COALESCE(SUM(impressions), 0) FROM engagement_metrics"))
-    ).scalar() or 0
-    total_likes = (
-        await db.execute(text("SELECT COALESCE(SUM(likes), 0) FROM engagement_metrics"))
-    ).scalar() or 0
-    total_comments = (
-        await db.execute(text("SELECT COALESCE(SUM(comments), 0) FROM engagement_metrics"))
-    ).scalar() or 0
-    total_shares = (
-        await db.execute(text("SELECT COALESCE(SUM(shares), 0) FROM engagement_metrics"))
-    ).scalar() or 0
-    total_reach = (
-        await db.execute(text("SELECT COALESCE(SUM(reach), 0) FROM engagement_metrics"))
-    ).scalar() or 0
-    total_clicks = (
-        await db.execute(text("SELECT COALESCE(SUM(clicks), 0) FROM engagement_metrics"))
-    ).scalar() or 0
-    raw_avg_rate = (
-        await db.execute(text("SELECT COALESCE(AVG(engagement_rate), 0) FROM engagement_metrics"))
-    ).scalar()
-    avg_engagement_rate = float(raw_avg_rate) if raw_avg_rate is not None else 0.0
-    total_published = (
-        await db.execute(text("SELECT count(*) FROM calendar_items WHERE status = 'published'"))
-    ).scalar() or 0
+    cached = await _cache_get("markai:analytics:summary")
+    if cached:
+        return json.loads(cached)
 
-    return {
-        "impressions": int(total_impressions),
-        "likes": int(total_likes),
-        "comments": int(total_comments),
-        "shares": int(total_shares),
-        "reach": int(total_reach),
-        "clicks": int(total_clicks),
-        "engagement_rate": round(float(avg_engagement_rate), 4),
-        "total_published_posts": total_published,
+    row = (
+        await db.execute(text("""
+            SELECT
+                COALESCE(SUM(impressions), 0) AS total_impressions,
+                COALESCE(SUM(likes), 0) AS total_likes,
+                COALESCE(SUM(comments), 0) AS total_comments,
+                COALESCE(SUM(shares), 0) AS total_shares,
+                COALESCE(SUM(reach), 0) AS total_reach,
+                COALESCE(SUM(clicks), 0) AS total_clicks,
+                COALESCE(AVG(engagement_rate), 0) AS avg_engagement_rate,
+                (SELECT count(*) FROM calendar_items WHERE status = 'published') AS total_published
+            FROM engagement_metrics
+        """))
+    ).fetchone()
+
+    result = {
+        "impressions": int(row[0]),
+        "likes": int(row[1]),
+        "comments": int(row[2]),
+        "shares": int(row[3]),
+        "reach": int(row[4]),
+        "clicks": int(row[5]),
+        "engagement_rate": round(float(row[6]), 4),
+        "total_published_posts": int(row[7]),
     }
+    await _cache_set("markai:analytics:summary", json.dumps(result), ttl=_ANALYTICS_CACHE_TTL)
+    return result
 
 
 @router.get("/engagement/timeseries")
@@ -77,7 +76,7 @@ async def get_engagement_timeseries(
     params: dict = {"days": days}
     if brand_id:
         query += " AND brand_id = :brand_id"
-        params["brand_id"] = str(brand_id)
+        params["brand_id"] = brand_id
     query += " GROUP BY DATE(fetched_at) ORDER BY date"
     rows = await db.execute(text(query), params)
     return [
@@ -122,6 +121,7 @@ async def get_top_content(
     current_user: User = Depends(get_current_user),
 ):
     """Top performing content by engagement."""
+    limit = min(limit, 200)
     rows = await db.execute(
         text("""
             SELECT
@@ -180,7 +180,7 @@ async def get_brand_metrics(
             JOIN calendar_items ci ON em.calendar_item_id = ci.id
             WHERE ci.brand_id = :brand_id
         """),
-        {"brand_id": str(brand_id)},
+        {"brand_id": brand_id},
     )
     row = rows.fetchone()
     if not row:

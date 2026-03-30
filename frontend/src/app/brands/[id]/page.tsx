@@ -116,6 +116,10 @@ export default function BrandDetailPage() {
   // AbortController ref to cancel in-flight requests on brand switch / unmount
   const abortRef = useRef<AbortController | null>(null);
 
+  // Guard flag to prevent overlapping async polling callbacks
+  const isFetchingRunsRef = useRef(false);
+  const isFetchingActivationRef = useRef(false);
+
   const [brand, setBrand] = useState<Brand | null>(null);
   const [content, setContent] = useState<Content[]>([]);
   const [metrics, setMetrics] = useState<EngagementMetrics | null>(null);
@@ -239,12 +243,15 @@ export default function BrandDetailPage() {
     const hasRunning = research.some((r) => r.status === "running" || r.status === "pending");
     if (!hasRunning || (activeTab !== "intelligence" && activeTab !== "overview")) return;
     const interval = setInterval(() => {
+      if (isFetchingRunsRef.current) return;
+      isFetchingRunsRef.current = true;
       api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 })
         .then((runs) => {
           setResearch(runs);
           setPipelineRuns(runs);
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { isFetchingRunsRef.current = false; });
     }, 5000);
     return () => clearInterval(interval);
   }, [research, activeTab, brandId]);
@@ -256,6 +263,8 @@ export default function BrandDetailPage() {
     const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
     const interval = setInterval(async () => {
+      if (isFetchingActivationRef.current) return;
+      isFetchingActivationRef.current = true;
       try {
         // Fetch brand status and agent runs in parallel
         const [updatedBrand, runs] = await Promise.all([
@@ -289,6 +298,8 @@ export default function BrandDetailPage() {
         }
       } catch {
         // Network error — keep polling
+      } finally {
+        isFetchingActivationRef.current = false;
       }
     }, 3000);
 

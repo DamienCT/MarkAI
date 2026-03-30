@@ -1,17 +1,23 @@
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from app.auth.models import User
 from app.auth.permissions import role_has_access
 from app.config import settings
 from app.deps import get_current_user, get_db
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+_limiter = Limiter(key_func=get_remote_address)
 from app.models.adaptation import Adaptation
 from app.models.agent_run import AgentRun
 from app.models.competitor import Competitor
@@ -20,7 +26,47 @@ from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
+# ── Prompt sanitization (mirrors agents/shared/sanitize.py) ──────────────
+_INJECTION_PATTERNS = [
+    re.compile(p) for p in [
+        r'(?i)ignore\s+(all\s+)?previous\s+instructions',
+        r'(?i)system\s*:\s*',
+        r'(?i)you\s+are\s+now\s+',
+        r'(?i)forget\s+(all\s+)?previous',
+        r'(?i)disregard\s+(all\s+)?',
+        r'(?i)new\s+instructions?\s*:',
+        r'(?i)\[INST\]',
+        r'(?i)<\|im_start\|>',
+        r'(?i)<<SYS>>',
+    ]
+]
 
+
+def _sanitize(text: str, max_length: int = 10000) -> str:
+    """Sanitize user-provided text before including in an LLM prompt."""
+    if not text:
+        return ""
+    text = text[:max_length]
+    for pattern in _INJECTION_PATTERNS:
+        text = pattern.sub("[FILTERED]", text)
+    return text
+
+
+def _is_retryable_llm(exc: BaseException) -> bool:
+    """Return True for transient LLM errors worth retrying."""
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (429, 502, 503)
+    return False
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception(_is_retryable_llm),
+    reraise=True,
+)
 async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: bool = False) -> str:
     """Call LLM via LiteLLM proxy, falling back to OpenAI directly if LiteLLM fails."""
     from app.services.ai_model_service import get_active_model
@@ -78,11 +124,12 @@ async def list_intelligence_reports(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List recent agent run reports (research, strategy, planning, content_calendar_strategy, product_intel).
+    """List recent agent run reports (research, strategy, planning, content_calendar, product_intel).
 
     Pass ?type=research to filter by a single agent_type.
     """
-    allowed_types = ["research", "strategy", "planning", "content_calendar_strategy", "product_intel"]
+    limit = min(limit, 200)
+    allowed_types = ["research", "strategy", "planning", "content_calendar", "content_calendar_strategy", "product_intel"]
 
     if type:
         filter_types = [type] if type in allowed_types else allowed_types
@@ -130,7 +177,7 @@ async def list_intelligence_reports(
                 summary_parts.append(f"{len(output['campaigns'])} campaign(s)")
             if output.get("calendar_summary") or output.get("calendar"):
                 summary_parts.append("Calendar summary available")
-        elif r.agent_type == "content_calendar_strategy":
+        elif r.agent_type in ("content_calendar", "content_calendar_strategy"):
             # Markdown document — just note its presence
             if output.get("strategy_document") or output.get("markdown"):
                 summary_parts.append("Year-long strategy document")
@@ -162,7 +209,7 @@ async def list_intelligence_reports(
             "title": title,
             "summary": summary,
             "insights": insights,
-            "output_payload": output,
+            "output_payload": {},  # Excluded from list for performance; use detail endpoint
             "created_at": r.created_at.isoformat(),
             "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         })
@@ -289,6 +336,7 @@ async def get_research_results(
     current_user: User = Depends(get_current_user),
 ):
     """Get latest research agent runs and competitor analyses for a brand."""
+    limit = min(limit, 200)
     # Fetch recent research agent runs
     runs_result = await db.execute(
         select(AgentRun)
@@ -346,6 +394,7 @@ async def get_adaptations(
     current_user: User = Depends(get_current_user),
 ):
     """Get adaptations for a content item."""
+    limit = min(limit, 200)
     stmt = (
         select(Adaptation)
         .where(Adaptation.source_content_id == content_id)
@@ -474,7 +523,9 @@ FIELD_PROMPTS: dict[str, str] = {
 
 
 @router.post("/generate-fields", response_model=AIGenerateFieldResponse)
+@_limiter.limit("10/minute")
 async def generate_brand_fields(
+    request: Request,
     req: AIGenerateFieldRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -504,24 +555,25 @@ async def generate_brand_fields(
     except Exception:
         timezone_value = "Indian/Mauritius"
 
-    # Build brand context for the LLM
+    # Build brand context for the LLM (sanitize all user-provided fields)
     guidelines = brand.brand_guidelines or {}
+    ta_desc = (brand.target_audience or {}).get('description', 'Not set') if isinstance(brand.target_audience, dict) else 'Not set'
     brand_context = (
-        f"Brand Name: {brand.name}\n"
-        f"Description: {brand.description or 'Not set'}\n"
-        f"BC Company: {brand.bc_company or 'Not set'}\n"
-        f"Tone of Voice: {brand.tone_of_voice or 'Not set'}\n"
-        f"Target Audience: {(brand.target_audience or {}).get('description', 'Not set') if isinstance(brand.target_audience, dict) else 'Not set'}\n"
-        f"Voice Style: {guidelines.get('voice_style', 'Not set')}\n"
-        f"Hashtag Strategy: {guidelines.get('hashtag_strategy', 'Not set')}\n"
-        f"Dos: {', '.join(guidelines.get('dos', [])) or 'Not set'}\n"
-        f"Donts: {', '.join(guidelines.get('donts', [])) or 'Not set'}\n"
-        f"Location/Timezone: {timezone_value} (Mauritius, Indian Ocean region)\n"
+        f"Brand Name: {_sanitize(brand.name or '')}\n"
+        f"Description: {_sanitize(brand.description or 'Not set')}\n"
+        f"BC Company: {_sanitize(brand.bc_company or 'Not set')}\n"
+        f"Tone of Voice: {_sanitize(brand.tone_of_voice or 'Not set')}\n"
+        f"Target Audience: {_sanitize(ta_desc)}\n"
+        f"Voice Style: {_sanitize(guidelines.get('voice_style', 'Not set'))}\n"
+        f"Hashtag Strategy: {_sanitize(guidelines.get('hashtag_strategy', 'Not set'))}\n"
+        f"Dos: {_sanitize(', '.join(guidelines.get('dos', [])) or 'Not set')}\n"
+        f"Donts: {_sanitize(', '.join(guidelines.get('donts', [])) or 'Not set')}\n"
+        f"Location/Timezone: {_sanitize(str(timezone_value))} (Mauritius, Indian Ocean region)\n"
     )
 
     if req.context:
         for key, val in req.context.items():
-            brand_context += f"{key}: {val}\n"
+            brand_context += f"{_sanitize(str(key))}: {_sanitize(str(val))}\n"
 
     # Determine which fields to generate
     if req.field:
@@ -604,7 +656,9 @@ class AIRewriteFieldResponse(BaseModel):
 
 
 @router.post("/rewrite-field", response_model=AIRewriteFieldResponse)
+@_limiter.limit("10/minute")
 async def rewrite_brand_field(
+    request: Request,
     req: AIRewriteFieldRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -618,15 +672,16 @@ async def rewrite_brand_field(
         raise HTTPException(status_code=404, detail="Brand not found")
 
     guidelines = brand.brand_guidelines or {}
+    ta_desc = (brand.target_audience or {}).get('description', 'Not set') if isinstance(brand.target_audience, dict) else 'Not set'
     brand_context = (
-        f"Brand Name: {brand.name}\n"
-        f"Description: {brand.description or 'Not set'}\n"
-        f"Tone of Voice: {brand.tone_of_voice or 'Not set'}\n"
-        f"Target Audience: {(brand.target_audience or {}).get('description', 'Not set') if isinstance(brand.target_audience, dict) else 'Not set'}\n"
+        f"Brand Name: {_sanitize(brand.name or '')}\n"
+        f"Description: {_sanitize(brand.description or 'Not set')}\n"
+        f"Tone of Voice: {_sanitize(brand.tone_of_voice or 'Not set')}\n"
+        f"Target Audience: {_sanitize(ta_desc)}\n"
         f"Location: Mauritius, Indian Ocean region\n"
     )
 
-    field_label = req.field.replace("_", " ").title()
+    field_label = _sanitize(req.field.replace("_", " ").title())
 
     system_prompt = (
         "You are a brand copywriter. The brand operates in Mauritius and the Indian Ocean region. "
@@ -639,7 +694,7 @@ async def rewrite_brand_field(
     user_prompt = (
         f"Brand Context:\n{brand_context}\n\n"
         f"Field: {field_label}\n"
-        f"Current text to rewrite:\n{req.current_value}\n\n"
+        f"Current text to rewrite:\n{_sanitize(req.current_value)}\n\n"
         "Rewrite this to be better while keeping the same meaning."
     )
 

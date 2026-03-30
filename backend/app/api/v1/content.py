@@ -1,82 +1,16 @@
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
 from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
-from app.models.calendar_item import CalendarItem
 from app.schemas.content import ContentCreate, ContentResponse, ContentUpdate
 from app.services import content_service
 from app.services.content_service import InvalidStatusTransition
 
 router = APIRouter()
-
-
-@router.get("/calendar")
-async def content_calendar(
-    brand_id: uuid.UUID | None = None,
-    month: str | None = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Return all calendar items, optionally filtered by brand or month."""
-    stmt = select(CalendarItem).order_by(CalendarItem.scheduled_at.desc()).limit(200)
-    if brand_id:
-        stmt = stmt.where(CalendarItem.brand_id == brand_id)
-    result = await db.execute(stmt)
-    items = result.scalars().all()
-    return [
-        {
-            "id": str(item.id),
-            "brand_id": str(item.brand_id),
-            "title": item.title,
-            "channel": item.channel,
-            "status": item.status,
-            "scheduled_at": item.scheduled_at.isoformat() if item.scheduled_at else None,
-            "published_at": item.published_at.isoformat() if item.published_at else None,
-        }
-        for item in items
-    ]
-
-
-@router.get("/calendar/upcoming")
-async def content_calendar_upcoming(
-    limit: int = 10,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Return upcoming calendar items with scheduled_at >= now(), ordered ascending."""
-    now = datetime.now(timezone.utc)
-    stmt = (
-        select(CalendarItem)
-        .where(CalendarItem.scheduled_at >= now)
-        .order_by(CalendarItem.scheduled_at.asc())
-        .limit(limit)
-    )
-    result = await db.execute(stmt)
-    items = result.scalars().all()
-
-    return [
-        {
-            "id": str(item.id),
-            "brand_id": str(item.brand_id),
-            "campaign_id": str(item.campaign_id) if item.campaign_id else None,
-            "title": item.title,
-            "description": item.description,
-            "item_type": item.item_type,
-            "channel": item.channel,
-            "scheduled_at": item.scheduled_at.isoformat() if item.scheduled_at else None,
-            "status": item.status,
-            "priority": item.priority,
-            "created_at": item.created_at.isoformat(),
-            "updated_at": item.updated_at.isoformat(),
-        }
-        for item in items
-    ]
 
 
 @router.get("/", response_model=list[ContentResponse])
@@ -88,6 +22,7 @@ async def list_content(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(limit, 200)
     return await content_service.list_content(
         db, brand_id=brand_id, is_current=is_current, skip=skip, limit=limit
     )

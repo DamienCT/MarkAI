@@ -6,7 +6,6 @@ Uses Google's Nano Banana (Gemini native image generation) ONLY for:
 Product images themselves are sourced from the WEB (real photos, never AI-generated).
 """
 
-import base64
 import logging
 import re
 from io import BytesIO
@@ -145,7 +144,8 @@ async def search_product_images(
                 })
                 logger.info("Downloaded product image %d for '%s' from %s (%d KB)",
                            len(results), product_name, url[:60], len(resp.content) // 1024)
-            except Exception:
+            except Exception as e:
+                logger.debug("Image download failed for URL %s: %s", url, e)
                 continue
 
     logger.info("Found %d product images for '%s'", len(results), product_name)

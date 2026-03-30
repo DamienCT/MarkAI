@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 import uuid
@@ -46,7 +47,7 @@ async def _check_valkey() -> str:
         import redis.asyncio as redis
         from app.config import settings
 
-        r = redis.Redis(host=settings.VALKEY_HOST, port=settings.VALKEY_PORT, socket_connect_timeout=2)
+        r = redis.Redis(host=settings.VALKEY_HOST, port=settings.VALKEY_PORT, password=settings.VALKEY_PASSWORD or None, socket_connect_timeout=2)
         await r.ping()
         await r.aclose()
         return "ok"
@@ -69,7 +70,10 @@ async def _check_minio() -> str:
     try:
         from app.services import minio_service
 
-        minio_service._client.list_buckets()
+        client = minio_service.get_client()
+        if client is None:
+            return "error: MinIO client not initialized"
+        await asyncio.to_thread(client.list_buckets)
         return "ok"
     except Exception as exc:
         return f"error: {exc}"
@@ -152,6 +156,7 @@ async def get_audit_log(
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    limit = min(limit, 200)
     stmt = (
         select(AuditLog)
         .offset(skip)
@@ -198,6 +203,7 @@ async def get_job_log(
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    limit = min(limit, 200)
     stmt = (
         select(ScheduledJobLog)
         .offset(skip)
@@ -251,7 +257,7 @@ async def system_services(
     try:
         import redis.asyncio as redis
 
-        r = redis.Redis(host=settings.VALKEY_HOST, port=settings.VALKEY_PORT, socket_connect_timeout=2)
+        r = redis.Redis(host=settings.VALKEY_HOST, port=settings.VALKEY_PORT, password=settings.VALKEY_PASSWORD or None, socket_connect_timeout=2)
         await r.ping()
         await r.aclose()
         latency = round((time.monotonic() - t0) * 1000, 1)
@@ -280,7 +286,8 @@ async def system_services(
     try:
         from app.services import minio_service
 
-        minio_service._client.list_buckets()
+        client = minio_service.get_client()
+        await asyncio.to_thread(client.list_buckets)
         latency = round((time.monotonic() - t0) * 1000, 1)
         services.append({"name": "minio", "status": "healthy", "latency_ms": latency})
     except Exception:
@@ -292,8 +299,8 @@ async def system_services(
     try:
         from qdrant_client import QdrantClient
 
-        qc = QdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT, timeout=2)
-        qc.get_collections()
+        qc = QdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT, api_key=settings.QDRANT_API_KEY or None, timeout=2)
+        await asyncio.to_thread(qc.get_collections)
         latency = round((time.monotonic() - t0) * 1000, 1)
         services.append({"name": "qdrant", "status": "healthy", "latency_ms": latency})
     except Exception:
@@ -318,23 +325,6 @@ async def system_services(
         services.append({"name": "litellm", "status": "unhealthy", "latency_ms": latency})
 
     return services
-
-
-@router.get("/scheduler/jobs")
-async def list_scheduler_jobs_detail(
-    current_user: User = Depends(get_current_user),
-):
-    """List all registered APScheduler jobs with their next run time."""
-    jobs = scheduler.get_jobs()
-    return [
-        {
-            "id": job.id,
-            "name": job.name or job.id,
-            "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
-            "trigger": str(job.trigger),
-        }
-        for job in jobs
-    ]
 
 
 @router.get("/queues")

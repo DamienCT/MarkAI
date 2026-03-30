@@ -39,7 +39,7 @@ async def analyze_patterns(state: EvaluationState) -> dict[str, Any]:
             )},
             {"role": "user", "content": f"Performance data (last 30 days):\n{sanitize_json_for_prompt(perf_data)}"},
         ]
-        result = await chat_completion(prompt, temperature=0.3)
+        result = await chat_completion(prompt, temperature=0.3, response_format={"type": "json_object"})
         patterns = parse_llm_json(result, fallback={"raw_analysis": result})
 
         return {"patterns": patterns}
@@ -63,7 +63,7 @@ async def generate_recommendations(state: EvaluationState) -> dict[str, Any]:
             )},
             {"role": "user", "content": f"Performance patterns:\n{sanitize_json_for_prompt(patterns, max_length=8000)}"},
         ]
-        result = await chat_completion(prompt, temperature=0.4)
+        result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
         recommendations = parse_llm_json(result, fallback=[{"title": "Analysis complete", "description": result, "confidence": 0.5}])
 
         return {"recommendations": recommendations}
@@ -92,7 +92,7 @@ async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
             )},
             {"role": "user", "content": f"Recommendations:\n{sanitize_json_for_prompt(recommendations, max_length=8000)}"},
         ]
-        result = await chat_completion(prompt, temperature=0.2)
+        result = await chat_completion(prompt, temperature=0.2, response_format={"type": "json_object"})
         classified = parse_llm_json(result, fallback=[{**r, "tier": 2} for r in recommendations])
 
         return {"adaptations": classified}

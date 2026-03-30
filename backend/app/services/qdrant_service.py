@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -26,20 +27,22 @@ def get_client() -> QdrantClient:
         _client = QdrantClient(
             host=settings.QDRANT_HOST,
             port=settings.QDRANT_PORT,
+            api_key=settings.QDRANT_API_KEY or None,
         )
     return _client
 
 
-def ensure_collection(
+async def ensure_collection(
     collection_name: str = DEFAULT_COLLECTION,
     vector_size: int = VECTOR_SIZE,
 ) -> None:
     """Create a collection if it doesn't exist."""
     client = get_client()
-    collections = client.get_collections().collections
-    names = [c.name for c in collections]
+    collections = await asyncio.to_thread(client.get_collections)
+    names = [c.name for c in collections.collections]
     if collection_name not in names:
-        client.create_collection(
+        await asyncio.to_thread(
+            client.create_collection,
             collection_name=collection_name,
             vectors_config=VectorParams(
                 size=vector_size,
@@ -49,7 +52,7 @@ def ensure_collection(
         logger.info("Created Qdrant collection: %s", collection_name)
 
 
-def upsert_vectors(
+async def upsert_vectors(
     vectors: list[dict[str, Any]],
     collection_name: str = DEFAULT_COLLECTION,
 ) -> None:
@@ -66,11 +69,13 @@ def upsert_vectors(
         )
         for v in vectors
     ]
-    client.upsert(collection_name=collection_name, points=points)
+    await asyncio.to_thread(
+        client.upsert, collection_name=collection_name, points=points,
+    )
     logger.debug("Upserted %d vectors to %s", len(points), collection_name)
 
 
-def search_vectors(
+async def search_vectors(
     query_vector: list[float],
     *,
     collection_name: str = DEFAULT_COLLECTION,
@@ -93,7 +98,8 @@ def search_vectors(
             must.append(FieldCondition(key=key, match=MatchValue(value=value)))
         qdrant_filter = Filter(must=must)
 
-    results = client.search(
+    results = await asyncio.to_thread(
+        client.search,
         collection_name=collection_name,
         query_vector=query_vector,
         limit=limit,
@@ -111,13 +117,14 @@ def search_vectors(
     ]
 
 
-def delete_vectors(
+async def delete_vectors(
     ids: list[str],
     collection_name: str = DEFAULT_COLLECTION,
 ) -> None:
     """Delete vectors by ID from Qdrant."""
     client = get_client()
-    client.delete(
+    await asyncio.to_thread(
+        client.delete,
         collection_name=collection_name,
         points_selector=ids,
     )

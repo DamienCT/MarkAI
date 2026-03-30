@@ -20,11 +20,19 @@ from typing import Any
 import nats.aio.msg
 
 from langgraph.errors import GraphInterrupt
+from sqlalchemy.exc import IntegrityError
 from shared.config import settings
 
 # Maximum time (seconds) a single workflow invocation may run before being cancelled
 WORKFLOW_TIMEOUT = int(os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "1800"))  # 30 min default
 from shared.nats_consumer import NATSConsumer
+from shared.tools.database import (
+    create_agent_run,
+    complete_agent_run,
+    execute_query,
+    execute_update,
+    get_latest_research,
+)
 
 # ── Import all workflow graphs ───────────────────────────────────────────
 from workflows.research.graph import research_graph
@@ -35,11 +43,26 @@ from workflows.evaluation.graph import evaluation_graph
 from workflows.product_intel.graph import product_intel_graph
 from workflows.adaptation.graph import adaptation_graph
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-    stream=sys.stdout,
-)
+def _setup_json_logging() -> None:
+    """Configure structured JSON logging for observability."""
+    try:
+        from pythonjsonlogger.json import JsonFormatter
+        formatter = JsonFormatter(
+            fmt="%(asctime)s %(name)s %(levelname)s %(message)s",
+            rename_fields={"asctime": "timestamp", "levelname": "level", "name": "logger"},
+        )
+    except ImportError:
+        # Fallback if python-json-logger not installed
+        formatter = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s")
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+_setup_json_logging()
 logger = logging.getLogger("worker")
 
 # ── Subject → graph mapping ─────────────────────────────────────────────
@@ -109,7 +132,6 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             initial_state[key] = value
 
     # Track this run in the database
-    from shared.tools.database import create_agent_run, complete_agent_run
     agent_type = subject.split(".")[0]
     brand_id = initial_state.get("brand_id", "")
     run_id = ""
@@ -117,24 +139,9 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     # Ensure payload is JSON-safe (handle UUIDs, datetimes, etc.)
     safe_payload = json.loads(json.dumps(payload, default=str))
 
-    # Idempotency: check if there's already a running workflow of this type for this brand
-    try:
-        from shared.tools.database import execute_query
-        existing = await execute_query(
-            "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type "
-            "AND status = 'running' AND started_at > NOW() - INTERVAL '30 minutes'",
-            {"brand_id": brand_id, "agent_type": agent_type},
-        )
-        if existing:
-            logger.warning(
-                "Skipping duplicate %s workflow for brand %s — already running (run %s)",
-                agent_type, brand_id, existing[0].get("id"),
-            )
-            await msg.ack()
-            return
-    except Exception:
-        pass  # If check fails, proceed anyway
-
+    # Idempotency: the partial unique index idx_agent_runs_running on
+    # (brand_id, agent_type) WHERE status='running' prevents duplicates.
+    # We catch the unique violation instead of a TOCTOU SELECT check.
     try:
         run_id = await create_agent_run(
             brand_id=brand_id,
@@ -157,14 +164,19 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
         # Ensure result is JSON-safe before storing (handle UUIDs, datetimes, etc.)
         safe_result = json.loads(json.dumps(result, default=str))
-        await complete_agent_run(run_id, output_payload=safe_result, status="completed")
-        logger.info("Workflow %s completed for brand %s", agent_type, brand_id)
+
+        # Extract total token usage if the workflow tracked it
+        tokens_used = None
+        if isinstance(result, dict):
+            tokens_used = result.get("_total_tokens") or None
+
+        await complete_agent_run(run_id, output_payload=safe_result, status="completed", tokens_used=tokens_used)
+        logger.info("Workflow %s completed for brand %s (tokens: %s)", agent_type, brand_id, tokens_used)
 
         # ── Activation: mark brand as active once the planning pipeline finishes
         if agent_type == "planning" and payload.get("trigger") == "activation":
             if brand_id:
                 try:
-                    from shared.tools.database import execute_query
                     await execute_query(
                         "UPDATE brands SET status = 'active', is_active = true WHERE id = :id",
                         {"id": brand_id},
@@ -221,7 +233,6 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         # strategy graph would fail on load_research).
         if agent_type == "product" and brand_id and _consumer is not None:
             try:
-                from shared.tools.database import get_latest_research
                 existing_research = await get_latest_research(brand_id)
                 if existing_research:
                     next_subject = "strategy.trigger"
@@ -272,8 +283,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     calendar_item_ids = (result or {}).get("calendar_item_ids", [])
                     if calendar_item_ids:
                         # Sort by scheduled_at (nearest first) so content is generated in order
-                        from shared.tools.database import execute_query as _eq
-                        items = await _eq(
+                        items = await execute_query(
                             "SELECT id FROM calendar_items WHERE id = ANY(:ids) ORDER BY scheduled_at ASC",
                             {"ids": calendar_item_ids},
                         )
@@ -313,13 +323,24 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     logger.info("Chained %s -> %s for brand %s (depth %d)", agent_type, next_subject, brand_id, current_depth + 1)
             except Exception as chain_exc:
                 logger.error("Failed to chain %s -> %s: %s", agent_type, next_subject, chain_exc)
-                # Update run status to indicate chain failure so the UI can show it
+                # Log chain error separately — do NOT overwrite the already-completed run
                 if run_id:
-                    await complete_agent_run(
-                        run_id,
-                        output_payload={**(safe_result or {}), "_chain_error": str(chain_exc)},
-                        status="completed",
-                    )
+                    try:
+                        await execute_update(
+                            "UPDATE agent_runs SET output_payload = output_payload || :patch WHERE id = :id",
+                            {"id": run_id, "patch": json.dumps({"_chain_error": str(chain_exc)})},
+                        )
+                    except Exception as patch_exc:
+                        logger.warning("Could not patch chain error onto run %s: %s", run_id, patch_exc)
+
+    except IntegrityError:
+        # Unique violation from idx_agent_runs_running — another instance is already running
+        logger.warning(
+            "Skipping duplicate %s workflow for brand %s — already running (unique constraint)",
+            agent_type, brand_id,
+        )
+        await msg.ack()
+        return
 
     except asyncio.TimeoutError:
         logger.error("Workflow %s timed out for brand %s", agent_type, brand_id)

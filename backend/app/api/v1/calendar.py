@@ -34,6 +34,7 @@ async def upcoming_calendar_items(
     current_user: User = Depends(get_current_user),
 ):
     """Return upcoming calendar items with scheduled_at >= now(), ordered ascending."""
+    limit = min(limit, 200)
     now = datetime.now(timezone.utc)
     stmt = (
         select(CalendarItem)
@@ -76,6 +77,7 @@ async def list_calendar_items(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(limit, 200)
     return await calendar_service.list_calendar_items(
         db,
         brand_id=brand_id,

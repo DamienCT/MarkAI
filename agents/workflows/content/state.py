@@ -17,6 +17,13 @@ class ContentState(TypedDict, total=False):
     calendar_item: dict[str, Any]
     brand: dict[str, Any]
     strategy: dict[str, Any]
+    positioning: dict[str, Any]
+    relevant_pillar: dict[str, Any]
+    relevant_audience: dict[str, Any]
+    month_context: str
+    recent_posts: list[dict[str, Any]]
+    top_performing: list[dict[str, Any]]
+    product: dict[str, Any]
 
     # Generated content
     hook: str

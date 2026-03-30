@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
+import { useRequireRole } from "@/lib/hooks";
 
 /* -- IANA timezone helpers ---------------------------------------- */
 
@@ -98,6 +99,7 @@ const DEFAULTS: AppSettings = {
 /* -- Component ---------------------------------------------------- */
 
 export default function SettingsPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("manager");
   const [settings, setSettings] = useState<AppSettings>(DEFAULTS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);

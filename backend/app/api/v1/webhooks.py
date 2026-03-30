@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import settings
 from app.deps import get_db
@@ -95,6 +96,7 @@ async def publish_result(
         gen_meta = content.generation_metadata or {}
         gen_meta["publish_error"] = payload.error_message
         content.generation_metadata = gen_meta
+        flag_modified(content, "generation_metadata")
 
         logger.warning(
             "Content %s publish failed: %s", content_id, payload.error_message

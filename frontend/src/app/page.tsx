@@ -25,24 +25,30 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+
     async function fetchDashboard() {
       try {
         const [dashData, runsData, postsData] = await Promise.allSettled([
-          api.get<DashboardStats>("/api/v1/dashboard/stats"),
-          api.get<AgentRun[]>("/api/v1/agents/runs", { limit: 10 }),
-          api.get<CalendarItem[]>("/api/v1/content/calendar/upcoming", { limit: 10 }),
+          api.get<DashboardStats>("/api/v1/dashboard/stats", undefined, { signal }),
+          api.get<AgentRun[]>("/api/v1/agents/runs", { limit: 10 }, { signal }),
+          api.get<CalendarItem[]>("/api/v1/calendar/upcoming", { limit: 10 }, { signal }),
         ]);
 
         if (dashData.status === "fulfilled") setStats(dashData.value);
         if (runsData.status === "fulfilled" && Array.isArray(runsData.value)) setRecentRuns(runsData.value);
         if (postsData.status === "fulfilled" && Array.isArray(postsData.value)) setUpcomingPosts(postsData.value);
       } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setError("Failed to load dashboard data");
       } finally {
         setLoading(false);
       }
     }
     fetchDashboard();
+
+    return () => controller.abort();
   }, []);
 
   if (loading) {

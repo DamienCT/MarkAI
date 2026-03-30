@@ -125,7 +125,7 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
         {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nIndustry context: {sanitize_for_prompt(brand_industry)} {sanitize_for_prompt(brand_context)}{existing_info}\n\nWebsite content:\n{sanitize_json_for_prompt(website_data[:5], max_length=8000)}"},
     ]
     try:
-        competitor_text = await chat_completion(identify_prompt, temperature=0.3)
+        competitor_text = await chat_completion(identify_prompt, temperature=0.3, response_format={"type": "json_object"})
     except Exception as exc:
         logger.error("analyze_competitors failed: %s", exc)
         return {"status": "failed", "errors": [*(state.get("errors") or []), f"analyze_competitors failed: {exc}"]}
@@ -165,7 +165,7 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
                     "\n".join([f"- {r.title}: {r.url} — {getattr(r, 'snippet', '')}" for r in all_results[:20]])},
             ]
             try:
-                filtered_text = await chat_completion(filter_prompt, temperature=0.2)
+                filtered_text = await chat_completion(filter_prompt, temperature=0.2, response_format={"type": "json_object"})
                 filtered = parse_llm_json(filtered_text, fallback=[])
                 if isinstance(filtered, list) and filtered:
                     competitors = filtered
@@ -234,7 +234,7 @@ async def identify_gaps(state: ResearchState) -> dict[str, Any]:
                 f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=3000)}"
             )},
         ]
-        result = await chat_completion(prompt, temperature=0.4)
+        result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
         gaps = parse_llm_json(result, fallback=[{"title": "General Gap", "category": "content", "description": result, "opportunity": "", "priority": "medium", "estimated_impact": "", "implementation_effort": "medium", "recommended_timeline": "", "target_audience": "", "success_metrics": []}])
         return {"gaps": gaps}
     except Exception as exc:
@@ -253,7 +253,7 @@ async def build_personas(state: ResearchState) -> dict[str, Any]:
                 f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=2000)}"
             )},
         ]
-        result = await chat_completion(prompt, temperature=0.5)
+        result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         personas = parse_llm_json(result, fallback=[{"name": "Primary Audience", "demographics": {"age": "", "gender": "", "location": "", "income": "", "occupation": ""}, "psychographics": result, "pain_points": [], "content_preferences": {"formats": [], "topics": [], "tone": "", "language_mix": ""}, "platforms": [], "buying_triggers": [], "best_engagement_times": "", "content_avoidance": []}])
         return {"personas": personas}
     except Exception as exc:

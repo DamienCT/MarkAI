@@ -21,6 +21,8 @@ def _channel_name(user_id: str) -> str:
 
 
 def _valkey_url() -> str:
+    if settings.VALKEY_PASSWORD:
+        return f"redis://:{settings.VALKEY_PASSWORD}@{settings.VALKEY_HOST}:{settings.VALKEY_PORT}"
     return f"redis://{settings.VALKEY_HOST}:{settings.VALKEY_PORT}"
 
 

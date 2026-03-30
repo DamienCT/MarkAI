@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from shared.llm import chat_completion, generate_image, get_model_for_category, parse_llm_json
+from shared.llm import chat_completion, generate_image, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
     build_brand_intelligence,
@@ -29,10 +29,36 @@ from shared.image_processing import (
     generate_mockup,
 )
 
+from pydantic import BaseModel, field_validator
+
 from workflows.content.state import ContentState
 from workflows.content.image_sourcing import source_product_image
 
 logger = logging.getLogger(__name__)
+
+
+class ContentRecordValidator(BaseModel):
+    """Validates generated content fields before DB insert."""
+    brand_id: str
+    calendar_item_id: str
+    hook: str = ""
+    caption: str = ""
+    hashtags: str = "[]"
+    cta: str = ""
+    product_image_url: str | None = None
+    generated_image_url: str | None = None
+    platform_adaptations: str = "{}"
+    metadata: dict = {}
+    status: str = "in_review"
+
+    @field_validator("caption")
+    @classmethod
+    def caption_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("caption must not be empty")
+        return v
+
+    model_config = {"extra": "allow"}
 
 
 def _extract_month_section(strategy_doc: str, month_name: str) -> str:
@@ -41,7 +67,7 @@ def _extract_month_section(strategy_doc: str, month_name: str) -> str:
         return ""
     # Try to find a section header containing the month name
     pattern = re.compile(
-        rf"(#{1,3}\s*.*{re.escape(month_name)}.*?)(?=#{1,3}\s|\Z)",
+        rf"(#{{1,3}}\s*.*{re.escape(month_name)}.*?)(?=#{{1,3}}\s|\Z)",
         re.IGNORECASE | re.DOTALL,
     )
     match = pattern.search(strategy_doc)
@@ -363,7 +389,7 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
                 f"ALWAYS INCLUDE these branded/local hashtags: {brand_slug}, Mauritius, IleMaurice"
             )},
         ]
-        result = await chat_completion(prompt, temperature=0.6, max_tokens=512)
+        result = await chat_completion(prompt, temperature=0.6, max_tokens=512, response_format={"type": "json_object"})
         hashtags = parse_llm_json(result, fallback=None)
         if hashtags is None:
             hashtags = [tag.strip().strip("#") for tag in result.split() if tag.strip()]
@@ -628,7 +654,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
         )},
     ]
     try:
-        result = await chat_completion(prompt, temperature=0.5)
+        result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         adaptations = parse_llm_json(result, fallback={source_platform: {"caption": state.get("caption", ""), "hashtags": state.get("hashtags", [])}})
 
         # Extract CTA from the primary platform adaptation
@@ -675,9 +701,8 @@ async def _replace_product_in_generated_image(state: ContentState, image_data: b
 
         product_name = state.get("calendar_item", {}).get("product_name", "product")
 
-        image_model = await get_model_for_category("vision")
         response = gemini_client.models.generate_content(
-            model=image_model,
+            model="gemini-2.5-flash-image",
             contents=[
                 f"Replace the generic product in Image 1 with the real product from Image 2 ('{product_name}'). "
                 f"Keep everything else exactly the same. Match lighting and perspective.",
@@ -827,7 +852,24 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
 
         caption = state.get("caption", "")
         brand = state.get("brand", {})
-        brand_name = brand.get("name", "Healthspan Mauritius")
+        brand_name = brand.get("name", "Brand")
+        # Derive a username/handle from brand guidelines or slug
+        brand_guidelines = brand.get("brand_guidelines") or {}
+        if isinstance(brand_guidelines, str):
+            try:
+                brand_guidelines_parsed = json.loads(brand_guidelines)
+            except (json.JSONDecodeError, TypeError):
+                brand_guidelines_parsed = {}
+        else:
+            brand_guidelines_parsed = brand_guidelines
+        social_links = brand_guidelines_parsed.get("social_links", {})
+        # Try to extract a handle from Instagram link, else use brand slug
+        brand_handle = ""
+        ig_link = social_links.get("instagram", "")
+        if ig_link:
+            brand_handle = ig_link.rstrip("/").rsplit("/", 1)[-1]
+        if not brand_handle:
+            brand_handle = brand.get("slug", brand_name.lower().replace(" ", ""))
         brand_id = state["brand_id"]
         item_id = state["calendar_item_id"]
 
@@ -835,10 +877,29 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
         await async_ensure_bucket("content-images")
         brand_initial = brand_name[0].upper() if brand_name else "H"
 
-        for platform in ["instagram", "facebook", "linkedin", "x"]:
+        # Only generate mockups for enabled channels
+        brand_guidelines = brand.get("brand_guidelines") or {}
+        if isinstance(brand_guidelines, str):
+            try:
+                brand_guidelines = json.loads(brand_guidelines)
+            except (json.JSONDecodeError, TypeError):
+                brand_guidelines = {}
+        channels_cfg = brand_guidelines.get("channels", {})
+        enabled_channels = [
+            ch for ch, cfg in channels_cfg.items()
+            if isinstance(cfg, dict) and cfg.get("enabled")
+        ]
+        # Filter to platforms that support mockups; fall back to all mockup platforms if none enabled
+        mockup_platforms = ["instagram", "facebook", "linkedin", "x"]
+        platforms_to_mock = [p for p in enabled_channels if p in mockup_platforms]
+        if not platforms_to_mock:
+            platforms_to_mock = mockup_platforms
+
+        for platform in platforms_to_mock:
             try:
                 mockup_bytes = generate_mockup(
                     image_data, caption, platform,
+                    username=brand_handle,
                     display_name=brand_name,
                     avatar_initial=brand_initial,
                 )
@@ -903,6 +964,13 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
         },
         "status": "in_review",
     }
+
+    # Validate content record before DB insert
+    try:
+        ContentRecordValidator(**content_record)
+    except Exception as ve:
+        logger.error("Content validation failed for calendar item %s: %s", state["calendar_item_id"], ve)
+        return {"status": "failed", "errors": [*(state.get("errors") or []), f"Content validation failed: {ve}"]}
 
     content_id = await store_content(content_record)
     logger.info("Stored content %s for calendar item %s", content_id, state["calendar_item_id"])

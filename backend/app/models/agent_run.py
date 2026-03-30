@@ -22,7 +22,7 @@ class AgentRun(Base):
     output_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("prompt_versions.id"), nullable=True

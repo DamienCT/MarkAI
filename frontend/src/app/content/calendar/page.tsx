@@ -14,7 +14,7 @@ export default function ContentCalendarPage() {
   useEffect(() => {
     async function fetchCalendar() {
       try {
-        const data = await api.get<CalendarItem[]>("/api/v1/content/calendar");
+        const data = await api.get<CalendarItem[]>("/api/v1/calendar");
         setItems(Array.isArray(data) ? data : []);
       } catch {
         setItems([]);

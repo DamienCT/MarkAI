@@ -22,6 +22,42 @@ logger = logging.getLogger(__name__)
 from shared.config import settings
 
 
+# ── Shared httpx client (lazy singleton) ────────────────────────────────
+_http_client: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """Return a module-level shared httpx.AsyncClient, creating it lazily."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=60,
+            limits=httpx.Limits(max_connections=20),
+        )
+    return _http_client
+
+
+class ChatResult(str):
+    """Return type for chat_completion — behaves like a str (the content)
+    but also carries token usage metadata.
+
+    Callers that just do ``str(result)`` or use it as a string continue to work.
+    Callers that need usage can access ``.prompt_tokens``, ``.completion_tokens``,
+    and ``.total_tokens``.
+    """
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+    def __new__(cls, content: str = "", *, prompt_tokens: int = 0, completion_tokens: int = 0, total_tokens: int = 0):
+        instance = super().__new__(cls, content)
+        instance.prompt_tokens = prompt_tokens
+        instance.completion_tokens = completion_tokens
+        instance.total_tokens = total_tokens
+        return instance
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Return True for transient errors worth retrying."""
     if isinstance(exc, httpx.TimeoutException):
@@ -76,21 +112,22 @@ async def get_model_for_category(category: str) -> str:
     try:
         backend_url = settings.BACKEND_URL
 
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{backend_url}/api/v1/providers/active",
-                headers=_auth_headers(),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            active_models: dict[str, str] = data.get("models", {})
+        client = get_http_client()
+        resp = await client.get(
+            f"{backend_url}/api/v1/providers/active",
+            headers=_auth_headers(),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        active_models: dict[str, str] = data.get("models", {})
 
-            # Cache all returned models
-            for slug, model_id in active_models.items():
-                _model_cache[slug] = (model_id, now + _CACHE_TTL)
+        # Cache all returned models
+        for slug, model_id in active_models.items():
+            _model_cache[slug] = (model_id, now + _CACHE_TTL)
 
-            if category in active_models:
-                return f"openai/{active_models[category]}"
+        if category in active_models:
+            return f"openai/{active_models[category]}"
     except Exception:
         # Backend unreachable — use cached value if available (even if expired)
         if category in _model_cache:
@@ -129,10 +166,14 @@ def validate_llm_output(data: Any, required_fields: list[str] | None = None, exp
             logger.warning("Expected list from LLM, got %s", type(data).__name__)
             return False
         if required_fields and data:
-            missing = [f for f in required_fields if f not in data[0]]
-            if missing:
-                logger.warning("LLM list items missing fields: %s", missing)
-                return False
+            for idx, item in enumerate(data):
+                if not isinstance(item, dict):
+                    logger.warning("LLM list item %d is not a dict: %s", idx, type(item).__name__)
+                    return False
+                missing = [f for f in required_fields if f not in item]
+                if missing:
+                    logger.warning("LLM list item %d missing fields: %s", idx, missing)
+                    return False
     elif isinstance(data, dict) and required_fields:
         missing = [f for f in required_fields if f not in data]
         if missing:
@@ -153,7 +194,8 @@ async def chat_completion(
     category: str = "text",
     temperature: float = 0.7,
     max_tokens: int = 4096,
-) -> str:
+    response_format: dict[str, str] | None = None,
+) -> "ChatResult":
     """Send a chat completion request through the LiteLLM proxy and return
     the assistant message content.
 
@@ -164,20 +206,31 @@ async def chat_completion(
         model = await get_model_for_category(category)
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{settings.LITELLM_BASE_URL}/v1/chat/completions",
-                headers=_auth_headers(),
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+        client = get_http_client()
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if response_format is not None:
+            body["response_format"] = response_format
+        resp = await client.post(
+            f"{settings.LITELLM_BASE_URL}/v1/chat/completions",
+            headers=_auth_headers(),
+            json=body,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        usage = data.get("usage", {})
+        return ChatResult(
+            content=content,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        )
     except httpx.ConnectError:
         raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
     except (httpx.TimeoutException, httpx.HTTPStatusError):
@@ -201,15 +254,16 @@ async def get_embedding(
         model = await get_model_for_category(category)
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{settings.LITELLM_BASE_URL}/v1/embeddings",
-                headers=_auth_headers(),
-                json={"model": model, "input": text},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["data"][0]["embedding"]
+        client = get_http_client()
+        resp = await client.post(
+            f"{settings.LITELLM_BASE_URL}/v1/embeddings",
+            headers=_auth_headers(),
+            json={"model": model, "input": text},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["data"][0]["embedding"]
     except httpx.ConnectError:
         raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
     except httpx.TimeoutException:
@@ -239,29 +293,30 @@ async def generate_image(
         model = await get_model_for_category(category)
 
     try:
-        async with httpx.AsyncClient(timeout=180) as client:
-            resp = await client.post(
-                f"{settings.LITELLM_BASE_URL}/v1/images/generations",
-                headers=_auth_headers(),
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "size": size,
-                    "n": n,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            result = data["data"][0]
+        client = get_http_client()
+        resp = await client.post(
+            f"{settings.LITELLM_BASE_URL}/v1/images/generations",
+            headers=_auth_headers(),
+            json={
+                "model": model,
+                "prompt": prompt,
+                "size": size,
+                "n": n,
+            },
+            timeout=180,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        result = data["data"][0]
 
-            # gpt-image-1.5 and newer return b64_json, older models return url
-            if result.get("url"):
-                return result["url"]
-            elif result.get("b64_json"):
-                # Return as data URI — caller can decode if needed
-                return f"data:image/png;base64,{result['b64_json']}"
-            else:
-                raise ValueError("Image generation returned neither url nor b64_json")
+        # gpt-image-1.5 and newer return b64_json, older models return url
+        if result.get("url"):
+            return result["url"]
+        elif result.get("b64_json"):
+            # Return as data URI — caller can decode if needed
+            return f"data:image/png;base64,{result['b64_json']}"
+        else:
+            raise ValueError("Image generation returned neither url nor b64_json")
     except httpx.ConnectError:
         raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
     except httpx.TimeoutException:

@@ -2,12 +2,11 @@
 -- PostgreSQL 16
 
 -- Enable extensions
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ── Users ───────────────────────────────────────────────────────
 CREATE TABLE users (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     entra_object_id VARCHAR(255) UNIQUE NOT NULL,
     email           VARCHAR(255) NOT NULL UNIQUE,
     display_name    VARCHAR(255) NOT NULL,
@@ -25,7 +24,7 @@ CREATE INDEX idx_users_role ON users (role);
 
 -- ── Brands ──────────────────────────────────────────────────────
 CREATE TABLE brands (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name            VARCHAR(255) NOT NULL,
     slug            VARCHAR(255) NOT NULL UNIQUE,
     description     TEXT,
@@ -54,7 +53,7 @@ CREATE INDEX idx_brands_status ON brands (status);
 
 -- ── Products ────────────────────────────────────────────────────
 CREATE TABLE products (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     brand_id            UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     bc_item_no          VARCHAR(50),
     bc_item_category    VARCHAR(255),
@@ -86,6 +85,7 @@ CREATE TABLE products (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX idx_products_brand_bc_item ON products (brand_id, bc_item_no) WHERE bc_item_no IS NOT NULL;
 CREATE INDEX idx_products_brand_id ON products (brand_id);
 CREATE INDEX idx_products_bc_item_no ON products (bc_item_no);
 CREATE INDEX idx_products_category ON products (category);
@@ -95,7 +95,7 @@ CREATE INDEX idx_products_tags ON products USING GIN (tags);
 
 -- ── Campaigns ───────────────────────────────────────────────────
 CREATE TABLE campaigns (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     name            VARCHAR(255) NOT NULL,
     description     TEXT,
@@ -124,7 +124,7 @@ CREATE INDEX idx_campaigns_created_by ON campaigns (created_by);
 
 -- ── Calendar Items ──────────────────────────────────────────────
 CREATE TABLE calendar_items (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     campaign_id     UUID REFERENCES campaigns(id) ON DELETE SET NULL,
     title           VARCHAR(500) NOT NULL,
@@ -163,13 +163,14 @@ CREATE INDEX idx_calendar_items_pillar ON calendar_items (pillar);
 CREATE INDEX idx_calendar_items_theme ON calendar_items (theme);
 CREATE INDEX idx_calendar_items_brand_scheduled ON calendar_items (brand_id, scheduled_at DESC);
 CREATE INDEX idx_calendar_items_status ON calendar_items (status);
+CREATE INDEX idx_calendar_items_status_published ON calendar_items (status, published_at) WHERE status = 'published';
 CREATE INDEX idx_calendar_items_scheduled_at ON calendar_items (scheduled_at);
 CREATE INDEX idx_calendar_items_assigned_to ON calendar_items (assigned_to);
 CREATE INDEX idx_calendar_items_created_by ON calendar_items (created_by);
 
 -- ── Content ─────────────────────────────────────────────────────
 CREATE TABLE content (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     calendar_item_id    UUID NOT NULL REFERENCES calendar_items(id) ON DELETE CASCADE,
     brand_id            UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     version             INTEGER NOT NULL DEFAULT 1,
@@ -199,10 +200,11 @@ CREATE INDEX idx_content_brand_id ON content (brand_id);
 CREATE INDEX idx_content_is_current ON content (is_current);
 CREATE INDEX idx_content_platform_post_id ON content (platform_post_id);
 CREATE INDEX idx_content_created_by ON content (created_by);
+CREATE UNIQUE INDEX idx_content_current ON content (calendar_item_id) WHERE is_current = true;
 
 -- ── Approvals ───────────────────────────────────────────────────
 CREATE TABLE approvals (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     content_id      UUID NOT NULL REFERENCES content(id) ON DELETE CASCADE,
     calendar_item_id UUID NOT NULL REFERENCES calendar_items(id) ON DELETE CASCADE,
     reviewer_id     UUID NOT NULL REFERENCES users(id),
@@ -221,7 +223,7 @@ CREATE INDEX idx_approvals_status ON approvals (status);
 
 -- ── Prompt Versions ─────────────────────────────────────────────
 CREATE TABLE prompt_versions (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name            VARCHAR(255) NOT NULL,
     slug            VARCHAR(255) NOT NULL,
     category        VARCHAR(100) NOT NULL
@@ -246,7 +248,7 @@ CREATE INDEX idx_prompt_versions_is_active ON prompt_versions (is_active);
 
 -- ── Agent Runs ──────────────────────────────────────────────────
 CREATE TABLE agent_runs (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_type      VARCHAR(100) NOT NULL,
     trigger         VARCHAR(100) NOT NULL
                     CHECK (trigger IN ('scheduled', 'manual', 'event', 'webhook', 'activation')),
@@ -271,10 +273,12 @@ CREATE INDEX idx_agent_runs_status ON agent_runs (status);
 CREATE INDEX idx_agent_runs_brand_id ON agent_runs (brand_id);
 CREATE INDEX idx_agent_runs_initiated_by ON agent_runs (initiated_by);
 CREATE INDEX idx_agent_runs_created_at ON agent_runs (created_at DESC);
+CREATE UNIQUE INDEX idx_agent_runs_running ON agent_runs (brand_id, agent_type) WHERE status = 'running';
+CREATE INDEX idx_agent_runs_brand_type_created ON agent_runs (brand_id, agent_type, created_at DESC);
 
 -- ── Engagement Metrics ──────────────────────────────────────────
 CREATE TABLE engagement_metrics (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     content_id          UUID NOT NULL REFERENCES content(id) ON DELETE CASCADE,
     calendar_item_id    UUID NOT NULL REFERENCES calendar_items(id) ON DELETE CASCADE,
     brand_id            UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
@@ -299,10 +303,11 @@ CREATE INDEX idx_engagement_metrics_calendar_item_id ON engagement_metrics (cale
 CREATE INDEX idx_engagement_metrics_brand_id ON engagement_metrics (brand_id);
 CREATE INDEX idx_engagement_metrics_channel ON engagement_metrics (channel);
 CREATE INDEX idx_engagement_metrics_fetched_at ON engagement_metrics (fetched_at DESC);
+CREATE INDEX idx_engagement_metrics_brand_fetched ON engagement_metrics (brand_id, fetched_at DESC);
 
 -- ── Competitors ─────────────────────────────────────────────────
 CREATE TABLE competitors (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     name            VARCHAR(255) NOT NULL,
     website_url     TEXT,
@@ -320,7 +325,7 @@ CREATE INDEX idx_competitors_is_active ON competitors (is_active);
 
 -- ── Adaptations (multi-channel content variants) ────────────────
 CREATE TABLE adaptations (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_content_id   UUID NOT NULL REFERENCES content(id) ON DELETE CASCADE,
     target_channel      VARCHAR(50) NOT NULL
                         CHECK (target_channel IN ('instagram', 'facebook', 'linkedin',
@@ -333,7 +338,8 @@ CREATE TABLE adaptations (
     ai_model            VARCHAR(255),
     status              VARCHAR(50) NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued', 'working', 'in_review', 'reworking',
-                                           'approved', 'scheduled', 'published', 'failed')),
+                                           'approved', 'scheduled', 'published', 'failed',
+                                           'proposed', 'auto_applied')),
     created_by          UUID REFERENCES users(id),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -345,7 +351,7 @@ CREATE INDEX idx_adaptations_status ON adaptations (status);
 
 -- ── Scheduled Job Log ───────────────────────────────────────────
 CREATE TABLE scheduled_job_log (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_name        VARCHAR(255) NOT NULL,
     job_type        VARCHAR(100) NOT NULL,
     status          VARCHAR(50) NOT NULL DEFAULT 'started'
@@ -365,7 +371,7 @@ CREATE INDEX idx_scheduled_job_log_started_at ON scheduled_job_log (started_at D
 
 -- ── Audit Log ───────────────────────────────────────────────────
 CREATE TABLE audit_log (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID REFERENCES users(id),
     action          VARCHAR(100) NOT NULL,
     entity_type     VARCHAR(100) NOT NULL,
@@ -385,7 +391,7 @@ CREATE INDEX idx_audit_log_created_at ON audit_log (created_at DESC);
 
 -- ── Notifications ───────────────────────────────────────────────
 CREATE TABLE notifications (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title           VARCHAR(500) NOT NULL,
     body            TEXT,
@@ -416,7 +422,7 @@ CREATE TABLE ai_model_categories (
     slug            VARCHAR(50) UNIQUE NOT NULL,
     display_name    VARCHAR(100) NOT NULL,
     description     TEXT,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ── Available AI Models (discovered from API) ─────────────────────
@@ -428,7 +434,7 @@ CREATE TABLE ai_models (
     category_id     UUID REFERENCES ai_model_categories(id),
     is_available    BOOLEAN DEFAULT true,
     capabilities    JSONB DEFAULT '{}',
-    discovered_at   TIMESTAMPTZ DEFAULT NOW(),
+    discovered_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(provider, model_id)
 );
 
@@ -444,7 +450,7 @@ CREATE TABLE ai_model_selections (
     is_active       BOOLEAN DEFAULT true,
     priority        INT DEFAULT 0,
     set_by          UUID REFERENCES users(id),
-    set_at          TIMESTAMPTZ DEFAULT NOW(),
+    set_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(category_slug, model_id)
 );
 
@@ -464,7 +470,7 @@ CREATE TABLE app_settings (
     key VARCHAR(255) PRIMARY KEY,
     value JSONB NOT NULL,
     updated_by UUID REFERENCES users(id),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Seed default settings

@@ -62,7 +62,7 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
         {"role": "user", "content": f"Vendor groups:\n{sanitize_json_for_prompt({v: [{'name': p['name'], 'sku': p.get('sku')} for p in ps[:20]] for v, ps in vendor_groups.items()}, max_length=8000)}"},
     ]
     try:
-        result = await chat_completion(prompt, temperature=0.3)
+        result = await chat_completion(prompt, temperature=0.3, response_format={"type": "json_object"})
         brand_mappings = parse_llm_json(result, fallback={v: [{"brand_name": v, "product_count": len(ps)}] for v, ps in vendor_groups.items()})
         return {"products": products, "brand_mappings": brand_mappings}
     except Exception as exc:
@@ -99,7 +99,7 @@ async def research_brand(state: ProductIntelState) -> dict[str, Any]:
                             )},
                             {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nWebsite data:\n{sanitize_json_for_prompt(page_data, max_length=5000)}"},
                         ]
-                        analysis = await chat_completion(prompt, temperature=0.3)
+                        analysis = await chat_completion(prompt, temperature=0.3, response_format={"type": "json_object"})
                         brand_data = parse_llm_json(analysis, fallback={"description": analysis})
 
                         brand_info.update(brand_data)
@@ -133,7 +133,7 @@ async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
         )},
     ]
     try:
-        result = await chat_completion(prompt, temperature=0.2, max_tokens=8192)
+        result = await chat_completion(prompt, temperature=0.2, max_tokens=8192, response_format={"type": "json_object"})
         matched = parse_llm_json(result, fallback=[])
     except Exception as exc:
         logger.error("match_products_to_brands LLM call failed: %s", exc)
@@ -211,7 +211,7 @@ async def flag_promotable(state: ProductIntelState) -> dict[str, Any]:
         {"role": "user", "content": f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in candidates[:50]], max_length=6000)}"},
     ]
     try:
-        result = await chat_completion(prompt, temperature=0.4)
+        result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
         promotable = parse_llm_json(result, fallback=[])
         return {"promotable_items": promotable, "status": "completed"}
     except Exception as exc:

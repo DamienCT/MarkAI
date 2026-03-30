@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   format,
   startOfMonth,
@@ -87,6 +87,17 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [dragItem, setDragItem] = useState<CalendarItem | null>(null);
   const [expandedDay, setExpandedDay] = useState<Date | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Track viewport width for responsive layout
+  React.useEffect(() => {
+    function handleResize() {
+      setIsMobile(window.innerWidth < 768);
+    }
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(currentMonth);
@@ -96,15 +107,25 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
   const totalCells = startPadding + days.length;
   const endPadding = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
 
-  function getItemsForDay(date: Date): CalendarItem[] {
-    return items.filter((item) => {
-      if (!item.scheduled_at) return false;
+  // Pre-group items by date string for O(1) lookup per day
+  const itemsByDateKey = useMemo(() => {
+    const map: Record<string, CalendarItem[]> = {};
+    for (const item of items) {
+      if (!item.scheduled_at) continue;
       try {
-        return isSameDay(parseISO(item.scheduled_at), date);
+        const key = format(parseISO(item.scheduled_at), "yyyy-MM-dd");
+        if (!map[key]) map[key] = [];
+        map[key].push(item);
       } catch {
-        return false;
+        // skip invalid dates
       }
-    });
+    }
+    return map;
+  }, [items]);
+
+  function getItemsForDay(date: Date): CalendarItem[] {
+    const key = format(date, "yyyy-MM-dd");
+    return itemsByDateKey[key] || [];
   }
 
   function handleDragStart(item: CalendarItem) {
@@ -152,6 +173,20 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
     );
   }
 
+  // Build sorted list of days-with-items for mobile list view
+  const daysWithItems = useMemo(() => {
+    const result: { date: Date; items: CalendarItem[] }[] = [];
+    for (const day of days) {
+      const key = format(day, "yyyy-MM-dd");
+      const dayItems = itemsByDateKey[key] || [];
+      if (dayItems.length > 0) {
+        result.push({ date: day, items: dayItems });
+      }
+    }
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMonth, itemsByDateKey]);
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -175,8 +210,64 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
         ))}
       </div>
 
-      {/* Calendar Grid */}
-      <div className="grid grid-cols-7 gap-px bg-border rounded-lg overflow-hidden max-h-[700px] overflow-y-auto">
+      {/* Mobile list view — shown below md breakpoint */}
+      {isMobile && (
+        <div className="space-y-4">
+          {daysWithItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-8">No content scheduled this month</p>
+          ) : (
+            daysWithItems.map(({ date, items: dayItems }) => (
+              <div key={date.toISOString()}>
+                <div className={cn(
+                  "text-sm font-semibold mb-2 px-1",
+                  isDateToday(date) && "text-primary"
+                )}>
+                  {format(date, "EEEE, MMM d")}
+                  {isDateToday(date) && <span className="ml-2 text-xs font-normal text-primary">(Today)</span>}
+                </div>
+                <div className="space-y-1.5">
+                  {dayItems.map((item) => {
+                    const style = getStatusStyle(item.status);
+                    const brandColor = getBrandColor(item.brand_id);
+                    return (
+                      <div
+                        key={item.id}
+                        className={cn(
+                          "rounded-md px-3 py-2 text-xs border-l-2",
+                          style.bg,
+                          style.text,
+                          brandColor,
+                        )}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 truncate">
+                            {item.channel && (
+                              <span className={cn(
+                                "inline-flex items-center rounded px-1 py-px text-[9px] font-bold uppercase shrink-0",
+                                CHANNEL_COLORS[item.channel] || "bg-gray-200 text-gray-700"
+                              )}>
+                                {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
+                              </span>
+                            )}
+                            <span className="font-medium truncate">{item.title || "Untitled"}</span>
+                          </div>
+                          <span className="text-[10px] opacity-70 ml-2 shrink-0">{style.label}</span>
+                        </div>
+                        {item.brand_name && (
+                          <div className="text-[10px] opacity-60 mt-0.5">{item.brand_name}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Calendar Grid — hidden on mobile */}
+      {!isMobile && <div className="grid grid-cols-7 gap-px bg-border rounded-lg overflow-hidden max-h-[700px] overflow-y-auto">
         {/* Weekday headers */}
         {WEEKDAYS.map((day) => (
           <div key={day} className="bg-muted p-2 text-center text-xs font-medium text-muted-foreground">
@@ -235,7 +326,7 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
         {Array.from({ length: endPadding }).map((_, i) => (
           <div key={`pad-e-${i}`} className="bg-card/50 p-2 min-h-[80px] sm:min-h-[110px]" />
         ))}
-      </div>
+      </div>}
 
       {/* Expanded day dialog overlay */}
       {expandedDay && (

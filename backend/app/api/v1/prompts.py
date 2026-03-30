@@ -25,6 +25,7 @@ async def list_prompts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit = min(limit, 200)
     return await prompt_service.list_prompt_versions(
         db, category=category, is_active=is_active, skip=skip, limit=limit
     )

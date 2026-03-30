@@ -19,7 +19,6 @@ async def list_content(
     is_current: bool | None = None,
     skip: int = 0,
     limit: int = 100,
-    **kwargs,
 ) -> Sequence[Content]:
     stmt = select(Content).offset(skip).limit(limit).order_by(Content.created_at.desc())
     if brand_id is not None:

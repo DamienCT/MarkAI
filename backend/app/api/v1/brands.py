@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,8 +12,38 @@ from app.models.competitor import Competitor
 from app.schemas.brand import BrandCreate, BrandResponse, BrandUpdate, ChannelConfigUpdate
 from app.schemas.competitor import CompetitorCreateBody, CompetitorResponse, CompetitorUpdate
 from app.services import brand_service, fabric_service, minio_service
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+_limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter()
+
+# Sensitive keys that must never leak to the frontend via brand_guidelines JSONB
+_SENSITIVE_GUIDELINE_KEYS = {"access_token", "api_key", "refresh_token", "webhook_url", "client_secret"}
+
+
+def _strip_sensitive_guidelines(brand):
+    """Return a brand object with sensitive fields removed from brand_guidelines.
+
+    Operates on the ORM instance before serialization so the response
+    model never sees secrets.  Does NOT mutate the DB — works on a shallow copy.
+    """
+    guidelines = brand.brand_guidelines
+    if not guidelines or not isinstance(guidelines, dict):
+        return brand
+    # Check channels sub-dicts for sensitive keys
+    cleaned = {}
+    for key, value in guidelines.items():
+        if key in _SENSITIVE_GUIDELINE_KEYS:
+            continue
+        if isinstance(value, dict):
+            cleaned[key] = {k: v for k, v in value.items() if k not in _SENSITIVE_GUIDELINE_KEYS}
+        else:
+            cleaned[key] = value
+    # Temporarily override for serialization (not committed)
+    brand.brand_guidelines = cleaned
+    return brand
 
 
 @router.get("/bc-companies")
@@ -43,9 +73,11 @@ async def list_brands(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return await brand_service.list_brands(
+    limit = min(limit, 200)
+    brands = await brand_service.list_brands(
         db, is_active=is_active, skip=skip, limit=limit
     )
+    return [_strip_sensitive_guidelines(b) for b in brands]
 
 
 @router.get("/{brand_id}", response_model=BrandResponse)
@@ -57,7 +89,7 @@ async def get_brand(
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
-    return brand
+    return _strip_sensitive_guidelines(brand)
 
 
 @router.post("/", response_model=BrandResponse, status_code=status.HTTP_201_CREATED)
@@ -108,7 +140,7 @@ async def update_brand(
                     "UPDATE agent_runs SET status = 'cancelled', completed_at = NOW() "
                     "WHERE brand_id = :brand_id AND status = 'running'"
                 ),
-                {"brand_id": str(brand_id)},
+                {"brand_id": brand_id},
             )
             await db.commit()
 
@@ -127,6 +159,9 @@ async def complete_onboarding(
     current_user: User = Depends(get_current_user),
 ):
     """Validate and mark onboarding as complete."""
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
@@ -163,12 +198,17 @@ async def complete_onboarding(
 
 
 @router.post("/{brand_id}/activate")
+@_limiter.limit("5/minute")
 async def activate_content_factory(
+    request: Request,
     brand_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Start the Content Factory pipeline: research → strategy → plan → content."""
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
@@ -190,13 +230,13 @@ async def activate_content_factory(
     await nats_service.publish("research.trigger", {
         "brand_id": str(brand_id),
         "trigger": "activation",
-        "scope_weeks": 2,
+        "scope_weeks": 12,
     })
 
     return {
         "status": "activating",
         "brand_id": str(brand_id),
-        "message": "Content Factory pipeline started. Research → Strategy → Plan → Content (2 weeks).",
+        "message": "Content Factory pipeline started. Research → Strategy → Plan → Content (12 weeks).",
     }
 
 
@@ -284,8 +324,8 @@ async def upload_brand_logo(
     ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "png"
     object_name = f"brands/{brand_id}/logos/{label}.{ext}"
 
-    minio_service.ensure_bucket()
-    minio_service.upload_file(object_name, data, content_type=file.content_type or "image/png")
+    await minio_service.ensure_bucket()
+    await minio_service.upload_file(object_name, data, content_type=file.content_type or "image/png")
 
     # Generate URL and update brand
     logo_url = f"/api/v1/brands/{brand_id}/logos/{label}"
@@ -312,6 +352,7 @@ async def get_brand_logo(
     brand_id: uuid.UUID,
     label: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Serve a brand logo by label."""
     brand = await brand_service.get_brand(db, brand_id)
@@ -325,12 +366,16 @@ async def get_brand_logo(
         raise HTTPException(status_code=404, detail="Logo not found")
 
     try:
-        data = minio_service.download_file(logo_info["object_name"])
+        data = await minio_service.download_file(logo_info["object_name"])
     except Exception:
         raise HTTPException(status_code=404, detail="Logo file not found in storage")
 
     from fastapi.responses import Response
-    return Response(content=data, media_type=logo_info.get("content_type", "image/png"))
+    return Response(
+        content=data,
+        media_type=logo_info.get("content_type", "image/png"),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.delete("/{brand_id}/logos/{label}")
@@ -355,7 +400,7 @@ async def delete_brand_logo(
         raise HTTPException(status_code=404, detail="Logo not found")
 
     try:
-        minio_service.delete_file(logo_info["object_name"])
+        await minio_service.delete_file(logo_info["object_name"])
     except Exception:
         pass  # File may already be deleted
 

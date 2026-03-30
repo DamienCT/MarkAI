@@ -1,13 +1,16 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
+
+AgentRunTrigger = Literal["scheduled", "manual", "event", "webhook", "activation"]
 
 
 class AgentRunBase(BaseModel):
     agent_type: str
-    trigger: str
+    trigger: AgentRunTrigger
     brand_id: uuid.UUID
 
 

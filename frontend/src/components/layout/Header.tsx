@@ -47,13 +47,35 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
     // Poll for notifications every 30 seconds using the authed api client
     // (EventSource does not support custom Authorization headers)
     fetchNotifications();
-    pollingRef.current = setInterval(fetchNotifications, 30000);
 
-    return () => {
+    function startPolling() {
+      if (pollingRef.current) return;
+      pollingRef.current = setInterval(fetchNotifications, 30000);
+    }
+
+    function stopPolling() {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
       }
+    }
+
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        // Fetch immediately when tab becomes visible again, then resume polling
+        fetchNotifications();
+        startPolling();
+      }
+    }
+
+    startPolling();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      stopPolling();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [fetchNotifications]);
 

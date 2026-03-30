@@ -45,6 +45,17 @@ model_list:
       model: openai/sora-2-pro
       api_key: os.environ/OPENAI_API_KEY
 
+  # Gemini models
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+
   # Add on-prem / other providers here, e.g.:
   # - model_name: llama-3
   #   litellm_params:
@@ -60,6 +71,7 @@ litellm_settings:
     type: redis
     host: os.environ/VALKEY_HOST
     port: os.environ/VALKEY_PORT
+    password: os.environ/VALKEY_PASSWORD
   num_retries: 3
   request_timeout: 120
   set_verbose: false

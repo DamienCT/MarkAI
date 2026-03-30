@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from workflows.strategy.state import StrategyState
 from workflows.strategy.nodes import (
@@ -41,5 +40,5 @@ builder.add_conditional_edges("plan_cadence", _check_failed, {"end": END, "conti
 builder.add_conditional_edges("generate_themes", _check_failed, {"end": END, "continue": "human_review"})
 builder.add_conditional_edges("human_review", _check_failed, {"end": END, "continue": END})
 
-# Compile with checkpointer to support interrupt/resume
-strategy_graph = builder.compile(checkpointer=MemorySaver())
+# Compile without checkpointer — these are one-shot linear workflows
+strategy_graph = builder.compile()

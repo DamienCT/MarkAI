@@ -109,6 +109,7 @@ def _get_valkey_pool():
             _valkey_pool = aioredis.ConnectionPool(
                 host=settings.VALKEY_HOST,
                 port=settings.VALKEY_PORT,
+                password=settings.VALKEY_PASSWORD or None,
                 decode_responses=True,
                 max_connections=10,
             )

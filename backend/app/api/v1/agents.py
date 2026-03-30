@@ -21,6 +21,7 @@ async def list_agent_runs(
     current_user: User = Depends(get_current_user),
 ):
     """Return recent agent runs ordered by created_at descending."""
+    limit = min(limit, 200)
     stmt = (
         select(AgentRun)
         .order_by(AgentRun.created_at.desc())

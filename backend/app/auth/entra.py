@@ -32,7 +32,7 @@ async def validate_entra_token(token: str) -> dict[str, Any]:
     Raises jwt.exceptions.PyJWTError or related errors on failure.
     """
     client = await _get_jwks_client(settings.AZURE_AD_TENANT_ID)
-    signing_key = client.get_signing_key_from_jwt(token)
+    signing_key = await asyncio.to_thread(client.get_signing_key_from_jwt, token)
 
     issuer = (
         f"https://login.microsoftonline.com/"
@@ -70,14 +70,11 @@ def invalidate_jwks_cache() -> None:
 # ---------------------------------------------------------------------------
 
 _graph_token_cache: dict[str, Any] = {}
-_graph_token_lock: asyncio.Lock | None = None
+_graph_token_lock = asyncio.Lock()
 
 
 def _get_token_lock() -> asyncio.Lock:
-    """Lazily create a token lock (must be called within an event loop)."""
-    global _graph_token_lock
-    if _graph_token_lock is None:
-        _graph_token_lock = asyncio.Lock()
+    """Return the module-level token lock."""
     return _graph_token_lock
 
 

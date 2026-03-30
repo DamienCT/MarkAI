@@ -83,13 +83,15 @@ async def complete_agent_run(
     output_payload: dict | None = None,
     status: str = "completed",
     error_message: str | None = None,
+    tokens_used: int | None = None,
 ) -> None:
     """Mark an agent_run as completed or failed."""
     async with async_session_factory() as session:
         await session.execute(
             text(
                 "UPDATE agent_runs SET status = :status, output_payload = :output, "
-                "error_message = :error, completed_at = :completed_at "
+                "error_message = :error, completed_at = :completed_at, "
+                "tokens_used = COALESCE(:tokens_used, tokens_used) "
                 "WHERE id = :id"
             ),
             {
@@ -98,6 +100,7 @@ async def complete_agent_run(
                 "output": json.dumps(output_payload or {}, default=str),
                 "error": error_message,
                 "completed_at": datetime.now(timezone.utc),
+                "tokens_used": tokens_used,
             },
         )
         await session.commit()
@@ -141,18 +144,19 @@ async def get_latest_research(brand_id: str) -> dict[str, Any] | None:
 
 # ── Strategy operations (stored in agent_runs) ────────────────────────────
 
-async def store_strategy(brand_id: str, strategy_data: dict[str, Any]) -> str:
+async def store_strategy(brand_id: str, strategy_data: dict[str, Any], agent_type: str = "strategy") -> str:
     """Store strategy results as a completed agent_run with output_payload."""
     run_id = str(uuid4())
     async with async_session_factory() as session:
         await session.execute(
             text(
                 "INSERT INTO agent_runs (id, brand_id, agent_type, trigger, status, output_payload, started_at, completed_at) "
-                "VALUES (:id, :brand_id, 'strategy', 'manual', 'completed', :output_payload, :now, :now)"
+                "VALUES (:id, :brand_id, :agent_type, 'manual', 'completed', :output_payload, :now, :now)"
             ),
             {
                 "id": run_id,
                 "brand_id": brand_id,
+                "agent_type": agent_type,
                 "output_payload": json.dumps(strategy_data, default=str),
                 "now": datetime.now(timezone.utc),
             },
@@ -425,8 +429,8 @@ async def get_performance_data(brand_id: str, days: int = 30) -> list[dict[str, 
                 "SELECT em.*, ci.channel, ci.title FROM engagement_metrics em "
                 "JOIN calendar_items ci ON em.calendar_item_id = ci.id "
                 "WHERE em.brand_id = :brand_id "
-                "AND em.measured_at >= NOW() - make_interval(days => :days) "
-                "ORDER BY em.measured_at DESC"
+                "AND em.fetched_at >= NOW() - make_interval(days => :days) "
+                "ORDER BY em.fetched_at DESC"
             ),
             {"brand_id": brand_id, "days": days},
         )
@@ -447,22 +451,26 @@ async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
 
             # Detect which schema the caller is using
             if "brand_id" in a and "tier" in a:
-                # Evaluation-node schema
+                # Evaluation-node schema — store tier/confidence/data in adaptation_notes as JSON
+                eval_meta = json.dumps({
+                    "tier": a.get("tier", 2),
+                    "confidence": a.get("confidence", 0.5),
+                    "data": a.get("data", {}),
+                }, default=str)
                 await session.execute(
                     text(
-                        "INSERT INTO adaptations (id, brand_id, tier, description, "
-                        "confidence, data, status) "
-                        "VALUES (:id, :brand_id, :tier, :description, "
-                        ":confidence, :data, :status)"
+                        "INSERT INTO adaptations (id, source_content_id, target_channel, "
+                        "adapted_text, adaptation_notes, status) "
+                        "VALUES (:id, :source_content_id, :target_channel, "
+                        ":adapted_text, :notes, :status)"
                     ),
                     {
                         "id": adapt_id,
-                        "brand_id": a.get("brand_id"),
-                        "tier": a.get("tier", 2),
-                        "description": a.get("description", ""),
-                        "confidence": a.get("confidence", 0.5),
-                        "data": a.get("data", "{}"),
-                        "status": a.get("status", "pending"),
+                        "source_content_id": a.get("source_content_id"),
+                        "target_channel": a.get("target_channel", "instagram"),
+                        "adapted_text": a.get("description", ""),
+                        "notes": eval_meta,
+                        "status": a.get("status", "queued"),
                     },
                 )
             else:
@@ -494,7 +502,8 @@ async def get_pending_adaptations(brand_id: str) -> list[dict[str, Any]]:
             text(
                 "SELECT a.* FROM adaptations a "
                 "JOIN content c ON a.source_content_id = c.id "
-                "WHERE c.brand_id = :brand_id AND a.status = 'proposed' "
+                "WHERE c.brand_id = :brand_id "
+                "AND a.status IN ('proposed', 'auto_applied', 'queued') "
                 "ORDER BY a.created_at"
             ),
             {"brand_id": brand_id},
@@ -629,7 +638,7 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
         strategy_doc_result = await session.execute(
             text(
                 "SELECT output_payload FROM agent_runs WHERE brand_id = :brand_id "
-                "AND agent_type = 'content_calendar_strategy' AND status = 'completed' "
+                "AND agent_type IN ('content_calendar', 'content_calendar_strategy') AND status = 'completed' "
                 "ORDER BY completed_at DESC LIMIT 1"
             ),
             {"brand_id": brand_id},

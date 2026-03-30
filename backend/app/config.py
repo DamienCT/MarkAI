@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     # --- Qdrant ---
     QDRANT_HOST: str = "qdrant"
     QDRANT_PORT: int = 6333
+    QDRANT_API_KEY: str = ""
 
     # --- MinIO ---
     MINIO_ENDPOINT: str = "minio:9000"
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
     # --- Valkey ---
     VALKEY_HOST: str = "valkey"
     VALKEY_PORT: int = 6379
+    VALKEY_PASSWORD: str = ""
 
     # --- NATS ---
     NATS_URL: str = "nats://nats:4222"

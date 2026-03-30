@@ -97,6 +97,12 @@ async def pull_all_engagement() -> None:
                     org_id = ch_cfg.get("org_id") or creds.get("linkedin_org_id", "")
                     metrics = await pull_linkedin_insights(content, token, org_id)
                 else:
+                    logger.info(
+                        "Skipping engagement pull for content %s — channel '%s' "
+                        "not yet supported (no API integration for youtube/tiktok/x/website_blog/teams)",
+                        content.id,
+                        channel,
+                    )
                     continue
 
                 await upsert_engagement(

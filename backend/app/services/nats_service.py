@@ -28,7 +28,7 @@ STREAMS = {
 async def connect() -> NATSClient:
     """Connect to NATS and set up JetStream streams."""
     global _nc, _js
-    _nc = await nats.connect(settings.NATS_URL)
+    _nc = await nats.connect(settings.NATS_URL, connect_timeout=5)
     _js = _nc.jetstream()
 
     # Ensure all streams exist with correct subjects
@@ -73,7 +73,6 @@ async def publish(subject: str, data: dict[str, Any]) -> None:
 async def subscribe(
     subject: str,
     durable: str,
-    deliver_policy: str = "all",
 ):
     """
     Create a pull subscription on a JetStream subject.

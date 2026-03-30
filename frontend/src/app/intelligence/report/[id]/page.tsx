@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import ReactMarkdown from "react-markdown";
+import { SafeValue, formatKeyValue } from "@/components/ui/safe-render";
 import {
   ArrowLeft,
   Printer,
@@ -79,7 +80,7 @@ interface OutputPayload {
   errors?: string[];
   recommendations?: string[];
   // Strategy fields
-  positioning?: string;
+  positioning?: string | Record<string, unknown>;
   brand_archetype?: string;
   emotional_territory?: string;
   competitive_differentiation?: { dimension?: string; brand?: string; competitors?: string }[];
@@ -182,7 +183,7 @@ interface Persona {
     formats?: string[];
     topics?: string[];
     tone?: string;
-    language_mix?: string;
+    language_mix?: string | Record<string, string>;
   };
   best_engagement_times?: string[];
   content_avoidance?: string[];
@@ -362,7 +363,7 @@ export default function ReportPage() {
   const isResearch = agentType === "research";
   const isStrategy = agentType === "strategy";
   const isPlanning = agentType === "planning";
-  const isContentCalendar = agentType === "content_calendar_strategy";
+  const isContentCalendar = agentType === "content_calendar" || agentType === "content_calendar_strategy";
 
   return (
     <>
@@ -985,7 +986,13 @@ export default function ReportPage() {
                             {persona.content_preferences.language_mix && (
                               <div>
                                 <span className="text-xs font-medium text-muted-foreground">Language Mix: </span>
-                                <span>{persona.content_preferences.language_mix}</span>
+                                <span>
+                                  {typeof persona.content_preferences.language_mix === "string"
+                                    ? persona.content_preferences.language_mix
+                                    : typeof persona.content_preferences.language_mix === "object"
+                                    ? formatKeyValue(persona.content_preferences.language_mix as Record<string, string>)
+                                    : null}
+                                </span>
                               </div>
                             )}
                           </div>
@@ -1266,54 +1273,99 @@ export default function ReportPage() {
               <CardDescription>Strategic market positioning statement</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="prose prose-sm max-w-none dark:prose-invert">
-                <p className="text-sm leading-relaxed whitespace-pre-line">
-                  {typeof positioning === "string" ? positioning : JSON.stringify(positioning, null, 2)}
-                </p>
-              </div>
-
-              {(output.brand_archetype || output.emotional_territory) && (
-                <div className="flex flex-wrap gap-3">
-                  {output.brand_archetype && (
-                    <div className="rounded-md border p-3">
-                      <p className="text-xs font-semibold text-muted-foreground mb-1">Brand Archetype</p>
-                      <p className="text-sm font-medium">{output.brand_archetype}</p>
-                    </div>
-                  )}
-                  {output.emotional_territory && (
-                    <div className="rounded-md border p-3">
-                      <p className="text-xs font-semibold text-muted-foreground mb-1">Emotional Territory</p>
-                      <p className="text-sm font-medium">{output.emotional_territory}</p>
-                    </div>
-                  )}
+              {typeof positioning === "string" ? (
+                <div className="prose prose-sm max-w-none dark:prose-invert">
+                  <p className="text-sm leading-relaxed whitespace-pre-line">{positioning}</p>
                 </div>
-              )}
-
-              {output.competitive_differentiation && output.competitive_differentiation.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-sm font-semibold">Competitive Differentiation</h4>
-                  <div className="rounded-md border overflow-hidden">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="bg-muted/50">
-                          <th className="text-left p-2 font-semibold text-muted-foreground">Dimension</th>
-                          <th className="text-left p-2 font-semibold text-muted-foreground">Brand</th>
-                          <th className="text-left p-2 font-semibold text-muted-foreground">Competitors</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {output.competitive_differentiation.map((cd, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="p-2 font-medium">{cd.dimension}</td>
-                            <td className="p-2 text-muted-foreground">{cd.brand}</td>
-                            <td className="p-2 text-muted-foreground">{cd.competitors}</td>
-                          </tr>
+              ) : typeof positioning === "object" && positioning !== null ? (
+                <div className="space-y-4">
+                  {/* Brand voice */}
+                  {(positioning as Record<string, unknown>).brand_voice && (
+                    <blockquote className="border-l-4 border-primary/30 pl-4 italic text-sm text-muted-foreground">
+                      {String((positioning as Record<string, unknown>).brand_voice)}
+                    </blockquote>
+                  )}
+                  {/* Value proposition */}
+                  {(positioning as Record<string, unknown>).value_proposition && (
+                    <div className="rounded-md bg-primary/5 border border-primary/20 p-3">
+                      <p className="text-xs font-semibold text-muted-foreground mb-1">Value Proposition</p>
+                      <p className="text-sm">{String((positioning as Record<string, unknown>).value_proposition)}</p>
+                    </div>
+                  )}
+                  {/* Key messages */}
+                  {Array.isArray((positioning as Record<string, unknown>).key_messages) && (
+                    <div className="space-y-1">
+                      <p className="text-xs font-semibold text-muted-foreground">Key Messages</p>
+                      <ol className="list-decimal list-inside space-y-1 text-sm">
+                        {((positioning as Record<string, unknown>).key_messages as string[]).map((msg, i) => (
+                          <li key={i}>{msg}</li>
                         ))}
-                      </tbody>
-                    </table>
-                  </div>
+                      </ol>
+                    </div>
+                  )}
+                  {/* Render remaining keys via SafeValue */}
+                  {Object.entries(positioning as Record<string, unknown>)
+                    .filter(([k]) => !["brand_voice", "value_proposition", "key_messages", "brand_archetype", "emotional_territory", "competitive_differentiation"].includes(k))
+                    .map(([k, v]) => (
+                      <div key={k}>
+                        <p className="text-xs font-semibold text-muted-foreground capitalize mb-1">{k.replace(/_/g, " ")}</p>
+                        <div className="text-sm"><SafeValue value={v} /></div>
+                      </div>
+                    ))}
                 </div>
-              )}
+              ) : null}
+
+              {(() => {
+                const pos = typeof positioning === "object" && positioning !== null ? positioning as Record<string, unknown> : {};
+                const archetype = output.brand_archetype || pos.brand_archetype;
+                const territory = output.emotional_territory || pos.emotional_territory;
+                return (archetype || territory) ? (
+                  <div className="flex flex-wrap gap-3">
+                    {archetype && (
+                      <div className="rounded-md border p-3">
+                        <p className="text-xs font-semibold text-muted-foreground mb-1">Brand Archetype</p>
+                        <p className="text-sm font-medium">{String(archetype)}</p>
+                      </div>
+                    )}
+                    {territory && (
+                      <div className="rounded-md border p-3">
+                        <p className="text-xs font-semibold text-muted-foreground mb-1">Emotional Territory</p>
+                        <p className="text-sm font-medium">{String(territory)}</p>
+                      </div>
+                    )}
+                  </div>
+                ) : null;
+              })()}
+
+              {(() => {
+                const pos = typeof positioning === "object" && positioning !== null ? positioning as Record<string, unknown> : {};
+                const compDiff = output.competitive_differentiation || pos.competitive_differentiation;
+                return Array.isArray(compDiff) && compDiff.length > 0 ? (
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-semibold">Competitive Differentiation</h4>
+                    <div className="rounded-md border overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-muted/50">
+                            <th className="text-left p-2 font-semibold text-muted-foreground">Dimension</th>
+                            <th className="text-left p-2 font-semibold text-muted-foreground">Brand</th>
+                            <th className="text-left p-2 font-semibold text-muted-foreground">Competitors</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(compDiff as { dimension?: string; brand?: string; competitors?: string }[]).map((cd, i) => (
+                            <tr key={i} className="border-t">
+                              <td className="p-2 font-medium">{cd.dimension}</td>
+                              <td className="p-2 text-muted-foreground">{cd.brand}</td>
+                              <td className="p-2 text-muted-foreground">{cd.competitors}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null;
+              })()}
             </CardContent>
           </Card>
         )}
@@ -1458,7 +1510,7 @@ export default function ReportPage() {
                     <div key={platform} className="rounded-md border p-3">
                       <p className="text-sm font-medium capitalize">{platform}</p>
                       <p className="text-xs text-muted-foreground">
-                        {typeof schedule === "string" ? schedule : JSON.stringify(schedule)}
+                        {typeof schedule === "string" ? schedule : <SafeValue value={schedule} />}
                       </p>
                     </div>
                   ))}
@@ -1588,9 +1640,9 @@ export default function ReportPage() {
                   <ReactMarkdown>{calendarSummary}</ReactMarkdown>
                 </div>
               ) : (
-                <pre className="text-xs bg-muted rounded-lg p-4 overflow-x-auto whitespace-pre-wrap">
-                  {JSON.stringify(calendarSummary, null, 2)}
-                </pre>
+                <div className="text-sm">
+                  <SafeValue value={calendarSummary} />
+                </div>
               )}
             </CardContent>
           </Card>
@@ -1612,7 +1664,9 @@ export default function ReportPage() {
             </CardHeader>
             <CardContent>
               <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:text-foreground prose-p:text-muted-foreground prose-strong:text-foreground prose-li:text-muted-foreground">
-                <ReactMarkdown>{typeof strategyDocument === "string" ? strategyDocument : JSON.stringify(strategyDocument, null, 2)}</ReactMarkdown>
+                {typeof strategyDocument === "string"
+                  ? <ReactMarkdown>{strategyDocument}</ReactMarkdown>
+                  : <SafeValue value={strategyDocument} />}
               </div>
             </CardContent>
           </Card>
@@ -1677,9 +1731,9 @@ export default function ReportPage() {
               <CardDescription>Raw output data from agent run</CardDescription>
             </CardHeader>
             <CardContent>
-              <pre className="text-xs bg-muted rounded-lg p-4 overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(output, null, 2)}
-              </pre>
+              <div className="text-sm space-y-3">
+                <SafeValue value={output} />
+              </div>
             </CardContent>
           </Card>
         )}

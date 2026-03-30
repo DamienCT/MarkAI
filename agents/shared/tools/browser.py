@@ -16,6 +16,20 @@ from shared.config import settings
 
 logger = logging.getLogger(__name__)
 
+# ── Shared httpx client (lazy singleton) ────────────────────────────────
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=60,
+            limits=httpx.Limits(max_connections=20),
+            follow_redirects=True,
+        )
+    return _http_client
+
 
 class _TextExtractor(HTMLParser):
     """Minimal HTML parser that extracts text, title, meta description, and links."""
@@ -58,13 +72,13 @@ class _TextExtractor(HTMLParser):
 
 async def _direct_fetch(url: str) -> dict[str, Any]:
     """Fetch a URL directly via HTTP and extract basic content."""
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        resp = await client.get(url, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; MarkAI Research Bot/1.0)",
-            "Accept": "text/html",
-        })
-        resp.raise_for_status()
-        html = resp.text
+    client = _get_http_client()
+    resp = await client.get(url, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; MarkAI Research Bot/1.0)",
+        "Accept": "text/html",
+    }, timeout=30)
+    resp.raise_for_status()
+    html = resp.text
 
     parser = _TextExtractor()
     parser.feed(html)
@@ -85,25 +99,27 @@ async def _direct_fetch(url: str) -> dict[str, Any]:
 
 async def take_screenshot(url: str, full_page: bool = True) -> bytes:
     """Capture a screenshot via browser-worker."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            f"{settings.BROWSER_WORKER_URL}/screenshot",
-            json={"url": url, "fullPage": full_page},
-        )
-        resp.raise_for_status()
-        return resp.content
+    client = _get_http_client()
+    resp = await client.post(
+        f"{settings.BROWSER_WORKER_URL}/screenshot",
+        json={"url": url, "fullPage": full_page},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.content
 
 
 async def extract_page(url: str) -> dict[str, Any]:
     """Extract structured content from a URL. Falls back to direct HTTP if browser-worker is down."""
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{settings.BROWSER_WORKER_URL}/extract",
-                json={"url": url},
-            )
-            resp.raise_for_status()
-            return resp.json()
+        client = _get_http_client()
+        resp = await client.post(
+            f"{settings.BROWSER_WORKER_URL}/extract",
+            json={"url": url},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
     except Exception:
         logger.info("Browser-worker unavailable, using direct HTTP for %s", url)
         try:
@@ -115,26 +131,28 @@ async def extract_page(url: str) -> dict[str, Any]:
 
 async def scrape_product_images(url: str) -> list[str]:
     """Scrape product image URLs from the given page."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            f"{settings.BROWSER_WORKER_URL}/scrape-images",
-            json={"url": url},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("images", [])
+    client = _get_http_client()
+    resp = await client.post(
+        f"{settings.BROWSER_WORKER_URL}/scrape-images",
+        json={"url": url},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("images", [])
 
 
 async def crawl_site(url: str, max_pages: int = 20) -> list[dict[str, Any]]:
     """Crawl a website. Falls back to direct HTTP fetch of the homepage if browser-worker is down."""
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(
-                f"{settings.BROWSER_WORKER_URL}/crawl",
-                json={"url": url, "maxPages": max_pages},
-            )
-            resp.raise_for_status()
-            return resp.json().get("pages", [])
+        client = _get_http_client()
+        resp = await client.post(
+            f"{settings.BROWSER_WORKER_URL}/crawl",
+            json={"url": url, "maxPages": max_pages},
+            timeout=300,
+        )
+        resp.raise_for_status()
+        return resp.json().get("pages", [])
     except Exception:
         logger.info("Browser-worker unavailable, fetching %s directly", url)
         try:

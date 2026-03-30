@@ -250,8 +250,8 @@ def generate_mockup(
     image_data: bytes,
     caption: str,
     platform: Literal["instagram", "facebook", "linkedin", "x"],
-    username: str = "healthspan.mu",
-    display_name: str = "Healthspan Mauritius",
+    username: str = "",
+    display_name: str = "",
     avatar_initial: str | None = None,
     avatar_color: tuple[int, int, int] = (79, 220, 239),
 ) -> bytes:

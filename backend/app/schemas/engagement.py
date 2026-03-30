@@ -1,15 +1,18 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
+
+from app.schemas.calendar_item import ChannelType
 
 
 class EngagementMetricBase(BaseModel):
     content_id: uuid.UUID
     calendar_item_id: uuid.UUID
     brand_id: uuid.UUID
-    channel: str
+    channel: ChannelType
     impressions: int | None = None
     reach: int | None = None
     likes: int | None = None

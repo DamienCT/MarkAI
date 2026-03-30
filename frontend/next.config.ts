@@ -8,8 +8,17 @@ const nextConfig: NextConfig = {
         protocol: "https",
         hostname: "*.hstgr.cloud",
       },
+      {
+        protocol: "http",
+        hostname: "localhost",
+        port: "8000",
+      },
+      {
+        protocol: "http",
+        hostname: "minio",
+        port: "9000",
+      },
     ],
-    unoptimized: true,
   },
 };
 

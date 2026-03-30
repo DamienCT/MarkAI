@@ -17,6 +17,7 @@ async def list_adaptations(
     current_user: User = Depends(get_current_user),
 ):
     """Return all adaptations ordered by most recent, with pagination."""
+    limit = min(limit, 200)
     stmt = (
         select(Adaptation)
         .order_by(Adaptation.created_at.desc())

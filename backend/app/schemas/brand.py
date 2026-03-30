@@ -1,7 +1,10 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
+
+BrandStatus = Literal["onboarding", "activating", "active", "inactive"]
 
 
 class BrandBase(BaseModel):
@@ -15,7 +18,7 @@ class BrandBase(BaseModel):
     target_audience: dict = {}
     color_palette: dict = {}
     is_active: bool = False
-    status: str = "onboarding"
+    status: BrandStatus = "onboarding"
     is_bc_linked: bool = False
     bc_company: str | None = None
     bc_locations: list[str] = []
@@ -23,7 +26,7 @@ class BrandBase(BaseModel):
 
 class BrandCreate(BrandBase):
     is_active: bool = False
-    status: str = "onboarding"
+    status: BrandStatus = "onboarding"
 
 
 class BrandUpdate(BaseModel):
@@ -37,7 +40,7 @@ class BrandUpdate(BaseModel):
     target_audience: dict | None = None
     color_palette: dict | None = None
     is_active: bool | None = None
-    status: str | None = None
+    status: BrandStatus | None = None
     is_bc_linked: bool | None = None
     bc_company: str | None = None
     bc_locations: list[str] | None = None

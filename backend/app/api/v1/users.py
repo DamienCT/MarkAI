@@ -205,6 +205,7 @@ async def list_users(
 ):
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+    limit = min(limit, 200)
     result = await db.execute(
         select(User).offset(skip).limit(limit).order_by(User.created_at.desc())
     )

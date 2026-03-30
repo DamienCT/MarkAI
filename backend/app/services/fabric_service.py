@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import struct
@@ -76,16 +77,37 @@ def _get_connection(token: str) -> pyodbc.Connection:
     return pyodbc.connect(conn_str, attrs_before={1256: token_struct})
 
 
-async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str, Any]]:
-    """Execute a SQL query against the Fabric Lakehouse SQL endpoint."""
-    token = await _get_sql_token()
-    try:
-        conn = _get_connection(token)
-    except pyodbc.Error:
-        invalidate_token_cache()
-        token = await _get_sql_token()
-        conn = _get_connection(token)
+# ── Connection cache (reuse within token lifetime) ──────────────────────
+_conn_cache: dict[str, Any] = {}  # keys: "conn", "created_at"
+_CONN_MAX_AGE = 55 * 60  # 55 minutes (tokens last 60 min)
 
+
+def _get_cached_connection(token: str) -> pyodbc.Connection:
+    """Return a cached connection if still fresh, otherwise create a new one."""
+    cached_conn = _conn_cache.get("conn")
+    created_at = _conn_cache.get("created_at", 0)
+
+    if cached_conn is not None and (time.time() - created_at) < _CONN_MAX_AGE:
+        try:
+            # Quick check that the connection is still alive
+            cached_conn.cursor().execute("SELECT 1")
+            return cached_conn
+        except Exception:
+            # Connection is stale, close and recreate
+            try:
+                cached_conn.close()
+            except Exception:
+                pass
+
+    conn = _get_connection(token)
+    _conn_cache["conn"] = conn
+    _conn_cache["created_at"] = time.time()
+    return conn
+
+
+def _run_query_sync(token: str, query: str, params: tuple | None) -> list[dict[str, Any]]:
+    """Run a blocking pyodbc query (designed to be called via asyncio.to_thread)."""
+    conn = _get_cached_connection(token)
     try:
         cursor = conn.cursor()
         if params:
@@ -95,9 +117,22 @@ async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str,
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         return [dict(zip(columns, row)) for row in rows]
-    finally:
-        if conn:
-            conn.close()
+    except pyodbc.Error:
+        # On error, invalidate the cached connection so next call creates a new one
+        _conn_cache.pop("conn", None)
+        _conn_cache.pop("created_at", None)
+        raise
+
+
+async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str, Any]]:
+    """Execute a SQL query against the Fabric Lakehouse SQL endpoint."""
+    token = await _get_sql_token()
+    try:
+        return await asyncio.to_thread(_run_query_sync, token, query, params)
+    except pyodbc.Error:
+        invalidate_token_cache()
+        token = await _get_sql_token()
+        return await asyncio.to_thread(_run_query_sync, token, query, params)
 
 
 async def list_companies() -> list[str]:

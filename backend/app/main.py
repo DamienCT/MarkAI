@@ -1,13 +1,37 @@
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.api.router import api_router
 from app.config import settings
 from app.scheduler import scheduler, setup_scheduler
 from app.services import minio_service, nats_service
+
+def _setup_json_logging() -> None:
+    """Configure structured JSON logging for production observability."""
+    from pythonjsonlogger.json import JsonFormatter
+
+    formatter = JsonFormatter(
+        fmt="%(asctime)s %(name)s %(levelname)s %(message)s",
+        rename_fields={"asctime": "timestamp", "levelname": "level", "name": "logger"},
+    )
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+
+
+_setup_json_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +70,7 @@ async def lifespan(app: FastAPI):
 
     # Ensure MinIO bucket exists
     try:
-        minio_service.ensure_bucket()
+        await minio_service.ensure_bucket()
     except Exception as e:
         logger.error("Failed to ensure MinIO bucket: %s", e)
 
@@ -58,12 +82,17 @@ async def lifespan(app: FastAPI):
     logger.info("MARKAI backend shut down")
 
 
+limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+
 app = FastAPI(
     title="MARKAI API",
     description="Autonomous AI Marketing Operating System",
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS — never combine allow_origins=["*"] with allow_credentials=True
 _frontend_url = settings.FRONTEND_URL or "http://localhost:3000"
@@ -115,6 +144,9 @@ if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
     _setup_telemetry(app)
 else:
     logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set; OpenTelemetry disabled")
+
+# Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # Mount all v1 routers
 app.include_router(api_router)

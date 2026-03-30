@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from workflows.adaptation.state import AdaptationState
 from workflows.adaptation.nodes import (
@@ -31,5 +30,5 @@ builder.add_conditional_edges("apply_tier1", _check_failed, {"end": END, "contin
 builder.add_conditional_edges("propose_tier2", _check_failed, {"end": END, "continue": "propose_tier3"})
 builder.add_conditional_edges("propose_tier3", _check_failed, {"end": END, "continue": END})
 
-# Compile with checkpointer to support interrupt/resume at tier2 and tier3
-adaptation_graph = builder.compile(checkpointer=MemorySaver())
+# Compile without checkpointer — these are one-shot linear workflows
+adaptation_graph = builder.compile()

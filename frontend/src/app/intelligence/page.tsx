@@ -27,6 +27,7 @@ import {
   LayoutGrid,
   Megaphone,
 } from "lucide-react";
+import { formatKeyValue } from "@/components/ui/safe-render";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -158,7 +159,7 @@ function StrategyPreview({ report }: { report: AgentReport }) {
             <Compass className="h-3 w-3" /> Positioning
           </p>
           <p className="text-xs text-blue-700 dark:text-blue-300 line-clamp-2">
-            {typeof positioning === "string" ? positioning : JSON.stringify(positioning)}
+            {typeof positioning === "string" ? positioning : typeof positioning === "object" && positioning !== null ? formatKeyValue(positioning as Record<string, string>) : String(positioning)}
           </p>
         </div>
       )}
@@ -290,7 +291,7 @@ const REPORT_CARDS: ReportCardConfig[] = [
     renderPreview: (report) => <PlanningPreview report={report} />,
   },
   {
-    agentType: "content_calendar_strategy",
+    agentType: "content_calendar",
     title: "Content Calendar Strategy",
     description: "Year-long strategy document with monthly themes",
     icon: <BookOpen className="h-5 w-5" />,
@@ -308,11 +309,14 @@ export default function IntelligencePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+
     async function fetchData() {
       try {
         const [reportsData, trendsData] = await Promise.allSettled([
-          api.get<AgentReport[]>("/api/v1/intelligence/reports", { limit: 50 }),
-          api.get<TrendData[]>("/api/v1/intelligence/trends", { limit: 20 }),
+          api.get<AgentReport[]>("/api/v1/intelligence/reports", { limit: 50 }, { signal }),
+          api.get<TrendData[]>("/api/v1/intelligence/trends", { limit: 20 }, { signal }),
         ]);
         if (reportsData.status === "fulfilled") setReports(reportsData.value);
         if (trendsData.status === "fulfilled") setTrends(trendsData.value);
@@ -323,6 +327,8 @@ export default function IntelligencePage() {
       }
     }
     fetchData();
+
+    return () => controller.abort();
   }, []);
 
   // Find the latest report for each agent type
