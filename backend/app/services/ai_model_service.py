@@ -76,10 +76,10 @@ def _categorize_model(model_id: str) -> list[str]:
     if is_chat_model:
         skip = {"image", "embedding", "tts", "stt", "video"}
         if not categories or not (set(categories) & skip):
-            categories.append("text")
             if is_mini:
-                categories.insert(0, "text-fast")  # primary for mini models
-            categories.append("vision")
+                categories.extend(["text-fast", "text", "vision"])  # text-fast primary
+            else:
+                categories.extend(["text", "text-fast", "vision"])  # text primary
 
     # Computer use — categorize as text (agent tool use)
     if mid.startswith("computer-use"):
