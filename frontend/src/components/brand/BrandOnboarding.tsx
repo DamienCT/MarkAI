@@ -70,7 +70,7 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
   const logos = (brand.brand_guidelines as Record<string, unknown>)?.logos as Record<string, unknown> | undefined;
   const channels = (brand.brand_guidelines as Record<string, unknown>)?.channels as Record<string, { enabled?: boolean; configured?: boolean }> | undefined;
   const enabledChannels = channels
-    ? Object.values(channels).filter((cfg) => cfg.enabled && cfg.configured)
+    ? Object.values(channels).filter((cfg) => cfg.enabled)
     : [];
 
   const stepComplete: Record<string, boolean> = {

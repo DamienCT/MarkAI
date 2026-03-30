@@ -203,9 +203,9 @@ export default function BrandDetailPage() {
     api.get<Product[]>("/api/v1/products", { brand_id: brandId }, { signal }).then(setProducts).catch(() => {});
     // Fetch pipeline runs for Overview tab
     api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }, { signal }).then(setPipelineRuns).catch(() => {});
-    // Fetch competitors for onboarding progress calculation
-    api.get<{ competitors: CompetitorData[] }>(`/api/v1/intelligence/research/${brandId}`, {}, { signal })
-      .then(data => setCompetitors(data.competitors || []))
+    // Fetch competitors for onboarding progress calculation (from DB, same source as BrandOnboarding)
+    api.get<CompetitorData[]>(`/api/v1/brands/${brandId}/competitors`, {}, { signal })
+      .then(data => setCompetitors(Array.isArray(data) ? data : []))
       .catch(() => {});
 
     return () => {
@@ -248,6 +248,52 @@ export default function BrandDetailPage() {
     }, 5000);
     return () => clearInterval(interval);
   }, [research, activeTab, brandId]);
+
+  // Poll brand status + agent runs while brand is "activating"
+  useEffect(() => {
+    if (!brand || brand.status !== "activating") return;
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+    const interval = setInterval(async () => {
+      try {
+        // Fetch brand status and agent runs in parallel
+        const [updatedBrand, runs] = await Promise.all([
+          api.get<Brand>(`/api/v1/brands/${brandId}`),
+          api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }),
+        ]);
+
+        setPipelineRuns(runs);
+        setResearch(runs);
+
+        // Brand finished activating
+        if (updatedBrand.status !== "activating") {
+          setBrand(updatedBrand);
+          if (updatedBrand.status === "active") {
+            toast.success("Content Factory is ready! Your brand is now active.");
+          }
+          return; // interval will be cleared by the status change re-render
+        }
+
+        // Check if any workflow failed
+        const hasFailed = runs.some((r) => r.status === "failed");
+        if (hasFailed) {
+          setBrand(updatedBrand);
+          toast.error("A workflow failed during activation. Check the System page for details.");
+        }
+
+        // Timeout check
+        if (Date.now() - startedAt > TIMEOUT_MS) {
+          setBrand(updatedBrand);
+          toast.error("Activation is taking longer than expected. Check the System page.");
+        }
+      } catch {
+        // Network error — keep polling
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [brand?.status, brandId]);
 
   const fetchPipelineRuns = useCallback(async () => {
     setLoadingPipeline(true);
@@ -424,19 +470,19 @@ export default function BrandDetailPage() {
     }
   }, [brand?.status]);
 
-  // Compute onboarding progress
+  // Compute onboarding progress — aligned with BrandOnboarding component logic
   const onboardingProgress = (() => {
     if (!brand) return { completed: 0, total: 7, isComplete: false };
     const guidelines = (brand.brand_guidelines || {}) as Record<string, unknown>;
     const logos = guidelines.logos as Record<string, unknown> | undefined;
     const channels = guidelines.channels as Record<string, { enabled?: boolean; configured?: boolean }> | undefined;
-    const configuredChannels = channels ? Object.values(channels).filter((c) => c.enabled && c.configured) : [];
+    const enabledChannels = channels ? Object.values(channels).filter((c) => c.enabled) : [];
     const checks = [
       !!(brand.name && brand.description),
       !!brand.bc_company,
       !!(logos && Object.keys(logos).length > 0),
       !!brand.tone_of_voice,
-      configuredChannels.length > 0,
+      enabledChannels.length > 0,
       products.length > 0,
       competitors.length > 0,
     ];
