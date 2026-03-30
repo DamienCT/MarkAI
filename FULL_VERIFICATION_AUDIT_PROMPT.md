@@ -1,243 +1,579 @@
-# MARKAI Verification Audit v3 — Convergence Audit
+# MARKAI Full Verification Audit — v4 Master Prompt
 
-**Purpose:** Iterative convergence audit. Run audit passes in a loop until zero new issues are found. Each pass reads actual code, verifies previous fixes, and searches for remaining bugs. The loop stops ONLY when a complete pass finds nothing new.
+**Purpose:** Comprehensive audit of every file in the MARKAI application. Every feature, every workflow, every endpoint, every component must be verified against the expected behavior in `SEQUENCE_MAP.html` and the enriched pipeline from `IMPLEMENTATION_PLAN.md`. The goal is to find every bug, logic error, missing implementation, type mismatch, broken data flow, and regression — then fix them all.
 
-**Prior audits:** v1 found 17 bugs (all fixed). v2 found 52 issues (28 fixed, 12 documented as architectural). This v3 audit verifies all prior fixes are correct and searches for anything missed.
-
-**Reference:** `SEQUENCE_MAP.html`, `AUDIT_RESULTS.md` (prior findings)
-
----
-
-## Loop Protocol
-
-```
-REPEAT:
-  1. Run a full audit pass across ALL sections below
-  2. For each check: read the actual code, verify correctness
-  3. Collect all findings (bugs, regressions, edge cases, dead code)
-  4. IF findings > 0:
-     a. Fix every finding
-     b. Record what was fixed
-     c. GOTO step 1 (new pass to verify fixes + find more)
-  5. IF findings == 0:
-     a. Report "CONVERGED — zero issues found"
-     b. STOP
-```
-
-**Rules:**
-- Each pass must re-read code — do NOT rely on memory of prior passes
-- A "finding" is any bug, logic error, regression, type mismatch, missing guard, or incorrect behavior
-- Cosmetic issues (naming, comments, formatting) do NOT count as findings
-- Documented architectural gaps from v2 do NOT count (they require design decisions)
-- Each pass must check ALL sections, not just areas where bugs were previously found
-- Report the pass number and findings count for each iteration
+**Total source files:** 220+ (82 backend, 46 agents, 84 frontend, 1 SQL, 6 Docker/config)
+**Model:** GPT-5.4 via LiteLLM (fallback: gpt-5.4-mini)
 
 ---
 
-## Pass Checklist — All Sections
+## Instructions
 
-### Section A: v1+v2 Fix Regression Check
-
-Verify every prior fix is still correct and hasn't introduced new bugs:
-
-**v1 fixes to verify:**
-- [ ] `backend/app/api/v1/webhooks.py` — webhook secret returns 503 when unconfigured (not silent pass-through)
-- [ ] `backend/app/auth/models.py` — User `is_active` default is `False`, Notification field sizes match init.sql (title=500, notification_type=50, channel=50, reference_type=100)
-- [ ] `backend/app/api/v1/brands.py` — `is_active = True` during activation; bidirectional is_active/status sync; "activating" counts as active
-- [ ] `backend/app/scheduler/publish_checker.py` — status set to "publishing" BEFORE dispatch; on failure set to "failed"
-- [ ] `agents/workflows/research/nodes.py` — 3 error returns have `"status": "failed"`; `identify_gaps` and `build_personas` wrapped in try/except
-- [ ] `agents/workflows/research/graph.py` — ALL edges use `_check_failed` conditional routing
-- [ ] `agents/workflows/strategy/graph.py` — ALL edges use `_check_failed` conditional routing
-- [ ] `agents/workflows/planning/graph.py` — ALL edges use `_check_failed` conditional routing
-- [ ] `agents/workflows/content/graph.py` — ALL edges use `_check_failed` conditional routing
-- [ ] `agents/workflows/evaluation/graph.py` — ALL edges use `_check_failed` conditional routing
-- [ ] `agents/workflows/adaptation/graph.py` — ALL edges use `_check_failed` conditional routing + has `_check_failed` function defined
-- [ ] `agents/workflows/content/nodes.py` — adapt_platforms fallback is `["instagram"]` not ALL_CHANNELS
-- [ ] `agents/shared/tools/database.py` — calendar IDs sorted by scheduled_at ASC with tz-aware comparison
-- [ ] `agents/worker.py` — `current_depth` defined before sequential chaining block; `GraphInterrupt` imported and caught; chain depth uses `current_depth + 1 < MAX_CHAIN_DEPTH`
-- [ ] `frontend/src/app/brands/[id]/page.tsx` — competitors check uses `competitors.length` (state variable); competitors fetched on initial page load
-
-**v2 fixes to verify:**
-- [ ] `backend/app/config.py` — Azure AD credentials validated in production startup
-- [ ] `frontend/src/lib/auth.ts` — env var validation at module load
-- [ ] `frontend/src/components/brand/BrandForm.tsx` — NO `is_active` field in form submission
-- [ ] `db/init.sql` — agent_runs: brand_id is `NOT NULL` + `ON DELETE CASCADE`; prompt_version_id is `ON DELETE SET NULL`; initiated_by is `ON DELETE SET NULL`
-- [ ] `agents/workflows/planning/nodes.py` — `load_strategy` parses JSON string; `generate_campaigns` and `generate_calendar` wrapped in try/except; `assign_products` has try/except on DB call
-- [ ] `agents/workflows/research/nodes.py` — Qdrant `async_create_collection` wrapped in inner try/except
-- [ ] `backend/app/services/content_service.py` — VALID_TRANSITIONS includes "publishing" state and "failed"→"scheduled" retry
-- [ ] `agents/workflows/content/nodes.py` — product sourcing uses `product_ids` from calendar item; else block properly indented
-- [ ] `agents/shared/image_processing.py` — logo width guard checks `logo.width > 0`; coordinate clipping uses `max(0, w - logo_w)`
-- [ ] `backend/app/api/v1/files.py` — path traversal check blocks `..` and leading `/`
-- [ ] `backend/app/api/v1/approvals.py` — accepts "rejected" status
-- [ ] `backend/app/models/brand.py` — `bc_locations` typed as `Mapped[list]`
-- [ ] `backend/app/models/product.py` — `image_urls` typed as `Mapped[list | None]`
+1. **Read every file listed** — do not skip, do not assume
+2. **Trace data flow end-to-end** — follow variables through every layer
+3. **Verify cross-component contracts** — frontend types must match backend schemas must match DB columns
+4. **Find and fix every bug** — logic errors, missing implementations, type mismatches, broken connections
+5. **Report everything found** and implement all fixes
 
 ---
 
-### Section B: Authentication & Authorization
+## Section 1: Authentication & Authorization
 
-**Files:** `backend/app/auth/entra.py`, `backend/app/deps.py`, `backend/app/auth/models.py`, `backend/app/auth/permissions.py`, `backend/app/main.py`, `backend/app/config.py`, `frontend/src/lib/auth.ts`, `frontend/src/lib/api.ts`, `frontend/src/app/providers-wrapper.tsx`
+**Files to read (every line):**
+- `backend/app/auth/entra.py`
+- `backend/app/deps.py`
+- `backend/app/auth/models.py`
+- `backend/app/auth/permissions.py`
+- `backend/app/main.py`
+- `backend/app/config.py`
+- `frontend/src/lib/auth.ts`
+- `frontend/src/lib/api.ts`
+- `frontend/src/app/providers-wrapper.tsx`
+- `frontend/src/app/api/auth/[...nextauth]/route.ts`
+- `frontend/src/types/next-auth.d.ts`
 
-- [ ] JWT validation: correct issuer, audience, algorithms
-- [ ] CORS: locked to FRONTEND_URL, not wildcard
-- [ ] Token refresh: expiresAt calculation correct (seconds not ms)
-- [ ] Role hierarchy: admin(100) > manager(80) > editor(60) > viewer(10)
-- [ ] All protected endpoints use `Depends(get_current_user)`
-- [ ] Public endpoints: `/health`, `/api/v1/files/`, `/api/v1/webhooks/publish-result` — verify each is intentionally public
-- [ ] `api.ts` Authorization header injection works correctly
+**Verify:**
+- [ ] JWT validation: correct issuer, audience, algorithms (RS256)
+- [ ] JWKS key rotation handled gracefully
+- [ ] Security group check: JWT claim first, Graph API fallback
+- [ ] New users auto-provisioned: security group → admin + is_active=True; others → viewer + is_active=False
+- [ ] User model `is_active` default is `False` (both model AND init.sql)
+- [ ] Token refresh: expiresAt in seconds, REFRESH_BUFFER_SECONDS adequate
+- [ ] `role_has_access` hierarchy: admin(100) > manager(80) > editor(60) > viewer(10)
+- [ ] All protected endpoints use `Depends(get_current_user)` — grep every router file
+- [ ] Intentionally public endpoints: `/health`, `/api/v1/files/{path}`, `/api/v1/webhooks/publish-result`
+- [ ] CORS locked to `FRONTEND_URL`, not wildcard
+- [ ] Azure AD credentials validated in production startup (`config.py`)
+- [ ] Frontend env var validation at module load (`auth.ts`)
+- [ ] Session includes `accessToken` for API calls
+- [ ] `api.ts` Authorization header injection correct
+- [ ] Path traversal protection on `/api/v1/files/` (blocks `..` and leading `/`)
+- [ ] Webhook secret: returns 503 when unconfigured, uses `secrets.compare_digest`
+- [ ] No legacy model references (gpt-4o, gpt-3.5) anywhere in codebase
 
 ---
 
-### Section C: Brand Lifecycle
+## Section 2: Brand Lifecycle
 
-**Files:** `backend/app/models/brand.py`, `backend/app/schemas/brand.py`, `backend/app/api/v1/brands.py`, `backend/app/services/brand_service.py`, `frontend/src/app/brands/[id]/page.tsx`, `frontend/src/components/brand/BrandOnboarding.tsx`, `frontend/src/components/brand/BrandForm.tsx`
+**Files to read:**
+- `backend/app/models/brand.py`
+- `backend/app/schemas/brand.py`
+- `backend/app/api/v1/brands.py`
+- `backend/app/services/brand_service.py`
+- `backend/app/api/v1/products.py`
+- `backend/app/services/product_service.py`
+- `db/init.sql` (brands + products tables)
+- `frontend/src/app/brands/page.tsx`
+- `frontend/src/app/brands/new/page.tsx`
+- `frontend/src/app/brands/[id]/page.tsx`
+- `frontend/src/components/brand/BrandOnboarding.tsx`
+- `frontend/src/components/brand/BrandCard.tsx`
+- `frontend/src/components/brand/BrandForm.tsx`
+- `frontend/src/components/brand/WorkflowStatus.tsx`
+- `frontend/src/components/brand/CompetitorTracker.tsx`
+- `frontend/src/components/brand/tabs/OverviewTab.tsx`
+- `frontend/src/components/brand/tabs/ChannelsTab.tsx`
+- `frontend/src/components/brand/tabs/LogosTab.tsx`
+- `frontend/src/components/brand/tabs/CompetitorsTab.tsx`
+- `frontend/src/components/brand/tabs/EditBrandTab.tsx`
+- `frontend/src/components/brand/tabs/ProductsTab.tsx`
+- `frontend/src/components/brand/tabs/IntelligenceTab.tsx`
+- `frontend/src/components/brand/tabs/PerformanceTab.tsx`
 
+**Verify:**
 - [ ] New brands: status='onboarding', is_active=false
-- [ ] complete-onboarding validates: name, description, tone_of_voice, >=1 logo, >=1 channel
+- [ ] BrandCreate schema defaults match init.sql
+- [ ] complete-onboarding validates: name, description, tone_of_voice, >=1 logo, >=1 enabled channel
 - [ ] activate: status='activating', is_active=true, publishes research.trigger with trigger=activation, scope_weeks=2
-- [ ] Deactivation cancels running agent_runs
-- [ ] BrandForm does NOT send is_active field
-- [ ] Onboarding progress uses API-fetched competitors state
+- [ ] Bidirectional is_active/status sync on updates; "activating" counts as active
+- [ ] Deactivating cancels running agent_runs
+- [ ] BrandForm does NOT send `is_active` field
+- [ ] Onboarding progress uses API-fetched `competitors` state (not `brand.competitors`)
+- [ ] Competitors fetched on initial page load (not just when Intelligence tab opens)
+- [ ] `bc_locations` typed as `Mapped[list]` (not dict)
+- [ ] `brand_guidelines` JSON properly serialized/deserialized
+- [ ] Brand deletion cascades correctly (all FK tables)
+- [ ] agent_runs: brand_id NOT NULL, ON DELETE CASCADE
 
 ---
 
-### Section D: All 7 Workflow Graphs
+## Section 3: Research Workflow
 
-**Files:** All `graph.py` files in `agents/workflows/research/`, `strategy/`, `planning/`, `content/`, `evaluation/`, `adaptation/`, `product_intel/`
+**Files to read:**
+- `agents/workflows/research/graph.py`
+- `agents/workflows/research/nodes.py`
+- `agents/workflows/research/state.py`
+- `agents/shared/tools/database.py` (store_competitors, store_research, get_brand, get_brand_config, execute_query, build_brand_intelligence)
+- `agents/shared/tools/vector.py`
+- `agents/shared/tools/web_search.py`
+- `agents/shared/tools/browser.py`
+- `agents/shared/tools/social.py`
+- `agents/shared/llm.py`
+- `agents/shared/sanitize.py`
 
-- [ ] Every graph has a `_check_failed` function defined
-- [ ] Every inter-node edge (except terminal → END) uses `add_conditional_edges` with `_check_failed`
-- [ ] Entry points are set correctly
-- [ ] Graphs that need checkpointers (strategy, adaptation) have them
-- [ ] product_intel graph follows the same pattern
+**Verify:**
+- [ ] Graph has `_check_failed` + conditional edges on ALL nodes
+- [ ] `crawl_website`: loads website_url + extra URLs from brand_guidelines
+- [ ] `analyze_social`: enriched prompt requests engagement_rate, benchmark, peak_times, hashtag_analysis, recommendations
+- [ ] `analyze_competitors`: enriched prompt requests positioning, strengths(3+), weaknesses(3+), social_presence, content_strategy, threat_level
+- [ ] `analyze_competitors`: loads EXISTING DB competitors first, deduplicates by name
+- [ ] `identify_gaps`: enriched prompt requests title, category, estimated_impact, implementation_effort, timeline, target_audience, success_metrics
+- [ ] `build_personas`: enriched prompt requests demographics(object), content_preferences(object with formats/topics/tone/language_mix), buying_triggers, best_engagement_times, content_avoidance
+- [ ] `store_results`: saves to agent_runs + Qdrant (non-fatal if Qdrant fails)
+- [ ] Qdrant `async_create_collection` wrapped in inner try/except (race condition)
+- [ ] ALL nodes with chat_completion() wrapped in try/except returning status:"failed"
+- [ ] ALL error returns include `"status": "failed"` for conditional edge routing
+- [ ] `chat_completion()` uses retry with exponential backoff (3 attempts)
+- [ ] `web_search()` uses DuckDuckGo, returns SearchResult objects
+- [ ] `crawl_site()` falls back to direct HTTP when browser-worker is down
 
 ---
 
-### Section E: Workflow Nodes — Error Handling
+## Section 4: Strategy Workflow
 
-**Files:** All `nodes.py` files in every workflow
+**Files to read:**
+- `agents/workflows/strategy/graph.py`
+- `agents/workflows/strategy/nodes.py`
+- `agents/workflows/strategy/state.py`
 
-- [ ] Every node that calls `chat_completion()` is wrapped in try/except returning `{"status": "failed"}`
-- [ ] Every node that calls database functions has error handling
-- [ ] Every error return includes `"status": "failed"` for conditional edge routing
-- [ ] No bare `return {"errors": [...]}` without status field
-- [ ] LLM results are parsed with `parse_llm_json()` with fallback values
+**Verify:**
+- [ ] Graph has `_check_failed` + conditional edges on ALL nodes
+- [ ] MemorySaver checkpointer configured
+- [ ] `load_research`: finds latest completed research, returns output_payload
+- [ ] `generate_positioning`: enriched — includes brand_archetype, emotional_territory, competitive_differentiation
+- [ ] `define_pillars`: enriched — includes audience_alignment, seasonal_emphasis, platform_fit, visual_style, pillar_rationale
+- [ ] `define_audiences`: cross-references research personas explicitly; prompt includes personas as "source of truth"; output has persona_ref field
+- [ ] `plan_cadence`: includes content_format_mix (% reels, carousels, stories, static)
+- [ ] `generate_themes`: generates 12 months (not 3); includes sub_themes (4 weekly), key_dates with content_angle/format/audience, pillar_rotation; max_tokens=8192
+- [ ] `human_review`: auto-approves for activation triggers; interrupts for manual
+- [ ] ALL nodes with chat_completion() wrapped in try/except
 
 ---
 
-### Section F: Worker Pipeline
+## Section 5: Planning Workflow
 
-**Files:** `agents/worker.py`, `agents/shared/nats_consumer.py`
+**Files to read:**
+- `agents/workflows/planning/graph.py`
+- `agents/workflows/planning/nodes.py`
+- `agents/workflows/planning/state.py`
 
-- [ ] All 7 NATS subjects subscribed
-- [ ] `ack_wait` >= WORKFLOW_TIMEOUT
+**Verify:**
+- [ ] Graph has `_check_failed` + conditional edges on ALL nodes
+- [ ] `load_strategy`: parses JSON string from output_payload; loads enabled_channels with fallback to ["instagram"]; loads existing_items for dedup
+- [ ] `generate_campaigns`: enriched — requests target_metrics, creative_direction, content_format_mix, target_audience; passes products
+- [ ] Strategy document: max_tokens=16384; cadence/audiences/pillars truncation >= 3000 chars each
+- [ ] `generate_calendar`: enriched items include pillar, theme, weekly_sub_theme, target_audience, content_brief, visual_direction, cta_type
+- [ ] `generate_calendar`: includes existing items as dedup context ("do NOT duplicate")
+- [ ] `generate_calendar`: max_tokens=16384
+- [ ] `generate_calendar`: enforces 1 post per enabled channel per day
+- [ ] `assign_products`: has try/except on DB call; matches real products from DB
+- [ ] `store_calendar`: passes ALL new fields (pillar, theme, target_audience, weekly_sub_theme, content_brief, visual_direction, cta_type) to store_calendar_items()
+- [ ] `store_calendar_items()` INSERT includes all 7 new columns
+- [ ] Returns calendar_item_ids sorted by scheduled_at ASC (tz-aware)
+
+---
+
+## Section 6: Content Generation Workflow
+
+**Files to read:**
+- `agents/workflows/content/graph.py`
+- `agents/workflows/content/nodes.py`
+- `agents/workflows/content/state.py`
+- `agents/workflows/content/image_sourcing.py`
+- `agents/shared/image_processing.py`
+- `agents/shared/tools/storage.py`
+
+**Verify:**
+- [ ] Graph has `_check_failed` + conditional edges on ALL nodes
+- [ ] `load_context`: calls `build_brand_intelligence()`; returns enriched state with positioning, relevant_pillar, relevant_audience, month_context, recent_posts, top_performing, product
+- [ ] `load_context`: sets calendar item status to 'working'
+- [ ] `_extract_month_section()`: extracts current month section from strategy document
+- [ ] `_find_product()`: matches product by product_ids first, then fuzzy name
+- [ ] `generate_hook`: enriched — includes brand archetype, pillar, audience pain points + tone, product, recent hooks to avoid, top performing hooks; max_tokens=256
+- [ ] `generate_caption`: enriched — includes full positioning (NOT truncated to 2000), pillar description, audience preferences + language_mix, product details, month_context (5000 chars), recent captions to avoid, top performing, CTA with brand URL; max_tokens=2048
+- [ ] `generate_hashtags`: full caption (NOT truncated to 500 chars); platform-specific limits; branded hashtag always included; max_tokens=512
+- [ ] `source_product_image`: uses product_ids from calendar item; NEVER AI-generates product photos
+- [ ] `generate_background`: includes brand color palette (hex), visual_style, audience aesthetic, seasonal direction
+- [ ] `apply_branding`: SVG→PNG, numpy variance placement, never bottom-left; logo width>0 guard; coordinate clipping prevents negatives
+- [ ] `adapt_platforms`: enriched — includes positioning, brand voice, key messages, audience, brand URL; fallback is ["instagram"]
+- [ ] `generate_mockups`: creates IG/FB/LI/X previews
+- [ ] `store_content`: sets calendar item to 'in_review', stores mockup_urls in generation_metadata
+- [ ] ALL nodes with chat_completion() wrapped in try/except
+
+---
+
+## Section 7: Worker Pipeline Orchestration
+
+**Files to read:**
+- `agents/worker.py`
+- `agents/shared/nats_consumer.py`
+- `agents/shared/config.py`
+- `agents/shared/state.py`
+
+**Verify:**
+- [ ] All 7 NATS subjects subscribed: research, strategy, content, evaluation, product, planning, adaptation
+- [ ] `ack_wait` >= WORKFLOW_TIMEOUT (1860s vs 1800s)
 - [ ] `max_deliver=5`
-- [ ] Idempotency check correct (brand+agent_type, running, 30 min window)
+- [ ] Idempotency: skips if same brand+agent_type running within 30 min
 - [ ] Chain fires ONLY for trigger=activation
-- [ ] Planning→content fan-out: sorts IDs, publishes first, passes remaining_queue
-- [ ] Sequential content chaining: current_depth defined first, next item published, rest propagated
-- [ ] Brand activation: status='active', is_active=true after planning completes
-- [ ] GraphInterrupt caught and handled as paused_for_review
-- [ ] Chain depth guard: `current_depth + 1 < MAX_CHAIN_DEPTH` (not `current_depth < MAX`)
+- [ ] Planning→content fan-out: sorts by scheduled_at, publishes FIRST item, passes remaining_queue
+- [ ] Sequential content chaining: current_depth defined BEFORE chaining block
+- [ ] After planning with trigger=activation: brand set to status='active', is_active=true
+- [ ] `GraphInterrupt` imported from `langgraph.errors` and caught → saves as paused_for_review
+- [ ] Chain depth: `current_depth + 1 < MAX_CHAIN_DEPTH` (not `current_depth < MAX`)
 - [ ] trigger, scope_weeks, chain_depth propagate through all chain messages
-- [ ] msg.ack() called in all paths (success, failure, duplicate, timeout, interrupt)
+- [ ] msg.ack() called in ALL paths (success, failure, duplicate, timeout, interrupt)
+- [ ] Evaluation always chains to adaptation regardless of trigger
+- [ ] Product intel conditional chain to strategy
 
 ---
 
-### Section G: Publishing Pipeline
+## Section 8: Publishing Pipeline
 
-**Files:** `backend/app/scheduler/publish_checker.py`, `backend/app/services/publish_service.py`, `backend/app/api/v1/webhooks.py`, `backend/app/services/content_service.py`
+**Files to read:**
+- `backend/app/scheduler/publish_checker.py`
+- `backend/app/services/publish_service.py`
+- `backend/app/api/v1/webhooks.py`
+- `backend/app/services/content_service.py`
+- `backend/app/models/content.py`
+- `backend/app/models/calendar_item.py`
+- `backend/app/schemas/content.py`
 
+**Verify:**
 - [ ] Publish checker: status='scheduled' AND scheduled_at <= NOW()
 - [ ] Status set to "publishing" BEFORE dispatch
 - [ ] On dispatch failure: status set to "failed" (not orphaned in "publishing")
-- [ ] VALID_TRANSITIONS includes: scheduled→publishing, publishing→published, publishing→failed, failed→scheduled
-- [ ] Webhook validates X-Webhook-Secret (returns 503 if unconfigured)
-- [ ] On success: platform_post_id set, cal_item status='published', published_at set
-- [ ] On failure: cal_item status='failed', error in generation_metadata
+- [ ] `VALID_TRANSITIONS` includes: scheduled→publishing, publishing→published, publishing→failed, failed→scheduled
+- [ ] `dispatch_to_n8n` sends to unified `/markai/publish` endpoint
+- [ ] Payload includes channel-specific credentials from brand_guidelines
 - [ ] website_blog: no dispatch, mark ready_to_publish
-- [ ] teams: direct webhook, not n8n
+- [ ] teams: direct Teams webhook, not n8n
+- [ ] Webhook validates X-Webhook-Secret (503 if unconfigured)
+- [ ] On success: platform_post_id, status='published', published_at
+- [ ] On failure: status='failed', error in generation_metadata
+- [ ] Content model: `image_urls` typed as `Mapped[list | None]`
+- [ ] CalendarItem model: has all 7 new columns (pillar, theme, target_audience, weekly_sub_theme, content_brief, visual_direction, cta_type)
 
 ---
 
-### Section H: Content Generation Nodes
+## Section 9: Engagement Tracking & Evaluation
 
-**Files:** `agents/workflows/content/nodes.py`, `agents/workflows/content/image_sourcing.py`, `agents/shared/image_processing.py`
+**Files to read:**
+- `backend/app/scheduler/engagement_puller.py`
+- `backend/app/services/engagement_service.py`
+- `backend/app/models/engagement.py`
+- `agents/workflows/evaluation/graph.py`
+- `agents/workflows/evaluation/nodes.py`
+- `agents/workflows/evaluation/state.py`
 
-- [ ] load_context: sets cal item status to 'working'
-- [ ] source_product_image: uses product_ids from calendar item; NEVER AI-generates product photos
-- [ ] generate_background: logo-safe composition prompt
-- [ ] apply_branding: SVG→PNG, numpy variance placement, never bottom-left
-- [ ] Logo dimension guards: width > 0 check, coordinate clipping prevents negatives
-- [ ] adapt_platforms: fallback is ["instagram"], not ALL_CHANNELS
-- [ ] store_content: status→'in_review', mockup_urls in generation_metadata
+**Verify:**
+- [ ] Engagement pull: fetches from Instagram/Facebook/LinkedIn APIs
+- [ ] Uses per-channel credentials from brand_guidelines
+- [ ] Only pulls for status='published' items
+- [ ] Evaluation graph: `_check_failed` + conditional edges on ALL nodes
+- [ ] ALL evaluation nodes with chat_completion() wrapped in try/except
+- [ ] Evaluation loads 30-day performance data
+- [ ] Recommendations classified into tier 1/2/3
 
 ---
 
-### Section I: Database Schema Integrity
+## Section 10: Adaptation Workflow
 
-**Files:** `db/init.sql`, all files in `backend/app/models/`, all files in `backend/app/schemas/`
+**Files to read:**
+- `agents/workflows/adaptation/graph.py`
+- `agents/workflows/adaptation/nodes.py`
+- `agents/workflows/adaptation/state.py`
+- `backend/app/models/adaptation.py`
+- `backend/app/schemas/adaptation.py`
 
+**Verify:**
+- [ ] Adaptation graph: has `_check_failed` function defined + conditional edges on ALL nodes
+- [ ] MemorySaver checkpointer configured
+- [ ] Tier 1 auto-applied; tier 2/3 require human interrupt via `interrupt()`
+- [ ] Adaptation→planning feedback loop: `current_depth + 1 < MAX_CHAIN_DEPTH`
+
+---
+
+## Section 11: Product Intelligence Workflow
+
+**Files to read:**
+- `agents/workflows/product_intel/graph.py`
+- `agents/workflows/product_intel/nodes.py`
+- `agents/workflows/product_intel/state.py`
+- `agents/shared/tools/image_search.py`
+
+**Verify:**
+- [ ] Graph has `_check_failed` + conditional edges on ALL nodes
+- [ ] ALL nodes with chat_completion() wrapped in try/except returning status:"failed"
+- [ ] Product images: prioritizes BC > supplier > web search; NO AI-generated images
+- [ ] Worker chains product_intel → strategy (conditional on existing research)
+
+---
+
+## Section 12: Scheduler & Daily Jobs
+
+**Files to read:**
+- `backend/app/scheduler/__init__.py`
+- `backend/app/scheduler/morning_jobs.py`
+- `backend/app/scheduler/bc_sync.py`
+- `backend/app/scheduler/model_discovery.py`
+- `backend/app/scheduler/publish_checker.py`
+
+**Verify:**
+- [ ] `get_app_setting()` reads from DB app_settings table
+- [ ] Morning job order: BC sync → engagement pull → evaluation trigger → content top-up
+- [ ] Content top-up: uses status='queued' only (NOT 'planned')
+- [ ] Content top-up: finds nearest item within days_ahead window
+- [ ] All job failures logged to scheduled_job_log with duration_ms
+- [ ] Scheduler started correctly in main.py lifespan
+
+---
+
+## Section 13: All API Endpoints
+
+**Files to read (every router):**
+- `backend/app/api/router.py`
+- `backend/app/api/v1/agents.py`
+- `backend/app/api/v1/analytics.py`
+- `backend/app/api/v1/approvals.py`
+- `backend/app/api/v1/brands.py`
+- `backend/app/api/v1/calendar.py`
+- `backend/app/api/v1/campaigns.py`
+- `backend/app/api/v1/content.py`
+- `backend/app/api/v1/dashboard.py`
+- `backend/app/api/v1/files.py`
+- `backend/app/api/v1/intelligence.py`
+- `backend/app/api/v1/learning.py`
+- `backend/app/api/v1/notifications.py`
+- `backend/app/api/v1/products.py`
+- `backend/app/api/v1/prompts.py`
+- `backend/app/api/v1/providers.py`
+- `backend/app/api/v1/settings.py`
+- `backend/app/api/v1/system.py`
+- `backend/app/api/v1/users.py`
+- `backend/app/api/v1/webhooks.py`
+
+**Verify:**
+- [ ] Every router registered with correct prefix in router.py
+- [ ] Correct HTTP methods (GET reads, POST creates, PUT/PATCH updates, DELETE deletes)
+- [ ] files.py: path traversal protection blocks `..` and leading `/`
+- [ ] approvals.py: accepts "approved", "rejected", "revision_requested"
+- [ ] intelligence.py: uses gpt-5.4-mini (not gpt-4o-mini)
+- [ ] All endpoints needing auth use `Depends(get_current_user)`
+- [ ] users.py: only admins can manage users
+
+---
+
+## Section 14: All Services
+
+**Files to read:**
+- `backend/app/services/ai_model_service.py`
+- `backend/app/services/analytics_service.py`
+- `backend/app/services/approval_service.py`
+- `backend/app/services/brand_service.py`
+- `backend/app/services/calendar_service.py`
+- `backend/app/services/content_service.py`
+- `backend/app/services/engagement_service.py`
+- `backend/app/services/fabric_service.py`
+- `backend/app/services/gemini_service.py`
+- `backend/app/services/minio_service.py`
+- `backend/app/services/nats_service.py`
+- `backend/app/services/notification_service.py`
+- `backend/app/services/product_service.py`
+- `backend/app/services/prompt_service.py`
+- `backend/app/services/publish_service.py`
+- `backend/app/services/qdrant_service.py`
+
+**Verify:**
+- [ ] `content_service.py` VALID_TRANSITIONS: includes publishing state; failed→scheduled for retry
+- [ ] `ai_model_service.py`: fallback models are gpt-5.4/gpt-5.4-mini (no legacy)
+- [ ] `nats_service.py`: publish function works correctly
+- [ ] `publish_service.py`: Teams = direct webhook; website_blog = ready_to_publish; others = n8n
+- [ ] `engagement_service.py`: uses Meta Graph API v20+, LinkedIn API v2
+- [ ] `fabric_service.py`: BC sync via Microsoft Fabric SQL with Azure AD auth
+- [ ] All services: proper async/await, no blocking calls in async functions
+- [ ] All services: DB sessions committed/rolled back properly
+
+---
+
+## Section 15: Database Schema Integrity
+
+**Files to read:**
+- `db/init.sql` (entire file)
+- All files in `backend/app/models/`
+- All files in `backend/app/schemas/`
+
+**Verify:**
 - [ ] Every model field matches init.sql: name, type, size, nullable, default
 - [ ] Brand status CHECK: onboarding, activating, active, inactive
 - [ ] CalendarItem status CHECK: queued, working, in_review, reworking, approved, scheduled, publishing, published, failed
-- [ ] agent_runs: brand_id NOT NULL, ON DELETE CASCADE; prompt_version_id ON DELETE SET NULL; initiated_by ON DELETE SET NULL
+- [ ] CalendarItem has columns: pillar, theme, target_audience, weekly_sub_theme, content_brief, visual_direction, cta_type
+- [ ] CalendarItem indexes: pillar, theme, brand_id+scheduled_at
+- [ ] users.is_active DEFAULT FALSE (init.sql AND model)
+- [ ] agent_runs: brand_id NOT NULL ON DELETE CASCADE; prompt_version_id ON DELETE SET NULL; initiated_by ON DELETE SET NULL
 - [ ] Notification model: title String(500), notification_type String(50), channel String(50), reference_type String(100)
-- [ ] Brand model: bc_locations Mapped[list], not Mapped[dict]
-- [ ] Product model: image_urls Mapped[list | None], not Mapped[dict | None]
+- [ ] Brand: bc_locations Mapped[list]; Product: image_urls Mapped[list|None]
+- [ ] agent_run model: brand_id Mapped[uuid.UUID] (NOT Optional), nullable=False
+- [ ] agent_run schema: brand_id uuid.UUID (NOT Optional)
 - [ ] All FK cascades appropriate (CASCADE for owned data, SET NULL for references)
-- [ ] Indexes exist for: calendar_items(status), calendar_items(scheduled_at), agent_runs(brand_id, status), products(brand_id)
+- [ ] app_settings has content_generation_days_ahead row
 
 ---
 
-### Section J: Frontend Data Flow
+## Section 16: All Frontend Pages & Components
 
-**Files:** `frontend/src/lib/api.ts`, `frontend/src/types/index.ts`, key page files
+**Files to read (every page):**
+- `frontend/src/app/page.tsx` (Dashboard)
+- `frontend/src/app/brands/page.tsx`
+- `frontend/src/app/brands/new/page.tsx`
+- `frontend/src/app/brands/[id]/page.tsx`
+- `frontend/src/app/content/page.tsx`
+- `frontend/src/app/content/[id]/page.tsx`
+- `frontend/src/app/content/calendar/page.tsx`
+- `frontend/src/app/approvals/page.tsx`
+- `frontend/src/app/intelligence/page.tsx`
+- `frontend/src/app/intelligence/products/page.tsx`
+- `frontend/src/app/intelligence/report/[id]/page.tsx`
+- `frontend/src/app/analytics/page.tsx`
+- `frontend/src/app/learning/page.tsx`
+- `frontend/src/app/prompts/page.tsx`
+- `frontend/src/app/providers/page.tsx`
+- `frontend/src/app/settings/page.tsx`
+- `frontend/src/app/settings/users/page.tsx`
+- `frontend/src/app/system/page.tsx`
+- `frontend/src/app/system/audit/page.tsx`
+- `frontend/src/app/auth/signin/page.tsx`
+- `frontend/src/app/error.tsx`
+- `frontend/src/app/layout.tsx`
 
+**Components to read:**
+- `frontend/src/components/content/CalendarView.tsx`
+- `frontend/src/components/content/ContentCard.tsx`
+- `frontend/src/components/content/ContentEditor.tsx`
+- `frontend/src/components/content/KanbanBoard.tsx`
+- `frontend/src/components/content/PlatformMockups.tsx`
+- `frontend/src/components/content/AssetPreview.tsx`
+- `frontend/src/components/layout/Sidebar.tsx`
+- `frontend/src/components/layout/Header.tsx`
+- `frontend/src/components/layout/BrandSwitcher.tsx`
+- `frontend/src/components/approval/ApprovalActions.tsx`
+- `frontend/src/components/approval/ApprovalHistory.tsx`
+- `frontend/src/components/analytics/EngagementChart.tsx`
+- `frontend/src/components/analytics/PerformanceGrid.tsx`
+- `frontend/src/components/analytics/PostingHeatmap.tsx`
+- `frontend/src/components/system/ServiceHealth.tsx`
+- `frontend/src/components/system/QueueDepth.tsx`
+- `frontend/src/components/system/WorkflowMonitor.tsx`
+
+**Shared:**
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/auth.ts`
+- `frontend/src/lib/hooks.ts`
+- `frontend/src/lib/utils.ts`
+- `frontend/src/types/index.ts`
+- `frontend/src/types/next-auth.d.ts`
+
+**Verify:**
 - [ ] API_BASE_URL enforces HTTPS for non-localhost
-- [ ] fileUrl() rewrites minio:9000 URLs correctly
-- [ ] All .map() calls have Array.isArray() guards
-- [ ] TypeScript interfaces in types/index.ts match backend Pydantic schemas for critical types (Brand, Content, CalendarItem, AgentRun)
-- [ ] Every image/asset display uses fileUrl() for MinIO URLs
-- [ ] Path traversal protection confirmed on files endpoint
+- [ ] `fileUrl()` rewrites minio:9000 URLs to backend proxy
+- [ ] All `.map()` calls have `Array.isArray()` guards
+- [ ] `types/index.ts`: CalendarItem has pillar, theme, target_audience, content_brief
+- [ ] `types/index.ts`: ContentStatus includes "publishing"
+- [ ] Report detail page renders enriched fields: competitor threat_level, gap impact/effort, persona content_preferences, positioning brand_archetype, pillar audience_alignment
+- [ ] CalendarView shows pillar badge + target_audience badge on items
+- [ ] Sidebar navigation links match actual routes
+- [ ] Kanban columns match valid status values
+- [ ] Every image uses `fileUrl()` for MinIO URLs
+- [ ] Settings page includes content_generation_days_ahead slider
 
 ---
 
-### Section K: Infrastructure
+## Section 17: Infrastructure & Configuration
 
-**Files:** `docker-compose.yml`, `docker-compose.vps.yml`, `backend/Dockerfile`, `frontend/Dockerfile`, `agents/Dockerfile`
+**Files to read:**
+- `docker-compose.yml`
+- `docker-compose.override.yml`
+- `docker-compose.vps.yml`
+- `backend/Dockerfile`
+- `frontend/Dockerfile`
+- `agents/Dockerfile`
+- `litellm/config.yaml`
+- `eval/promptfooconfig.yaml`
 
-- [ ] Uvicorn: --proxy-headers --forwarded-allow-ips *
-- [ ] Frontend Dockerfile: default ARG is HTTPS URL
+**Verify:**
+- [ ] Uvicorn: `--proxy-headers --forwarded-allow-ips *`
+- [ ] Frontend Dockerfile default ARG is HTTPS production URL
 - [ ] ODBC Driver 17 in backend + agents
 - [ ] All healthchecks use curl
-- [ ] VPS overlay: zero host port bindings
+- [ ] VPS overlay: zero host port bindings, external Traefik network
 - [ ] No http:// in production config (except internal Docker hostnames)
 - [ ] All containers run as non-root
+- [ ] LiteLLM config: only gpt-5.4, gpt-5.4-mini, gpt-image-1.5, text-embedding-3-small (no legacy models)
+- [ ] Eval config: uses gpt-5.4 (not gpt-4o)
 
 ---
 
-### Section L: Scheduler & Daily Jobs
+## Section 18: BrandIntelligence & Cross-Component Data Flow
 
-**Files:** `backend/app/scheduler/__init__.py`, `backend/app/scheduler/morning_jobs.py`, `backend/app/scheduler/publish_checker.py`
+**Files to read:**
+- `agents/shared/tools/database.py` — `build_brand_intelligence()`, `get_recent_calendar_items()`, `_parse_payload()`
+- `agents/workflows/content/nodes.py` — `load_context()`, `_extract_month_section()`, `_find_product()`
+- `agents/workflows/planning/nodes.py` — `load_strategy()`, existing_items dedup
 
-- [ ] get_app_setting() reads from DB
-- [ ] Morning job order: BC sync → engagement → evaluation → content top-up
-- [ ] Content top-up reads days_ahead from DB, finds nearest queued/planned item
-- [ ] Job failures logged with duration_ms
-- [ ] Scheduler started in main.py on correct lifecycle event
+**Verify:**
+- [ ] `build_brand_intelligence()` loads: brand config, products, research, strategy, planning, strategy_document, recent_posts (90 days), top_performing (10 items)
+- [ ] `_parse_payload()` handles string, dict, and None correctly
+- [ ] `get_recent_calendar_items()` queries with proper date interval and limit
+- [ ] Content `load_context()` calls `build_brand_intelligence()` and returns enriched state
+- [ ] `_extract_month_section()` extracts correct month from strategy document
+- [ ] `_find_product()` matches by product_ids first, then fuzzy name
+- [ ] `relevant_pillar` matched from strategy pillars by pillar name
+- [ ] `relevant_audience` matched from research personas by name
+- [ ] Dedup: recent_posts injected into hook/caption prompts as "do NOT repeat"
+- [ ] Learning: top_performing injected into hook/caption prompts as "learn from these"
+- [ ] Research personas flow into strategy audiences (persona_ref cross-reference)
+- [ ] Strategy themes flow into planning calendar (pillar_rotation, weekly sub-themes)
+- [ ] Strategy document flows into content generation (month_context excerpt)
+- [ ] Brand colors from brand_guidelines flow into image generation prompts
 
 ---
 
-## Convergence Criteria
+## Section 19: Agents Shared Utilities
 
-A pass is **clean** when ALL of the above checks pass and ZERO new findings are discovered. The audit is complete when one clean pass is achieved.
+**Files to read:**
+- `agents/shared/config.py`
+- `agents/shared/llm.py`
+- `agents/shared/image_processing.py`
+- `agents/shared/nats_consumer.py`
+- `agents/shared/sanitize.py`
+- `agents/shared/state.py`
+- `agents/shared/tools/browser.py`
+- `agents/shared/tools/database.py`
+- `agents/shared/tools/fabric.py`
+- `agents/shared/tools/image_search.py`
+- `agents/shared/tools/social.py`
+- `agents/shared/tools/storage.py`
+- `agents/shared/tools/vector.py`
+- `agents/shared/tools/web_search.py`
+
+**Verify:**
+- [ ] `llm.py`: fallback models are gpt-5.4/gpt-5.4-mini; retry 3 attempts; max_tokens default 4096
+- [ ] `image_processing.py`: logo placement never bottom-left; width>0 guard; coordinate clipping with max(0,...)
+- [ ] `sanitize.py`: HTML sanitization applied to LLM outputs
+- [ ] `storage.py`: MinIO upload sets correct content-type; returns accessible URLs
+- [ ] `social.py`: Instagram/Facebook/LinkedIn API calls with proper auth
+- [ ] `browser.py`: crawl_site with timeout, fallback to direct HTTP
+- [ ] `web_search.py`: DuckDuckGo HTML endpoint, no API key required
+- [ ] `vector.py`: Qdrant operations with 1536-dimension vectors
+- [ ] `database.py`: all functions use parameterized queries (no SQL injection)
+- [ ] `fabric.py`: Microsoft Fabric SQL with Azure AD token auth
+
+---
 
 ## Deliverables
 
-After convergence:
-1. Report the total number of passes required
-2. List any fixes applied during v3 passes
-3. Append v3 results to `AUDIT_RESULTS.md`
-4. Update `DEPLOY_FIX.md` if any new migrations needed
-5. Final statement: "CONVERGED after N passes — zero issues remaining"
+After completing the audit:
+1. **Fix every bug found** — implement all fixes directly
+2. **Update `AUDIT_RESULTS.md`** — append findings
+3. **Update `DEPLOY_FIX.md`** if any new deployment steps needed
+4. **End-to-end pipeline trace** — mentally walk through brand activation → research → strategy → planning → content for a single post, verifying every field propagates correctly through the BrandIntelligence package
