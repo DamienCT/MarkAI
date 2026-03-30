@@ -49,7 +49,6 @@ class ContentRecordValidator(BaseModel):
     generated_image_url: str | None = None
     platform_adaptations: str = "{}"
     metadata: dict = {}
-    status: str = "in_review"
 
     @field_validator("caption")
     @classmethod
@@ -656,6 +655,11 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
     try:
         result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         adaptations = parse_llm_json(result, fallback={source_platform: {"caption": state.get("caption", ""), "hashtags": state.get("hashtags", [])}})
+        # Unwrap dict-wrapping-dict: LLM may return {"platforms": {"instagram": {...}, ...}}
+        if isinstance(adaptations, dict) and len(adaptations) == 1:
+            only_val = next(iter(adaptations.values()))
+            if isinstance(only_val, dict):
+                adaptations = only_val
 
         # Extract CTA from the primary platform adaptation
         primary = adaptations.get(source_platform, {})

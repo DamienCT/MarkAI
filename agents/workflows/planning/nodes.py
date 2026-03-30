@@ -178,6 +178,8 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     ]
     result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
     campaigns = parse_llm_json(result, fallback=[{"name": "General Campaign", "description": result}])
+    if isinstance(campaigns, dict):
+        campaigns = next((v for v in campaigns.values() if isinstance(v, list)), [])
 
     # ── Generate year-long content calendar strategy document ──────────────
     strategy_doc_prompt = [
@@ -288,6 +290,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     ]
     result = await chat_completion(prompt, temperature=0.5, max_tokens=16384, response_format={"type": "json_object"})
     items = parse_llm_json(result, fallback=[])
+    if isinstance(items, dict):
+        items = next((v for v in items.values() if isinstance(v, list)), [])
     return {"calendar_items": items}
 
 

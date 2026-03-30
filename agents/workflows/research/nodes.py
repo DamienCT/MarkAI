@@ -220,7 +220,7 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
             discovered_names.add(ec_name.lower())
 
     logger.info("Found %d competitors for brand %s (%d existing, %d new)", len(analyses), brand_name, len(existing_competitors), len(analyses) - len(existing_competitors))
-    return {"status": "completed", "competitor_analysis": analyses, "competitor_urls": [c.get("website", c.get("website_url", "")) for c in analyses]}
+    return {"competitor_analysis": analyses, "competitor_urls": [c.get("website", c.get("website_url", "")) for c in analyses]}
 
 
 async def identify_gaps(state: ResearchState) -> dict[str, Any]:

@@ -605,6 +605,8 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
         "website_url": brand.get("website_url", ""),
         "industry": brand.get("industry", ""),
         "tone_of_voice": brand.get("tone_of_voice", ""),
+        "logo_url": brand.get("logo_url", ""),
+        "slug": brand.get("slug", ""),
         "brand_guidelines": brand_guidelines,
         "enabled_channels": enabled_channels,
     }

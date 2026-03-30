@@ -177,7 +177,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         if agent_type == "planning" and payload.get("trigger") == "activation":
             if brand_id:
                 try:
-                    await execute_query(
+                    await execute_update(
                         "UPDATE brands SET status = 'active', is_active = true WHERE id = :id",
                         {"id": brand_id},
                     )

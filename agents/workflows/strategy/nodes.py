@@ -60,6 +60,8 @@ async def define_pillars(state: StrategyState) -> dict[str, Any]:
         ]
         result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         pillars = parse_llm_json(result, fallback=[{"name": "General", "description": result}])
+        if isinstance(pillars, dict):
+            pillars = next((v for v in pillars.values() if isinstance(v, list)), [])
         return {"pillars": pillars}
     except Exception as exc:
         logger.error("define_pillars failed: %s", exc)
@@ -71,6 +73,8 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
     try:
         # Cross-reference research personas if available
         research_data = state.get("research_data", {})
+        if not isinstance(research_data, dict):
+            research_data = {}
         personas_context = sanitize_json_for_prompt(research_data.get("personas", []), max_length=6000)
 
         prompt = [
@@ -84,6 +88,8 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
         ]
         result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         audiences = parse_llm_json(result, fallback=[{"segment_name": "Primary", "description": result}])
+        if isinstance(audiences, dict):
+            audiences = next((v for v in audiences.values() if isinstance(v, list)), [])
         return {"audiences": audiences}
     except Exception as exc:
         logger.error("define_audiences failed: %s", exc)
@@ -122,6 +128,8 @@ async def generate_themes(state: StrategyState) -> dict[str, Any]:
         ]
         result = await chat_completion(prompt, temperature=0.65, max_tokens=8192, response_format={"type": "json_object"})
         themes = parse_llm_json(result, fallback=[{"month": "current", "theme_name": "General", "description": result, "sub_themes": [], "key_dates": [], "pillar_rotation": ""}])
+        if isinstance(themes, dict):
+            themes = next((v for v in themes.values() if isinstance(v, list)), [])
         return {"themes": themes}
     except Exception as exc:
         logger.error("generate_themes failed: %s", exc)

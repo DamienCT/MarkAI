@@ -21,3 +21,4 @@ class ResearchState(TypedDict, total=False):
     competitor_analysis: list[dict[str, Any]]
     personas: list[dict[str, Any]]
     gaps: list[dict[str, Any]]
+    research_data: dict
