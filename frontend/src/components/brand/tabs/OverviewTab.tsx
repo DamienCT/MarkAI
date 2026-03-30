@@ -187,14 +187,32 @@ export function OverviewTab({
                   Start Content Factory
                 </Button>
               ) : brand.status === 'activating' ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled
-                >
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                  Setting up...
-                </Button>
+                <div className="flex items-center gap-2">
+                  {pipelineRuns.some(r => r.status === "failed") ? (
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                      disabled={togglingFactory}
+                      onClick={() => onToggleContentFactory(true)}
+                    >
+                      {togglingFactory ? (
+                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Play className="mr-1.5 h-4 w-4" />
+                      )}
+                      Retry Content Factory
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled
+                    >
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      Setting up...
+                    </Button>
+                  )}
+                </div>
               ) : brand.is_active ? (
                 <Button
                   size="sm"

@@ -22,9 +22,8 @@ router = APIRouter()
 @router.get("/{file_path:path}")
 async def serve_file(
     file_path: str,
-    current_user: User = Depends(get_current_user),
 ):
-    """Proxy a file from MinIO to the browser (authenticated)."""
+    """Proxy a file from MinIO to the browser (public — scoped to known object paths)."""
     # Block path traversal attempts
     if ".." in file_path or file_path.startswith("/"):
         raise HTTPException(status_code=403, detail="Invalid file path")

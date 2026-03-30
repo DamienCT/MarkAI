@@ -352,9 +352,8 @@ async def get_brand_logo(
     brand_id: uuid.UUID,
     label: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
 ):
-    """Serve a brand logo by label."""
+    """Serve a brand logo by label (public — used by img tags)."""
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")

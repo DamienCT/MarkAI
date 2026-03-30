@@ -153,7 +153,14 @@ def parse_llm_json(text: str, fallback: Any = None) -> Any:
     cleaned = strip_markdown_fences(text)
 
     try:
-        return json.loads(cleaned)
+        result = json.loads(cleaned)
+        # response_format={"type":"json_object"} wraps arrays in a single-key dict
+        # e.g. {"competitors": [...]} — unwrap to just the list
+        if isinstance(result, dict) and len(result) == 1:
+            only_value = next(iter(result.values()))
+            if isinstance(only_value, list):
+                return only_value
+        return result
     except json.JSONDecodeError:
         logger.warning("Failed to parse LLM JSON output (length=%d): %s...", len(text), text[:200])
         return fallback

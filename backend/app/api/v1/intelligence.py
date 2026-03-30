@@ -90,7 +90,7 @@ async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: b
                     headers["Authorization"] = f"Bearer {settings.LITELLM_MASTER_KEY}"
                 body_litellm = {**body, "model": f"openai/{model_id}"}
                 resp = await client.post(
-                    settings.LITELLM_BASE_URL.rstrip("/") + "/chat/completions",
+                    settings.LITELLM_BASE_URL.rstrip("/") + "/v1/chat/completions",
                     headers=headers,
                     json=body_litellm,
                 )

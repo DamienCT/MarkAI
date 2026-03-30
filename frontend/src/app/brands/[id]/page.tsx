@@ -902,7 +902,26 @@ export default function BrandDetailPage() {
       </Tabs>
 
       {/* Onboarding Dialog */}
-      <Dialog open={onboardingOpen} onOpenChange={setOnboardingOpen}>
+      <Dialog open={onboardingOpen} onOpenChange={async (open) => {
+        setOnboardingOpen(open);
+        if (!open) {
+          // Re-fetch brand, products, and competitors so the overview
+          // reflects any changes made inside the onboarding dialog.
+          const [updatedBrand, updatedProducts, updatedCompetitors] = await Promise.allSettled([
+            api.get<Brand>(`/api/v1/brands/${brandId}`),
+            api.get<Product[]>(`/api/v1/products`, { brand_id: brandId }),
+            api.get<CompetitorData[]>(`/api/v1/brands/${brandId}/competitors`),
+          ]);
+          if (updatedBrand.status === "fulfilled") {
+            setBrand(updatedBrand.value);
+            const guidelines = updatedBrand.value.brand_guidelines || {};
+            const chs = (guidelines as Record<string, unknown>).channels as Record<string, ChannelConfig> | undefined;
+            if (chs) setChannelConfigs(chs);
+          }
+          if (updatedProducts.status === "fulfilled") setProducts(updatedProducts.value);
+          if (updatedCompetitors.status === "fulfilled") setCompetitors(Array.isArray(updatedCompetitors.value) ? updatedCompetitors.value : []);
+        }
+      }}>
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
           <DialogTitle className="sr-only">Brand Setup</DialogTitle>
           <BrandOnboarding
