@@ -11,7 +11,8 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import select, update, cast
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -495,12 +496,13 @@ async def list_models_by_category(
 
     if category_slug:
         # Match primary category OR additional_categories in capabilities JSONB
+        # Use PostgreSQL @> containment: {"additional_categories": ["vision"]} @> {"additional_categories": ["vision"]}
+        jsonb_filter = AIModel.capabilities.op("@>")(
+            cast({"additional_categories": [category_slug]}, JSONB)
+        )
         stmt = (
             stmt.outerjoin(AIModelCategory, AIModel.category_id == AIModelCategory.id)
-            .where(
-                (AIModelCategory.slug == category_slug)
-                | (AIModel.capabilities["additional_categories"].astext.contains(f'"{category_slug}"'))
-            )
+            .where((AIModelCategory.slug == category_slug) | jsonb_filter)
         )
 
     stmt = stmt.order_by(AIModel.model_id)
