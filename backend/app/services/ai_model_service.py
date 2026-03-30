@@ -64,8 +64,8 @@ def _categorize_model(model_id: str) -> list[str]:
         if not categories:
             categories.append("text")
 
-    # Vision — multimodal models (gpt-5.x have vision built-in)
-    if re.match(r"^gpt-\d+-vision-", mid):
+    # Vision — multimodal models (gpt-5.x have vision built-in, plus legacy gpt-X-vision-*)
+    if re.match(r"^gpt-\d+-vision-", mid) or re.match(r"^gpt-5(\.\d+)?($|-)", mid):
         categories.append("vision")
 
     # Text-fast — smaller/cheaper models (mini, nano)
