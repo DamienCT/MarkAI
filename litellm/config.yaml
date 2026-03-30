@@ -3,29 +3,14 @@
 # Swap models here to change providers (OpenAI, Azure, Ollama, etc.) without touching app code.
 
 model_list:
-  - model_name: gpt-4o-mini
+  - model_name: gpt-5.4
     litellm_params:
-      model: openai/gpt-4o-mini
+      model: openai/gpt-5.4
       api_key: os.environ/OPENAI_API_KEY
 
-  - model_name: gpt-4o
+  - model_name: gpt-5.4-mini
     litellm_params:
-      model: openai/gpt-4o
-      api_key: os.environ/OPENAI_API_KEY
-
-  - model_name: gpt-4.1-mini
-    litellm_params:
-      model: openai/gpt-4.1-mini
-      api_key: os.environ/OPENAI_API_KEY
-
-  - model_name: gpt-4.1
-    litellm_params:
-      model: openai/gpt-4.1
-      api_key: os.environ/OPENAI_API_KEY
-
-  - model_name: gpt-4-turbo
-    litellm_params:
-      model: openai/gpt-4-turbo
+      model: openai/gpt-5.4-mini
       api_key: os.environ/OPENAI_API_KEY
 
   - model_name: text-embedding-3-small

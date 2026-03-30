@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Content Calendar Strategy — MedActiv</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0b0f;--surface:#111318;--surface2:#181b23;--surface3:#1f2330;--border:#2a2e3b;--text:#e8eaf0;--text2:#9ca3b8;--text3:#6b7280;--blue:#3b82f6;--green:#22c55e;--orange:#f59e0b;--red:#ef4444;--purple:#a855f7;--cyan:#06b6d4;--pink:#ec4899;--radius:12px}
+body{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:32px;max-width:1100px;margin:0 auto}
+h1{font-size:28px;font-weight:700;margin-bottom:4px}
+h2{font-size:18px;font-weight:600;margin:24px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+h3{font-size:15px;font-weight:600;margin:16px 0 8px;color:var(--cyan)}
+h4{font-size:14px;font-weight:600;margin:12px 0 6px;color:var(--text)}
+p{color:var(--text2);font-size:14px;margin-bottom:12px;line-height:1.8}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px}
+.badge-green{background:rgba(34,197,94,.12);color:#86efac;border:1px solid rgba(34,197,94,.25)}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--border)}
+.header-left .subtitle{color:var(--text2);font-size:14px;margin-top:4px}
+.meta{display:flex;gap:24px;margin-top:12px;font-size:12px;color:var(--text3)}
+.doc{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px 24px;margin-bottom:20px}
+.doc hr{border:none;border-top:1px solid var(--border);margin:20px 0}
+ul,ol{padding-left:20px;margin-bottom:12px;color:var(--text2);font-size:14px}
+li{margin-bottom:6px;line-height:1.7}
+li strong{color:var(--text)}
+table{width:100%;border-collapse:collapse;margin:12px 0 16px;font-size:12px}
+th{text-align:left;padding:8px 10px;background:var(--surface2);color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
+td{padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text2)}
+.highlight{background:linear-gradient(135deg,rgba(59,130,246,.06),rgba(168,85,247,.06));border:1px solid rgba(59,130,246,.15);border-radius:10px;padding:16px;margin:12px 0}
+.q-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:14px}
+.q-header{font-size:16px;font-weight:700;margin-bottom:4px}
+.q-sub{font-size:12px;color:var(--text3);margin-bottom:12px}
+.month-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.month-card{background:var(--surface3);border-radius:8px;padding:12px;border:1px solid var(--border)}
+.month-card .mc-name{font-size:13px;font-weight:600;color:var(--orange);margin-bottom:4px}
+.month-card .mc-theme{font-size:13px;font-weight:600;margin-bottom:6px}
+.month-card .mc-weeks{font-size:11px;color:var(--text3);line-height:1.6}
+.month-card .mc-dates{font-size:11px;color:var(--cyan);margin-top:6px;padding-top:6px;border-top:1px solid var(--border);line-height:1.5}
+.footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:12px;color:var(--text3)}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1>Content Calendar Strategy</h1>
+    <div class="subtitle">MedActiv &mdash; 12-Month Strategic Calendar Document</div>
+    <div class="meta">
+      <span>Completed 8 hours ago</span>
+      <span>Duration: 2m 38s</span>
+      <span>Coverage: Apr 2026 &ndash; Mar 2027</span>
+    </div>
+  </div>
+  <span class="badge badge-green">Completed</span>
+</div>
+
+<div class="doc">
+
+<h2>Full 12-Month Roadmap</h2>
+<p>This document is the master calendar reference for MedActiv's content generation. It defines monthly themes, weekly sub-themes, pillar rotation, key dates, content sequencing logic, audience rotation, and product placement strategy for the Mauritian market.</p>
+
+<hr>
+
+<!-- Q2 -->
+<div class="q-card">
+  <div class="q-header">Q2 2026: April &ndash; June</div>
+  <div class="q-sub">Strategic focus: Build awareness, establish bilingual voice, launch immunity campaigns</div>
+  <div class="month-grid">
+    <div class="month-card">
+      <div class="mc-name">April</div>
+      <div class="mc-theme">Autumn Immunity Boost</div>
+      <div class="mc-weeks">
+        W1: Local Wellness Traditions (Community)<br>
+        W2: World Health Day Deep Dive (Education)<br>
+        W3: Immunity Supplements Guide (Product)<br>
+        W4: Autumn Bundle Promo (Promo)
+      </div>
+      <div class="mc-dates">
+        Apr 7 &mdash; World Health Day: Preventive health carousel + Reel (Priya, Rajesh). Format: Bilingual carousel.<br>
+        Audience focus: W1 Rajesh, W2 All, W3 Priya, W4 Sophie
+      </div>
+    </div>
+    <div class="month-card">
+      <div class="mc-name">May</div>
+      <div class="mc-theme">Mental Health Awareness</div>
+      <div class="mc-weeks">
+        W1: Work-Life Balance (Community)<br>
+        W2: Stress Management Toolkit (Education)<br>
+        W3: Sleep + Supplements (Product)<br>
+        W4: Pharmacist Mental Health Q&A (Behind Counter)
+      </div>
+      <div class="mc-dates">
+        May 1 &mdash; Labour Day: Work-life balance carousel (Priya, Rajesh). Format: IG Carousel + FB Story.<br>
+        May 10 &mdash; Mother's Day: "Merci Mama" wellness gift guide (Sophie). Format: IG Reel + promo.
+      </div>
+    </div>
+    <div class="month-card">
+      <div class="mc-name">June</div>
+      <div class="mc-theme">Winter Wellness & Self-Care</div>
+      <div class="mc-weeks">
+        W1: Winter Skincare Essentials (Product)<br>
+        W2: Warm Remedies & Herbal Teas (Education)<br>
+        W3: Customer Self-Care Routines (Community)<br>
+        W4: Winter Wellness Kit Promo (Promo)
+      </div>
+      <div class="mc-dates">
+        Jun 21 &mdash; Winter Solstice: Self-care campaign (Priya, Marie-Claire). Format: IG static + Stories series.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Q3 -->
+<div class="q-card">
+  <div class="q-header">Q3 2026: July &ndash; September</div>
+  <div class="q-sub">Strategic focus: Sports nutrition, women's health, spring renewal</div>
+  <div class="month-grid">
+    <div class="month-card">
+      <div class="mc-name">July</div>
+      <div class="mc-theme">Sports & Active Living</div>
+      <div class="mc-weeks">
+        W1: Pre/Post Workout Nutrition (Education)<br>
+        W2: Sports Supplement Range (Product)<br>
+        W3: Family Fitness Challenge (Community)<br>
+        W4: Active Living Bundle (Promo)
+      </div>
+      <div class="mc-dates">
+        School holidays begin &mdash; Family fitness content series (Sophie, Rajesh). Format: Reels + FB challenge.
+      </div>
+    </div>
+    <div class="month-card">
+      <div class="mc-name">August</div>
+      <div class="mc-theme">Women's Health Month</div>
+      <div class="mc-weeks">
+        W1: Women's Nutrition Guide (Education)<br>
+        W2: Skincare & Beauty Supplements (Product)<br>
+        W3: Real Women, Real Health (Community)<br>
+        W4: Pharmacist on Women's Health (Behind Counter)
+      </div>
+      <div class="mc-dates">
+        Ganesh Chaturthi &mdash; Festive wellness + fasting nutrition (Rajesh). Format: Carousel + FB Live.<br>
+        Audience focus: Priya (primary), Sophie, Marie-Claire
+      </div>
+    </div>
+    <div class="month-card">
+      <div class="mc-name">September</div>
+      <div class="mc-theme">Spring Renewal</div>
+      <div class="mc-weeks">
+        W1: Spring Detox Guide (Education)<br>
+        W2: Allergy Season Products (Product)<br>
+        W3: Outdoor Wellness Activities (Community)<br>
+        W4: Spring Wellness Kit (Promo)
+      </div>
+      <div class="mc-dates">
+        Sep 9 &mdash; Pere Laval Pilgrimage: Community wellness + walking health (Marie-Claire). Format: FB post + WhatsApp.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Q4 -->
+<div class="q-card">
+  <div class="q-header">Q4 2026: October &ndash; December</div>
+  <div class="q-sub">Strategic focus: Awareness campaigns, festive commerce, year-end push</div>
+  <div class="month-grid">
+    <div class="month-card">
+      <div class="mc-name">October</div>
+      <div class="mc-theme">Breast Cancer Awareness</div>
+      <div class="mc-weeks">
+        W1: Pink October Launch (Community)<br>
+        W2: Screening Awareness Guide (Education)<br>
+        W3: Survivor Stories + Support (Community)<br>
+        W4: Wellness Check Bundle (Promo)
+      </div>
+      <div class="mc-dates">
+        Oct 1-31 &mdash; Pink October: Partner with local oncology orgs. Screening reminders daily. (All audiences). Format: Mix.
+      </div>
+    </div>
+    <div class="month-card">
+      <div class="mc-name">November</div>
+      <div class="mc-theme">Diwali & Festive Wellness</div>
+      <div class="mc-weeks">
+        W1: Festive Nutrition Guide (Education)<br>
+        W2: Gift-Ready Wellness Hampers (Product)<br>
+        W3: Diwali Celebrations + Detox (Community)<br>
+        W4: Black Friday Health Deals (Promo)
+      </div>
+      <div class="mc-dates">
+        Diwali &mdash; Wellness hampers + festive health content (All). Format: Full campaign, all channels.<br>
+        Nov 2 &mdash; Arrival of Indentured Labourers: Heritage health content (Rajesh, Marie-Claire). Format: FB.
+      </div>
+    </div>
+    <div class="month-card">
+      <div class="mc-name">December</div>
+      <div class="mc-theme">Holiday Health & New Year</div>
+      <div class="mc-weeks">
+        W1: Summer Sun Protection (Education)<br>
+        W2: Christmas Health Hampers (Product)<br>
+        W3: Holiday First-Aid Essentials (Behind Counter)<br>
+        W4: New Year Health Goals (Community)
+      </div>
+      <div class="mc-dates">
+        Dec 25 &mdash; Christmas: Gift guides + health hampers (All). Format: IG Reel + FB carousel + WhatsApp broadcast.<br>
+        Dec 31 &mdash; New Year: "New Year, New Health" campaign launch (Priya, Sophie). Format: Countdown Reels.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Q1 2027 -->
+<div class="q-card">
+  <div class="q-header">Q1 2027: January &ndash; March</div>
+  <div class="q-sub">Strategic focus: New year wellness, cultural celebrations, Independence Day</div>
+  <div class="month-grid">
+    <div class="month-card">
+      <div class="mc-name">January</div>
+      <div class="mc-theme">New Year Wellness Reset</div>
+      <div class="mc-weeks">
+        W1: Health Goals Setting (Education)<br>
+        W2: Detox & Clean Eating (Product)<br>
+        W3: Customer Goal Stories (Community)<br>
+        W4: January Wellness Bundle (Promo)
+      </div>
+      <div class="mc-dates">
+        Jan/Feb &mdash; Thaipoosam Cavadee: Fasting nutrition guide (Rajesh). Format: Carousel.<br>
+        New Year momentum &mdash; Highest purchase intent period for supplements (Sophie, Priya).
+      </div>
+    </div>
+    <div class="month-card">
+      <div class="mc-name">February</div>
+      <div class="mc-theme">Heart Health & Love</div>
+      <div class="mc-weeks">
+        W1: Abolition Day Heritage Health (Community)<br>
+        W2: Heart Health Guide (Education)<br>
+        W3: Valentine's Wellness Gifts (Product)<br>
+        W4: Maha Shivaratri Wellness (Community)
+      </div>
+      <div class="mc-dates">
+        Feb 1 &mdash; Abolition of Slavery: Heritage + community wellness (All). Format: FB article.<br>
+        Feb 14 &mdash; Valentine's Day: Couples wellness gift guide (Sophie). Format: IG Reel.<br>
+        Maha Shivaratri &mdash; Fasting wellness + hydration (Rajesh, Marie-Claire). Format: Carousel.
+      </div>
+    </div>
+    <div class="month-card">
+      <div class="mc-name">March</div>
+      <div class="mc-theme">Independence & Renewed Energy</div>
+      <div class="mc-weeks">
+        W1: Mauritian Wellness Heritage (Community)<br>
+        W2: Summer-to-Autumn Transition (Education)<br>
+        W3: Year Review + Best Products (Product)<br>
+        W4: Year-End Campaign Wrap (Behind Counter)
+      </div>
+      <div class="mc-dates">
+        Mar 12 &mdash; Independence Day: National pride + Mauritian wellness heritage (All). Format: Full campaign.<br>
+        Mar 20 &mdash; Autumn Equinox: Season transition health tips (Priya). Format: Carousel.
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr>
+
+<h2>Content Sequencing Rationale</h2>
+<p>Each day of the week is assigned a primary content type based on audience behavior patterns specific to the Mauritian market, informed by engagement data analysis.</p>
+
+<table>
+  <thead><tr><th>Day</th><th>Primary Content</th><th>Pillar</th><th>Rationale</th><th>Primary Audience</th></tr></thead>
+  <tbody>
+    <tr><td style="font-weight:600;color:var(--text)">Monday</td><td>Health Education</td><td style="color:var(--blue)">Education</td><td>Start the week with value-driven content. Highest save rates (algorithm boost). Users seek fresh information after weekend.</td><td>Priya, Rajesh</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Tuesday</td><td>Product Spotlight</td><td style="color:var(--green)">Product</td><td>Mid-week consideration phase. Users research purchases Tuesday-Wednesday. Product content gets highest click-through.</td><td>Sophie, Priya</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Wednesday</td><td>Community Story</td><td style="color:var(--orange)">Community</td><td>Midweek engagement boost with emotional content. Highest share rates. Breaks up the educational/product cycle.</td><td>Rajesh, Marie-Claire</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Thursday</td><td>Behind the Counter</td><td style="color:var(--cyan)">Behind Counter</td><td>Build trust and transparency before weekend shopping decisions. Pharmacist Q&A format drives comments.</td><td>All personas</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Friday</td><td>Promotion / Offer</td><td style="color:var(--purple)">Promo</td><td>Weekend shopping intent peaks Friday afternoon. Highest conversion day for retail in Mauritius. Urgency elements work best.</td><td>Sophie, Rajesh</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Saturday</td><td>Lifestyle / Wellness</td><td style="color:var(--orange)">Community</td><td>Relaxed browsing mode. Aspirational content performs 40% better on weekends. Lifestyle imagery drives discovery.</td><td>Priya, Sophie</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Sunday</td><td>Self-Care / Inspiration</td><td style="color:var(--blue)">Education</td><td>Rest day alignment. Gentle, nurturing tone. "Prepare for the week ahead" content. Lowest unfollow rate.</td><td>Marie-Claire, Priya</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2>Pillar Rotation Matrix</h2>
+<p>Each month follows a 4-week rotation to ensure balanced content. The primary pillar shifts weekly while other pillars maintain supporting presence.</p>
+
+<table>
+  <thead><tr><th>Week</th><th>Primary Pillar</th><th>Secondary Pillar</th><th>Accent Pillar</th><th>Primary Audience</th></tr></thead>
+  <tbody>
+    <tr><td style="font-weight:600;color:var(--text)">Week 1</td><td style="color:var(--orange)">Community & Lifestyle</td><td style="color:var(--blue)">Health Education</td><td style="color:var(--green)">Product</td><td>Rajesh, Marie-Claire</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Week 2</td><td style="color:var(--blue)">Health Education</td><td style="color:var(--green)">Product Spotlight</td><td style="color:var(--cyan)">Behind Counter</td><td>Priya, Dr. Anil</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Week 3</td><td style="color:var(--green)">Product Spotlight</td><td style="color:var(--orange)">Community</td><td style="color:var(--blue)">Education</td><td>Sophie, Priya</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Week 4</td><td style="color:var(--purple)">Promotions</td><td style="color:var(--cyan)">Behind Counter</td><td style="color:var(--orange)">Community</td><td>Sophie, Rajesh</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2>Key Dates Calendar</h2>
+
+<h3>Mauritius Public Holidays & Cultural Events</h3>
+<table>
+  <thead><tr><th>Date</th><th>Event</th><th>Content Angle</th><th>Format</th><th>Audience</th></tr></thead>
+  <tbody>
+    <tr><td>Jan/Feb</td><td>Thaipoosam Cavadee</td><td>Fasting nutrition, hydration guidance, energy recovery</td><td>Carousel + WhatsApp</td><td>Rajesh</td></tr>
+    <tr><td>Feb 1</td><td>Abolition of Slavery</td><td>Heritage & community wellness, Mauritian resilience</td><td>FB article + IG static</td><td>All</td></tr>
+    <tr><td>Feb/Mar</td><td>Maha Shivaratri</td><td>Fasting wellness, hydration tips, spiritual health</td><td>Carousel + Stories</td><td>Rajesh, Marie-Claire</td></tr>
+    <tr><td>Mar 12</td><td>Independence Day</td><td>National pride, Mauritian wellness heritage</td><td>Full campaign</td><td>All</td></tr>
+    <tr><td>Variable</td><td>Eid ul-Fitr</td><td>Post-Ramadan nutrition, festive health, celebration</td><td>Carousel + WhatsApp</td><td>All</td></tr>
+    <tr><td>Aug/Sep</td><td>Ganesh Chaturthi</td><td>Festive nutrition, fasting health, community</td><td>Carousel + FB Live</td><td>Rajesh</td></tr>
+    <tr><td>Sep 9</td><td>Pere Laval Pilgrimage</td><td>Walking wellness, community spirit, hydration</td><td>FB post + WhatsApp</td><td>Marie-Claire</td></tr>
+    <tr><td>Oct/Nov</td><td>Diwali</td><td>Festive hampers, healthy sweets, detox guides</td><td>Full campaign</td><td>All</td></tr>
+    <tr><td>Nov 2</td><td>Arrival of Indentured Labourers</td><td>Cultural heritage, ancestral wellness traditions</td><td>FB article</td><td>Rajesh, Marie-Claire</td></tr>
+    <tr><td>Dec 25</td><td>Christmas</td><td>Gift guides, health hampers, summer wellness</td><td>IG Reel + FB + WA</td><td>All</td></tr>
+  </tbody>
+</table>
+
+<h3>Global Health Awareness Dates</h3>
+<table>
+  <thead><tr><th>Date</th><th>Event</th><th>Content Angle</th><th>Format</th><th>Audience</th></tr></thead>
+  <tbody>
+    <tr><td>Apr 7</td><td>World Health Day</td><td>Preventive health checklist for Mauritians</td><td>Carousel + Reel + LI</td><td>All</td></tr>
+    <tr><td>May (month)</td><td>Mental Health Awareness</td><td>Destigmatize mental wellness in Mauritian context</td><td>4-week series</td><td>Priya, Rajesh</td></tr>
+    <tr><td>May 10</td><td>Mother's Day</td><td>"Merci Mama" wellness gift guide</td><td>IG Reel + promo</td><td>Sophie</td></tr>
+    <tr><td>Jun 21</td><td>Father's Day</td><td>Men's health spotlight + gift guide</td><td>Carousel + promo</td><td>Sophie, Priya</td></tr>
+    <tr><td>Oct (month)</td><td>Breast Cancer Awareness</td><td>Pink October: screening, survivor stories, support</td><td>Full month campaign</td><td>All</td></tr>
+    <tr><td>Nov 14</td><td>World Diabetes Day</td><td>Diabetes management guide, glucose monitoring</td><td>Carousel + FB Live</td><td>Rajesh, Marie-Claire</td></tr>
+    <tr><td>Dec 1</td><td>World AIDS Day</td><td>Sexual health awareness, testing info</td><td>IG static + FB</td><td>Sophie, Priya</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2>Product Placement Frequency Guide</h2>
+
+<div class="highlight">
+  <p style="margin:0"><strong>Rule of 3:</strong> Each featured product appears a maximum of 3 times per week across all platforms. First mention is educational (ingredient/benefit), second is social proof (review/testimonial), third is promotional (offer/CTA). This prevents fatigue while building purchase consideration.</p>
+</div>
+
+<table>
+  <thead><tr><th>Product Category</th><th>Frequency</th><th>Best Pillar Fit</th><th>Seasonal Peak</th></tr></thead>
+  <tbody>
+    <tr><td style="font-weight:600;color:var(--text)">Immunity Supplements</td><td>3x/week in peak, 1x/week baseline</td><td>Education + Product</td><td>April-June, Oct-Nov</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Sports Nutrition</td><td>2x/week in peak, 1x/week baseline</td><td>Product + Community</td><td>July, January</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Skincare & Beauty</td><td>2x/week in peak, 1x/week baseline</td><td>Product + Education</td><td>June, August, December</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Chronic Care (BP, Glucose)</td><td>1x/week consistent</td><td>Education + Behind Counter</td><td>Nov (Diabetes Day), year-round</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Wellness Bundles</td><td>2x/week during promo, 0 baseline</td><td>Promo</td><td>Week 4 of each month</td></tr>
+    <tr><td style="font-weight:600;color:var(--text)">Herbal / Natural Range</td><td>2x/week consistent</td><td>Education + Community</td><td>April (traditions), September (spring)</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2>Annual Content Distribution</h2>
+
+<div class="highlight">
+  <p style="margin:0"><strong>Annual baseline:</strong> Health Education (30%) | Product Spotlight (25%) | Community & Lifestyle (20%) | Promotions (15%) | Behind the Counter (10%)</p>
+</div>
+
+<p>Monthly ratios shift based on seasonal hooks: Promotional content peaks during Diwali (November, up to 25%) and Christmas (December, up to 25%). Educational content peaks during awareness months (May, October, up to 40%). Community content peaks around cultural events (March Independence, September Pere Laval).</p>
+
+</div>
+
+<div class="footer">
+  <span>Report ID: d8f3a195-6c4e-4b7d-a2e8-5f1c9d3b7a0e</span>
+  <span>Generated by MARKAI Planning Agent (content_calendar_strategy)</span>
+</div>
+
+</body>
+</html>

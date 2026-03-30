@@ -64,14 +64,14 @@ def _categorize_model(model_id: str) -> list[str]:
         if not categories:
             categories.append("text")
 
-    # Vision — specific vision models and multimodal models (gpt-4o+ have vision)
-    if re.match(r"^gpt-4-vision-", mid):
+    # Vision — multimodal models (gpt-5.x have vision built-in)
+    if re.match(r"^gpt-\d+-vision-", mid):
         categories.append("vision")
 
-    # Text-fast — smaller/cheaper models (mini, nano, gpt-3.5)
-    if re.match(r"^(gpt-4o-mini|gpt-4\.1-mini|gpt-4\.1-nano|gpt-3\.5|o4-mini)", mid):
+    # Text-fast — smaller/cheaper models (mini, nano)
+    if re.match(r"^(gpt-5(\.\d+)?-(mini|nano)|o4-mini)", mid):
         categories.append("text-fast")
-    elif re.match(r"^gpt-5(\.\d+)?-(mini|nano)", mid):
+    elif re.match(r"^gpt-\d+(\.\d+)?-(mini|nano)", mid):
         categories.append("text-fast")
     # Text / Chat — general language models (gpt-4+, gpt-5+, o-series)
     elif re.match(r"^(gpt-[45]|chatgpt-|o[134]-|o[134]$)", mid):
@@ -356,16 +356,16 @@ async def get_active_model(category_slug: str) -> str:
 
     # Fallback defaults (only used when no selection exists)
     defaults = {
-        "text": "gpt-4o",
-        "text-fast": "gpt-4o-mini",
-        "image": "dall-e-3",
+        "text": "gpt-5.4",
+        "text-fast": "gpt-5.4-mini",
+        "image": "gpt-image-1.5",
         "embedding": "text-embedding-3-small",
         "tts": "tts-1",
         "stt": "whisper-1",
         "moderation": "omni-moderation-latest",
-        "vision": "gpt-4o",
+        "vision": "gpt-5.4",
     }
-    fallback = defaults.get(category_slug, "gpt-4o")
+    fallback = defaults.get(category_slug, "gpt-5.4")
     await _cache_set(cache_key, fallback)
     return fallback
 

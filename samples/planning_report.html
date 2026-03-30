@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marketing Plan — MedActiv</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0b0f;--surface:#111318;--surface2:#181b23;--surface3:#1f2330;--border:#2a2e3b;--text:#e8eaf0;--text2:#9ca3b8;--text3:#6b7280;--blue:#3b82f6;--green:#22c55e;--orange:#f59e0b;--red:#ef4444;--purple:#a855f7;--cyan:#06b6d4;--pink:#ec4899;--radius:12px}
+body{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:32px;max-width:1100px;margin:0 auto}
+h1{font-size:28px;font-weight:700;margin-bottom:4px}
+h2{font-size:18px;font-weight:600;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+h3{font-size:15px;font-weight:600;margin-bottom:6px}
+p{color:var(--text2);font-size:14px;margin-bottom:12px}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px}
+.badge-green{background:rgba(34,197,94,.12);color:#86efac;border:1px solid rgba(34,197,94,.25)}
+.badge-blue{background:rgba(59,130,246,.12);color:#93bbfc;border:1px solid rgba(59,130,246,.25)}
+.badge-purple{background:rgba(168,85,247,.12);color:#d8b4fe;border:1px solid rgba(168,85,247,.25)}
+.badge-orange{background:rgba(245,158,11,.12);color:#fcd68d;border:1px solid rgba(245,158,11,.25)}
+.badge-cyan{background:rgba(6,182,212,.12);color:#67e8f9;border:1px solid rgba(6,182,212,.25)}
+.badge-pink{background:rgba(236,72,153,.12);color:#f9a8d4;border:1px solid rgba(236,72,153,.25)}
+.badge-red{background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.25)}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--border)}
+.header-left .subtitle{color:var(--text2);font-size:14px;margin-top:4px}
+.meta{display:flex;gap:24px;margin-top:12px;font-size:12px;color:var(--text3)}
+.section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:20px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
+.stat{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
+.stat .num{font-size:28px;font-weight:700;color:var(--blue)}
+.stat .label{font-size:12px;color:var(--text3);margin-top:2px}
+.campaign{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:14px}
+.campaign-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px}
+.campaign-name{font-size:16px;font-weight:600}
+.campaign-dates{font-size:12px;color:var(--text3)}
+.campaign-desc{font-size:13px;color:var(--text2);margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}
+th{text-align:left;padding:8px 10px;background:var(--surface3);color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
+td{padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text2)}
+.campaign-meta{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px}
+.campaign-meta-item{font-size:12px;color:var(--text3)}
+.campaign-meta-item strong{color:var(--text2)}
+.channels{display:flex;gap:4px;flex-wrap:wrap}
+.channel{font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid var(--border)}
+.channel-ig{background:rgba(236,72,153,.1);color:#f9a8d4;border-color:rgba(236,72,153,.2)}
+.channel-fb{background:rgba(59,130,246,.1);color:#93bbfc;border-color:rgba(59,130,246,.2)}
+.channel-li{background:rgba(6,182,212,.1);color:#67e8f9;border-color:rgba(6,182,212,.2)}
+.channel-wa{background:rgba(34,197,94,.1);color:#86efac;border-color:rgba(34,197,94,.2)}
+.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:12px}
+.cal-header{font-size:11px;font-weight:600;color:var(--text3);text-align:center;padding:6px}
+.cal-day{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px;min-height:110px;font-size:11px}
+.cal-day .date{font-weight:600;color:var(--text3);margin-bottom:4px;font-size:12px}
+.cal-item{padding:3px 5px;border-radius:4px;margin-bottom:3px;font-size:10px;line-height:1.3}
+.cal-item .ci-title{font-weight:600;display:block}
+.cal-item .ci-brief{color:var(--text3);display:block;font-size:9px;margin-top:1px}
+.cal-pillar-edu{background:rgba(59,130,246,.12);color:#93bbfc;border-left:2px solid var(--blue)}
+.cal-pillar-product{background:rgba(34,197,94,.12);color:#86efac;border-left:2px solid var(--green)}
+.cal-pillar-community{background:rgba(245,158,11,.12);color:#fcd68d;border-left:2px solid var(--orange)}
+.cal-pillar-promo{background:rgba(168,85,247,.12);color:#d8b4fe;border-left:2px solid var(--purple)}
+.cal-pillar-btc{background:rgba(6,182,212,.12);color:#67e8f9;border-left:2px solid var(--cyan)}
+.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.summary-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px}
+.summary-card h3{font-size:13px;color:var(--text3);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px}
+.summary-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:12px;color:var(--text2)}
+.summary-row .bar-bg{width:80px;height:6px;background:var(--surface3);border-radius:3px;overflow:hidden}
+.summary-row .bar-fill{height:100%;border-radius:3px}
+.footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:12px;color:var(--text3)}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1>Marketing Plan</h1>
+    <div class="subtitle">MedActiv &mdash; Healthcare & Wellness Pharmacy, Mauritius</div>
+    <div class="meta">
+      <span>Completed 8 hours ago</span>
+      <span>Duration: 5m 47s</span>
+      <span>Scope: 2 weeks</span>
+      <span>Based on: Strategy b7d2e4</span>
+    </div>
+  </div>
+  <span class="badge badge-green">Completed</span>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="num">4</div><div class="label">Campaigns</div></div>
+  <div class="stat"><div class="num">42</div><div class="label">Calendar Items</div></div>
+  <div class="stat"><div class="num">4</div><div class="label">Channels</div></div>
+  <div class="stat"><div class="num">14</div><div class="label">Days Planned</div></div>
+</div>
+
+<!-- Campaigns -->
+<div class="section">
+  <h2>Campaigns</h2>
+
+  <div class="campaign">
+    <div class="campaign-header">
+      <div class="campaign-name">Mauritian Wellness Week</div>
+      <div class="campaign-dates">Mar 30 &mdash; Apr 5, 2026</div>
+    </div>
+    <div class="campaign-desc">Launch campaign celebrating local wellness traditions. Spotlight indigenous herbs, traditional remedies, and natural health practices unique to Mauritius and the Indian Ocean region.</div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px"><strong style="color:var(--text)">Creative direction:</strong> Warm, earthy tones. Macro photography of local herbs (ayapana, faham, bois de ronde). Bilingual text overlays with hand-drawn botanical illustrations. Pharmacist-to-camera Reels in Kreol.</p>
+    <table>
+      <thead><tr><th>Metric</th><th>Target</th><th>Baseline</th><th>Lift</th></tr></thead>
+      <tbody>
+        <tr><td>Reach</td><td>25,000</td><td>8,000</td><td style="color:var(--green)">+212%</td></tr>
+        <tr><td>Engagement Rate</td><td>2.5%</td><td>0.8%</td><td style="color:var(--green)">+212%</td></tr>
+        <tr><td>Profile Visits</td><td>1,200</td><td>350</td><td style="color:var(--green)">+243%</td></tr>
+      </tbody>
+    </table>
+    <div class="campaign-meta">
+      <div class="campaign-meta-item"><strong>Pillar:</strong> Community & Lifestyle</div>
+      <div class="campaign-meta-item"><strong>Target Audience:</strong> Priya, Rajesh</div>
+      <div class="campaign-meta-item"><strong>Format Mix:</strong> 40% Reels, 30% Carousels, 20% Stories, 10% Static</div>
+      <div class="campaign-meta-item">
+        <strong>Channels:</strong>
+        <span class="channels" style="display:inline-flex;margin-left:4px">
+          <span class="channel channel-ig">Instagram</span>
+          <span class="channel channel-fb">Facebook</span>
+          <span class="channel channel-li">LinkedIn</span>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="campaign">
+    <div class="campaign-header">
+      <div class="campaign-name">Smart Health Tech Showcase</div>
+      <div class="campaign-dates">Apr 1 &mdash; Apr 7, 2026</div>
+    </div>
+    <div class="campaign-desc">Feature health-tech products: smart blood pressure monitors, glucose trackers, and fitness wearables. Educational content on how technology supports everyday health management for Mauritian families.</div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px"><strong style="color:var(--text)">Creative direction:</strong> Clean, modern aesthetic. Product demo Reels with pharmacist narration. Split-screen before/after scenarios. Tech-blue accent palette with MedActiv branding.</p>
+    <table>
+      <thead><tr><th>Metric</th><th>Target</th><th>Baseline</th><th>Lift</th></tr></thead>
+      <tbody>
+        <tr><td>Product Page Views</td><td>800</td><td>120</td><td style="color:var(--green)">+567%</td></tr>
+        <tr><td>Engagement Rate</td><td>3.0%</td><td>0.8%</td><td style="color:var(--green)">+275%</td></tr>
+        <tr><td>In-Store Inquiries</td><td>50</td><td>12</td><td style="color:var(--green)">+317%</td></tr>
+      </tbody>
+    </table>
+    <div class="campaign-meta">
+      <div class="campaign-meta-item"><strong>Pillar:</strong> Product Spotlight</div>
+      <div class="campaign-meta-item"><strong>Target Audience:</strong> Rajesh, Dr. Anil</div>
+      <div class="campaign-meta-item"><strong>Format Mix:</strong> 50% Reels (demos), 30% Carousels, 20% Static</div>
+      <div class="campaign-meta-item">
+        <strong>Channels:</strong>
+        <span class="channels" style="display:inline-flex;margin-left:4px">
+          <span class="channel channel-ig">Instagram</span>
+          <span class="channel channel-fb">Facebook</span>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="campaign">
+    <div class="campaign-header">
+      <div class="campaign-name">Community Care Stories</div>
+      <div class="campaign-dates">Apr 3 &mdash; Apr 12, 2026</div>
+    </div>
+    <div class="campaign-desc">Real customer testimonials and pharmacist stories. Humanize the brand through authentic community connections and everyday health victories across Mauritius.</div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px"><strong style="color:var(--text)">Creative direction:</strong> Documentary-style. Natural lighting, real pharmacy settings. Customer quote overlays in Kreol/French. Pharmacist profile portraits. Warm, golden-hour photography.</p>
+    <table>
+      <thead><tr><th>Metric</th><th>Target</th><th>Baseline</th><th>Lift</th></tr></thead>
+      <tbody>
+        <tr><td>Engagement Rate</td><td>3.5%</td><td>0.8%</td><td style="color:var(--green)">+338%</td></tr>
+        <tr><td>Shares</td><td>150</td><td>22</td><td style="color:var(--green)">+582%</td></tr>
+        <tr><td>New Followers</td><td>200</td><td>45/wk</td><td style="color:var(--green)">+344%</td></tr>
+      </tbody>
+    </table>
+    <div class="campaign-meta">
+      <div class="campaign-meta-item"><strong>Pillar:</strong> Community & Lifestyle</div>
+      <div class="campaign-meta-item"><strong>Target Audience:</strong> Marie-Claire, Rajesh</div>
+      <div class="campaign-meta-item"><strong>Format Mix:</strong> 40% Reels (stories), 30% Static, 20% Carousels, 10% Stories</div>
+      <div class="campaign-meta-item">
+        <strong>Channels:</strong>
+        <span class="channels" style="display:inline-flex;margin-left:4px">
+          <span class="channel channel-ig">Instagram</span>
+          <span class="channel channel-fb">Facebook</span>
+          <span class="channel channel-wa">WhatsApp</span>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="campaign">
+    <div class="campaign-header">
+      <div class="campaign-name">Autumn Immunity Bundle</div>
+      <div class="campaign-dates">Apr 6 &mdash; Apr 12, 2026</div>
+    </div>
+    <div class="campaign-desc">Promotional campaign for immunity-boosting supplement bundles. Tie-in with World Health Day (Apr 7) and seasonal health content as Mauritius enters cooler months.</div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px"><strong style="color:var(--text)">Creative direction:</strong> Product flat-lay on autumn leaves. Bundle comparison graphics. Urgency elements (countdown, limited stock). Warm amber + MedActiv brand colors.</p>
+    <table>
+      <thead><tr><th>Metric</th><th>Target</th><th>Baseline</th><th>Lift</th></tr></thead>
+      <tbody>
+        <tr><td>Bundle Sales</td><td>500 units</td><td>N/A (new)</td><td>New KPI</td></tr>
+        <tr><td>Revenue</td><td>Rs 375,000</td><td>N/A</td><td>New KPI</td></tr>
+        <tr><td>WhatsApp Inquiries</td><td>120</td><td>30</td><td style="color:var(--green)">+300%</td></tr>
+      </tbody>
+    </table>
+    <div class="campaign-meta">
+      <div class="campaign-meta-item"><strong>Pillar:</strong> Promotions & Offers</div>
+      <div class="campaign-meta-item"><strong>Target Audience:</strong> Priya, Sophie, Rajesh</div>
+      <div class="campaign-meta-item"><strong>Format Mix:</strong> 35% Static (promo), 35% Stories (urgency), 30% Reels (unboxing)</div>
+      <div class="campaign-meta-item">
+        <strong>Channels:</strong>
+        <span class="channels" style="display:inline-flex;margin-left:4px">
+          <span class="channel channel-ig">Instagram</span>
+          <span class="channel channel-fb">Facebook</span>
+          <span class="channel channel-wa">WhatsApp</span>
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Calendar Grid Week 1 -->
+<div class="section">
+  <h2>Calendar Preview &mdash; Week 1 (Mar 30 - Apr 5)</h2>
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+    <span class="badge badge-blue">Education</span>
+    <span class="badge badge-green">Product</span>
+    <span class="badge badge-orange">Community</span>
+    <span class="badge badge-purple">Promo</span>
+    <span class="badge badge-cyan">Behind Counter</span>
+  </div>
+  <div class="calendar-grid">
+    <div class="cal-header">Mon</div><div class="cal-header">Tue</div><div class="cal-header">Wed</div><div class="cal-header">Thu</div><div class="cal-header">Fri</div><div class="cal-header">Sat</div><div class="cal-header">Sun</div>
+
+    <div class="cal-day">
+      <div class="date">Mar 30</div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">IG: Mauritian herbs guide</span>
+        <span class="ci-brief">Carousel: 5 local herbs + health benefits. Bilingual FR/EN. Target: Priya.</span>
+      </div>
+      <div class="cal-item cal-pillar-community">
+        <span class="ci-title">FB: Welcome to Wellness Week</span>
+        <span class="ci-brief">Launch post with pharmacy team photo. Kreol caption. Target: Rajesh, Marie-Claire.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">LI: Health trends Indian Ocean</span>
+        <span class="ci-brief">Industry insight article on regional wellness. Target: Dr. Anil.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Mar 31</div>
+      <div class="cal-item cal-pillar-product">
+        <span class="ci-title">IG: Ayapana tea spotlight</span>
+        <span class="ci-brief">Reel: Pharmacist brews ayapana, explains benefits. Product: MedActiv Herbal Range.</span>
+      </div>
+      <div class="cal-item cal-pillar-community">
+        <span class="ci-title">FB: Customer wellness story</span>
+        <span class="ci-brief">"How Marie found relief" testimonial. Photo + quote in Kreol. Target: Marie-Claire.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 1</div>
+      <div class="cal-item cal-pillar-community">
+        <span class="ci-title">IG: Staff spotlight Reel</span>
+        <span class="ci-brief">Meet our pharmacist Anisha. Day-in-the-life, 60s. Target: All.</span>
+      </div>
+      <div class="cal-item cal-pillar-product">
+        <span class="ci-title">FB: BP monitor launch</span>
+        <span class="ci-brief">Smart BP monitor demo + how to read results. Product: Omron M7. Target: Rajesh.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">LI: Digital health in pharmacy</span>
+        <span class="ci-brief">Article on connected health devices. Target: Dr. Anil.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 2</div>
+      <div class="cal-item cal-pillar-btc">
+        <span class="ci-title">IG: Myth vs Fact carousel</span>
+        <span class="ci-brief">"5 vitamin myths debunked." Bilingual. Save-worthy. Target: Priya, Sophie.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">FB: Ask the pharmacist</span>
+        <span class="ci-brief">Q&A post: "What supplements do you need in autumn?" Kreol/FR. Target: Rajesh.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 3</div>
+      <div class="cal-item cal-pillar-promo">
+        <span class="ci-title">IG: Weekend wellness deal</span>
+        <span class="ci-brief">15% off herbal range. Stories countdown + static post. Product: Herbal Range. Target: Priya.</span>
+      </div>
+      <div class="cal-item cal-pillar-community">
+        <span class="ci-title">FB: Community care story</span>
+        <span class="ci-brief">Pharmacist Raj shares why he became a pharmacist. Video, 90s. Target: All.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">LI: Healthcare partnership</span>
+        <span class="ci-brief">MedActiv x local clinic partnership announcement. Target: Dr. Anil.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 4</div>
+      <div class="cal-item cal-pillar-product">
+        <span class="ci-title">IG: Supplement Saturday</span>
+        <span class="ci-brief">Reel: Top 3 immunity supplements ranked. Product: Vitamin C, Zinc, Elderberry. Target: Sophie.</span>
+      </div>
+      <div class="cal-item cal-pillar-promo">
+        <span class="ci-title">FB: Bundle deal reminder</span>
+        <span class="ci-brief">Immunity bundle preview. "Coming Monday." Urgency build. Target: Rajesh.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 5</div>
+      <div class="cal-item cal-pillar-community">
+        <span class="ci-title">IG: Sunday self-care</span>
+        <span class="ci-brief">Calming Reel: evening wellness routine. Herbal tea + journaling. Target: Priya.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">FB: Wellness quote + tip</span>
+        <span class="ci-brief">Bilingual wellness quote graphic. Rest day theme. Target: Marie-Claire.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Calendar Grid Week 2 -->
+<div class="section">
+  <h2>Calendar Preview &mdash; Week 2 (Apr 6-12)</h2>
+  <div class="calendar-grid">
+    <div class="cal-header">Mon</div><div class="cal-header">Tue</div><div class="cal-header">Wed</div><div class="cal-header">Thu</div><div class="cal-header">Fri</div><div class="cal-header">Sat</div><div class="cal-header">Sun</div>
+
+    <div class="cal-day">
+      <div class="date">Apr 6</div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">IG: Immunity 101 carousel</span>
+        <span class="ci-brief">How your immune system works. 8-slide bilingual carousel. Target: Priya.</span>
+      </div>
+      <div class="cal-item cal-pillar-promo">
+        <span class="ci-title">FB: Immunity Bundle launch</span>
+        <span class="ci-brief">Rs 750 bundle (was Rs 950). Vitamin C + Zinc + Elderberry. Target: Rajesh, Sophie.</span>
+      </div>
+      <div class="cal-item cal-pillar-promo">
+        <span class="ci-title">WA: Bundle broadcast</span>
+        <span class="ci-brief">WhatsApp broadcast with bundle details + order link. Target: Rajesh, Marie-Claire.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 7</div>
+      <div class="cal-item cal-pillar-edu" style="border-left-color:var(--red);background:rgba(239,68,68,.12)">
+        <span class="ci-title">IG: World Health Day</span>
+        <span class="ci-brief">Carousel: Preventive health checklist for Mauritians. High-save content. Target: All.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu" style="border-left-color:var(--red);background:rgba(239,68,68,.12)">
+        <span class="ci-title">FB: World Health Day article</span>
+        <span class="ci-brief">Long-form: "5 Health Screenings Every Mauritian Should Get." Bilingual. Target: Rajesh.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">LI: WHD professional insight</span>
+        <span class="ci-brief">Pharmacy's role in preventive healthcare. Target: Dr. Anil.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 8</div>
+      <div class="cal-item cal-pillar-community">
+        <span class="ci-title">IG: Customer immunity story</span>
+        <span class="ci-brief">Reel: Real customer shares immunity journey. Kreol narration. Target: Marie-Claire.</span>
+      </div>
+      <div class="cal-item cal-pillar-product">
+        <span class="ci-title">FB: Glucose tracker guide</span>
+        <span class="ci-brief">How to use smart glucose monitors. Product: FreeStyle Libre. Target: Rajesh.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 9</div>
+      <div class="cal-item cal-pillar-btc">
+        <span class="ci-title">IG: Pharmacist Q&A Reel</span>
+        <span class="ci-brief">"Can you take vitamin C and zinc together?" 45s Reel. Target: Sophie, Priya.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">FB: Autumn health tips</span>
+        <span class="ci-brief">5 tips for staying healthy as temperatures drop. Bilingual carousel. Target: All.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 10</div>
+      <div class="cal-item cal-pillar-promo">
+        <span class="ci-title">IG: Flash sale Stories</span>
+        <span class="ci-brief">24hr flash: extra 10% off bundles. Countdown sticker. Target: Sophie.</span>
+      </div>
+      <div class="cal-item cal-pillar-promo">
+        <span class="ci-title">FB: Bundle testimonial</span>
+        <span class="ci-brief">Customer review of immunity bundle + CTA. Target: Rajesh.</span>
+      </div>
+      <div class="cal-item cal-pillar-product">
+        <span class="ci-title">LI: Pharma innovation update</span>
+        <span class="ci-brief">New health monitoring devices at MedActiv. Target: Dr. Anil.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 11</div>
+      <div class="cal-item cal-pillar-product">
+        <span class="ci-title">IG: Fitness Saturday Reel</span>
+        <span class="ci-brief">Pre-workout vs post-workout supplements. Product: protein range. Target: Sophie.</span>
+      </div>
+      <div class="cal-item cal-pillar-community">
+        <span class="ci-title">FB: Weekend wellness</span>
+        <span class="ci-brief">Local hiking trails + health benefits. Mauritian lifestyle. Target: Priya.</span>
+      </div>
+    </div>
+
+    <div class="cal-day">
+      <div class="date">Apr 12</div>
+      <div class="cal-item cal-pillar-community">
+        <span class="ci-title">IG: Self-care Sunday</span>
+        <span class="ci-brief">Calming Reel: Sunday reset routine with MedActiv products. Target: Priya.</span>
+      </div>
+      <div class="cal-item cal-pillar-edu">
+        <span class="ci-title">FB: Week ahead health tip</span>
+        <span class="ci-brief">Prepare for the week: meal prep + supplement schedule. Target: Rajesh.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Summary Stats -->
+<div class="section">
+  <h2>Summary Statistics</h2>
+  <div class="summary-grid">
+    <div class="summary-card">
+      <h3>Items by Pillar</h3>
+      <div class="summary-row"><span>Health Education</span><span>13 items</span><div class="bar-bg"><div class="bar-fill" style="width:72%;background:var(--blue)"></div></div></div>
+      <div class="summary-row"><span>Product Spotlight</span><span>9 items</span><div class="bar-bg"><div class="bar-fill" style="width:50%;background:var(--green)"></div></div></div>
+      <div class="summary-row"><span>Community</span><span>10 items</span><div class="bar-bg"><div class="bar-fill" style="width:56%;background:var(--orange)"></div></div></div>
+      <div class="summary-row"><span>Promotions</span><span>7 items</span><div class="bar-bg"><div class="bar-fill" style="width:39%;background:var(--purple)"></div></div></div>
+      <div class="summary-row"><span>Behind Counter</span><span>3 items</span><div class="bar-bg"><div class="bar-fill" style="width:17%;background:var(--cyan)"></div></div></div>
+    </div>
+    <div class="summary-card">
+      <h3>Items by Audience</h3>
+      <div class="summary-row"><span>Priya</span><span>14 items</span><div class="bar-bg"><div class="bar-fill" style="width:78%;background:var(--pink)"></div></div></div>
+      <div class="summary-row"><span>Rajesh</span><span>12 items</span><div class="bar-bg"><div class="bar-fill" style="width:67%;background:var(--blue)"></div></div></div>
+      <div class="summary-row"><span>Sophie</span><span>7 items</span><div class="bar-bg"><div class="bar-fill" style="width:39%;background:var(--orange)"></div></div></div>
+      <div class="summary-row"><span>Dr. Anil</span><span>5 items</span><div class="bar-bg"><div class="bar-fill" style="width:28%;background:var(--cyan)"></div></div></div>
+      <div class="summary-row"><span>Marie-Claire</span><span>4 items</span><div class="bar-bg"><div class="bar-fill" style="width:22%;background:var(--purple)"></div></div></div>
+    </div>
+    <div class="summary-card">
+      <h3>Items by Format</h3>
+      <div class="summary-row"><span>Reels / Video</span><span>14 items</span><div class="bar-bg"><div class="bar-fill" style="width:78%;background:var(--pink)"></div></div></div>
+      <div class="summary-row"><span>Carousels</span><span>10 items</span><div class="bar-bg"><div class="bar-fill" style="width:56%;background:var(--blue)"></div></div></div>
+      <div class="summary-row"><span>Static Posts</span><span>9 items</span><div class="bar-bg"><div class="bar-fill" style="width:50%;background:var(--green)"></div></div></div>
+      <div class="summary-row"><span>Stories</span><span>5 items</span><div class="bar-bg"><div class="bar-fill" style="width:28%;background:var(--orange)"></div></div></div>
+      <div class="summary-row"><span>Articles</span><span>4 items</span><div class="bar-bg"><div class="bar-fill" style="width:22%;background:var(--cyan)"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  <span>Report ID: c4e1f673-8b2d-4a5f-9d7c-1e3b6a8f0d2e</span>
+  <span>Generated by MARKAI Planning Agent</span>
+</div>
+
+</body>
+</html>

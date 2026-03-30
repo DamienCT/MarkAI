@@ -2,7 +2,7 @@
 # Runs against the LiteLLM proxy for model-agnostic evals.
 
 providers:
-  - id: openai:chat:gpt-4o
+  - id: openai:chat:gpt-5.4
     config:
       apiBaseUrl: http://litellm:4000/v1
       apiKey: "{{LITELLM_MASTER_KEY}}"

@@ -41,14 +41,14 @@ _CACHE_TTL = 300  # 5 minutes
 
 # Fallback defaults used when the backend API is unreachable
 _FALLBACK_MODELS: dict[str, str] = {
-    "text": "gpt-4o",
-    "text-fast": "gpt-4o-mini",
+    "text": "gpt-5.4",
+    "text-fast": "gpt-5.4-mini",
     "image": "gpt-image-1.5",
     "embedding": "text-embedding-3-small",
     "tts": "tts-1",
     "stt": "whisper-1",
     "moderation": "omni-moderation-latest",
-    "vision": "gpt-4o",
+    "vision": "gpt-5.4",
 }
 
 
@@ -65,7 +65,7 @@ async def get_model_for_category(category: str) -> str:
     Results are cached for 5 minutes. Falls back to sensible defaults
     if the backend is unreachable.
 
-    Returns the full LiteLLM model string, e.g. "openai/gpt-4o".
+    Returns the full LiteLLM model string, e.g. "openai/gpt-5.4".
     """
     now = time.time()
 
@@ -101,7 +101,7 @@ async def get_model_for_category(category: str) -> str:
             return f"openai/{model_id}"
 
     # Ultimate fallback
-    fallback = _FALLBACK_MODELS.get(category, "gpt-4o")
+    fallback = _FALLBACK_MODELS.get(category, "gpt-5.4")
     _model_cache[category] = (fallback, now + _CACHE_TTL)
     return f"openai/{fallback}"
 

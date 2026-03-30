@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: bool = False) -> str:
     """Call LLM via LiteLLM proxy, falling back to OpenAI directly if LiteLLM fails."""
     body: dict = {
-        "model": "gpt-4o-mini",
+        "model": "gpt-5.4-mini",
         "messages": messages,
         "temperature": temperature,
     }
@@ -38,7 +38,7 @@ async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: b
                 headers = {"Content-Type": "application/json"}
                 if settings.LITELLM_MASTER_KEY:
                     headers["Authorization"] = f"Bearer {settings.LITELLM_MASTER_KEY}"
-                body_litellm = {**body, "model": "openai/gpt-4o-mini"}
+                body_litellm = {**body, "model": "openai/gpt-5.4-mini"}
                 resp = await client.post(
                     settings.LITELLM_BASE_URL.rstrip("/") + "/chat/completions",
                     headers=headers,
