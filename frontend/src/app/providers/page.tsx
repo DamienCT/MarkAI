@@ -44,11 +44,22 @@ export default function ProvidersPage() {
 
       const grouped: Record<string, AIModel[]> = {};
       for (const model of allModels) {
+        // Add to primary category
         if (model.category_id) {
           const cat = cats.find((c) => c.id === model.category_id);
           if (cat) {
             if (!grouped[cat.slug]) grouped[cat.slug] = [];
             grouped[cat.slug].push(model);
+          }
+        }
+        // Add to additional categories from capabilities JSONB
+        const additional = (model.capabilities as Record<string, unknown>)?.additional_categories;
+        if (Array.isArray(additional)) {
+          for (const slug of additional) {
+            if (typeof slug === "string" && !grouped[slug]?.includes(model)) {
+              if (!grouped[slug]) grouped[slug] = [];
+              grouped[slug].push(model);
+            }
           }
         }
       }
