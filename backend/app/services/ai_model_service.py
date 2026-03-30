@@ -64,22 +64,21 @@ def _categorize_model(model_id: str) -> list[str]:
         if not categories:
             categories.append("text")
 
-    # Vision — multimodal models (gpt-5.x have vision built-in, plus legacy gpt-X-vision-*)
-    # Exclude mini/nano — those are text-fast primary, vision secondary
-    if re.match(r"^gpt-\d+-vision-", mid) or (re.match(r"^gpt-5(\.\d+)?($|-)", mid) and not re.search(r"(mini|nano)", mid)):
-        categories.append("vision")
+    # Detect chat-capable models (gpt-4+, gpt-5+, chatgpt-*, o-series, computer-use, search, deep-research)
+    is_chat_model = bool(re.match(r"^(gpt-[45]|chatgpt-|o[134](-|$))", mid))
+    is_mini = bool(re.search(r"(mini|nano)", mid))
 
-    # Text-fast — smaller/cheaper models (mini, nano)
-    if re.match(r"^(gpt-5(\.\d+)?-(mini|nano)|o4-mini)", mid):
-        categories.append("text-fast")
-    elif re.match(r"^gpt-\d+(\.\d+)?-(mini|nano)", mid):
-        categories.append("text-fast")
-    # Text / Chat — general language models (gpt-4+, gpt-5+, o-series)
-    elif re.match(r"^(gpt-[45]|chatgpt-|o[134]-|o[134]$)", mid):
-        # Exclude models already categorized as image/embedding/tts/stt/video
+    # All chat-capable models get all three text categories:
+    # - text: full language model
+    # - text-fast: cheaper/faster variant (mini/nano get this as primary)
+    # - vision: multimodal image understanding (gpt-4-vision-*, gpt-5.x, o-series)
+    if is_chat_model:
         skip = {"image", "embedding", "tts", "stt", "video"}
         if not categories or not (set(categories) & skip):
             categories.append("text")
+            if is_mini:
+                categories.insert(0, "text-fast")  # primary for mini models
+            categories.append("vision")
 
     # Computer use — categorize as text (agent tool use)
     if mid.startswith("computer-use"):
