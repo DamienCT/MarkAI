@@ -28,6 +28,19 @@ async def list_content(
     )
 
 
+@router.get("/by-calendar-item/{calendar_item_id}", response_model=ContentResponse)
+async def get_content_by_calendar_item(
+    calendar_item_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get the current content record for a calendar item."""
+    item = await content_service.get_content_by_calendar_item(db, calendar_item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Content not found for this calendar item")
+    return item
+
+
 @router.get("/{content_id}", response_model=ContentResponse)
 async def get_content(
     content_id: uuid.UUID,

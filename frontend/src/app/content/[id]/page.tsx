@@ -25,12 +25,29 @@ export default function ContentDetailPage() {
   useEffect(() => {
     async function fetchData() {
       try {
-        const [contentData, approvalData] = await Promise.allSettled([
-          api.get<Content>(`/api/v1/content/${contentId}`),
-          api.get<Approval[]>(`/api/v1/approvals`, { content_id: contentId }),
-        ]);
-        if (contentData.status === "fulfilled") setContent(contentData.value);
-        if (approvalData.status === "fulfilled") setApprovals(approvalData.value);
+        // The [id] param may be a calendar_item_id (from Content Studio) or a content_id.
+        // Try by calendar_item_id first (most common), then fall back to direct content_id.
+        let contentData: Content | null = null;
+        try {
+          contentData = await api.get<Content>(`/api/v1/content/by-calendar-item/${contentId}`);
+        } catch {
+          // Not found by calendar item — try as direct content_id
+          try {
+            contentData = await api.get<Content>(`/api/v1/content/${contentId}`);
+          } catch {
+            // Neither worked
+          }
+        }
+        if (contentData) {
+          setContent(contentData);
+          // Fetch approvals using the actual content ID
+          try {
+            const approvalData = await api.get<Approval[]>(`/api/v1/approvals`, { content_id: contentData.id });
+            setApprovals(approvalData);
+          } catch {
+            // Approvals may not exist yet
+          }
+        }
       } catch {
         toast.error("Failed to load content");
       } finally {
@@ -42,7 +59,9 @@ export default function ContentDetailPage() {
 
   const handleSave = async (data: Partial<Content>) => {
     try {
-      const updated = await api.put<Content>(`/api/v1/content/${contentId}`, data);
+      // Use the actual content ID for updates, not the URL param (which may be a calendar_item_id)
+      const actualId = content?.id || contentId;
+      const updated = await api.put<Content>(`/api/v1/content/${actualId}`, data);
       setContent(updated);
       toast.success("Content saved");
     } catch (err: unknown) {

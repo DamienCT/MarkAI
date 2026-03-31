@@ -34,6 +34,17 @@ async def get_content(db: AsyncSession, content_id: uuid.UUID) -> Content | None
     return result.scalar_one_or_none()
 
 
+async def get_content_by_calendar_item(db: AsyncSession, calendar_item_id: uuid.UUID) -> Content | None:
+    """Get the most recent current content for a calendar item."""
+    result = await db.execute(
+        select(Content)
+        .where(Content.calendar_item_id == calendar_item_id, Content.is_current == True)
+        .order_by(Content.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def create_content(db: AsyncSession, data: ContentCreate) -> Content:
     content = Content(**data.model_dump())
     db.add(content)

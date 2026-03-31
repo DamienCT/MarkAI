@@ -14,26 +14,34 @@ router = APIRouter()
 
 @router.get("/")
 async def list_approvals(
+    status: str | None = None,
     status_filter: str | None = None,
+    content_id: uuid.UUID | None = None,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List approvals, optionally filtered by status."""
+    """List approvals, optionally filtered by status or content_id."""
     limit = min(limit, 200)
     from sqlalchemy import select, func
     from app.models.approval import Approval
 
-    # Count total
+    # Accept both "status" and "status_filter" query params
+    effective_status = status or status_filter
+
     count_stmt = select(func.count(Approval.id))
-    if status_filter:
-        count_stmt = count_stmt.where(Approval.status == status_filter)
+    if effective_status:
+        count_stmt = count_stmt.where(Approval.status == effective_status)
+    if content_id:
+        count_stmt = count_stmt.where(Approval.content_id == content_id)
     total = (await db.execute(count_stmt)).scalar() or 0
 
     stmt = select(Approval).order_by(Approval.created_at.desc()).offset(skip).limit(limit)
-    if status_filter:
-        stmt = stmt.where(Approval.status == status_filter)
+    if effective_status:
+        stmt = stmt.where(Approval.status == effective_status)
+    if content_id:
+        stmt = stmt.where(Approval.content_id == content_id)
     result = await db.execute(stmt)
     items = result.scalars().all()
 
@@ -89,6 +97,29 @@ async def create_approval(
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     return await approval_service.create_approval(db, data)
+
+
+@router.put("/{approval_id}", response_model=ApprovalResponse)
+async def update_approval(
+    approval_id: uuid.UUID,
+    decision: ApprovalDecision,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update/decide on an approval (PUT alias for decide)."""
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    if decision.status not in ("approved", "rejected", "revision_requested"):
+        raise HTTPException(
+            status_code=422, detail="Decision must be 'approved', 'rejected', or 'revision_requested'"
+        )
+    try:
+        approval = await approval_service.resolve_approval(db, approval_id, decision)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return approval
 
 
 @router.post("/{approval_id}/decide", response_model=ApprovalResponse)
