@@ -217,7 +217,14 @@ async def activate_content_factory(
         raise HTTPException(status_code=422, detail="Complete onboarding first")
 
     if brand.status == "activating":
-        raise HTTPException(status_code=409, detail="Activation already in progress")
+        # Allow re-activation if no agents are actually running (all failed/completed)
+        running_check = await db.execute(
+            text("SELECT 1 FROM agent_runs WHERE brand_id = :bid AND status = 'running' LIMIT 1"),
+            {"bid": str(brand_id)}
+        )
+        if running_check.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Activation already in progress")
+        # All runs are done — allow re-activation by resetting status
 
     from datetime import datetime, timezone
     brand.status = "activating"

@@ -393,7 +393,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
         try:
             await store_strategy(brand_id, {
                 "type": "content_calendar_strategy",
-                "document": strategy_document,
+                "strategy_document": strategy_document,
                 "scope_weeks": scope_weeks,
                 "enabled_channels": enabled_channels,
                 "generated_at": datetime.now(timezone.utc).isoformat(),

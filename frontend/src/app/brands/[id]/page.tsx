@@ -326,6 +326,10 @@ export default function BrandDetailPage() {
     setTogglingFactory(true);
     try {
       if (turnOn) {
+        // Before calling activate, reset status if stuck in "activating"
+        if (brand?.status === "activating") {
+          await api.put(`/api/v1/brands/${brandId}`, { status: "onboarding" });
+        }
         await api.post(`/api/v1/brands/${brandId}/activate`);
         toast.success("Content Factory started. AI agents are now working on your brand.");
         const updated = await api.get<Brand>(`/api/v1/brands/${brandId}`);

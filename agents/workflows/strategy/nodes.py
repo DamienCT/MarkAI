@@ -147,10 +147,10 @@ async def human_review(state: StrategyState) -> dict[str, Any]:
     """
     strategy_summary = {
         "positioning": state.get("positioning"),
-        "pillars": state.get("pillars"),
-        "audiences": state.get("audiences"),
-        "cadence": state.get("cadence"),
-        "themes": state.get("themes"),
+        "content_pillars": state.get("pillars"),
+        "target_audiences": state.get("audiences"),
+        "posting_cadence": state.get("cadence"),
+        "monthly_themes": state.get("themes"),
     }
 
     # Auto-approve for automated pipeline triggers (no human in the loop)

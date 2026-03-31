@@ -368,7 +368,7 @@ export default function ReportPage() {
   ).length;
 
   const displayName = formatAgentType(report.agent_type);
-  const needsReportSuffix = !AGENT_TYPE_DISPLAY_NAMES[report.agent_type];
+  const needsReportSuffix = report.agent_type === "research";
   const reportTitle = `${displayName}${needsReportSuffix ? " Report" : ""}${
     report.brand_name ? ` \u2014 ${report.brand_name}` : ""
   }`;

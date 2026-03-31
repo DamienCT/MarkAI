@@ -192,36 +192,26 @@ export function OverviewTab({
                   Start Content Factory
                 </Button>
               ) : brand.status === 'activating' ? (
-                <div className="flex items-center gap-2">
-                  {pipelineRuns.some(r => r.status === "failed") && (
-                    <Button
-                      size="sm"
-                      className="bg-green-600 hover:bg-green-700 text-white"
-                      disabled={togglingFactory}
-                      onClick={() => onToggleContentFactory(true)}
-                    >
-                      {togglingFactory ? (
-                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                      ) : (
-                        <Play className="mr-1.5 h-4 w-4" />
-                      )}
-                      Retry Content Factory
+                (() => {
+                  const hasFailed = pipelineRuns.some(r => r.status === "failed");
+                  const hasRunning = pipelineRuns.some(r => r.status === "running");
+                  if (hasFailed && !hasRunning) {
+                    return (
+                      <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white"
+                        disabled={togglingFactory} onClick={() => onToggleContentFactory(true)}>
+                        {togglingFactory ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Play className="mr-1.5 h-4 w-4" />}
+                        Retry Content Factory
+                      </Button>
+                    );
+                  }
+                  return (
+                    <Button size="sm" variant="destructive"
+                      disabled={togglingFactory} onClick={() => onToggleContentFactory(false)}>
+                      {togglingFactory ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Square className="mr-1.5 h-4 w-4" />}
+                      Stop Content Factory
                     </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    disabled={togglingFactory}
-                    onClick={() => onToggleContentFactory(false)}
-                  >
-                    {togglingFactory ? (
-                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Square className="mr-1.5 h-4 w-4" />
-                    )}
-                    Stop Content Factory
-                  </Button>
-                </div>
+                  );
+                })()
               ) : brand.is_active ? (
                 <Button
                   size="sm"
