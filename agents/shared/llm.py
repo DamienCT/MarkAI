@@ -222,11 +222,13 @@ async def chat_completion(
         }
         if response_format is not None:
             body["response_format"] = response_format
+        # Scale timeout with max_tokens — large generations (16K tokens) need more time
+        call_timeout = max(120, min(600, max_tokens // 10))
         resp = await client.post(
             f"{settings.LITELLM_BASE_URL}/v1/chat/completions",
             headers=_auth_headers(),
             json=body,
-            timeout=120,
+            timeout=call_timeout,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -246,7 +248,7 @@ async def chat_completion(
         # Let tenacity retry handle transient errors (429, 5xx, timeouts)
         raise
     except httpx.TimeoutException:
-        raise
+        raise TimeoutError(f"LLM call timed out after {call_timeout}s (model={model}, max_tokens={max_tokens})")
 
 
 @retry(

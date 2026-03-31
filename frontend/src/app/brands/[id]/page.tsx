@@ -284,17 +284,21 @@ export default function BrandDetailPage() {
           return; // interval will be cleared by the status change re-render
         }
 
-        // Check if any workflow failed
+        // Check if any workflow failed — show toast ONCE and stop polling
         const hasFailed = runs.some((r) => r.status === "failed");
         if (hasFailed) {
           setBrand(updatedBrand);
           toast.error("A workflow failed during activation. Check the System page for details.");
+          clearInterval(interval);
+          return;
         }
 
-        // Timeout check
+        // Timeout check — show toast ONCE and stop polling
         if (Date.now() - startedAt > TIMEOUT_MS) {
           setBrand(updatedBrand);
           toast.error("Activation is taking longer than expected. Check the System page.");
+          clearInterval(interval);
+          return;
         }
       } catch {
         // Network error — keep polling
