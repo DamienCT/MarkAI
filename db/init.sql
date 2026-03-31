@@ -76,7 +76,7 @@ CREATE TABLE products (
     bc_location         VARCHAR(255),
     remaining_qty       DECIMAL(12,2),
     lot_no              VARCHAR(255),
-    is_active           BOOLEAN NOT NULL DEFAULT TRUE,
+    is_active           BOOLEAN NOT NULL DEFAULT FALSE,
     is_new              BOOLEAN NOT NULL DEFAULT FALSE,
     is_expiring_soon    BOOLEAN NOT NULL DEFAULT FALSE,
     expiry_date         DATE,

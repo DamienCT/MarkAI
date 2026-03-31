@@ -67,7 +67,7 @@ async def sync_brand_products(
             "bc_company": brand.bc_company,
             "bc_location": row.get("locationCode", ""),
             "remaining_qty": row.get("totalRemaining"),
-            "is_active": True,
+            "is_active": False,
             "attributes": {
                 "unitCost": row.get("unitCost"),
                 "baseUnitOfMeasure": row.get("baseUnitOfMeasure"),

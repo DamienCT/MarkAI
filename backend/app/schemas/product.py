@@ -27,7 +27,7 @@ class ProductBase(BaseModel):
     bc_location: str | None = None
     remaining_qty: float | None = None
     lot_no: str | None = None
-    is_active: bool = True
+    is_active: bool = False
     is_new: bool = False
     is_expiring_soon: bool = False
     expiry_date: date | None = None

@@ -53,7 +53,7 @@ class Product(Base):
         Numeric(12, 2), nullable=True
     )
     lot_no: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_new: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_expiring_soon: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)

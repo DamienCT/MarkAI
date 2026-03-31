@@ -128,7 +128,7 @@ async def _sync_bc_products_impl() -> None:
                     "bc_location": item.get("locationCode", ""),
                     "remaining_qty": item.get("totalRemaining"),
                     "lot_no": lot_no_map.get(item_no, ""),
-                    "is_active": True,
+                    "is_active": False,
                     "is_new": item_no in new_item_nos,
                     "is_expiring_soon": item_no in expiring_item_nos,
                     "expiry_date": expiry_date_map.get(item_no),
