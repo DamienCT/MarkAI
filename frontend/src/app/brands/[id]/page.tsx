@@ -284,8 +284,16 @@ export default function BrandDetailPage() {
           return; // interval will be cleared by the status change re-render
         }
 
-        // Check if any workflow failed — show toast ONCE and stop polling
-        const hasFailed = runs.some((r) => r.status === "failed");
+        // Check if any workflow failed during THIS activation attempt
+        // Only consider runs started after the current activation began
+        const activationStart = updatedBrand.activation_started_at
+          ? new Date(updatedBrand.activation_started_at).getTime()
+          : startedAt;
+        const currentRuns = runs.filter((r) => {
+          const runStart = r.started_at ? new Date(r.started_at).getTime() : 0;
+          return runStart >= activationStart - 5000; // 5s tolerance
+        });
+        const hasFailed = currentRuns.some((r) => r.status === "failed");
         if (hasFailed) {
           setBrand(updatedBrand);
           toast.error("A workflow failed during activation. Check the System page for details.");

@@ -139,12 +139,44 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     # Ensure payload is JSON-safe (handle UUIDs, datetimes, etc.)
     safe_payload = json.loads(json.dumps(payload, default=str))
 
+    # ── Content without calendar_item_id: query DB for queued items ──────
+    # This happens when content.generate is forwarded from skip logic
+    if agent_type == "content" and not payload.get("calendar_item_id") and brand_id and _consumer is not None:
+        try:
+            queued_items = await execute_query(
+                "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'queued' ORDER BY scheduled_at ASC LIMIT 100",
+                {"brand_id": brand_id},
+            )
+            if queued_items:
+                sorted_ids = [str(r["id"]) for r in queued_items]
+                first_id = sorted_ids[0]
+                remaining_ids = sorted_ids[1:]
+                item_msg: dict[str, Any] = {
+                    "brand_id": brand_id,
+                    "calendar_item_id": first_id,
+                    "trigger": payload.get("trigger", "activation"),
+                    "chain_depth": payload.get("chain_depth", 0),
+                    "remaining_queue": remaining_ids,
+                }
+                if payload.get("scope_weeks") is not None:
+                    item_msg["scope_weeks"] = payload["scope_weeks"]
+                await _consumer.js.publish("content.generate", json.dumps(item_msg).encode())
+                logger.info("Content skip-forward: queued first item %s (%d remaining) for brand %s", first_id, len(remaining_ids), brand_id)
+            else:
+                logger.info("No queued calendar items found for brand %s — content generation skipped", brand_id)
+            await msg.ack()
+            return
+        except Exception as content_skip_exc:
+            logger.warning("Content skip-forward failed: %s — proceeding normally", content_skip_exc)
+
     # ── Skip already-completed stages on activation restart ──────
     # If this is an activation trigger and this stage already completed,
     # skip directly to the next uncompleted stage instead of re-running.
     if payload.get("trigger") == "activation" and brand_id and _consumer is not None:
+        # Content is per-item — never skip it at entry point; only skip report stages
+        REPORT_STAGES = ["research", "strategy", "planning"]
         ACTIVATION_CHAIN_ORDER = ["research", "strategy", "planning", "content"]
-        if agent_type in ACTIVATION_CHAIN_ORDER:
+        if agent_type in REPORT_STAGES:
             try:
                 already_done = await execute_query(
                     "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
@@ -157,6 +189,13 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     CHAIN_SUBJECTS = {"research": "research.trigger", "strategy": "strategy.trigger", "planning": "planning.trigger", "content": "content.generate"}
                     forwarded = False
                     for next_stage in ACTIVATION_CHAIN_ORDER[idx + 1:]:
+                        if next_stage == "content":
+                            # Content is per-item — always forward to it (it will pick up queued items)
+                            chain_msg = json.dumps({"brand_id": brand_id, "trigger": "activation", "scope_weeks": payload.get("scope_weeks", 12)}).encode()
+                            await _consumer.js.publish("content.generate", chain_msg)
+                            logger.info("Forwarded activation to content.generate for brand %s", brand_id)
+                            forwarded = True
+                            break
                         next_existing = await execute_query(
                             "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
                             {"brand_id": brand_id, "agent_type": next_stage},
@@ -323,43 +362,48 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 )
                 next_subject = None  # Override evaluation->adaptation default
 
-        # ── Skip completed stages on restart ─────────────────────
-        # When restarting, if the next stage already completed, skip ahead.
+        # ── Skip completed report stages on restart ─────────────────────
+        # When restarting, if the next REPORT stage already completed, skip ahead.
+        # Content is per-item and should never be skipped.
         ACTIVATION_CHAIN_ORDER = ["research", "strategy", "planning", "content"]
         if next_subject and brand_id and trigger_type == "activation" and _consumer is not None:
             next_agent_type = next_subject.split(".")[0]
-            try:
-                existing = await execute_query(
-                    "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
-                    {"brand_id": brand_id, "agent_type": next_agent_type},
-                )
-                if existing:
-                    logger.info("Skipping %s — already completed for brand %s", next_agent_type, brand_id)
-                    # Find the stage after the completed one and chain to that instead
-                    if next_agent_type in ACTIVATION_CHAIN_ORDER:
-                        idx = ACTIVATION_CHAIN_ORDER.index(next_agent_type)
-                        # Walk forward through the chain to find a non-completed stage
-                        skipped = True
-                        while skipped and idx + 1 < len(ACTIVATION_CHAIN_ORDER):
-                            candidate = ACTIVATION_CHAIN_ORDER[idx + 1]
-                            candidate_existing = await execute_query(
-                                "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
-                                {"brand_id": brand_id, "agent_type": candidate},
-                            )
-                            if candidate_existing:
-                                logger.info("Skipping %s — already completed for brand %s", candidate, brand_id)
-                                idx += 1
+            # Never skip content — it's per-item
+            if next_agent_type != "content":
+                try:
+                    existing = await execute_query(
+                        "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
+                        {"brand_id": brand_id, "agent_type": next_agent_type},
+                    )
+                    if existing:
+                        logger.info("Skipping %s — already completed for brand %s", next_agent_type, brand_id)
+                        if next_agent_type in ACTIVATION_CHAIN_ORDER:
+                            idx = ACTIVATION_CHAIN_ORDER.index(next_agent_type)
+                            skipped = True
+                            while skipped and idx + 1 < len(ACTIVATION_CHAIN_ORDER):
+                                candidate = ACTIVATION_CHAIN_ORDER[idx + 1]
+                                if candidate == "content":
+                                    # Always forward to content — it processes queued items
+                                    next_subject = "content.generate"
+                                    skipped = False
+                                    break
+                                candidate_existing = await execute_query(
+                                    "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
+                                    {"brand_id": brand_id, "agent_type": candidate},
+                                )
+                                if candidate_existing:
+                                    logger.info("Skipping %s — already completed for brand %s", candidate, brand_id)
+                                    idx += 1
+                                else:
+                                    CHAIN_SUBJECTS = {"strategy": "strategy.trigger", "planning": "planning.trigger", "content": "content.generate"}
+                                    next_subject = CHAIN_SUBJECTS.get(candidate)
+                                    skipped = False
                             else:
-                                # Found a stage that hasn't completed yet
-                                CHAIN_SUBJECTS = {"strategy": "strategy.trigger", "planning": "planning.trigger", "content": "content.generate"}
-                                next_subject = CHAIN_SUBJECTS.get(candidate)
-                                skipped = False
-                        else:
-                            if skipped:
-                                logger.info("All activation stages already completed for brand %s — no chaining needed", brand_id)
-                                next_subject = None
-            except Exception as skip_exc:
-                logger.warning("Could not check completed stages for skip logic: %s", skip_exc)
+                                if skipped:
+                                    logger.info("All activation stages already completed for brand %s — no chaining needed", brand_id)
+                                    next_subject = None
+                except Exception as skip_exc:
+                    logger.warning("Could not check completed stages for skip logic: %s", skip_exc)
 
         if next_subject and brand_id and _consumer is not None:
             try:
@@ -396,7 +440,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                         logger.warning("Planning completed but no calendar_item_ids in result for brand %s — querying DB for recent items", brand_id)
                         # Fallback: query DB for recently stored calendar items
                         db_items = await execute_query(
-                            "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'planned' ORDER BY scheduled_at ASC LIMIT 100",
+                            "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'queued' ORDER BY scheduled_at ASC LIMIT 100",
                             {"brand_id": brand_id},
                         )
                         if db_items:

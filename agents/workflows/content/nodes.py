@@ -133,8 +133,10 @@ async def load_context(state: ContentState) -> dict[str, Any]:
     pillar_name = calendar_item.get("pillar", "")
     audience_name = calendar_item.get("target_audience", "")
 
+    # Strategy stores pillars under "content_pillars" key
+    strategy_pillars = intel.get("strategy", {}).get("content_pillars", []) or intel.get("strategy", {}).get("pillars", [])
     relevant_pillar = next(
-        (p for p in intel.get("strategy", {}).get("pillars", [])
+        (p for p in (strategy_pillars if isinstance(strategy_pillars, list) else [])
          if p.get("name", "").lower() == (pillar_name or "").lower()),
         {},
     )

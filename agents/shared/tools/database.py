@@ -673,7 +673,7 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
         "research": research_data,
         "strategy": strategy_data,
         "planning": {
-            "strategy_document": strategy_doc_data.get("document", ""),
+            "strategy_document": strategy_doc_data.get("strategy_document", strategy_doc_data.get("document", "")),
             "campaigns": planning_data.get("campaigns", []),
         },
         "recent_posts": recent_posts,

@@ -137,9 +137,17 @@ export function OverviewTab({
                   );
                 }
                 if (brand.status === 'activating') {
-                  const runningRun = pipelineRuns.find((r) => r.status === "running");
-                  const completedCount = pipelineRuns.filter((r) => r.status === "completed").length;
-                  const failedRun = pipelineRuns.find((r) => r.status === "failed");
+                  // Only consider runs from current activation
+                  const activationStart = brand.activation_started_at
+                    ? new Date(brand.activation_started_at).getTime() - 5000
+                    : 0;
+                  const currentActivationRuns = pipelineRuns.filter(r => {
+                    const runStart = r.started_at ? new Date(r.started_at).getTime() : 0;
+                    return runStart >= activationStart;
+                  });
+                  const runningRun = currentActivationRuns.find((r) => r.status === "running");
+                  const completedCount = currentActivationRuns.filter((r) => r.status === "completed").length;
+                  const failedRun = currentActivationRuns.find((r) => r.status === "failed");
                   const statusDetail = runningRun
                     ? `Running ${runningRun.agent_type}...`
                     : failedRun
@@ -193,8 +201,16 @@ export function OverviewTab({
                 </Button>
               ) : brand.status === 'activating' ? (
                 (() => {
-                  const hasFailed = pipelineRuns.some(r => r.status === "failed");
-                  const hasRunning = pipelineRuns.some(r => r.status === "running");
+                  // Only consider runs from current activation (filter out old runs)
+                  const activationStart = brand.activation_started_at
+                    ? new Date(brand.activation_started_at).getTime() - 5000
+                    : 0;
+                  const currentRuns = pipelineRuns.filter(r => {
+                    const runStart = r.started_at ? new Date(r.started_at).getTime() : 0;
+                    return runStart >= activationStart;
+                  });
+                  const hasFailed = currentRuns.some(r => r.status === "failed");
+                  const hasRunning = currentRuns.some(r => r.status === "running");
                   if (hasFailed && !hasRunning) {
                     return (
                       <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white"
@@ -264,11 +280,11 @@ export function OverviewTab({
             </div>
           )}
           {(brand.status !== 'onboarding' || pipelineRuns.length > 0) && (() => {
-            const PIPELINE_STAGES = [
+            // Report stages (produce Intelligence documents)
+            const REPORT_STAGES = [
               { key: "research", label: "Research", icon: <Search className="h-6 w-6" /> },
               { key: "strategy", label: "Strategy", icon: <Target className="h-6 w-6" /> },
               { key: "planning", label: "Marketing Plan", icon: <FileText className="h-6 w-6" /> },
-              { key: "content", label: "Content Generation", icon: <Zap className="h-6 w-6" /> },
             ] as const;
 
             const latestByType: Record<string, AgentRun> = {};
@@ -278,6 +294,14 @@ export function OverviewTab({
                 latestByType[t] = run;
               }
             }
+
+            // Content generation runs (there may be many per-item)
+            const contentRuns = pipelineRuns.filter(r => r.agent_type === "content");
+            const contentCompleted = contentRuns.filter(r => r.status === "completed").length;
+            const contentRunning = contentRuns.find(r => r.status === "running");
+            const contentFailed = contentRuns.filter(r => r.status === "failed").length;
+            const contentTotal = contentRuns.length;
+            const allReportsDone = REPORT_STAGES.every(s => latestByType[s.key]?.status === "completed");
 
             const statusBadgeClass = (status: string | undefined) => {
               if (!status) return "bg-muted text-muted-foreground";
@@ -292,8 +316,10 @@ export function OverviewTab({
 
             return (
               <div className="space-y-4">
+                {/* Report Pipeline Stages */}
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Intelligence Reports</p>
                 <div className="flex items-start justify-between gap-0 overflow-x-auto pb-2">
-                  {PIPELINE_STAGES.map((stage, idx) => {
+                  {REPORT_STAGES.map((stage, idx) => {
                     const run = latestByType[stage.key];
                     const status = run?.status || "pending";
                     return (
@@ -332,11 +358,11 @@ export function OverviewTab({
                             </Button>
                           )}
                         </div>
-                        {idx < PIPELINE_STAGES.length - 1 && (
+                        {idx < REPORT_STAGES.length - 1 && (
                           <div className="flex items-center pt-5 shrink-0">
                             <ArrowRight className={`h-5 w-5 ${
-                              latestByType[PIPELINE_STAGES[idx + 1].key]?.status === "completed" ||
-                              latestByType[PIPELINE_STAGES[idx + 1].key]?.status === "running"
+                              latestByType[REPORT_STAGES[idx + 1].key]?.status === "completed" ||
+                              latestByType[REPORT_STAGES[idx + 1].key]?.status === "running"
                                 ? "text-primary" : "text-muted-foreground/30"
                             }`} />
                           </div>
@@ -345,6 +371,45 @@ export function OverviewTab({
                     );
                   })}
                 </div>
+
+                {/* Content Generation Progress (separate from reports) */}
+                {(allReportsDone || contentTotal > 0) && (
+                  <div className="border-t pt-4">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">Content Generation</p>
+                    <div className="flex items-center gap-3">
+                      <div className={`flex items-center justify-center h-10 w-10 rounded-full border-2 transition-colors ${
+                        contentTotal === 0 && !contentRunning ? "border-muted-foreground/30 bg-muted/30 text-muted-foreground" :
+                        contentFailed > 0 && !contentRunning ? "border-red-500 bg-red-50 dark:bg-red-900/30 text-red-600" :
+                        contentRunning ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-600" :
+                        contentCompleted > 0 ? "border-green-500 bg-green-50 dark:bg-green-900/30 text-green-600" :
+                        "border-muted-foreground/30 bg-muted/30 text-muted-foreground"
+                      }`}>
+                        {contentRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Zap className="h-5 w-5" />}
+                      </div>
+                      <div className="flex-1">
+                        {contentTotal === 0 && !contentRunning ? (
+                          <p className="text-sm text-muted-foreground">
+                            {allReportsDone ? "Waiting for content generation to start..." : "Reports must complete first"}
+                          </p>
+                        ) : contentRunning ? (
+                          <p className="text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                            <span>Generating content...</span>
+                            <span className="text-muted-foreground">({contentCompleted} completed{contentFailed > 0 ? `, ${contentFailed} failed` : ""})</span>
+                          </p>
+                        ) : (
+                          <p className="text-sm">
+                            <span className="font-medium">{contentCompleted}</span>
+                            <span className="text-muted-foreground"> content item{contentCompleted !== 1 ? "s" : ""} generated</span>
+                            {contentFailed > 0 && (
+                              <span className="text-red-500 ml-1">({contentFailed} failed)</span>
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {loadingPipeline && (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin" /> Loading pipeline status...
