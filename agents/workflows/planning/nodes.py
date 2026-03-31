@@ -252,47 +252,70 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     )
 
     channels_str = ", ".join(enabled_channels)
-    prompt = [
-        {"role": "system", "content": (
-            "You are a content calendar planner. The brand operates in Mauritius. Consider the local market, "
-            "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
-            "and regional consumer preferences. Generate content for the period "
-            f"{start_date} to {end_date} ({scope_weeks} weeks). "
-            f"Generate content ONLY for these platforms: {channels_str}. "
-            "Do NOT generate content for any other platforms. "
-            "CRITICAL: Generate EXACTLY 1 post per enabled channel per day, for EVERY day in the date range. "
-            f"No gaps — every single day from {start_date} to {end_date} must have content for each enabled channel. "
-            f"There are {len(enabled_channels)} enabled channel(s) and {total_days} days, "
-            f"so generate exactly {total_items} items total. "
-            "Distribute content evenly — do NOT cluster posts on certain days or skip weekends. "
-            "Generate specific calendar items for each campaign. "
-            "Each item MUST include ALL of these fields: "
-            "campaign_name, scheduled_date (YYYY-MM-DD), platform "
-            f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
-            "pillar (which content pillar from strategy), "
-            "theme (monthly theme name), "
-            "weekly_sub_theme (specific sub-theme for this week), "
-            "target_audience (primary persona for this post), "
-            "content_brief (2-3 sentences describing EXACTLY what this post should communicate), "
-            "product_name (from available products if relevant, else null), "
-            "visual_direction (1 sentence on visual style for the image), "
-            "cta_type (what action to drive: shop, learn, engage, or share). "
-            "Return a JSON array."
-        )},
-        {"role": "user", "content": (
-            f"{dedup_context}"
-            f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=5000)}\n\n"
-            f"Strategy cadence:\n{sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=2000)}\n\n"
-            f"Strategy document (use as reference for themes and seasonal hooks):\n"
-            f"{sanitize_for_prompt(strategy_document, max_length=5000)}\n\n"
-            f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=3000)}"
-        )},
-    ]
-    result = await chat_completion(prompt, temperature=0.5, max_tokens=16384, response_format={"type": "json_object"})
-    items = parse_llm_json(result, fallback=[])
-    if isinstance(items, dict):
-        items = next((v for v in items.values() if isinstance(v, list)), [])
-    return {"calendar_items": items}
+
+    # Generate in weekly batches to avoid LLM truncation on large calendars
+    all_items: list[dict[str, Any]] = []
+    batch_size_days = 7
+    current_dt = start_date_dt
+    batch_num = 0
+
+    while current_dt < end_date_dt:
+        batch_num += 1
+        batch_end = min(current_dt + timedelta(days=batch_size_days), end_date_dt)
+        batch_start_str = current_dt.strftime("%Y-%m-%d")
+        batch_end_str = batch_end.strftime("%Y-%m-%d")
+        batch_days = (batch_end - current_dt).days
+        batch_items_target = len(enabled_channels) * batch_days
+
+        logger.info("generate_calendar batch %d: %s to %s (%d days, %d target items)",
+                    batch_num, batch_start_str, batch_end_str, batch_days, batch_items_target)
+
+        prompt = [
+            {"role": "system", "content": (
+                "You are a content calendar planner. The brand operates in Mauritius. Consider the local market, "
+                "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
+                "and regional consumer preferences. Generate content for the period "
+                f"{batch_start_str} to {batch_end_str} ({batch_days} days). "
+                f"Generate content ONLY for these platforms: {channels_str}. "
+                "Do NOT generate content for any other platforms. "
+                f"Generate EXACTLY 1 post per enabled channel per day — {batch_items_target} items total. "
+                "Each item MUST include ALL of these fields: "
+                "campaign_name, scheduled_date (YYYY-MM-DD), platform "
+                f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
+                "pillar (which content pillar from strategy), "
+                "theme (monthly theme name), "
+                "weekly_sub_theme (specific sub-theme for this week), "
+                "target_audience (primary persona for this post), "
+                "content_brief (2-3 sentences describing EXACTLY what this post should communicate), "
+                "product_name (from available products if relevant, else null), "
+                "visual_direction (1 sentence on visual style for the image), "
+                "cta_type (what action to drive: shop, learn, engage, or share). "
+                "Return a JSON array."
+            )},
+            {"role": "user", "content": (
+                f"{dedup_context}"
+                f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=3000)}\n\n"
+                f"Strategy cadence:\n{sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=1000)}\n\n"
+                f"Strategy document (use as reference for themes and seasonal hooks):\n"
+                f"{sanitize_for_prompt(strategy_document, max_length=3000)}\n\n"
+                f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=2000)}"
+            )},
+        ]
+        try:
+            result = await chat_completion(prompt, temperature=0.5, max_tokens=8192, response_format={"type": "json_object"})
+            logger.info("generate_calendar batch %d LLM response: %d chars", batch_num, len(result))
+            batch_items = parse_llm_json(result, fallback=[])
+            if isinstance(batch_items, dict):
+                batch_items = next((v for v in batch_items.values() if isinstance(v, list)), [])
+            logger.info("generate_calendar batch %d produced %d items", batch_num, len(batch_items))
+            all_items.extend(batch_items)
+        except Exception as batch_exc:
+            logger.error("generate_calendar batch %d failed: %s", batch_num, batch_exc)
+
+        current_dt = batch_end
+
+    logger.info("generate_calendar total: %d items across %d batches", len(all_items), batch_num)
+    return {"calendar_items": all_items}
 
 
 async def assign_products(state: PlanningState) -> dict[str, Any]:
