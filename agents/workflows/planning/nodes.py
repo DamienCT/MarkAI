@@ -314,8 +314,13 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
             logger.info("generate_calendar batch %d LLM response: %d chars", batch_num, len(result))
             batch_items = parse_llm_json(result, fallback=[])
             if isinstance(batch_items, dict):
-                # parse_llm_json may unwrap single-key dicts, but if not, extract the list value
-                batch_items = next((v for v in batch_items.values() if isinstance(v, list)), [])
+                # Check if this is a single calendar item (has scheduled_date) vs a wrapper
+                if "scheduled_date" in batch_items or "platform" in batch_items:
+                    # LLM returned a single item instead of an array — wrap it
+                    batch_items = [batch_items]
+                else:
+                    # Try to extract the list value from wrapper dict
+                    batch_items = next((v for v in batch_items.values() if isinstance(v, list)), [])
             if not batch_items:
                 logger.warning("generate_calendar batch %d produced 0 items — raw response preview: %s", batch_num, result[:300])
             else:
