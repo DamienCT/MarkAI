@@ -356,7 +356,27 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                             first_id, len(remaining_ids), brand_id,
                         )
                     else:
-                        logger.warning("Planning completed but no calendar_item_ids in result — skipping content chain")
+                        logger.warning("Planning completed but no calendar_item_ids in result for brand %s — querying DB for recent items", brand_id)
+                        # Fallback: query DB for recently stored calendar items
+                        db_items = await execute_query(
+                            "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'planned' ORDER BY scheduled_at ASC LIMIT 100",
+                            {"brand_id": brand_id},
+                        )
+                        if db_items:
+                            sorted_ids = [str(r["id"]) for r in db_items]
+                            first_id = sorted_ids[0]
+                            remaining_ids = sorted_ids[1:]
+                            item_msg = {
+                                "brand_id": brand_id,
+                                "calendar_item_id": first_id,
+                                "trigger": payload.get("trigger", "event"),
+                                "chain_depth": current_depth + 1,
+                                "remaining_queue": remaining_ids,
+                            }
+                            await _consumer.js.publish(next_subject, json.dumps(item_msg).encode())
+                            logger.info("Fallback: queued first DB item %s (%d remaining) for brand %s", first_id, len(remaining_ids), brand_id)
+                        else:
+                            logger.warning("No calendar items found in DB for brand %s — content generation skipped", brand_id)
                 else:
                     # Standard single-message chain — propagate trigger & scope_weeks
                     chain_msg: dict[str, Any] = {
