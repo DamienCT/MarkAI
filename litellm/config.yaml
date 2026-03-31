@@ -34,6 +34,26 @@ model_list:
       model: openai/gpt-image-1-mini
       api_key: os.environ/OPENAI_API_KEY
 
+  - model_name: chatgpt-image-latest
+    litellm_params:
+      model: openai/chatgpt-image-latest
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: dall-e-3
+    litellm_params:
+      model: openai/dall-e-3
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: dall-e-2
+    litellm_params:
+      model: openai/dall-e-2
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: text-embedding-3-large
+    litellm_params:
+      model: openai/text-embedding-3-large
+      api_key: os.environ/OPENAI_API_KEY
+
   # Video generation
   - model_name: sora-2
     litellm_params:

@@ -107,6 +107,24 @@ export const authOptions: NextAuthOptions = {
       return refreshAzureToken(token);
     },
     async session({ session, token }) {
+      // Fetch user role from backend if not already cached
+      if (!token.role && token.accessToken) {
+        try {
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://backend:8000";
+          const res = await fetch(`${apiUrl}/api/v1/users/me`, {
+            headers: { Authorization: `Bearer ${token.accessToken}` },
+          });
+          if (res.ok) {
+            const userData = await res.json();
+            token.role = userData.role || "manager";
+          } else {
+            // Default to manager if backend is unreachable (first login creates user)
+            token.role = "manager";
+          }
+        } catch {
+          token.role = "manager";
+        }
+      }
       return {
         ...session,
         accessToken: token.accessToken as string,
@@ -114,6 +132,7 @@ export const authOptions: NextAuthOptions = {
         user: {
           ...session.user,
           id: token.sub,
+          role: (token.role as string) || "manager",
         },
       };
     },

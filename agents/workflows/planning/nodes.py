@@ -46,6 +46,14 @@ class CalendarItemValidator(BaseModel):
     product_id: Optional[str] = None
     product_sku: Optional[str] = None
 
+    @field_validator("product_id", mode="before")
+    @classmethod
+    def coerce_product_id(cls, v: Any) -> Optional[str]:
+        """Coerce UUID objects to strings."""
+        if v is None:
+            return None
+        return str(v)
+
     @field_validator("scheduled_date")
     @classmethod
     def validate_date(cls, v: str) -> str:
@@ -306,8 +314,12 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
             logger.info("generate_calendar batch %d LLM response: %d chars", batch_num, len(result))
             batch_items = parse_llm_json(result, fallback=[])
             if isinstance(batch_items, dict):
+                # parse_llm_json may unwrap single-key dicts, but if not, extract the list value
                 batch_items = next((v for v in batch_items.values() if isinstance(v, list)), [])
-            logger.info("generate_calendar batch %d produced %d items", batch_num, len(batch_items))
+            if not batch_items:
+                logger.warning("generate_calendar batch %d produced 0 items — raw response preview: %s", batch_num, result[:300])
+            else:
+                logger.info("generate_calendar batch %d produced %d items", batch_num, len(batch_items))
             all_items.extend(batch_items)
         except Exception as batch_exc:
             logger.error("generate_calendar batch %d failed: %s", batch_num, batch_exc)
