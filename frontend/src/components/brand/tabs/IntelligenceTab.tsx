@@ -66,7 +66,7 @@ export function IntelligenceTab({
               { agent_type: "research", title: "Research Report", icon: <Search className="h-5 w-5" />, triggerKey: "research", pipelineOrder: 0 },
               { agent_type: "strategy", title: "Marketing Strategy", icon: <Target className="h-5 w-5" />, triggerKey: "strategy", pipelineOrder: 1 },
               { agent_type: "planning", title: "Marketing Plan", icon: <FileText className="h-5 w-5" />, triggerKey: "planning", pipelineOrder: 2 },
-              { agent_type: "content_calendar", title: "Content Calendar", icon: <Calendar className="h-5 w-5" />, triggerKey: "planning", pipelineOrder: 3 },
+              { agent_type: "content_calendar", title: "Content Calendar Strategy", icon: <Calendar className="h-5 w-5" />, triggerKey: "planning", pipelineOrder: 3 },
             ] as const;
 
             const PIPELINE_ORDER: Record<string, number> = {
