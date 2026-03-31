@@ -132,6 +132,9 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
 
     # Parse competitor list
     competitors = parse_llm_json(competitor_text, fallback=[{"name": "Unknown", "website_url": "", "positioning": "", "strengths": [], "weaknesses": [], "social_presence": {}, "content_strategy": "", "threat_level": "medium"}])
+    # json_object mode may wrap arrays in a dict — extract the list
+    if isinstance(competitors, dict):
+        competitors = next((v for v in competitors.values() if isinstance(v, list)), [])
 
     # If LLM couldn't identify competitors (e.g. no website data), do targeted web searches
     if not competitors or len(competitors) < 3:
@@ -167,12 +170,15 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
             try:
                 filtered_text = await chat_completion(filter_prompt, temperature=0.2, response_format={"type": "json_object"})
                 filtered = parse_llm_json(filtered_text, fallback=[])
+                if isinstance(filtered, dict):
+                    filtered = next((v for v in filtered.values() if isinstance(v, list)), [])
                 if isinstance(filtered, list) and filtered:
                     competitors = filtered
             except Exception:
                 pass
 
     # Build structured competitor data for storage
+    logger.info("analyze_competitors: %d competitors (type=%s)", len(competitors) if isinstance(competitors, (list, dict)) else 0, type(competitors).__name__)
     analyses: list[dict[str, Any]] = []
     for comp in competitors[:5]:
         comp_name = comp.get("name", "Unknown")
@@ -236,6 +242,8 @@ async def identify_gaps(state: ResearchState) -> dict[str, Any]:
         ]
         result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
         gaps = parse_llm_json(result, fallback=[{"title": "General Gap", "category": "content", "description": result, "opportunity": "", "priority": "medium", "estimated_impact": "", "implementation_effort": "medium", "recommended_timeline": "", "target_audience": "", "success_metrics": []}])
+        if isinstance(gaps, dict):
+            gaps = next((v for v in gaps.values() if isinstance(v, list)), [])
         return {"gaps": gaps}
     except Exception as exc:
         logger.error("identify_gaps failed: %s", exc)
@@ -255,6 +263,8 @@ async def build_personas(state: ResearchState) -> dict[str, Any]:
         ]
         result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
         personas = parse_llm_json(result, fallback=[{"name": "Primary Audience", "demographics": {"age": "", "gender": "", "location": "", "income": "", "occupation": ""}, "psychographics": result, "pain_points": [], "content_preferences": {"formats": [], "topics": [], "tone": "", "language_mix": ""}, "platforms": [], "buying_triggers": [], "best_engagement_times": "", "content_avoidance": []}])
+        if isinstance(personas, dict):
+            personas = next((v for v in personas.values() if isinstance(v, list)), [])
         return {"personas": personas}
     except Exception as exc:
         logger.error("build_personas failed: %s", exc)

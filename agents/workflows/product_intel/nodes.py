@@ -135,6 +135,8 @@ async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
     try:
         result = await chat_completion(prompt, temperature=0.2, max_tokens=8192, response_format={"type": "json_object"})
         matched = parse_llm_json(result, fallback=[])
+        if isinstance(matched, dict):
+            matched = next((v for v in matched.values() if isinstance(v, list)), [])
     except Exception as exc:
         logger.error("match_products_to_brands LLM call failed: %s", exc)
         return {"status": "failed", "errors": [*(state.get("errors") or []), f"match_products_to_brands failed: {exc}"]}
@@ -213,6 +215,8 @@ async def flag_promotable(state: ProductIntelState) -> dict[str, Any]:
     try:
         result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
         promotable = parse_llm_json(result, fallback=[])
+        if isinstance(promotable, dict):
+            promotable = next((v for v in promotable.values() if isinstance(v, list)), [])
         return {"promotable_items": promotable, "status": "completed"}
     except Exception as exc:
         logger.error("flag_promotable LLM call failed: %s", exc)

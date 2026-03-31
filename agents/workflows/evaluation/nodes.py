@@ -65,6 +65,8 @@ async def generate_recommendations(state: EvaluationState) -> dict[str, Any]:
         ]
         result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
         recommendations = parse_llm_json(result, fallback=[{"title": "Analysis complete", "description": result, "confidence": 0.5}])
+        if isinstance(recommendations, dict):
+            recommendations = next((v for v in recommendations.values() if isinstance(v, list)), [])
 
         return {"recommendations": recommendations}
     except Exception as exc:
@@ -94,6 +96,8 @@ async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
         ]
         result = await chat_completion(prompt, temperature=0.2, response_format={"type": "json_object"})
         classified = parse_llm_json(result, fallback=[{**r, "tier": 2} for r in recommendations])
+        if isinstance(classified, dict):
+            classified = next((v for v in classified.values() if isinstance(v, list)), [])
 
         return {"adaptations": classified}
     except Exception as exc:

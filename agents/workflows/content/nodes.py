@@ -390,6 +390,8 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
         ]
         result = await chat_completion(prompt, temperature=0.6, max_tokens=512, response_format={"type": "json_object"})
         hashtags = parse_llm_json(result, fallback=None)
+        if isinstance(hashtags, dict):
+            hashtags = next((v for v in hashtags.values() if isinstance(v, list)), None)
         if hashtags is None:
             hashtags = [tag.strip().strip("#") for tag in result.split() if tag.strip()]
         return {"hashtags": hashtags}
