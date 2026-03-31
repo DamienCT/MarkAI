@@ -139,6 +139,43 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     # Ensure payload is JSON-safe (handle UUIDs, datetimes, etc.)
     safe_payload = json.loads(json.dumps(payload, default=str))
 
+    # ── Skip already-completed stages on activation restart ──────
+    # If this is an activation trigger and this stage already completed,
+    # skip directly to the next uncompleted stage instead of re-running.
+    if payload.get("trigger") == "activation" and brand_id and _consumer is not None:
+        ACTIVATION_CHAIN_ORDER = ["research", "strategy", "planning", "content"]
+        if agent_type in ACTIVATION_CHAIN_ORDER:
+            try:
+                already_done = await execute_query(
+                    "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
+                    {"brand_id": brand_id, "agent_type": agent_type},
+                )
+                if already_done:
+                    logger.info("Skipping %s — already completed for brand %s (entry-point skip)", agent_type, brand_id)
+                    # Find next uncompleted stage
+                    idx = ACTIVATION_CHAIN_ORDER.index(agent_type)
+                    CHAIN_SUBJECTS = {"research": "research.trigger", "strategy": "strategy.trigger", "planning": "planning.trigger", "content": "content.generate"}
+                    forwarded = False
+                    for next_stage in ACTIVATION_CHAIN_ORDER[idx + 1:]:
+                        next_existing = await execute_query(
+                            "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
+                            {"brand_id": brand_id, "agent_type": next_stage},
+                        )
+                        if not next_existing:
+                            next_subj = CHAIN_SUBJECTS.get(next_stage)
+                            if next_subj:
+                                chain_msg = json.dumps({"brand_id": brand_id, "trigger": "activation", "scope_weeks": payload.get("scope_weeks", 12)}).encode()
+                                await _consumer.js.publish(next_subj, chain_msg)
+                                logger.info("Forwarded activation to %s for brand %s", next_subj, brand_id)
+                                forwarded = True
+                            break
+                    if not forwarded:
+                        logger.info("All stages already completed for brand %s", brand_id)
+                    await msg.ack()
+                    return
+            except Exception as skip_exc:
+                logger.warning("Entry-point skip check failed: %s — proceeding normally", skip_exc)
+
     # Idempotency: the partial unique index idx_agent_runs_running on
     # (brand_id, agent_type) WHERE status='running' prevents duplicates.
     # We catch the unique violation instead of a TOCTOU SELECT check.
