@@ -167,14 +167,19 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
         # Extract total token usage if the workflow tracked it
         tokens_used = None
+        workflow_failed = False
         if isinstance(result, dict):
             tokens_used = result.get("_total_tokens") or None
+            # Check if the workflow itself reported an internal failure
+            if result.get("status") == "failed":
+                workflow_failed = True
 
-        await complete_agent_run(run_id, output_payload=safe_result, status="completed", tokens_used=tokens_used)
-        logger.info("Workflow %s completed for brand %s (tokens: %s)", agent_type, brand_id, tokens_used)
+        final_status = "failed" if workflow_failed else "completed"
+        await complete_agent_run(run_id, output_payload=safe_result, status=final_status, tokens_used=tokens_used)
+        logger.info("Workflow %s %s for brand %s (tokens: %s)", agent_type, final_status, brand_id, tokens_used)
 
         # ── Activation: mark brand as active once the planning pipeline finishes
-        if agent_type == "planning" and payload.get("trigger") == "activation":
+        if agent_type == "planning" and payload.get("trigger") == "activation" and not workflow_failed:
             if brand_id:
                 try:
                     await execute_update(
@@ -186,6 +191,11 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     logger.error("Failed to activate brand %s: %s", brand_id, act_exc)
 
         await msg.ack()
+
+        # ── Don't chain if the workflow failed internally ──────────
+        if workflow_failed:
+            logger.warning("Workflow %s reported internal failure for brand %s — not chaining next stage", agent_type, brand_id)
+            return
 
         # Track chain depth (used by sequential chaining and pipeline chaining)
         current_depth = payload.get("chain_depth", 0)
@@ -275,6 +285,44 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     brand_id,
                 )
                 next_subject = None  # Override evaluation->adaptation default
+
+        # ── Skip completed stages on restart ─────────────────────
+        # When restarting, if the next stage already completed, skip ahead.
+        ACTIVATION_CHAIN_ORDER = ["research", "strategy", "planning", "content"]
+        if next_subject and brand_id and trigger_type == "activation" and _consumer is not None:
+            next_agent_type = next_subject.split(".")[0]
+            try:
+                existing = await execute_query(
+                    "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
+                    {"brand_id": brand_id, "agent_type": next_agent_type},
+                )
+                if existing:
+                    logger.info("Skipping %s — already completed for brand %s", next_agent_type, brand_id)
+                    # Find the stage after the completed one and chain to that instead
+                    if next_agent_type in ACTIVATION_CHAIN_ORDER:
+                        idx = ACTIVATION_CHAIN_ORDER.index(next_agent_type)
+                        # Walk forward through the chain to find a non-completed stage
+                        skipped = True
+                        while skipped and idx + 1 < len(ACTIVATION_CHAIN_ORDER):
+                            candidate = ACTIVATION_CHAIN_ORDER[idx + 1]
+                            candidate_existing = await execute_query(
+                                "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
+                                {"brand_id": brand_id, "agent_type": candidate},
+                            )
+                            if candidate_existing:
+                                logger.info("Skipping %s — already completed for brand %s", candidate, brand_id)
+                                idx += 1
+                            else:
+                                # Found a stage that hasn't completed yet
+                                CHAIN_SUBJECTS = {"strategy": "strategy.trigger", "planning": "planning.trigger", "content": "content.generate"}
+                                next_subject = CHAIN_SUBJECTS.get(candidate)
+                                skipped = False
+                        else:
+                            if skipped:
+                                logger.info("All activation stages already completed for brand %s — no chaining needed", brand_id)
+                                next_subject = None
+            except Exception as skip_exc:
+                logger.warning("Could not check completed stages for skip logic: %s", skip_exc)
 
         if next_subject and brand_id and _consumer is not None:
             try:

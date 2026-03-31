@@ -93,6 +93,8 @@ interface OutputPayload {
   campaigns?: Campaign[];
   calendar_summary?: string;
   calendar?: Record<string, unknown> | string;
+  calendar_items?: Record<string, unknown>[];
+  calendar_item_ids?: string[];
   // Content calendar strategy fields
   strategy_document?: string;
   markdown?: string;
@@ -257,8 +259,16 @@ function formatDuration(ms: number | null): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
+const AGENT_TYPE_DISPLAY_NAMES: Record<string, string> = {
+  planning: "Marketing Plan",
+  research: "Research",
+  strategy: "Marketing Strategy",
+  content_calendar: "Content Calendar Strategy",
+  content_calendar_strategy: "Content Calendar Strategy",
+};
+
 function formatAgentType(type: string): string {
-  return type
+  return AGENT_TYPE_DISPLAY_NAMES[type] || type
     .split("_")
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
@@ -344,6 +354,7 @@ export default function ReportPage() {
   // Planning fields
   const campaigns = output.campaigns || [];
   const calendarSummary = output.calendar_summary || output.calendar;
+  const calendarItems = output.calendar_items || [];
 
   // Content calendar strategy fields
   const strategyDocument = output.strategy_document || output.markdown || output.content;
@@ -356,7 +367,9 @@ export default function ReportPage() {
     (g) => g.priority?.toLowerCase() === "high" || g.priority?.toLowerCase() === "critical"
   ).length;
 
-  const reportTitle = `${formatAgentType(report.agent_type)} Report${
+  const displayName = formatAgentType(report.agent_type);
+  const needsReportSuffix = !AGENT_TYPE_DISPLAY_NAMES[report.agent_type];
+  const reportTitle = `${displayName}${needsReportSuffix ? " Report" : ""}${
     report.brand_name ? ` \u2014 ${report.brand_name}` : ""
   }`;
 
@@ -546,8 +559,12 @@ export default function ReportPage() {
                     <p className="text-xs text-muted-foreground">Campaigns</p>
                   </div>
                   <div className="rounded-lg border p-4 text-center">
+                    <p className="text-2xl font-bold text-primary">{calendarItems.length}</p>
+                    <p className="text-xs text-muted-foreground">Calendar Items</p>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
                     <p className="text-2xl font-bold text-primary">{calendarSummary ? "1" : "0"}</p>
-                    <p className="text-xs text-muted-foreground">Calendar</p>
+                    <p className="text-xs text-muted-foreground">Calendar Summary</p>
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -557,6 +574,12 @@ export default function ReportPage() {
                       <li className="flex items-start gap-2">
                         <Megaphone className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
                         <span><strong>{campaigns.length}</strong> campaign{campaigns.length !== 1 ? "s" : ""} planned</span>
+                      </li>
+                    )}
+                    {calendarItems.length > 0 && (
+                      <li className="flex items-start gap-2">
+                        <CalendarDays className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                        <span><strong>{calendarItems.length}</strong> calendar item{calendarItems.length !== 1 ? "s" : ""} created</span>
                       </li>
                     )}
                     {calendarSummary && (
@@ -1648,6 +1671,55 @@ export default function ReportPage() {
                   <SafeValue value={calendarSummary} />
                 </div>
               )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Calendar Items (from planning workflow) ────────────── */}
+        {isPlanning && calendarItems.length > 0 && (
+          <Card className="print-break">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <CalendarDays className="h-5 w-5 text-primary" />
+                Calendar Items
+              </CardTitle>
+              <CardDescription>
+                {calendarItems.length} content item{calendarItems.length !== 1 ? "s" : ""} scheduled
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {calendarItems.map((item, idx) => {
+                  const title = String(item.title || item.name || `Item ${idx + 1}`);
+                  const platform = item.platform ? String(item.platform) : null;
+                  const desc = item.description ? String(item.description) : null;
+                  const date = item.scheduled_at || item.scheduled_date;
+                  const dateStr = date ? String(date) : null;
+                  const contentType = item.content_type ? String(item.content_type) : null;
+                  return (
+                  <div key={idx} className="rounded-lg border p-4 space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <h4 className="font-semibold text-sm">{title}</h4>
+                      {platform && (
+                        <Badge variant="secondary" className="text-xs">{platform}</Badge>
+                      )}
+                    </div>
+                    {desc && (
+                      <p className="text-sm text-muted-foreground">{desc}</p>
+                    )}
+                    {dateStr && (
+                      <p className="text-xs text-muted-foreground flex items-center gap-1">
+                        <CalendarDays className="h-3 w-3" />
+                        {dateStr}
+                      </p>
+                    )}
+                    {contentType && (
+                      <Badge variant="outline" className="text-xs">{contentType}</Badge>
+                    )}
+                  </div>
+                  );
+                })}
+              </div>
             </CardContent>
           </Card>
         )}

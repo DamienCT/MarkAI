@@ -2,7 +2,7 @@
 
 import React from "react";
 import {
-  CheckCircle2, Search, Target, FileText, Calendar, Zap,
+  CheckCircle2, Search, Target, FileText, Zap,
   Loader2, Rocket, Clock, Eye, RefreshCw, ArrowRight,
   TrendingUp, Play, Square,
 } from "lucide-react";
@@ -139,14 +139,19 @@ export function OverviewTab({
                 if (brand.status === 'activating') {
                   const runningRun = pipelineRuns.find((r) => r.status === "running");
                   const completedCount = pipelineRuns.filter((r) => r.status === "completed").length;
+                  const failedRun = pipelineRuns.find((r) => r.status === "failed");
                   const statusDetail = runningRun
                     ? `Running ${runningRun.agent_type}...`
+                    : failedRun
+                    ? `${failedRun.agent_type} failed`
                     : completedCount > 0
                     ? `${completedCount} stage${completedCount !== 1 ? "s" : ""} done`
-                    : "Setting up...";
+                    : "Starting up...";
                   return (
-                    <span className="text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span className={`text-sm flex items-center gap-1.5 ${
+                      failedRun ? "text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400"
+                    }`}>
+                      {!failedRun && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                       Status: {statusDetail}
                     </span>
                   );
@@ -188,7 +193,7 @@ export function OverviewTab({
                 </Button>
               ) : brand.status === 'activating' ? (
                 <div className="flex items-center gap-2">
-                  {pipelineRuns.some(r => r.status === "failed") ? (
+                  {pipelineRuns.some(r => r.status === "failed") && (
                     <Button
                       size="sm"
                       className="bg-green-600 hover:bg-green-700 text-white"
@@ -202,16 +207,20 @@ export function OverviewTab({
                       )}
                       Retry Content Factory
                     </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled
-                    >
-                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                      Setting up...
-                    </Button>
                   )}
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={togglingFactory}
+                    onClick={() => onToggleContentFactory(false)}
+                  >
+                    {togglingFactory ? (
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Square className="mr-1.5 h-4 w-4" />
+                    )}
+                    Stop Content Factory
+                  </Button>
                 </div>
               ) : brand.is_active ? (
                 <Button
@@ -269,7 +278,6 @@ export function OverviewTab({
               { key: "research", label: "Research", icon: <Search className="h-6 w-6" /> },
               { key: "strategy", label: "Strategy", icon: <Target className="h-6 w-6" /> },
               { key: "planning", label: "Marketing Plan", icon: <FileText className="h-6 w-6" /> },
-              { key: "content_calendar", label: "Content Calendar", icon: <Calendar className="h-6 w-6" /> },
               { key: "content", label: "Content Generation", icon: <Zap className="h-6 w-6" /> },
             ] as const;
 

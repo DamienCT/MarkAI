@@ -240,8 +240,12 @@ async def chat_completion(
         )
     except httpx.ConnectError:
         raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
-    except (httpx.TimeoutException, httpx.HTTPStatusError):
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 400:
+            logger.error("LLM API %d error: %s", exc.response.status_code, exc.response.text[:500])
         # Let tenacity retry handle transient errors (429, 5xx, timeouts)
+        raise
+    except httpx.TimeoutException:
         raise
 
 
