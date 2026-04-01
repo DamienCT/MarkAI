@@ -163,7 +163,20 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 await _consumer.js.publish("content.generate", json.dumps(item_msg).encode())
                 logger.info("Content skip-forward: queued first item %s (%d remaining) for brand %s", first_id, len(remaining_ids), brand_id)
             else:
-                logger.info("No queued calendar items found for brand %s — content generation skipped", brand_id)
+                # No queued items — need to re-run planning to generate calendar items
+                # Delete the old planning run so it can run fresh
+                logger.info("No queued calendar items for brand %s — re-triggering planning to generate new calendar", brand_id)
+                await execute_update(
+                    "DELETE FROM agent_runs WHERE brand_id = :brand_id AND agent_type IN ('planning', 'content_calendar') AND status = 'completed'",
+                    {"brand_id": brand_id},
+                )
+                chain_msg = json.dumps({
+                    "brand_id": brand_id,
+                    "trigger": payload.get("trigger", "activation"),
+                    "scope_weeks": payload.get("scope_weeks", 12),
+                }).encode()
+                await _consumer.js.publish("planning.trigger", chain_msg)
+                logger.info("Re-triggered planning.trigger for brand %s", brand_id)
             await msg.ack()
             return
         except Exception as content_skip_exc:
