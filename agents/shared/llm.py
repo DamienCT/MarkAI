@@ -307,6 +307,9 @@ async def generate_image(
     if model is None:
         model = await get_model_for_category(category)
 
+    # Strip "openai/" prefix for LiteLLM — it uses its own model_list names
+    litellm_model = model.replace("openai/", "") if model.startswith("openai/") else model
+
     # Try LiteLLM proxy first
     try:
         client = get_http_client()
@@ -314,7 +317,7 @@ async def generate_image(
             f"{settings.LITELLM_BASE_URL}/v1/images/generations",
             headers=_auth_headers(),
             json={
-                "model": model,
+                "model": litellm_model,
                 "prompt": prompt,
                 "size": size,
                 "n": n,
