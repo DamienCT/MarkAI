@@ -87,12 +87,15 @@ export default function ApprovalsPage() {
               <CardContent className="space-y-4">
                 {approval.content && (
                   <div className="rounded-md border p-4">
-                    <p className="text-sm whitespace-pre-wrap">{approval.content.caption}</p>
-                    {approval.content.hashtags && approval.content.hashtags.length > 0 && (
-                      <p className="text-sm text-primary mt-2">
-                        {approval.content.hashtags.map((h: string) => `#${h}`).join(" ")}
-                      </p>
-                    )}
+                    <p className="text-sm whitespace-pre-wrap">{approval.content.caption || ""}</p>
+                    {(() => {
+                      const tags = Array.isArray(approval.content.hashtags) ? approval.content.hashtags : [];
+                      return tags.length > 0 ? (
+                        <p className="text-sm text-primary mt-2">
+                          {tags.map((h: string) => `#${h}`).join(" ")}
+                        </p>
+                      ) : null;
+                    })()}
                   </div>
                 )}
                 <ApprovalActions

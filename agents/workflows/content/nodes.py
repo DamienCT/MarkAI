@@ -990,6 +990,32 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
             {"id": state["calendar_item_id"]},
         )
 
+    # Auto-create approval record so it appears in the Approvals page
+    try:
+        from shared.tools.database import execute_query
+        from uuid import uuid4
+        # Find a manager/admin user to assign as reviewer
+        reviewers = await execute_query(
+            "SELECT id FROM users WHERE role IN ('admin', 'manager') AND is_active = true LIMIT 1"
+        )
+        if reviewers:
+            approval_id = str(uuid4())
+            await execute_update(
+                "INSERT INTO approvals (id, content_id, calendar_item_id, reviewer_id, status) "
+                "VALUES (:id, :content_id, :calendar_item_id, :reviewer_id, 'pending')",
+                {
+                    "id": approval_id,
+                    "content_id": content_id,
+                    "calendar_item_id": state["calendar_item_id"],
+                    "reviewer_id": str(reviewers[0]["id"]),
+                },
+            )
+            logger.info("Created approval %s for content %s", approval_id, content_id)
+        else:
+            logger.warning("No manager/admin user found — skipping approval creation")
+    except Exception as appr_exc:
+        logger.warning("Failed to create approval record: %s", appr_exc)
+
     return {
         "status": "in_review",
         "needs_manual_image": state.get("needs_manual_image", False),

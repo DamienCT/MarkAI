@@ -111,6 +111,7 @@ export interface Content {
   content_type?: string;
   platform?: string;
   platform_adaptations?: Record<string, PlatformAdaptation>;
+  platform_metadata?: Record<string, unknown>;
   media_urls?: string[];
   image_urls?: Record<string, unknown> | string[];
   thumbnail_url?: string;

@@ -37,7 +37,12 @@ async def list_approvals(
         count_stmt = count_stmt.where(Approval.content_id == content_id)
     total = (await db.execute(count_stmt)).scalar() or 0
 
-    stmt = select(Approval).order_by(Approval.created_at.desc()).offset(skip).limit(limit)
+    from sqlalchemy.orm import selectinload
+
+    stmt = select(Approval).options(
+        selectinload(Approval.content),
+        selectinload(Approval.calendar_item),
+    ).order_by(Approval.created_at.desc()).offset(skip).limit(limit)
     if effective_status:
         stmt = stmt.where(Approval.status == effective_status)
     if content_id:
@@ -45,7 +50,40 @@ async def list_approvals(
     result = await db.execute(stmt)
     items = result.scalars().all()
 
-    return {"items": items, "total": total, "skip": skip, "limit": limit}
+    # Serialize with content data for frontend
+    serialized = []
+    for item in items:
+        d = {
+            "id": str(item.id),
+            "content_id": str(item.content_id),
+            "calendar_item_id": str(item.calendar_item_id),
+            "reviewer_id": str(item.reviewer_id) if item.reviewer_id else None,
+            "status": item.status,
+            "feedback": item.feedback,
+            "decided_at": item.decided_at.isoformat() if item.decided_at else None,
+            "created_at": item.created_at.isoformat(),
+            "updated_at": item.updated_at.isoformat(),
+        }
+        if item.content:
+            hashtags = item.content.hashtags
+            if hashtags and not isinstance(hashtags, list):
+                hashtags = []
+            d["content"] = {
+                "id": str(item.content.id),
+                "headline": item.content.headline,
+                "caption": item.content.caption,
+                "hashtags": hashtags or [],
+                "cta_text": item.content.cta_text,
+            }
+        if item.calendar_item:
+            d["calendar_item"] = {
+                "title": item.calendar_item.title,
+                "channel": item.calendar_item.channel,
+                "scheduled_at": item.calendar_item.scheduled_at.isoformat() if item.calendar_item.scheduled_at else None,
+            }
+        serialized.append(d)
+
+    return {"items": serialized, "total": total, "skip": skip, "limit": limit}
 
 
 @router.get("/pending", response_model=list[ApprovalResponse])
