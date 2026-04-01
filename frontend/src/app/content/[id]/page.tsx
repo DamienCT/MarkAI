@@ -42,8 +42,12 @@ export default function ContentDetailPage() {
           setContent(contentData);
           // Fetch approvals using the actual content ID
           try {
-            const approvalData = await api.get<Approval[]>(`/api/v1/approvals`, { content_id: contentData.id });
-            setApprovals(approvalData);
+            const approvalData = await api.get<{ items: Approval[] } | Approval[]>(`/api/v1/approvals`, { content_id: contentData.id });
+            // Backend returns {items: [...]} wrapper, not a plain array
+            const approvalList = Array.isArray(approvalData)
+              ? approvalData
+              : (approvalData as { items: Approval[] }).items || [];
+            setApprovals(approvalList);
           } catch {
             // Approvals may not exist yet
           }

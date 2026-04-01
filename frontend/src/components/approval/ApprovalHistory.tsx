@@ -11,7 +11,9 @@ interface ApprovalHistoryProps {
 }
 
 export function ApprovalHistory({ approvals }: ApprovalHistoryProps) {
-  if (approvals.length === 0) {
+  // Defensive: ensure approvals is always an array
+  const items = Array.isArray(approvals) ? approvals : [];
+  if (items.length === 0) {
     return (
       <p className="text-sm text-muted-foreground text-center py-4">
         No approval history
@@ -28,13 +30,13 @@ export function ApprovalHistory({ approvals }: ApprovalHistoryProps) {
 
   return (
     <div className="space-y-4">
-      {approvals.map((approval, index) => (
+      {items.map((approval, index) => (
         <div key={approval.id} className="flex gap-3">
           <div className="flex flex-col items-center">
             <div className="flex h-8 w-8 items-center justify-center rounded-full border bg-background">
               {iconMap[approval.status] || <Clock className="h-4 w-4" />}
             </div>
-            {index < approvals.length - 1 && (
+            {index < items.length - 1 && (
               <div className="w-px flex-1 bg-border mt-1" />
             )}
           </div>
