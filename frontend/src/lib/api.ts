@@ -70,8 +70,12 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      // Don't auto-redirect on 401 — the AuthGate handles sign-in state.
-      // API 401s are shown as error toasts by each page's catch handler.
+      // On 401, redirect to sign-in (token expired or invalid)
+      if (response.status === 401 && typeof window !== "undefined") {
+        const { signIn } = await import("next-auth/react");
+        signIn("azure-ad");
+        return undefined as T;
+      }
       const error: ApiError = {
         detail: "An error occurred",
         status: response.status,
