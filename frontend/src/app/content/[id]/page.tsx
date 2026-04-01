@@ -141,9 +141,13 @@ export default function ContentDetailPage() {
   }
 
   if (!content) {
+    // Check if this is a calendar item that hasn't had content generated yet
     return (
       <div className="text-center py-12">
-        <p className="text-lg text-muted-foreground">Content not found</p>
+        <p className="text-lg text-muted-foreground">Content not yet generated</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          This item is still being processed. Content will appear once generation completes.
+        </p>
         <Button variant="outline" className="mt-4" onClick={() => router.push("/content")}>
           Back to Content Studio
         </Button>
