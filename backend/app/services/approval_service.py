@@ -47,9 +47,7 @@ async def list_approvals_for_content(
 
 
 async def get_approval(db: AsyncSession, approval_id: uuid.UUID) -> Approval | None:
-    result = await db.execute(
-        select(Approval).where(Approval.id == approval_id)
-    )
+    result = await db.execute(select(Approval).where(Approval.id == approval_id))
     return result.scalar_one_or_none()
 
 

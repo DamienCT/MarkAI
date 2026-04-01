@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 _job_start_times: dict[str, datetime] = {}
 
 
-async def _log_job(job_name: str, status: str, error_message: str | None = None) -> None:
+async def _log_job(
+    job_name: str, status: str, error_message: str | None = None
+) -> None:
     now = datetime.now(timezone.utc)
     duration_ms = None
     completed_at = None
@@ -54,6 +56,7 @@ async def run_morning_jobs() -> None:
     # 1. BC product sync
     try:
         from app.scheduler.bc_sync import sync_bc_products
+
         await sync_bc_products()
     except Exception as e:
         logger.error("BC sync failed in morning jobs: %s", e)
@@ -62,6 +65,7 @@ async def run_morning_jobs() -> None:
     # 2. Engagement pull
     try:
         from app.scheduler.engagement_puller import pull_all_engagement
+
         await pull_all_engagement()
     except Exception as e:
         logger.error("Engagement pull failed in morning jobs: %s", e)
@@ -69,10 +73,13 @@ async def run_morning_jobs() -> None:
 
     # 3. Emit evaluation trigger to NATS
     try:
-        await nats_service.publish("evaluation.trigger", {
-            "triggered_by": "morning_jobs",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        await nats_service.publish(
+            "evaluation.trigger",
+            {
+                "triggered_by": "morning_jobs",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         logger.info("Emitted evaluation.trigger to NATS")
     except Exception as e:
         logger.error("NATS evaluation trigger failed: %s", e)
@@ -128,12 +135,17 @@ async def _topup_content_generation() -> None:
     calendar_item_id, brand_id, title, scheduled_at = row
     logger.info(
         "Content top-up: triggering generation for calendar item %s (%s) scheduled at %s",
-        calendar_item_id, title, scheduled_at,
+        calendar_item_id,
+        title,
+        scheduled_at,
     )
 
-    await nats_service.publish("content.generate", {
-        "brand_id": str(brand_id),
-        "calendar_item_id": str(calendar_item_id),
-        "triggered_by": "morning_jobs.content_topup",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    await nats_service.publish(
+        "content.generate",
+        {
+            "brand_id": str(brand_id),
+            "calendar_item_id": str(calendar_item_id),
+            "triggered_by": "morning_jobs.content_topup",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )

@@ -42,9 +42,7 @@ async def pull_instagram_insights(
     }
 
 
-async def pull_facebook_insights(
-    content: Content, access_token: str
-) -> dict[str, Any]:
+async def pull_facebook_insights(content: Content, access_token: str) -> dict[str, Any]:
     """
     Direct call to Facebook Graph API for post insights.
     """

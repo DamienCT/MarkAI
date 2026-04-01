@@ -4,21 +4,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException, Query, status  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
-from app.auth.entra import (
-    check_user_in_security_group,
+from app.auth.entra import (  # noqa: E402
     get_graph_users_by_ids,
     search_graph_users,
 )
-from app.auth.models import User
-from app.auth.permissions import role_has_access
-from app.config import settings
-from app.deps import get_current_user, get_db
-from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.auth.models import User  # noqa: E402
+from app.auth.permissions import role_has_access  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.deps import get_current_user, get_db  # noqa: E402
+from app.schemas.user import UserCreate, UserResponse, UserUpdate  # noqa: E402
 
 router = APIRouter()
 
@@ -26,6 +25,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Pydantic models for new endpoints
 # ---------------------------------------------------------------------------
+
 
 class EntraUserResult(BaseModel):
     id: str
@@ -47,6 +47,7 @@ class GrantAccessResult(BaseModel):
 # ---------------------------------------------------------------------------
 # Entra ID user search
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search", response_model=list[EntraUserResult])
 async def search_entra_users(
@@ -70,6 +71,7 @@ async def search_entra_users(
 # ---------------------------------------------------------------------------
 # Bulk grant access
 # ---------------------------------------------------------------------------
+
 
 @router.post("/grant-access", response_model=GrantAccessResult)
 async def grant_access(
@@ -96,9 +98,7 @@ async def grant_access(
             detail=f"Failed to fetch user details from Entra ID: {exc}",
         )
 
-    graph_user_map: dict[str, dict[str, Any]] = {
-        u["id"]: u for u in graph_users
-    }
+    graph_user_map: dict[str, dict[str, Any]] = {u["id"]: u for u in graph_users}
 
     granted: list[str] = []
     errors: list[str] = []
@@ -109,17 +109,11 @@ async def grant_access(
             errors.append(f"User {user_id} not found in Entra ID")
             continue
 
-        email = (
-            graph_info.get("mail")
-            or graph_info.get("userPrincipalName")
-            or ""
-        )
+        email = graph_info.get("mail") or graph_info.get("userPrincipalName") or ""
         display_name = graph_info.get("displayName", "Unknown")
 
         # Check if user already exists
-        result = await db.execute(
-            select(User).where(User.entra_id == user_id)
-        )
+        result = await db.execute(select(User).where(User.entra_id == user_id))
         existing = result.scalar_one_or_none()
 
         if existing:
@@ -150,6 +144,7 @@ async def grant_access(
 # Security group membership check
 # ---------------------------------------------------------------------------
 
+
 @router.get("/security-group-members", response_model=list[str])
 async def get_security_group_members(
     db: AsyncSession = Depends(get_db),
@@ -172,7 +167,9 @@ async def get_security_group_members(
         params = {"$select": "id", "$top": "999"}
 
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            resp = await client.get(
+                url, params=params, headers={"Authorization": f"Bearer {token}"}
+            )
             resp.raise_for_status()
             for member in resp.json().get("value", []):
                 if member.get("id"):
@@ -187,6 +184,7 @@ async def get_security_group_members(
 # ---------------------------------------------------------------------------
 # Existing CRUD endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(

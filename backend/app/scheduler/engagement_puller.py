@@ -87,13 +87,19 @@ async def pull_all_engagement() -> None:
 
             try:
                 if channel == "instagram":
-                    token = ch_cfg.get("access_token") or creds.get("meta_access_token", "")
+                    token = ch_cfg.get("access_token") or creds.get(
+                        "meta_access_token", ""
+                    )
                     metrics = await pull_instagram_insights(content, token)
                 elif channel == "facebook":
-                    token = ch_cfg.get("access_token") or creds.get("meta_access_token", "")
+                    token = ch_cfg.get("access_token") or creds.get(
+                        "meta_access_token", ""
+                    )
                     metrics = await pull_facebook_insights(content, token)
                 elif channel == "linkedin":
-                    token = ch_cfg.get("access_token") or creds.get("linkedin_access_token", "")
+                    token = ch_cfg.get("access_token") or creds.get(
+                        "linkedin_access_token", ""
+                    )
                     org_id = ch_cfg.get("org_id") or creds.get("linkedin_org_id", "")
                     metrics = await pull_linkedin_insights(content, token, org_id)
                 else:

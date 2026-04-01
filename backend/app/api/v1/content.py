@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
@@ -37,7 +38,9 @@ async def get_content_by_calendar_item(
     """Get the current content record for a calendar item."""
     item = await content_service.get_content_by_calendar_item(db, calendar_item_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Content not found for this calendar item")
+        raise HTTPException(
+            status_code=404, detail="Content not found for this calendar item"
+        )
     return item
 
 
@@ -80,6 +83,41 @@ async def update_content(
     if item is None:
         raise HTTPException(status_code=404, detail="Content not found")
     return item
+
+
+class ImageRegenerateRequest(BaseModel):
+    prompt: str | None = None
+
+
+@router.post("/{content_id}/regenerate-image")
+async def regenerate_image(
+    content_id: uuid.UUID,
+    body: ImageRegenerateRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Regenerate the image for an existing content piece without recreating the text."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    content = await content_service.get_content(db, content_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    # Publish a NATS message to trigger image regeneration
+    from app.services import nats_service
+
+    await nats_service.publish(
+        "content.regenerate-image",
+        {
+            "content_id": str(content_id),
+            "brand_id": str(content.brand_id),
+            "calendar_item_id": str(content.calendar_item_id),
+            "custom_prompt": (body.prompt if body else None),
+        },
+    )
+
+    return {"status": "queued", "message": "Image regeneration started"}
 
 
 @router.post("/{content_id}/transition", response_model=ContentResponse)

@@ -3,10 +3,18 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-_VALID_OBJECTIVES = frozenset({
-    "awareness", "engagement", "traffic", "conversions",
-    "product_launch", "seasonal", "event", "other",
-})
+_VALID_OBJECTIVES = frozenset(
+    {
+        "awareness",
+        "engagement",
+        "traffic",
+        "conversions",
+        "product_launch",
+        "seasonal",
+        "event",
+        "other",
+    }
+)
 
 
 class CampaignBase(BaseModel):

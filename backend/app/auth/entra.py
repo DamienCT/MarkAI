@@ -17,10 +17,7 @@ async def _get_jwks_client(tenant_id: str) -> PyJWKClient:
     """Return a cached PyJWKClient for the given tenant."""
     global _jwks_client
     if _jwks_client is None:
-        jwks_url = (
-            f"https://login.microsoftonline.com/"
-            f"{tenant_id}/discovery/v2.0/keys"
-        )
+        jwks_url = f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
         _jwks_client = PyJWKClient(jwks_url)
     return _jwks_client
 
@@ -34,10 +31,7 @@ async def validate_entra_token(token: str) -> dict[str, Any]:
     client = await _get_jwks_client(settings.AZURE_AD_TENANT_ID)
     signing_key = await asyncio.to_thread(client.get_signing_key_from_jwt, token)
 
-    issuer = (
-        f"https://login.microsoftonline.com/"
-        f"{settings.AZURE_AD_TENANT_ID}/v2.0"
-    )
+    issuer = f"https://login.microsoftonline.com/{settings.AZURE_AD_TENANT_ID}/v2.0"
 
     claims = jwt.decode(
         token,
@@ -96,9 +90,7 @@ async def get_graph_api_token() -> str:
             return cached["access_token"]
 
         tenant_id = settings.AZURE_AD_TENANT_ID
-        token_url = (
-            f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-        )
+        token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -129,14 +121,14 @@ async def search_graph_users(query: str) -> list[dict[str, Any]]:
 
     # Sanitise the query for OData $filter — strip control chars and escape quotes
     import re
-    safe_q = re.sub(r'[\x00-\x1f\x7f]', '', query)  # strip control characters
+
+    safe_q = re.sub(r"[\x00-\x1f\x7f]", "", query)  # strip control characters
     safe_q = safe_q.replace("\\", "\\\\").replace("'", "''")
 
     graph_url = "https://graph.microsoft.com/v1.0/users"
     params = {
         "$filter": (
-            f"startswith(mail,'{safe_q}') or "
-            f"startswith(userPrincipalName,'{safe_q}')"
+            f"startswith(mail,'{safe_q}') or startswith(userPrincipalName,'{safe_q}')"
         ),
         "$select": "id,displayName,mail,userPrincipalName,jobTitle,department",
         "$top": "20",

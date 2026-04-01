@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle } from "lucide-react";
+import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -38,6 +38,8 @@ export default function ContentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [approvalComments, setApprovalComments] = useState("");
   const [submittingApproval, setSubmittingApproval] = useState(false);
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [regeneratingImage, setRegeneratingImage] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -86,6 +88,22 @@ export default function ContentDetailPage() {
       toast.error(detail);
     }
   }, [content, contentId]);
+
+  const handleRegenerateImage = useCallback(async () => {
+    if (!content) return;
+    setRegeneratingImage(true);
+    try {
+      await api.post(`/api/v1/content/${content.id}/regenerate-image`, {
+        prompt: imagePrompt || undefined,
+      });
+      toast.success("Image regeneration started — refresh in a moment to see the result");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to regenerate image";
+      toast.error(detail);
+    } finally {
+      setRegeneratingImage(false);
+    }
+  }, [content, imagePrompt]);
 
   const handleApproval = useCallback(async (action: "approved" | "rejected") => {
     const pendingApproval = approvals.find(a => a.status === "pending");
@@ -225,6 +243,38 @@ export default function ContentDetailPage() {
                   </CardContent>
                 </Card>
               )}
+
+              {/* Image regeneration */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Image</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {content.generation_metadata?.raw_image || content.generation_metadata?.generated_image_url ? (
+                    <p className="text-xs text-green-600">Image generated</p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No image generated yet</p>
+                  )}
+                  <div className="space-y-2">
+                    <Textarea
+                      placeholder="Custom image prompt (optional — leave blank to auto-generate from content)..."
+                      value={imagePrompt}
+                      onChange={(e) => setImagePrompt(e.target.value)}
+                      rows={2}
+                      className="text-xs"
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={regeneratingImage}
+                      onClick={handleRegenerateImage}
+                      className="w-full"
+                    >
+                      {regeneratingImage ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Generating...</> : "Regenerate Image"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
 
               {/* Content details */}
               <Card>

@@ -13,18 +13,20 @@ from app.deps import get_current_user, get_db
 router = APIRouter()
 
 # Known setting keys from the app_settings table
-_VALID_SETTING_KEYS = frozenset({
-    "scheduler_timezone",
-    "morning_schedule_hour",
-    "morning_schedule_minute",
-    "publish_check_interval_minutes",
-    "engagement_pull_interval_hours",
-    "bc_sync_interval_hours",
-    "max_daily_posts",
-    "auto_approve_threshold",
-    "default_channels",
-    "notification_channels",
-})
+_VALID_SETTING_KEYS = frozenset(
+    {
+        "scheduler_timezone",
+        "morning_schedule_hour",
+        "morning_schedule_minute",
+        "publish_check_interval_minutes",
+        "engagement_pull_interval_hours",
+        "bc_sync_interval_hours",
+        "max_daily_posts",
+        "auto_approve_threshold",
+        "default_channels",
+        "notification_channels",
+    }
+)
 
 
 class SettingsUpdate(BaseModel):
@@ -48,9 +50,7 @@ async def get_settings(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        text("SELECT key, value FROM app_settings ORDER BY key")
-    )
+    result = await db.execute(text("SELECT key, value FROM app_settings ORDER BY key"))
     rows = result.fetchall()
     return {row[0]: row[1] for row in rows}
 
@@ -62,7 +62,9 @@ async def update_settings(
     current_user: User = Depends(get_current_user),
 ):
     if not role_has_access(current_user.role, "admin"):
-        raise HTTPException(status_code=403, detail="Admin role required to update settings")
+        raise HTTPException(
+            status_code=403, detail="Admin role required to update settings"
+        )
     for key, value in payload.settings.items():
         await db.execute(
             text(

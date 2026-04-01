@@ -8,8 +8,6 @@ from app.auth.permissions import role_has_access
 from app.config import settings
 from app.deps import get_current_user, get_db
 from app.schemas.ai_model import (
-    ActiveModelsResponse,
-    AIModelCategoryResponse,
     AIModelResponse,
     AIModelSelectionResponse,
     AIModelSelectionUpdate,
@@ -53,7 +51,9 @@ async def get_categories(
                 "category_id": str(m.category_id) if m.category_id else None,
                 "is_available": m.is_available,
                 "capabilities": m.capabilities,
-                "discovered_at": m.discovered_at.isoformat() if m.discovered_at else None,
+                "discovered_at": m.discovered_at.isoformat()
+                if m.discovered_at
+                else None,
             }
         result.append(entry)
     return result
@@ -133,7 +133,9 @@ async def provider_health(
             headers = {}
             if settings.LITELLM_MASTER_KEY:
                 headers["Authorization"] = f"Bearer {settings.LITELLM_MASTER_KEY}"
-            resp = await client.get(f"{settings.LITELLM_BASE_URL}/health", headers=headers)
+            resp = await client.get(
+                f"{settings.LITELLM_BASE_URL}/health", headers=headers
+            )
             resp.raise_for_status()
             data = resp.json()
             data["status"] = "healthy"

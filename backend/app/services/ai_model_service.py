@@ -344,8 +344,8 @@ async def get_active_model(category_slug: str) -> str:
             .join(AIModel, AIModelSelection.model_id == AIModel.id)
             .where(
                 AIModelSelection.category_slug == category_slug,
-                AIModelSelection.is_active == True,
-                AIModel.is_available == True,
+                AIModelSelection.is_active,
+                AIModel.is_available,
             )
             .order_by(AIModelSelection.priority.desc())
             .limit(1)
@@ -388,7 +388,7 @@ async def set_active_model(
 
         # Verify the model exists and is available
         model_result = await db.execute(
-            select(AIModel).where(AIModel.id == model_id, AIModel.is_available == True)
+            select(AIModel).where(AIModel.id == model_id, AIModel.is_available)
         )
         model = model_result.scalar_one_or_none()
         if not model:
@@ -407,7 +407,7 @@ async def set_active_model(
             update(AIModelSelection)
             .where(
                 AIModelSelection.category_slug == category_slug,
-                AIModelSelection.is_active == True,
+                AIModelSelection.is_active,
             )
             .values(is_active=False)
         )
@@ -453,9 +453,7 @@ async def set_active_model(
 
 async def list_categories(db: AsyncSession) -> list[dict]:
     """Return all categories with their currently active model."""
-    result = await db.execute(
-        select(AIModelCategory).order_by(AIModelCategory.slug)
-    )
+    result = await db.execute(select(AIModelCategory).order_by(AIModelCategory.slug))
     categories = result.scalars().all()
 
     output = []
@@ -466,7 +464,7 @@ async def list_categories(db: AsyncSession) -> list[dict]:
             .join(AIModel, AIModelSelection.model_id == AIModel.id)
             .where(
                 AIModelSelection.category_slug == cat.slug,
-                AIModelSelection.is_active == True,
+                AIModelSelection.is_active,
             )
             .order_by(AIModelSelection.priority.desc())
             .limit(1)
@@ -478,14 +476,16 @@ async def list_categories(db: AsyncSession) -> list[dict]:
             _, model = sel_row
             active_model = model
 
-        output.append({
-            "id": cat.id,
-            "slug": cat.slug,
-            "display_name": cat.display_name,
-            "description": cat.description,
-            "created_at": cat.created_at,
-            "active_model": active_model,
-        })
+        output.append(
+            {
+                "id": cat.id,
+                "slug": cat.slug,
+                "display_name": cat.display_name,
+                "description": cat.description,
+                "created_at": cat.created_at,
+                "active_model": active_model,
+            }
+        )
 
     return output
 
@@ -494,7 +494,7 @@ async def list_models_by_category(
     db: AsyncSession, category_slug: str | None = None
 ) -> list[AIModel]:
     """Return all available models, optionally filtered by category."""
-    stmt = select(AIModel).where(AIModel.is_available == True)
+    stmt = select(AIModel).where(AIModel.is_available)
 
     if category_slug:
         # Match primary category OR additional_categories in capabilities JSONB
@@ -502,10 +502,9 @@ async def list_models_by_category(
         jsonb_filter = AIModel.capabilities.op("@>")(
             cast({"additional_categories": [category_slug]}, JSONB)
         )
-        stmt = (
-            stmt.outerjoin(AIModelCategory, AIModel.category_id == AIModelCategory.id)
-            .where((AIModelCategory.slug == category_slug) | jsonb_filter)
-        )
+        stmt = stmt.outerjoin(
+            AIModelCategory, AIModel.category_id == AIModelCategory.id
+        ).where((AIModelCategory.slug == category_slug) | jsonb_filter)
 
     stmt = stmt.order_by(AIModel.model_id)
     result = await db.execute(stmt)
@@ -522,7 +521,7 @@ async def get_all_active_models(db: AsyncSession) -> dict[str, str]:
     result = await db.execute(
         select(AIModelSelection, AIModel)
         .join(AIModel, AIModelSelection.model_id == AIModel.id)
-        .where(AIModelSelection.is_active == True, AIModel.is_available == True)
+        .where(AIModelSelection.is_active, AIModel.is_available)
         .order_by(AIModelSelection.priority.desc())
     )
 

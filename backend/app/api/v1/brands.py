@@ -9,8 +9,17 @@ from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
 from app.models.brand import ALL_CHANNELS, CHANNEL_DISPLAY_NAMES
 from app.models.competitor import Competitor
-from app.schemas.brand import BrandCreate, BrandResponse, BrandUpdate, ChannelConfigUpdate
-from app.schemas.competitor import CompetitorCreateBody, CompetitorResponse, CompetitorUpdate
+from app.schemas.brand import (
+    BrandCreate,
+    BrandResponse,
+    BrandUpdate,
+    ChannelConfigUpdate,
+)
+from app.schemas.competitor import (
+    CompetitorCreateBody,
+    CompetitorResponse,
+    CompetitorUpdate,
+)
 from app.services import brand_service, fabric_service, minio_service
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -20,7 +29,13 @@ _limiter = Limiter(key_func=get_remote_address)
 router = APIRouter()
 
 # Sensitive keys that must never leak to the frontend via brand_guidelines JSONB
-_SENSITIVE_GUIDELINE_KEYS = {"access_token", "api_key", "refresh_token", "webhook_url", "client_secret"}
+_SENSITIVE_GUIDELINE_KEYS = {
+    "access_token",
+    "api_key",
+    "refresh_token",
+    "webhook_url",
+    "client_secret",
+}
 
 
 def _strip_sensitive_guidelines(brand):
@@ -38,7 +53,9 @@ def _strip_sensitive_guidelines(brand):
         if key in _SENSITIVE_GUIDELINE_KEYS:
             continue
         if isinstance(value, dict):
-            cleaned[key] = {k: v for k, v in value.items() if k not in _SENSITIVE_GUIDELINE_KEYS}
+            cleaned[key] = {
+                k: v for k, v in value.items() if k not in _SENSITIVE_GUIDELINE_KEYS
+            }
         else:
             cleaned[key] = value
     # Temporarily override for serialization (not committed)
@@ -175,7 +192,9 @@ async def complete_onboarding(
 
     # Check at least one channel enabled
     channels = (brand.brand_guidelines or {}).get("channels", {})
-    has_channel = any(ch.get("enabled") for ch in channels.values() if isinstance(ch, dict))
+    has_channel = any(
+        ch.get("enabled") for ch in channels.values() if isinstance(ch, dict)
+    )
     if not has_channel:
         missing.append("At least one enabled channel")
 
@@ -191,6 +210,7 @@ async def complete_onboarding(
         )
 
     from datetime import datetime, timezone
+
     brand.onboarding_completed_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(brand)
@@ -219,14 +239,19 @@ async def activate_content_factory(
     if brand.status == "activating":
         # Allow re-activation if no agents are actually running (all failed/completed)
         running_check = await db.execute(
-            text("SELECT 1 FROM agent_runs WHERE brand_id = :bid AND status = 'running' LIMIT 1"),
-            {"bid": str(brand_id)}
+            text(
+                "SELECT 1 FROM agent_runs WHERE brand_id = :bid AND status = 'running' LIMIT 1"
+            ),
+            {"bid": str(brand_id)},
         )
         if running_check.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="Activation already in progress")
+            raise HTTPException(
+                status_code=409, detail="Activation already in progress"
+            )
         # All runs are done — allow re-activation by resetting status
 
     from datetime import datetime, timezone
+
     brand.status = "activating"
     brand.is_active = True
     brand.activation_started_at = datetime.now(timezone.utc)
@@ -234,11 +259,15 @@ async def activate_content_factory(
 
     # Trigger the research pipeline (worker chains: research → strategy → planning → content)
     from app.services import nats_service
-    await nats_service.publish("research.trigger", {
-        "brand_id": str(brand_id),
-        "trigger": "activation",
-        "scope_weeks": 12,
-    })
+
+    await nats_service.publish(
+        "research.trigger",
+        {
+            "brand_id": str(brand_id),
+            "trigger": "activation",
+            "scope_weeks": 12,
+        },
+    )
 
     return {
         "status": "activating",
@@ -264,13 +293,15 @@ async def get_brand_channels(
     result = []
     for ch in ALL_CHANNELS:
         cfg = channels.get(ch, {})
-        result.append({
-            "channel": ch,
-            "enabled": cfg.get("enabled", False),
-            "configured": cfg.get("configured", False),
-            "display_name": CHANNEL_DISPLAY_NAMES[ch],
-            "requires_setup": ch not in ["website_blog", "teams"],
-        })
+        result.append(
+            {
+                "channel": ch,
+                "enabled": cfg.get("enabled", False),
+                "configured": cfg.get("configured", False),
+                "display_name": CHANNEL_DISPLAY_NAMES[ch],
+                "requires_setup": ch not in ["website_blog", "teams"],
+            }
+        )
     return result
 
 
@@ -294,6 +325,7 @@ async def update_brand_channels(
 
     # Direct update with flag_modified to ensure JSONB persistence
     from sqlalchemy.orm.attributes import flag_modified
+
     brand.brand_guidelines = guidelines
     flag_modified(brand, "brand_guidelines")
     await db.commit()
@@ -321,18 +353,26 @@ async def upload_brand_logo(
     # Validate file type
     allowed = {"image/png", "image/jpeg", "image/svg+xml", "image/webp"}
     if file.content_type not in allowed:
-        raise HTTPException(status_code=400, detail="Only PNG, JPEG, SVG, and WebP images are allowed")
+        raise HTTPException(
+            status_code=400, detail="Only PNG, JPEG, SVG, and WebP images are allowed"
+        )
 
     # Read file and upload to MinIO
     data = await file.read()
     if len(data) > 5 * 1024 * 1024:  # 5MB limit
         raise HTTPException(status_code=400, detail="File size must be under 5MB")
 
-    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "png"
+    ext = (
+        file.filename.rsplit(".", 1)[-1].lower()
+        if file.filename and "." in file.filename
+        else "png"
+    )
     object_name = f"brands/{brand_id}/logos/{label}.{ext}"
 
     await minio_service.ensure_bucket()
-    await minio_service.upload_file(object_name, data, content_type=file.content_type or "image/png")
+    await minio_service.upload_file(
+        object_name, data, content_type=file.content_type or "image/png"
+    )
 
     # Generate URL and update brand
     logo_url = f"/api/v1/brands/{brand_id}/logos/{label}"
@@ -340,11 +380,17 @@ async def upload_brand_logo(
     # Store logo info in brand_guidelines
     guidelines = dict(brand.brand_guidelines or {})
     logos = guidelines.get("logos", {})
-    logos[label] = {"object_name": object_name, "url": logo_url, "content_type": file.content_type, "filename": file.filename}
+    logos[label] = {
+        "object_name": object_name,
+        "url": logo_url,
+        "content_type": file.content_type,
+        "filename": file.filename,
+    }
     guidelines["logos"] = logos
 
     # Direct update with flag_modified for JSONB persistence
     from sqlalchemy.orm.attributes import flag_modified
+
     brand.brand_guidelines = guidelines
     if label == "primary":
         brand.logo_url = logo_url
@@ -377,6 +423,7 @@ async def get_brand_logo(
         raise HTTPException(status_code=404, detail="Logo file not found in storage")
 
     from fastapi.responses import Response
+
     return Response(
         content=data,
         media_type=logo_info.get("content_type", "image/png"),
@@ -414,6 +461,7 @@ async def delete_brand_logo(
 
     # Force SQLAlchemy to detect the JSONB change by assigning a new dict
     from sqlalchemy.orm.attributes import flag_modified
+
     brand.brand_guidelines = dict(guidelines)
     if label == "primary":
         brand.logo_url = None
@@ -493,7 +541,9 @@ async def create_competitor(
     return competitor
 
 
-@router.put("/{brand_id}/competitors/{competitor_id}", response_model=CompetitorResponse)
+@router.put(
+    "/{brand_id}/competitors/{competitor_id}", response_model=CompetitorResponse
+)
 async def update_competitor(
     brand_id: uuid.UUID,
     competitor_id: uuid.UUID,

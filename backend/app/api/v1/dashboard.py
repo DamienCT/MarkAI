@@ -24,7 +24,8 @@ async def dashboard_stats(
         return json.loads(cached)
 
     row = (
-        await db.execute(text("""
+        await db.execute(
+            text("""
             SELECT
                 (SELECT count(*) FROM brands) AS total_brands,
                 (SELECT count(*) FROM content) AS total_content,
@@ -32,7 +33,8 @@ async def dashboard_stats(
                 (SELECT count(*) FROM calendar_items WHERE status = 'scheduled') AS scheduled_posts,
                 (SELECT count(*) FROM calendar_items WHERE status = 'published' AND published_at >= now() - interval '7 days') AS published_this_week,
                 (SELECT count(*) FROM agent_runs WHERE status = 'running') AS active_workflows
-        """))
+        """)
+        )
     ).fetchone()
 
     result = {
@@ -43,5 +45,7 @@ async def dashboard_stats(
         "published_this_week": int(row[4]),
         "active_workflows": int(row[5]),
     }
-    await _cache_set("markai:dashboard:stats", json.dumps(result), ttl=_DASHBOARD_CACHE_TTL)
+    await _cache_set(
+        "markai:dashboard:stats", json.dumps(result), ttl=_DASHBOARD_CACHE_TTL
+    )
     return result

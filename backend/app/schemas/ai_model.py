@@ -46,6 +46,7 @@ class AIModelSelectionUpdate(BaseModel):
 
 class ActiveModelsResponse(BaseModel):
     """Maps category_slug to the active model_id string (e.g. 'gpt-5.4')."""
+
     models: dict[str, str] = {}
 
 

@@ -60,7 +60,9 @@ async def publish_result(
 
     if payload.status == "published":
         if not payload.platform_post_id:
-            logger.warning("Published callback for content %s missing platform_post_id", content_id)
+            logger.warning(
+                "Published callback for content %s missing platform_post_id", content_id
+            )
         content.platform_post_id = payload.platform_post_id
 
         # Update the associated calendar item's status and published_at

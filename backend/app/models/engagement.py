@@ -33,8 +33,12 @@ class EngagementMetric(Base):
     saves: Mapped[int | None] = mapped_column(Integer, nullable=True)
     clicks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     video_views: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    engagement_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
-    sentiment_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
+    engagement_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 4), nullable=True
+    )
+    sentiment_score: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 4), nullable=True
+    )
     raw_metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

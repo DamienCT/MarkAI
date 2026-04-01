@@ -35,9 +35,7 @@ class Product(Base):
     short_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     sku: Mapped[str | None] = mapped_column(String(255), nullable=True)
     barcode: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    unit_price: Mapped[Decimal | None] = mapped_column(
-        Numeric(12, 2), nullable=True
-    )
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     currency: Mapped[str | None] = mapped_column(String(255), nullable=True)
     category: Mapped[str | None] = mapped_column(String(255), nullable=True)
     subcategory: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -49,13 +47,13 @@ class Product(Base):
     vendor_no: Mapped[str | None] = mapped_column(String(255), nullable=True)
     bc_company: Mapped[str | None] = mapped_column(String(255), nullable=True)
     bc_location: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    remaining_qty: Mapped[Decimal | None] = mapped_column(
-        Numeric(12, 2), nullable=True
-    )
+    remaining_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     lot_no: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_new: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    is_expiring_soon: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_expiring_soon: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     bc_last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -64,7 +62,10 @@ class Product(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     # Relationships

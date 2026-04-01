@@ -94,6 +94,84 @@ SUBSCRIPTIONS = [
 _consumer: NATSConsumer | None = None
 
 
+async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
+    """Regenerate the image for an existing content piece."""
+    from shared.llm import generate_image
+    from shared.tools.storage import async_upload_file, async_ensure_bucket
+
+    content_id = payload.get("content_id", "")
+    brand_id = payload.get("brand_id", "")
+    calendar_item_id = payload.get("calendar_item_id", "")
+    custom_prompt = payload.get("custom_prompt")
+
+    logger.info("Regenerating image for content %s (brand %s)", content_id, brand_id)
+
+    # Get the content record for context
+    content_rows = await execute_query(
+        "SELECT headline, caption, generation_metadata FROM content WHERE id = :id",
+        {"id": content_id},
+    )
+    if not content_rows:
+        logger.error("Content %s not found for image regeneration", content_id)
+        return
+
+    content = content_rows[0]
+    headline = content.get("headline", "")
+    caption = content.get("caption", "")
+
+    # Build image prompt
+    if custom_prompt:
+        image_prompt = custom_prompt
+    else:
+        image_prompt = (
+            f"Create a professional social media lifestyle image. "
+            f"Theme: {headline}. "
+            f"Context: {caption[:200]}. "
+            f"Clean, modern aesthetic. Golden hour lighting. No text or logos in the image."
+        )
+
+    # Generate image
+    image_url = await generate_image(image_prompt)
+    logger.info("Image generated for content %s: %s chars", content_id, len(image_url))
+
+    # Upload to MinIO
+    import base64 as _b64
+    import httpx as _httpx
+
+    await async_ensure_bucket("content-images")
+
+    if image_url.startswith("data:"):
+        _, b64_part = image_url.split(",", 1)
+        image_data = _b64.b64decode(b64_part)
+    else:
+        async with _httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+            image_data = resp.content
+
+    object_name = f"{brand_id}/{calendar_item_id}/background.png"
+    await async_upload_file("content-images", object_name, image_data, "image/png")
+    stored_url = f"content-images/{object_name}"
+
+    # Update content record with the new image
+    import json as _json
+    existing_metadata = content.get("generation_metadata") or {}
+    if isinstance(existing_metadata, str):
+        try:
+            existing_metadata = _json.loads(existing_metadata)
+        except Exception:
+            existing_metadata = {}
+    existing_metadata["raw_image"] = stored_url
+    existing_metadata["generated_image_url"] = stored_url
+
+    await execute_update(
+        "UPDATE content SET generation_metadata = :metadata WHERE id = :id",
+        {"id": content_id, "metadata": _json.dumps(existing_metadata, default=str)},
+    )
+
+    logger.info("Image regeneration complete for content %s — stored at %s", content_id, stored_url)
+
+
 def _resolve_graph(subject: str):
     """Resolve a NATS subject to the appropriate LangGraph graph."""
     prefix = subject.split(".")[0]
@@ -104,6 +182,16 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     """Process an incoming NATS message by dispatching to the correct graph."""
     subject = msg.subject
     logger.info("Received message on %s (%d bytes)", subject, len(msg.data))
+
+    # ── Special handler: image regeneration (not a graph workflow) ──────
+    if subject == "content.regenerate-image":
+        try:
+            payload = json.loads(msg.data.decode())
+            await _handle_image_regeneration(payload)
+        except Exception as exc:
+            logger.exception("Image regeneration failed: %s", exc)
+        await msg.ack()
+        return
 
     graph = _resolve_graph(subject)
     if graph is None:

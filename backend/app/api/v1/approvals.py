@@ -39,10 +39,16 @@ async def list_approvals(
 
     from sqlalchemy.orm import selectinload
 
-    stmt = select(Approval).options(
-        selectinload(Approval.content),
-        selectinload(Approval.calendar_item),
-    ).order_by(Approval.created_at.desc()).offset(skip).limit(limit)
+    stmt = (
+        select(Approval)
+        .options(
+            selectinload(Approval.content),
+            selectinload(Approval.calendar_item),
+        )
+        .order_by(Approval.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
     if effective_status:
         stmt = stmt.where(Approval.status == effective_status)
     if content_id:
@@ -79,7 +85,9 @@ async def list_approvals(
             d["calendar_item"] = {
                 "title": item.calendar_item.title,
                 "channel": item.calendar_item.channel,
-                "scheduled_at": item.calendar_item.scheduled_at.isoformat() if item.calendar_item.scheduled_at else None,
+                "scheduled_at": item.calendar_item.scheduled_at.isoformat()
+                if item.calendar_item.scheduled_at
+                else None,
             }
         serialized.append(d)
 
@@ -149,7 +157,8 @@ async def update_approval(
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     if decision.status not in ("approved", "rejected", "revision_requested"):
         raise HTTPException(
-            status_code=422, detail="Decision must be 'approved', 'rejected', or 'revision_requested'"
+            status_code=422,
+            detail="Decision must be 'approved', 'rejected', or 'revision_requested'",
         )
     try:
         approval = await approval_service.resolve_approval(db, approval_id, decision)
@@ -171,7 +180,8 @@ async def decide_approval(
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     if decision.status not in ("approved", "rejected", "revision_requested"):
         raise HTTPException(
-            status_code=422, detail="Decision must be 'approved', 'rejected', or 'revision_requested'"
+            status_code=422,
+            detail="Decision must be 'approved', 'rejected', or 'revision_requested'",
         )
     try:
         approval = await approval_service.resolve_approval(db, approval_id, decision)

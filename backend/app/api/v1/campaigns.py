@@ -23,7 +23,9 @@ async def list_campaigns(
     current_user: User = Depends(get_current_user),
 ):
     limit = min(limit, 200)
-    stmt = select(Campaign).offset(skip).limit(limit).order_by(Campaign.created_at.desc())
+    stmt = (
+        select(Campaign).offset(skip).limit(limit).order_by(Campaign.created_at.desc())
+    )
     if brand_id is not None:
         stmt = stmt.where(Campaign.brand_id == brand_id)
     if status_filter is not None:

@@ -53,7 +53,9 @@ async def create_prompt(
 ):
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    return await prompt_service.create_prompt_version(db, data, created_by=current_user.id)
+    return await prompt_service.create_prompt_version(
+        db, data, created_by=current_user.id
+    )
 
 
 @router.put("/{prompt_id}", response_model=PromptVersionResponse)

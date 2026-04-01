@@ -27,12 +27,14 @@ IMAGE_MODELS = [
 def _get_client():
     """Lazy import and create Gemini client."""
     from google import genai
+
     return genai.Client(api_key=settings.GEMINI_API_KEY)
 
 
 def _get_types():
     """Lazy import Gemini types."""
     from google.genai import types
+
     return types
 
 
@@ -78,7 +80,13 @@ async def search_product_images(
             if vqd:
                 img_resp = await client.get(
                     "https://duckduckgo.com/i.js",
-                    params={"l": "us-en", "o": "json", "q": query, "vqd": vqd, "f": ",size:Medium,"},
+                    params={
+                        "l": "us-en",
+                        "o": "json",
+                        "q": query,
+                        "vqd": vqd,
+                        "f": ",size:Medium,",
+                    },
                     headers=headers,
                 )
                 if img_resp.status_code == 200:
@@ -102,11 +110,15 @@ async def search_product_images(
                     headers=headers,
                 )
                 for url in re.findall(r'href="(https?://[^"]+)"', resp.text):
-                    if any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-                        if 'duckduckgo' not in url:
+                    if any(
+                        ext in url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]
+                    ):
+                        if "duckduckgo" not in url:
                             image_urls.append(url)
         except Exception as e:
-            logger.warning("DuckDuckGo HTML fallback failed for '%s': %s", product_name, e)
+            logger.warning(
+                "DuckDuckGo HTML fallback failed for '%s': %s", product_name, e
+            )
 
     # Strategy 3: Direct manufacturer website guess
     if not image_urls:
@@ -136,14 +148,21 @@ async def search_product_images(
                 if len(resp.content) > 10_000_000:  # Skip huge files
                     continue
 
-                results.append({
-                    "url": url,
-                    "content_type": ct.split(";")[0],
-                    "size_bytes": len(resp.content),
-                    "image_data": resp.content,
-                })
-                logger.info("Downloaded product image %d for '%s' from %s (%d KB)",
-                           len(results), product_name, url[:60], len(resp.content) // 1024)
+                results.append(
+                    {
+                        "url": url,
+                        "content_type": ct.split(";")[0],
+                        "size_bytes": len(resp.content),
+                        "image_data": resp.content,
+                    }
+                )
+                logger.info(
+                    "Downloaded product image %d for '%s' from %s (%d KB)",
+                    len(results),
+                    product_name,
+                    url[:60],
+                    len(resp.content) // 1024,
+                )
             except Exception as e:
                 logger.debug("Image download failed for URL %s: %s", url, e)
                 continue
@@ -204,13 +223,24 @@ async def replace_product_in_image(
 
             for part in response.candidates[0].content.parts:
                 if part.inline_data is not None:
-                    logger.info("Product replacement successful for '%s' using %s", product_name, model)
+                    logger.info(
+                        "Product replacement successful for '%s' using %s",
+                        product_name,
+                        model,
+                    )
                     return part.inline_data.data
 
-            logger.warning("No image in Gemini response for product replacement (model=%s)", model)
+            logger.warning(
+                "No image in Gemini response for product replacement (model=%s)", model
+            )
 
         except Exception as e:
-            logger.warning("Product replacement failed with %s for '%s': %s", model, product_name, e)
+            logger.warning(
+                "Product replacement failed with %s for '%s': %s",
+                model,
+                product_name,
+                e,
+            )
             continue
 
     return None

@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import uuid
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -70,7 +69,9 @@ async def upsert_vectors(
         for v in vectors
     ]
     await asyncio.to_thread(
-        client.upsert, collection_name=collection_name, points=points,
+        client.upsert,
+        collection_name=collection_name,
+        points=points,
     )
     logger.debug("Upserted %d vectors to %s", len(points), collection_name)
 

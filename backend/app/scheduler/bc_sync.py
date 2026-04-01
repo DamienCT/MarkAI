@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from datetime import datetime
 
 from sqlalchemy import select
 
@@ -44,16 +43,12 @@ async def _sync_bc_products_impl() -> None:
 
         for brand in brands:
             if not brand.bc_company:
-                logger.info(
-                    "Brand %s has no BC company set, skipping", brand.name
-                )
+                logger.info("Brand %s has no BC company set, skipping", brand.name)
                 continue
 
             locations = brand.bc_locations or []
             if not locations:
-                logger.info(
-                    "Brand %s has no BC locations set, skipping", brand.name
-                )
+                logger.info("Brand %s has no BC locations set, skipping", brand.name)
                 continue
 
             # ── Fetch active stock (company + locations, blocked=0, qty>0) ──
@@ -64,14 +59,16 @@ async def _sync_bc_products_impl() -> None:
             except Exception as e:
                 logger.error(
                     "Failed to fetch active stock for brand %s: %s",
-                    brand.name, e,
+                    brand.name,
+                    e,
                 )
                 await notify_failure("bc_sync", brand.id, e)
                 continue
 
             logger.info(
                 "Syncing %d stock items for brand %s",
-                len(stock_items), brand.name,
+                len(stock_items),
+                brand.name,
             )
 
             # ── Fetch expiring items to flag products ──
@@ -86,20 +83,20 @@ async def _sync_bc_products_impl() -> None:
             except Exception as e:
                 logger.warning(
                     "Failed to fetch expiring items for brand %s: %s",
-                    brand.name, e,
+                    brand.name,
+                    e,
                 )
 
             # ── Fetch new items to flag products ──
             new_item_nos: set[str] = set()
             try:
                 new_items = await fabric_service.get_new_items(brand.bc_company)
-                new_item_nos = {
-                    r.get("no", "") for r in new_items if r.get("no")
-                }
+                new_item_nos = {r.get("no", "") for r in new_items if r.get("no")}
             except Exception as e:
                 logger.warning(
                     "Failed to fetch new items for brand %s: %s",
-                    brand.name, e,
+                    brand.name,
+                    e,
                 )
 
             # ── Build expiry date map from expiring items ──
@@ -143,8 +140,6 @@ async def _sync_bc_products_impl() -> None:
                 try:
                     await upsert_from_bc(db, item_no, product_data)
                 except Exception as e:
-                    logger.warning(
-                        "Failed to upsert product %s: %s", item_no, e
-                    )
+                    logger.warning("Failed to upsert product %s: %s", item_no, e)
 
         logger.info("Business Central product sync completed")

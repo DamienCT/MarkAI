@@ -23,10 +23,7 @@ async def list_agent_runs(
     """Return recent agent runs ordered by created_at descending."""
     limit = min(limit, 200)
     stmt = (
-        select(AgentRun)
-        .order_by(AgentRun.created_at.desc())
-        .offset(skip)
-        .limit(limit)
+        select(AgentRun).order_by(AgentRun.created_at.desc()).offset(skip).limit(limit)
     )
     if brand_id:
         stmt = stmt.where(AgentRun.brand_id == brand_id)

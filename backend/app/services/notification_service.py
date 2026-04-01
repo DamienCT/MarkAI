@@ -66,9 +66,7 @@ async def send_teams_message(title: str, text: str, color: str = "0076D7") -> No
     logger.info("Teams message sent: %s", title)
 
 
-async def notify_failure(
-    job_name: str, entity: Any, error: Exception
-) -> None:
+async def notify_failure(job_name: str, entity: Any, error: Exception) -> None:
     """
     Send failure alerts to Teams and create in-app notifications for admins.
     Replaces n8n error handler workflow.
@@ -112,7 +110,7 @@ async def notify_approval_requested(
         reviewer_id,
         "approval_request",
         f"Approval requested by {requester_name}",
-        f"Please review the content.",
+        "Please review the content.",
         reference_type="content",
         reference_id=content_id,
     )

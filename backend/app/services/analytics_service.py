@@ -5,7 +5,6 @@ from typing import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.content import Content
 from app.models.engagement import EngagementMetric
 from app.schemas.engagement import EngagementAggregation
 
@@ -64,7 +63,9 @@ async def get_aggregated_engagement(
         total_saves=row.total_saves or 0,
         total_clicks=row.total_clicks or 0,
         total_video_views=row.total_video_views or 0,
-        avg_engagement_rate=float(row.avg_engagement_rate) if row.avg_engagement_rate else None,
+        avg_engagement_rate=float(row.avg_engagement_rate)
+        if row.avg_engagement_rate
+        else None,
         content_count=row.content_count or 0,
     )
 
@@ -79,13 +80,17 @@ async def get_engagement_timeseries(
 ) -> list[dict]:
     """Return daily engagement aggregations for charting."""
     date_col = func.date(EngagementMetric.fetched_at).label("date")
-    stmt = select(
-        date_col,
-        func.sum(EngagementMetric.impressions).label("impressions"),
-        func.sum(EngagementMetric.likes).label("likes"),
-        func.sum(EngagementMetric.comments).label("comments"),
-        func.sum(EngagementMetric.shares).label("shares"),
-    ).group_by(date_col).order_by(date_col)
+    stmt = (
+        select(
+            date_col,
+            func.sum(EngagementMetric.impressions).label("impressions"),
+            func.sum(EngagementMetric.likes).label("likes"),
+            func.sum(EngagementMetric.comments).label("comments"),
+            func.sum(EngagementMetric.shares).label("shares"),
+        )
+        .group_by(date_col)
+        .order_by(date_col)
+    )
 
     if brand_id is not None:
         stmt = stmt.where(EngagementMetric.brand_id == brand_id)

@@ -179,12 +179,14 @@ async def upload_product_image(
 
     # Add to image gallery and set as primary
     gallery = list(product.image_urls) if isinstance(product.image_urls, list) else []
-    gallery.append({
-        "url": object_name,
-        "object_name": object_name,
-        "source": "upload",
-        "original_filename": file.filename,
-    })
+    gallery.append(
+        {
+            "url": object_name,
+            "object_name": object_name,
+            "source": "upload",
+            "original_filename": file.filename,
+        }
+    )
     product.image_urls = gallery
     product.primary_image_url = object_name
     flag_modified(product, "image_urls")
@@ -260,11 +262,17 @@ async def fetch_product_images(
 
     new_images = []
     for i, img in enumerate(results):
-        ext = "jpg" if "jpeg" in img["content_type"] else img["content_type"].split("/")[-1]
+        ext = (
+            "jpg"
+            if "jpeg" in img["content_type"]
+            else img["content_type"].split("/")[-1]
+        )
         object_name = f"products/{product_id}/gallery/web_{len(gallery) + i + 1}.{ext}"
 
         await minio_service.ensure_bucket()
-        await minio_service.upload_file(object_name, img["image_data"], img["content_type"])
+        await minio_service.upload_file(
+            object_name, img["image_data"], img["content_type"]
+        )
 
         entry = {
             "url": object_name,
@@ -284,8 +292,17 @@ async def fetch_product_images(
     await db.commit()
     await db.refresh(product)
 
-    logger.info("Fetched %d web images for product %s (%s)", len(new_images), product_id, product.name)
-    return {"product_id": str(product_id), "images_found": len(new_images), "images": new_images}
+    logger.info(
+        "Fetched %d web images for product %s (%s)",
+        len(new_images),
+        product_id,
+        product.name,
+    )
+    return {
+        "product_id": str(product_id),
+        "images_found": len(new_images),
+        "images": new_images,
+    }
 
 
 @router.post("/batch-fetch-images")
@@ -304,7 +321,13 @@ async def batch_fetch_product_images(
     for pid in req.product_ids:
         product = await product_service.get_product(db, pid)
         if not product:
-            results.append({"product_id": str(pid), "images_found": 0, "error": "Product not found"})
+            results.append(
+                {
+                    "product_id": str(pid),
+                    "images_found": 0,
+                    "error": "Product not found",
+                }
+            )
             continue
 
         images = await search_product_images(
@@ -313,21 +336,31 @@ async def batch_fetch_product_images(
             max_results=3,
         )
 
-        gallery = list(product.image_urls) if isinstance(product.image_urls, list) else []
+        gallery = (
+            list(product.image_urls) if isinstance(product.image_urls, list) else []
+        )
 
         saved = 0
         for i, img in enumerate(images):
-            ext = "jpg" if "jpeg" in img["content_type"] else img["content_type"].split("/")[-1]
+            ext = (
+                "jpg"
+                if "jpeg" in img["content_type"]
+                else img["content_type"].split("/")[-1]
+            )
             object_name = f"products/{pid}/gallery/web_{len(gallery) + i + 1}.{ext}"
             await minio_service.ensure_bucket()
-            await minio_service.upload_file(object_name, img["image_data"], img["content_type"])
-            gallery.append({
-                "url": object_name,
-                "object_name": object_name,
-                "source": "web_search",
-                "source_url": img["url"],
-                "size_bytes": img["size_bytes"],
-            })
+            await minio_service.upload_file(
+                object_name, img["image_data"], img["content_type"]
+            )
+            gallery.append(
+                {
+                    "url": object_name,
+                    "object_name": object_name,
+                    "source": "web_search",
+                    "source_url": img["url"],
+                    "size_bytes": img["size_bytes"],
+                }
+            )
             saved += 1
 
         product.image_urls = gallery
@@ -398,7 +431,11 @@ async def delete_product_image(
     flag_modified(product, "image_urls")
 
     # Update primary if it was the deleted one
-    if product.primary_image_url and isinstance(removed, dict) and removed.get("url") == product.primary_image_url:
+    if (
+        product.primary_image_url
+        and isinstance(removed, dict)
+        and removed.get("url") == product.primary_image_url
+    ):
         product.primary_image_url = gallery[0]["url"] if gallery else None
 
     await db.commit()

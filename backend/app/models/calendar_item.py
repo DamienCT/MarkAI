@@ -41,7 +41,9 @@ class CalendarItem(Base):
     content_brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     visual_direction: Mapped[str | None] = mapped_column(Text, nullable=True)
     cta_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    product_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=True)
+    product_ids: Mapped[list | None] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=True
+    )
     tags: Mapped[list | None] = mapped_column(ARRAY(String), nullable=True)
     priority: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -51,7 +53,10 @@ class CalendarItem(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     # Relationships
@@ -59,4 +64,6 @@ class CalendarItem(Base):
     campaign = relationship("Campaign", back_populates="calendar_items")
     content_items = relationship("Content", back_populates="calendar_item")
     approvals = relationship("Approval", back_populates="calendar_item")
-    engagement_metrics = relationship("EngagementMetric", back_populates="calendar_item")
+    engagement_metrics = relationship(
+        "EngagementMetric", back_populates="calendar_item"
+    )

@@ -17,9 +17,16 @@ _js: JetStreamContext | None = None
 STREAMS = {
     "WORKFLOWS": {
         "subjects": [
-            "research.>", "strategy.>", "content.>", "evaluation.>",
-            "product.>", "planning.>", "adaptation.>", "publish.>",
-            "engagement.>", "brand.>",
+            "research.>",
+            "strategy.>",
+            "content.>",
+            "evaluation.>",
+            "product.>",
+            "planning.>",
+            "adaptation.>",
+            "publish.>",
+            "engagement.>",
+            "brand.>",
         ]
     },
 }

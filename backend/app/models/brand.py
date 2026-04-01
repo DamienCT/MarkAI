@@ -9,8 +9,14 @@ from app.models.base import Base
 
 
 ALL_CHANNELS = [
-    "instagram", "facebook", "linkedin", "youtube",
-    "tiktok", "x", "website_blog", "teams",
+    "instagram",
+    "facebook",
+    "linkedin",
+    "youtube",
+    "tiktok",
+    "x",
+    "website_blog",
+    "teams",
 ]
 
 CHANNEL_DISPLAY_NAMES = {
@@ -55,7 +61,9 @@ class Brand(Base):
     target_audience: Mapped[dict] = mapped_column(JSONB, default=dict)
     color_palette: Mapped[dict] = mapped_column(JSONB, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
-    status: Mapped[str] = mapped_column(String(50), nullable=False, default="onboarding")
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="onboarding"
+    )
     onboarding_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

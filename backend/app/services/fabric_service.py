@@ -12,14 +12,19 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_TABLE_NAME_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+_TABLE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 # Whitelist of allowed table names to prevent SQL injection via config
 _ALLOWED_TABLES = {
-    "itemmodule_item", "itemmodule_itemcategory",
-    "vendormodule_vendor", "itemmodule_itemledgerentry",
+    "itemmodule_item",
+    "itemmodule_itemcategory",
+    "vendormodule_vendor",
+    "itemmodule_itemledgerentry",
     # Legacy/alternate names
-    "items", "item_categories", "vendors", "item_ledger_entries",
+    "items",
+    "item_categories",
+    "vendors",
+    "item_ledger_entries",
 }
 
 
@@ -44,12 +49,15 @@ async def _get_sql_token() -> str:
 
     token_url = f"https://login.microsoftonline.com/{settings.FABRIC_TENANT_ID}/oauth2/v2.0/token"
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(token_url, data={
-            "grant_type": "client_credentials",
-            "client_id": settings.FABRIC_CLIENT_ID,
-            "client_secret": settings.FABRIC_CLIENT_SECRET,
-            "scope": "https://database.windows.net/.default",
-        })
+        resp = await client.post(
+            token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": settings.FABRIC_CLIENT_ID,
+                "client_secret": settings.FABRIC_CLIENT_SECRET,
+                "scope": "https://database.windows.net/.default",
+            },
+        )
         resp.raise_for_status()
         token = resp.json()["access_token"]
 
@@ -105,7 +113,9 @@ def _get_cached_connection(token: str) -> pyodbc.Connection:
     return conn
 
 
-def _run_query_sync(token: str, query: str, params: tuple | None) -> list[dict[str, Any]]:
+def _run_query_sync(
+    token: str, query: str, params: tuple | None
+) -> list[dict[str, Any]]:
     """Run a blocking pyodbc query (designed to be called via asyncio.to_thread)."""
     conn = _get_cached_connection(token)
     try:
@@ -152,7 +162,9 @@ async def list_locations_for_company(company: str) -> list[str]:
     return [r["locationCode"] for r in rows]
 
 
-async def get_items(company: str, vendor_filter: list[str] | None = None, exclude_blocked: bool = True) -> list[dict[str, Any]]:
+async def get_items(
+    company: str, vendor_filter: list[str] | None = None, exclude_blocked: bool = True
+) -> list[dict[str, Any]]:
     """Fetch items from BC for a specific company, excluding blocked items."""
     table = _safe_table_name(settings.BC_TABLE_ITEMS)
     query = f"SELECT * FROM {table} WHERE Company = ?"
@@ -225,7 +237,9 @@ async def get_vendors(company: str) -> list[dict[str, Any]]:
     )
 
 
-async def get_expiring_items(company: str, locations: list[str], days_ahead: int = 30) -> list[dict[str, Any]]:
+async def get_expiring_items(
+    company: str, locations: list[str], days_ahead: int = 30
+) -> list[dict[str, Any]]:
     """Get items expiring within the next N days at the given locations."""
     ledger_table = _safe_table_name(settings.BC_TABLE_ITEM_LEDGER_ENTRIES)
     items_table = _safe_table_name(settings.BC_TABLE_ITEMS)

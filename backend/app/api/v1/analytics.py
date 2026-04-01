@@ -1,6 +1,5 @@
 import json
 import uuid
-from datetime import datetime
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
@@ -26,7 +25,8 @@ async def get_analytics_summary(
         return json.loads(cached)
 
     row = (
-        await db.execute(text("""
+        await db.execute(
+            text("""
             SELECT
                 COALESCE(SUM(impressions), 0) AS total_impressions,
                 COALESCE(SUM(likes), 0) AS total_likes,
@@ -37,7 +37,8 @@ async def get_analytics_summary(
                 COALESCE(AVG(engagement_rate), 0) AS avg_engagement_rate,
                 (SELECT count(*) FROM calendar_items WHERE status = 'published') AS total_published
             FROM engagement_metrics
-        """))
+        """)
+        )
     ).fetchone()
 
     result = {
@@ -50,7 +51,9 @@ async def get_analytics_summary(
         "engagement_rate": round(float(row[6]), 4),
         "total_published_posts": int(row[7]),
     }
-    await _cache_set("markai:analytics:summary", json.dumps(result), ttl=_ANALYTICS_CACHE_TTL)
+    await _cache_set(
+        "markai:analytics:summary", json.dumps(result), ttl=_ANALYTICS_CACHE_TTL
+    )
     return result
 
 
@@ -98,7 +101,8 @@ async def get_posting_heatmap(
     current_user: User = Depends(get_current_user),
 ):
     """Posting frequency by day-of-week and hour."""
-    rows = await db.execute(text("""
+    rows = await db.execute(
+        text("""
         SELECT
             EXTRACT(DOW FROM scheduled_at) as day,
             EXTRACT(HOUR FROM scheduled_at) as hour,
@@ -107,7 +111,8 @@ async def get_posting_heatmap(
         WHERE scheduled_at IS NOT NULL AND status IN ('published', 'scheduled')
         GROUP BY EXTRACT(DOW FROM scheduled_at), EXTRACT(HOUR FROM scheduled_at)
         ORDER BY day, hour
-    """))
+    """)
+    )
     return [
         {"day": int(row[0]), "hour": int(row[1]), "count": int(row[2])}
         for row in rows.fetchall()
@@ -184,7 +189,15 @@ async def get_brand_metrics(
     )
     row = rows.fetchone()
     if not row:
-        return {"likes": 0, "comments": 0, "shares": 0, "impressions": 0, "reach": 0, "engagement_rate": 0, "total_posts": 0}
+        return {
+            "likes": 0,
+            "comments": 0,
+            "shares": 0,
+            "impressions": 0,
+            "reach": 0,
+            "engagement_rate": 0,
+            "total_posts": 0,
+        }
     return {
         "likes": int(row[0]),
         "comments": int(row[1]),

@@ -22,17 +22,21 @@ def get_platform_credentials(brand: Brand, channel: str) -> dict[str, Any]:
 
     if channel == "instagram":
         return {
-            "meta_access_token": ch_cfg.get("access_token") or creds.get("meta_access_token", ""),
-            "instagram_account_id": ch_cfg.get("account_id") or creds.get("instagram_account_id", ""),
+            "meta_access_token": ch_cfg.get("access_token")
+            or creds.get("meta_access_token", ""),
+            "instagram_account_id": ch_cfg.get("account_id")
+            or creds.get("instagram_account_id", ""),
         }
     elif channel == "facebook":
         return {
-            "meta_access_token": ch_cfg.get("access_token") or creds.get("meta_access_token", ""),
+            "meta_access_token": ch_cfg.get("access_token")
+            or creds.get("meta_access_token", ""),
             "page_id": ch_cfg.get("page_id") or creds.get("facebook_page_id", ""),
         }
     elif channel == "linkedin":
         return {
-            "linkedin_access_token": ch_cfg.get("access_token") or creds.get("linkedin_access_token", ""),
+            "linkedin_access_token": ch_cfg.get("access_token")
+            or creds.get("linkedin_access_token", ""),
             "linkedin_org_id": ch_cfg.get("org_id") or creds.get("linkedin_org_id", ""),
         }
     elif channel == "youtube":
@@ -61,6 +65,7 @@ def get_platform_credentials(brand: Brand, channel: str) -> dict[str, Any]:
 
 class PublishPreflightError(Exception):
     """Raised when pre-flight checks fail before dispatching to n8n."""
+
     pass
 
 

@@ -135,6 +135,7 @@ _DEFAULTS_TO_CHECK = {
 }
 if settings.MARKAI_ENV == "production":
     import logging as _log
+
     _startup_logger = _log.getLogger("app.config")
     _insecure_defaults = []
     for _field, _default in _DEFAULTS_TO_CHECK.items():
@@ -152,7 +153,11 @@ if settings.MARKAI_ENV == "production":
             f"Set strong values in .env for these settings."
         )
     # Validate required Azure AD configuration
-    _REQUIRED_AUTH = ["AZURE_AD_TENANT_ID", "AZURE_AD_CLIENT_ID", "AZURE_AD_CLIENT_SECRET"]
+    _REQUIRED_AUTH = [
+        "AZURE_AD_TENANT_ID",
+        "AZURE_AD_CLIENT_ID",
+        "AZURE_AD_CLIENT_SECRET",
+    ]
     _missing_auth = [f for f in _REQUIRED_AUTH if not getattr(settings, f, "")]
     if _missing_auth:
         raise RuntimeError(

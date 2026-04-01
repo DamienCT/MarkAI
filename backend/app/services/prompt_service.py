@@ -21,7 +21,9 @@ async def list_prompt_versions(
         stmt = stmt.where(PromptVersion.category == category)
     if is_active is not None:
         stmt = stmt.where(PromptVersion.is_active == is_active)
-    stmt = stmt.order_by(PromptVersion.category, PromptVersion.slug, PromptVersion.version.desc())
+    stmt = stmt.order_by(
+        PromptVersion.category, PromptVersion.slug, PromptVersion.version.desc()
+    )
     result = await db.execute(stmt)
     return result.scalars().all()
 

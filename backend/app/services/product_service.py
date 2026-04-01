@@ -40,9 +40,7 @@ async def get_product(db: AsyncSession, product_id: uuid.UUID) -> Product | None
 async def get_product_by_bc_item_no(
     db: AsyncSession, bc_item_no: str
 ) -> Product | None:
-    result = await db.execute(
-        select(Product).where(Product.bc_item_no == bc_item_no)
-    )
+    result = await db.execute(select(Product).where(Product.bc_item_no == bc_item_no))
     return result.scalar_one_or_none()
 
 

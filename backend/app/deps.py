@@ -1,12 +1,16 @@
 import logging
 from typing import AsyncGenerator
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.entra import check_user_in_security_group, extract_groups, validate_entra_token
+from app.auth.entra import (
+    check_user_in_security_group,
+    extract_groups,
+    validate_entra_token,
+)
 from app.auth.models import User
 from app.config import settings
 from app.models.base import async_session_factory

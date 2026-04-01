@@ -48,6 +48,7 @@ class BrandUpdate(BaseModel):
 
 class ChannelConfigUpdate(BaseModel):
     """Payload for PUT /brands/{id}/channels."""
+
     channels: dict[str, dict] = {}
 
 

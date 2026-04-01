@@ -21,8 +21,10 @@ from app.services import calendar_service
 
 class CalendarReorderItem(BaseModel):
     """Pydantic model for a single item in a calendar reorder request."""
+
     id: uuid.UUID
     scheduled_at: datetime
+
 
 router = APIRouter()
 
@@ -56,7 +58,9 @@ async def upcoming_calendar_items(
             "description": item.description,
             "item_type": item.item_type,
             "channel": item.channel,
-            "scheduled_at": item.scheduled_at.isoformat() if item.scheduled_at else None,
+            "scheduled_at": item.scheduled_at.isoformat()
+            if item.scheduled_at
+            else None,
             "status": item.status,
             "priority": item.priority,
             "created_at": item.created_at.isoformat(),

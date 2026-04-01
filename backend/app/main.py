@@ -14,6 +14,7 @@ from app.config import settings
 from app.scheduler import scheduler, setup_scheduler
 from app.services import minio_service, nats_service
 
+
 def _setup_json_logging() -> None:
     """Configure structured JSON logging for production observability."""
     from pythonjsonlogger.json import JsonFormatter
@@ -106,9 +107,10 @@ app.add_middleware(
 )
 
 # Global exception handler — ensures CORS headers are present on 500 errors
-from fastapi import Request
-from fastapi.responses import JSONResponse
-import traceback as _tb
+from fastapi import Request  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+import traceback as _tb  # noqa: E402
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -116,10 +118,20 @@ async def global_exception_handler(request: Request, exc: Exception):
     tb_text = _tb.format_exc()
     # Strip any lines containing known secret patterns
     sanitized_tb = "\n".join(
-        line for line in tb_text.splitlines()
-        if not any(s in line.lower() for s in ("secret", "password", "api_key", "token", "credential"))
+        line
+        for line in tb_text.splitlines()
+        if not any(
+            s in line.lower()
+            for s in ("secret", "password", "api_key", "token", "credential")
+        )
     )
-    logger.error("Unhandled exception on %s %s: %s\n%s", request.method, request.url.path, type(exc).__name__, sanitized_tb)
+    logger.error(
+        "Unhandled exception on %s %s: %s\n%s",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+        sanitized_tb,
+    )
     # Use configured CORS origins instead of echoing the request's Origin header
     headers = {}
     _allowed_origin = settings.FRONTEND_URL or "http://localhost:3000"
@@ -132,6 +144,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"detail": "Internal server error"},
         headers=headers,
     )
+
 
 # Health check endpoint (used by Docker healthcheck)
 @app.get("/health")

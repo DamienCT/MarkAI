@@ -18,26 +18,26 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 _limiter = Limiter(key_func=get_remote_address)
-from app.models.adaptation import Adaptation
-from app.models.agent_run import AgentRun
-from app.models.competitor import Competitor
-from app.services import brand_service, nats_service
-from sqlalchemy import func
+from app.models.adaptation import Adaptation  # noqa: E402
+from app.models.agent_run import AgentRun  # noqa: E402
+from app.models.competitor import Competitor  # noqa: E402
+from app.services import brand_service, nats_service  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 # ── Prompt sanitization (mirrors agents/shared/sanitize.py) ──────────────
 _INJECTION_PATTERNS = [
-    re.compile(p) for p in [
-        r'(?i)ignore\s+(all\s+)?previous\s+instructions',
-        r'(?i)system\s*:\s*',
-        r'(?i)you\s+are\s+now\s+',
-        r'(?i)forget\s+(all\s+)?previous',
-        r'(?i)disregard\s+(all\s+)?',
-        r'(?i)new\s+instructions?\s*:',
-        r'(?i)\[INST\]',
-        r'(?i)<\|im_start\|>',
-        r'(?i)<<SYS>>',
+    re.compile(p)
+    for p in [
+        r"(?i)ignore\s+(all\s+)?previous\s+instructions",
+        r"(?i)system\s*:\s*",
+        r"(?i)you\s+are\s+now\s+",
+        r"(?i)forget\s+(all\s+)?previous",
+        r"(?i)disregard\s+(all\s+)?",
+        r"(?i)new\s+instructions?\s*:",
+        r"(?i)\[INST\]",
+        r"(?i)<\|im_start\|>",
+        r"(?i)<<SYS>>",
     ]
 ]
 
@@ -67,7 +67,9 @@ def _is_retryable_llm(exc: BaseException) -> bool:
     retry=retry_if_exception(_is_retryable_llm),
     reraise=True,
 )
-async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: bool = False) -> str:
+async def _call_llm(
+    messages: list[dict], temperature: float = 0.7, json_mode: bool = False
+) -> str:
     """Call LLM via LiteLLM proxy, falling back to OpenAI directly if LiteLLM fails."""
     from app.services.ai_model_service import get_active_model
 
@@ -97,11 +99,16 @@ async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: b
                 resp.raise_for_status()
                 return resp.json()["choices"][0]["message"]["content"]
             except Exception as litellm_exc:
-                logger.warning("LiteLLM call failed, falling back to direct OpenAI: %s", litellm_exc)
+                logger.warning(
+                    "LiteLLM call failed, falling back to direct OpenAI: %s",
+                    litellm_exc,
+                )
 
         # Direct OpenAI fallback
         if not settings.OPENAI_API_KEY:
-            raise ValueError("No LLM available: LiteLLM failed and OPENAI_API_KEY not set")
+            raise ValueError(
+                "No LLM available: LiteLLM failed and OPENAI_API_KEY not set"
+            )
 
         resp = await client.post(
             "https://api.openai.com/v1/chat/completions",
@@ -113,6 +120,7 @@ async def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: b
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
+
 
 router = APIRouter()
 
@@ -131,7 +139,14 @@ async def list_intelligence_reports(
     Pass ?brand_id=uuid to filter by brand.
     """
     limit = min(limit, 200)
-    allowed_types = ["research", "strategy", "planning", "content_calendar", "content_calendar_strategy", "product_intel"]
+    allowed_types = [
+        "research",
+        "strategy",
+        "planning",
+        "content_calendar",
+        "content_calendar_strategy",
+        "product_intel",
+    ]
 
     if type:
         filter_types = [type] if type in allowed_types else allowed_types
@@ -166,12 +181,18 @@ async def list_intelligence_reports(
             if personas:
                 summary_parts.append(f"{len(personas)} persona(s) built")
             if output.get("competitor_analysis"):
-                summary_parts.append(f"{len(output['competitor_analysis'])} competitor(s) analyzed")
+                summary_parts.append(
+                    f"{len(output['competitor_analysis'])} competitor(s) analyzed"
+                )
         elif r.agent_type == "strategy":
             if output.get("content_pillars"):
-                summary_parts.append(f"{len(output['content_pillars'])} content pillar(s)")
+                summary_parts.append(
+                    f"{len(output['content_pillars'])} content pillar(s)"
+                )
             if output.get("target_audiences"):
-                summary_parts.append(f"{len(output['target_audiences'])} target audience(s)")
+                summary_parts.append(
+                    f"{len(output['target_audiences'])} target audience(s)"
+                )
             if output.get("positioning"):
                 summary_parts.append("Positioning defined")
             if output.get("posting_cadence"):
@@ -186,7 +207,9 @@ async def list_intelligence_reports(
             if output.get("strategy_document") or output.get("markdown"):
                 summary_parts.append("Year-long strategy document")
             if output.get("monthly_themes"):
-                summary_parts.append(f"{len(output['monthly_themes'])} monthly theme(s)")
+                summary_parts.append(
+                    f"{len(output['monthly_themes'])} monthly theme(s)"
+                )
 
         if not summary_parts:
             # Fallback: generic summary from gaps (legacy)
@@ -197,7 +220,9 @@ async def list_intelligence_reports(
             if personas:
                 summary_parts.append(f"{len(personas)} persona(s) built")
             if output.get("competitor_analysis"):
-                summary_parts.append(f"{len(output['competitor_analysis'])} competitor(s) analyzed")
+                summary_parts.append(
+                    f"{len(output['competitor_analysis'])} competitor(s) analyzed"
+                )
 
         summary = ". ".join(summary_parts) if summary_parts else f"Status: {r.status}"
 
@@ -205,18 +230,20 @@ async def list_intelligence_reports(
         gaps = output.get("gaps", [])
         insights = [g.get("description", "") for g in gaps[:5]] if gaps else []
 
-        reports.append({
-            "id": str(r.id),
-            "brand_id": str(r.brand_id) if r.brand_id else None,
-            "report_type": r.agent_type,
-            "status": r.status,
-            "title": title,
-            "summary": summary,
-            "insights": insights,
-            "output_payload": {},  # Excluded from list for performance; use detail endpoint
-            "created_at": r.created_at.isoformat(),
-            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-        })
+        reports.append(
+            {
+                "id": str(r.id),
+                "brand_id": str(r.brand_id) if r.brand_id else None,
+                "report_type": r.agent_type,
+                "status": r.status,
+                "title": title,
+                "summary": summary,
+                "insights": insights,
+                "output_payload": {},  # Excluded from list for performance; use detail endpoint
+                "created_at": r.created_at.isoformat(),
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            }
+        )
     return reports
 
 
@@ -229,9 +256,7 @@ async def get_report(
     """Get a single agent run report by ID, including brand info."""
     from app.models.brand import Brand
 
-    result = await db.execute(
-        select(AgentRun).where(AgentRun.id == run_id)
-    )
+    result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
     run = result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -241,9 +266,7 @@ async def get_report(
     brand_website = None
     brand_industry = None
     if run.brand_id:
-        brand_result = await db.execute(
-            select(Brand).where(Brand.id == run.brand_id)
-        )
+        brand_result = await db.execute(select(Brand).where(Brand.id == run.brand_id))
         brand = brand_result.scalar_one_or_none()
         if brand:
             brand_name = brand.name
@@ -307,21 +330,29 @@ async def get_trending_topics(
     trends = []
     for i, theme in enumerate(themes):
         if isinstance(theme, dict):
-            trends.append({
-                "topic": theme.get("name", theme.get("theme", f"Theme {i+1}")),
-                "platform": theme.get("platform", "all"),
-                "relevance_score": theme.get("relevance", theme.get("score", 0.8)),
-                "description": theme.get("description", ""),
-                "discovered_at": run.completed_at.isoformat() if run.completed_at else None,
-            })
+            trends.append(
+                {
+                    "topic": theme.get("name", theme.get("theme", f"Theme {i + 1}")),
+                    "platform": theme.get("platform", "all"),
+                    "relevance_score": theme.get("relevance", theme.get("score", 0.8)),
+                    "description": theme.get("description", ""),
+                    "discovered_at": run.completed_at.isoformat()
+                    if run.completed_at
+                    else None,
+                }
+            )
         elif isinstance(theme, str):
-            trends.append({
-                "topic": theme,
-                "platform": "all",
-                "relevance_score": 0.8,
-                "description": "",
-                "discovered_at": run.completed_at.isoformat() if run.completed_at else None,
-            })
+            trends.append(
+                {
+                    "topic": theme,
+                    "platform": "all",
+                    "relevance_score": 0.8,
+                    "description": "",
+                    "discovered_at": run.completed_at.isoformat()
+                    if run.completed_at
+                    else None,
+                }
+            )
 
     return trends
 
@@ -368,7 +399,9 @@ async def get_research_results(
                 "id": str(run.id),
                 "status": run.status,
                 "started_at": run.started_at.isoformat() if run.started_at else None,
-                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                "completed_at": run.completed_at.isoformat()
+                if run.completed_at
+                else None,
                 "output_payload": run.output_payload,
             }
             for run in runs
@@ -545,11 +578,14 @@ async def generate_brand_fields(
     # Fetch timezone setting for geographic context
     try:
         tz_result = await db.execute(
-            text("SELECT value FROM app_settings WHERE key = 'scheduler_timezone' LIMIT 1")
+            text(
+                "SELECT value FROM app_settings WHERE key = 'scheduler_timezone' LIMIT 1"
+            )
         )
         raw_tz = tz_result.scalar()
         if raw_tz:
             import json as _json
+
             try:
                 timezone_value = _json.loads(raw_tz)
             except Exception:
@@ -561,7 +597,11 @@ async def generate_brand_fields(
 
     # Build brand context for the LLM (sanitize all user-provided fields)
     guidelines = brand.brand_guidelines or {}
-    ta_desc = (brand.target_audience or {}).get('description', 'Not set') if isinstance(brand.target_audience, dict) else 'Not set'
+    ta_desc = (
+        (brand.target_audience or {}).get("description", "Not set")
+        if isinstance(brand.target_audience, dict)
+        else "Not set"
+    )
     brand_context = (
         f"Brand Name: {_sanitize(brand.name or '')}\n"
         f"Description: {_sanitize(brand.description or 'Not set')}\n"
@@ -625,6 +665,7 @@ async def generate_brand_fields(
 
     try:
         import json
+
         content = await _call_llm(
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -675,8 +716,11 @@ async def rewrite_brand_field(
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
 
-    guidelines = brand.brand_guidelines or {}
-    ta_desc = (brand.target_audience or {}).get('description', 'Not set') if isinstance(brand.target_audience, dict) else 'Not set'
+    ta_desc = (
+        (brand.target_audience or {}).get("description", "Not set")
+        if isinstance(brand.target_audience, dict)
+        else "Not set"
+    )
     brand_context = (
         f"Brand Name: {_sanitize(brand.name or '')}\n"
         f"Description: {_sanitize(brand.description or 'Not set')}\n"
@@ -710,7 +754,9 @@ async def rewrite_brand_field(
             ],
         )
         content = content.strip()
-        if (content.startswith('"') and content.endswith('"')) or (content.startswith("'") and content.endswith("'")):
+        if (content.startswith('"') and content.endswith('"')) or (
+            content.startswith("'") and content.endswith("'")
+        ):
             content = content[1:-1]
         return AIRewriteFieldResponse(value=content)
 

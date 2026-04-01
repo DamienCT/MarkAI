@@ -7,11 +7,9 @@ can load images without mixed-content or DNS resolution issues.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from app.auth.models import User
-from app.deps import get_current_user
 from app.services import minio_service
 
 logger = logging.getLogger(__name__)

@@ -47,7 +47,12 @@ async def _check_valkey() -> str:
         import redis.asyncio as redis
         from app.config import settings
 
-        r = redis.Redis(host=settings.VALKEY_HOST, port=settings.VALKEY_PORT, password=settings.VALKEY_PASSWORD or None, socket_connect_timeout=2)
+        r = redis.Redis(
+            host=settings.VALKEY_HOST,
+            port=settings.VALKEY_PORT,
+            password=settings.VALKEY_PASSWORD or None,
+            socket_connect_timeout=2,
+        )
         await r.ping()
         await r.aclose()
         return "ok"
@@ -158,10 +163,7 @@ async def get_audit_log(
 
     limit = min(limit, 200)
     stmt = (
-        select(AuditLog)
-        .offset(skip)
-        .limit(limit)
-        .order_by(AuditLog.created_at.desc())
+        select(AuditLog).offset(skip).limit(limit).order_by(AuditLog.created_at.desc())
     )
     if user_id is not None:
         stmt = stmt.where(AuditLog.user_id == user_id)
@@ -247,24 +249,35 @@ async def system_services(
     try:
         await db.execute(text("SELECT 1"))
         latency = round((time.monotonic() - t0) * 1000, 1)
-        services.append({"name": "postgres", "status": "healthy", "latency_ms": latency})
+        services.append(
+            {"name": "postgres", "status": "healthy", "latency_ms": latency}
+        )
     except Exception:
         latency = round((time.monotonic() - t0) * 1000, 1)
-        services.append({"name": "postgres", "status": "unhealthy", "latency_ms": latency})
+        services.append(
+            {"name": "postgres", "status": "unhealthy", "latency_ms": latency}
+        )
 
     # Valkey
     t0 = time.monotonic()
     try:
         import redis.asyncio as redis
 
-        r = redis.Redis(host=settings.VALKEY_HOST, port=settings.VALKEY_PORT, password=settings.VALKEY_PASSWORD or None, socket_connect_timeout=2)
+        r = redis.Redis(
+            host=settings.VALKEY_HOST,
+            port=settings.VALKEY_PORT,
+            password=settings.VALKEY_PASSWORD or None,
+            socket_connect_timeout=2,
+        )
         await r.ping()
         await r.aclose()
         latency = round((time.monotonic() - t0) * 1000, 1)
         services.append({"name": "valkey", "status": "healthy", "latency_ms": latency})
     except Exception:
         latency = round((time.monotonic() - t0) * 1000, 1)
-        services.append({"name": "valkey", "status": "unhealthy", "latency_ms": latency})
+        services.append(
+            {"name": "valkey", "status": "unhealthy", "latency_ms": latency}
+        )
 
     # NATS
     t0 = time.monotonic()
@@ -273,10 +286,14 @@ async def system_services(
 
         if nats_service._nc and nats_service._nc.is_connected:
             latency = round((time.monotonic() - t0) * 1000, 1)
-            services.append({"name": "nats", "status": "healthy", "latency_ms": latency})
+            services.append(
+                {"name": "nats", "status": "healthy", "latency_ms": latency}
+            )
         else:
             latency = round((time.monotonic() - t0) * 1000, 1)
-            services.append({"name": "nats", "status": "unhealthy", "latency_ms": latency})
+            services.append(
+                {"name": "nats", "status": "unhealthy", "latency_ms": latency}
+            )
     except Exception:
         latency = round((time.monotonic() - t0) * 1000, 1)
         services.append({"name": "nats", "status": "unhealthy", "latency_ms": latency})
@@ -299,13 +316,20 @@ async def system_services(
     try:
         from qdrant_client import QdrantClient
 
-        qc = QdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT, api_key=settings.QDRANT_API_KEY or None, timeout=2)
+        qc = QdrantClient(
+            host=settings.QDRANT_HOST,
+            port=settings.QDRANT_PORT,
+            api_key=settings.QDRANT_API_KEY or None,
+            timeout=2,
+        )
         await asyncio.to_thread(qc.get_collections)
         latency = round((time.monotonic() - t0) * 1000, 1)
         services.append({"name": "qdrant", "status": "healthy", "latency_ms": latency})
     except Exception:
         latency = round((time.monotonic() - t0) * 1000, 1)
-        services.append({"name": "qdrant", "status": "unhealthy", "latency_ms": latency})
+        services.append(
+            {"name": "qdrant", "status": "unhealthy", "latency_ms": latency}
+        )
 
     # LiteLLM
     t0 = time.monotonic()
@@ -316,13 +340,19 @@ async def system_services(
             headers = {}
             if settings.LITELLM_MASTER_KEY:
                 headers["Authorization"] = f"Bearer {settings.LITELLM_MASTER_KEY}"
-            resp = await client.get(f"{settings.LITELLM_BASE_URL}/health", headers=headers)
+            resp = await client.get(
+                f"{settings.LITELLM_BASE_URL}/health", headers=headers
+            )
             status_str = "healthy" if resp.status_code == 200 else "unhealthy"
         latency = round((time.monotonic() - t0) * 1000, 1)
-        services.append({"name": "litellm", "status": status_str, "latency_ms": latency})
+        services.append(
+            {"name": "litellm", "status": status_str, "latency_ms": latency}
+        )
     except Exception:
         latency = round((time.monotonic() - t0) * 1000, 1)
-        services.append({"name": "litellm", "status": "unhealthy", "latency_ms": latency})
+        services.append(
+            {"name": "litellm", "status": "unhealthy", "latency_ms": latency}
+        )
 
     return services
 
@@ -340,17 +370,21 @@ async def system_queues(
         for stream_name in nats_service.STREAMS:
             try:
                 stream_info = await js.stream_info(stream_name)
-                streams.append({
-                    "name": stream_name,
-                    "messages": stream_info.state.messages,
-                    "consumers": stream_info.state.consumer_count,
-                })
+                streams.append(
+                    {
+                        "name": stream_name,
+                        "messages": stream_info.state.messages,
+                        "consumers": stream_info.state.consumer_count,
+                    }
+                )
             except Exception:
-                streams.append({
-                    "name": stream_name,
-                    "messages": 0,
-                    "consumers": 0,
-                })
+                streams.append(
+                    {
+                        "name": stream_name,
+                        "messages": 0,
+                        "consumers": 0,
+                    }
+                )
         return streams
     except Exception:
         return []

@@ -21,6 +21,7 @@ class CompetitorCreate(CompetitorBase):
 
 class CompetitorCreateBody(BaseModel):
     """Body schema for creating a competitor via the API (brand_id comes from path)."""
+
     name: str
     website_url: str | None = None
     social_handles: dict | None = None

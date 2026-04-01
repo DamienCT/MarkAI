@@ -49,13 +49,13 @@ api_router.include_router(files.router, prefix="/files", tags=["files"])
 api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
 
 # Alias: frontend calls /api/v1/audit directly — redirects to system/audit-log
-from fastapi import Depends
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.deps import get_current_user, get_db
-from app.auth.models import AuditLog, User
-from app.auth.permissions import role_has_access
-from fastapi import HTTPException
+from fastapi import Depends  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
+from app.deps import get_current_user, get_db  # noqa: E402
+from app.auth.models import AuditLog, User  # noqa: E402
+from app.auth.permissions import role_has_access  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 
 @api_router.get("/audit", tags=["system"])
@@ -70,7 +70,10 @@ async def list_audit_log(
     limit = min(limit, 200)
     offset = (page - 1) * limit
     result = await db.execute(
-        select(AuditLog).order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
+        select(AuditLog)
+        .order_by(AuditLog.created_at.desc())
+        .offset(offset)
+        .limit(limit)
     )
     return [
         {

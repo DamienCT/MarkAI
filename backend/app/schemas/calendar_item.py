@@ -5,14 +5,28 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 ChannelType = Literal[
-    "instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"
+    "instagram",
+    "facebook",
+    "linkedin",
+    "youtube",
+    "tiktok",
+    "x",
+    "website_blog",
+    "teams",
 ]
 ItemType = Literal[
     "post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"
 ]
 CalendarItemStatus = Literal[
-    "queued", "working", "in_review", "reworking",
-    "approved", "scheduled", "publishing", "published", "failed"
+    "queued",
+    "working",
+    "in_review",
+    "reworking",
+    "approved",
+    "scheduled",
+    "publishing",
+    "published",
+    "failed",
 ]
 
 

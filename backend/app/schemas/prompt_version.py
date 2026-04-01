@@ -22,9 +22,7 @@ class PromptVersionBase(BaseModel):
     @classmethod
     def validate_a_b_group(cls, v: str | None) -> str | None:
         if v is not None and v not in _VALID_AB_GROUPS:
-            raise ValueError(
-                f"Invalid a_b_group '{v}'. Must be 'A' or 'B'."
-            )
+            raise ValueError(f"Invalid a_b_group '{v}'. Must be 'A' or 'B'.")
         return v
 
 
@@ -44,9 +42,7 @@ class PromptVersionUpdate(BaseModel):
     @classmethod
     def validate_a_b_group(cls, v: str | None) -> str | None:
         if v is not None and v not in _VALID_AB_GROUPS:
-            raise ValueError(
-                f"Invalid a_b_group '{v}'. Must be 'A' or 'B'."
-            )
+            raise ValueError(f"Invalid a_b_group '{v}'. Must be 'A' or 'B'.")
         return v
 
 

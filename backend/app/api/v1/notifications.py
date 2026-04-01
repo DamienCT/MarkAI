@@ -78,10 +78,14 @@ async def stream_notifications(
                 result = await db.execute(stmt)
                 notifications = result.scalars().all()
 
-            payload = json.dumps({
-                "notifications": [_serialize_notification(n) for n in notifications],
-                "unread_count": len(notifications),
-            })
+            payload = json.dumps(
+                {
+                    "notifications": [
+                        _serialize_notification(n) for n in notifications
+                    ],
+                    "unread_count": len(notifications),
+                }
+            )
             yield f"data: {payload}\n\n"
 
             await asyncio.sleep(10)

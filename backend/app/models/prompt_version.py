@@ -31,7 +31,9 @@ class PromptVersion(Base):
     variables: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    performance_score: Mapped[Decimal | None] = mapped_column(Numeric(7, 4), nullable=True)
+    performance_score: Mapped[Decimal | None] = mapped_column(
+        Numeric(7, 4), nullable=True
+    )
     a_b_group: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
@@ -40,7 +42,10 @@ class PromptVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     # Relationships

@@ -86,7 +86,10 @@ async def get_presigned_url(
     client = get_client()
     bucket = bucket or settings.MINIO_BUCKET
     return await asyncio.to_thread(
-        client.presigned_get_object, bucket, object_name, expires=expires,
+        client.presigned_get_object,
+        bucket,
+        object_name,
+        expires=expires,
     )
 
 
@@ -99,7 +102,10 @@ async def get_presigned_upload_url(
     client = get_client()
     bucket = bucket or settings.MINIO_BUCKET
     return await asyncio.to_thread(
-        client.presigned_put_object, bucket, object_name, expires=expires,
+        client.presigned_put_object,
+        bucket,
+        object_name,
+        expires=expires,
     )
 
 
