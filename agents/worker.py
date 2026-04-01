@@ -21,12 +21,13 @@ import nats.aio.msg
 
 from langgraph.errors import GraphInterrupt
 from sqlalchemy.exc import IntegrityError
-from shared.config import settings
 
 # Maximum time (seconds) a single workflow invocation may run before being cancelled
-WORKFLOW_TIMEOUT = int(os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "1800"))  # 30 min default
-from shared.nats_consumer import NATSConsumer
-from shared.tools.database import (
+WORKFLOW_TIMEOUT = int(
+    os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "1800")
+)  # 30 min default
+from shared.nats_consumer import NATSConsumer  # noqa: E402
+from shared.tools.database import (  # noqa: E402
     create_agent_run,
     complete_agent_run,
     execute_query,
@@ -35,25 +36,33 @@ from shared.tools.database import (
 )
 
 # ── Import all workflow graphs ───────────────────────────────────────────
-from workflows.research.graph import research_graph
-from workflows.strategy.graph import strategy_graph
-from workflows.planning.graph import planning_graph
-from workflows.content.graph import content_graph
-from workflows.evaluation.graph import evaluation_graph
-from workflows.product_intel.graph import product_intel_graph
-from workflows.adaptation.graph import adaptation_graph
+from workflows.research.graph import research_graph  # noqa: E402
+from workflows.strategy.graph import strategy_graph  # noqa: E402
+from workflows.planning.graph import planning_graph  # noqa: E402
+from workflows.content.graph import content_graph  # noqa: E402
+from workflows.evaluation.graph import evaluation_graph  # noqa: E402
+from workflows.product_intel.graph import product_intel_graph  # noqa: E402
+from workflows.adaptation.graph import adaptation_graph  # noqa: E402
+
 
 def _setup_json_logging() -> None:
     """Configure structured JSON logging for observability."""
     try:
         from pythonjsonlogger.json import JsonFormatter
+
         formatter = JsonFormatter(
             fmt="%(asctime)s %(name)s %(levelname)s %(message)s",
-            rename_fields={"asctime": "timestamp", "levelname": "level", "name": "logger"},
+            rename_fields={
+                "asctime": "timestamp",
+                "levelname": "level",
+                "name": "logger",
+            },
         )
     except ImportError:
         # Fallback if python-json-logger not installed
-        formatter = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s")
+        formatter = logging.Formatter(
+            "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
+        )
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
@@ -61,6 +70,7 @@ def _setup_json_logging() -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+
 
 _setup_json_logging()
 logger = logging.getLogger("worker")
@@ -155,6 +165,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
 
     # Update content record with the new image
     import json as _json
+
     existing_metadata = content.get("generation_metadata") or {}
     if isinstance(existing_metadata, str):
         try:
@@ -169,7 +180,11 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         {"id": content_id, "metadata": _json.dumps(existing_metadata, default=str)},
     )
 
-    logger.info("Image regeneration complete for content %s — stored at %s", content_id, stored_url)
+    logger.info(
+        "Image regeneration complete for content %s — stored at %s",
+        content_id,
+        stored_url,
+    )
 
 
 def _resolve_graph(subject: str):
@@ -229,7 +244,12 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
     # ── Content without calendar_item_id: query DB for queued items ──────
     # This happens when content.generate is forwarded from skip logic
-    if agent_type == "content" and not payload.get("calendar_item_id") and brand_id and _consumer is not None:
+    if (
+        agent_type == "content"
+        and not payload.get("calendar_item_id")
+        and brand_id
+        and _consumer is not None
+    ):
         try:
             queued_items = await execute_query(
                 "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'queued' ORDER BY scheduled_at ASC LIMIT 100",
@@ -248,27 +268,42 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 }
                 if payload.get("scope_weeks") is not None:
                     item_msg["scope_weeks"] = payload["scope_weeks"]
-                await _consumer.js.publish("content.generate", json.dumps(item_msg).encode())
-                logger.info("Content skip-forward: queued first item %s (%d remaining) for brand %s", first_id, len(remaining_ids), brand_id)
+                await _consumer.js.publish(
+                    "content.generate", json.dumps(item_msg).encode()
+                )
+                logger.info(
+                    "Content skip-forward: queued first item %s (%d remaining) for brand %s",
+                    first_id,
+                    len(remaining_ids),
+                    brand_id,
+                )
             else:
                 # No queued items — need to re-run planning to generate calendar items
                 # Delete the old planning run so it can run fresh
-                logger.info("No queued calendar items for brand %s — re-triggering planning to generate new calendar", brand_id)
+                logger.info(
+                    "No queued calendar items for brand %s — re-triggering planning to generate new calendar",
+                    brand_id,
+                )
                 await execute_update(
                     "DELETE FROM agent_runs WHERE brand_id = :brand_id AND agent_type IN ('planning', 'content_calendar') AND status = 'completed'",
                     {"brand_id": brand_id},
                 )
-                chain_msg = json.dumps({
-                    "brand_id": brand_id,
-                    "trigger": payload.get("trigger", "activation"),
-                    "scope_weeks": payload.get("scope_weeks", 12),
-                }).encode()
+                chain_msg = json.dumps(
+                    {
+                        "brand_id": brand_id,
+                        "trigger": payload.get("trigger", "activation"),
+                        "scope_weeks": payload.get("scope_weeks", 12),
+                    }
+                ).encode()
                 await _consumer.js.publish("planning.trigger", chain_msg)
                 logger.info("Re-triggered planning.trigger for brand %s", brand_id)
             await msg.ack()
             return
         except Exception as content_skip_exc:
-            logger.warning("Content skip-forward failed: %s — proceeding normally", content_skip_exc)
+            logger.warning(
+                "Content skip-forward failed: %s — proceeding normally",
+                content_skip_exc,
+            )
 
     # ── Skip already-completed stages on activation restart ──────
     # If this is an activation trigger and this stage already completed,
@@ -284,17 +319,35 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     {"brand_id": brand_id, "agent_type": agent_type},
                 )
                 if already_done:
-                    logger.info("Skipping %s — already completed for brand %s (entry-point skip)", agent_type, brand_id)
+                    logger.info(
+                        "Skipping %s — already completed for brand %s (entry-point skip)",
+                        agent_type,
+                        brand_id,
+                    )
                     # Find next uncompleted stage
                     idx = ACTIVATION_CHAIN_ORDER.index(agent_type)
-                    CHAIN_SUBJECTS = {"research": "research.trigger", "strategy": "strategy.trigger", "planning": "planning.trigger", "content": "content.generate"}
+                    CHAIN_SUBJECTS = {
+                        "research": "research.trigger",
+                        "strategy": "strategy.trigger",
+                        "planning": "planning.trigger",
+                        "content": "content.generate",
+                    }
                     forwarded = False
-                    for next_stage in ACTIVATION_CHAIN_ORDER[idx + 1:]:
+                    for next_stage in ACTIVATION_CHAIN_ORDER[idx + 1 :]:
                         if next_stage == "content":
                             # Content is per-item — always forward to it (it will pick up queued items)
-                            chain_msg = json.dumps({"brand_id": brand_id, "trigger": "activation", "scope_weeks": payload.get("scope_weeks", 12)}).encode()
+                            chain_msg = json.dumps(
+                                {
+                                    "brand_id": brand_id,
+                                    "trigger": "activation",
+                                    "scope_weeks": payload.get("scope_weeks", 12),
+                                }
+                            ).encode()
                             await _consumer.js.publish("content.generate", chain_msg)
-                            logger.info("Forwarded activation to content.generate for brand %s", brand_id)
+                            logger.info(
+                                "Forwarded activation to content.generate for brand %s",
+                                brand_id,
+                            )
                             forwarded = True
                             break
                         next_existing = await execute_query(
@@ -304,17 +357,31 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                         if not next_existing:
                             next_subj = CHAIN_SUBJECTS.get(next_stage)
                             if next_subj:
-                                chain_msg = json.dumps({"brand_id": brand_id, "trigger": "activation", "scope_weeks": payload.get("scope_weeks", 12)}).encode()
+                                chain_msg = json.dumps(
+                                    {
+                                        "brand_id": brand_id,
+                                        "trigger": "activation",
+                                        "scope_weeks": payload.get("scope_weeks", 12),
+                                    }
+                                ).encode()
                                 await _consumer.js.publish(next_subj, chain_msg)
-                                logger.info("Forwarded activation to %s for brand %s", next_subj, brand_id)
+                                logger.info(
+                                    "Forwarded activation to %s for brand %s",
+                                    next_subj,
+                                    brand_id,
+                                )
                                 forwarded = True
                             break
                     if not forwarded:
-                        logger.info("All stages already completed for brand %s", brand_id)
+                        logger.info(
+                            "All stages already completed for brand %s", brand_id
+                        )
                     await msg.ack()
                     return
             except Exception as skip_exc:
-                logger.warning("Entry-point skip check failed: %s — proceeding normally", skip_exc)
+                logger.warning(
+                    "Entry-point skip check failed: %s — proceeding normally", skip_exc
+                )
 
     # Idempotency: the partial unique index idx_agent_runs_running on
     # (brand_id, agent_type) WHERE status='running' prevents duplicates.
@@ -328,7 +395,12 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         )
         initial_state["run_id"] = run_id
 
-        logger.info("Dispatching %s workflow for brand %s (run %s)", agent_type, brand_id, run_id)
+        logger.info(
+            "Dispatching %s workflow for brand %s (run %s)",
+            agent_type,
+            brand_id,
+            run_id,
+        )
 
         config: dict[str, Any] = {}
         if hasattr(graph, "checkpointer") and graph.checkpointer is not None:
@@ -352,11 +424,26 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 workflow_failed = True
 
         final_status = "failed" if workflow_failed else "completed"
-        await complete_agent_run(run_id, output_payload=safe_result, status=final_status, tokens_used=tokens_used)
-        logger.info("Workflow %s %s for brand %s (tokens: %s)", agent_type, final_status, brand_id, tokens_used)
+        await complete_agent_run(
+            run_id,
+            output_payload=safe_result,
+            status=final_status,
+            tokens_used=tokens_used,
+        )
+        logger.info(
+            "Workflow %s %s for brand %s (tokens: %s)",
+            agent_type,
+            final_status,
+            brand_id,
+            tokens_used,
+        )
 
         # ── Activation: mark brand as active once the planning pipeline finishes
-        if agent_type == "planning" and payload.get("trigger") == "activation" and not workflow_failed:
+        if (
+            agent_type == "planning"
+            and payload.get("trigger") == "activation"
+            and not workflow_failed
+        ):
             if brand_id:
                 try:
                     await execute_update(
@@ -371,14 +458,22 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
         # ── Don't chain if the workflow failed internally ──────────
         if workflow_failed:
-            logger.warning("Workflow %s reported internal failure for brand %s — not chaining next stage", agent_type, brand_id)
+            logger.warning(
+                "Workflow %s reported internal failure for brand %s — not chaining next stage",
+                agent_type,
+                brand_id,
+            )
             return
 
         # Track chain depth (used by sequential chaining and pipeline chaining)
         current_depth = payload.get("chain_depth", 0)
 
         # ── Sequential content chaining: after content completes, queue next item
-        if agent_type == "content" and payload.get("remaining_queue") and _consumer is not None:
+        if (
+            agent_type == "content"
+            and payload.get("remaining_queue")
+            and _consumer is not None
+        ):
             remaining = payload["remaining_queue"]
             if remaining:
                 next_id = remaining[0]
@@ -393,10 +488,20 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 if payload.get("scope_weeks") is not None:
                     next_msg["scope_weeks"] = payload["scope_weeks"]
                 try:
-                    await _consumer.js.publish("content.generate", json.dumps(next_msg).encode())
-                    logger.info("Sequential content: queued next item %s (%d remaining)", next_id, len(rest))
+                    await _consumer.js.publish(
+                        "content.generate", json.dumps(next_msg).encode()
+                    )
+                    logger.info(
+                        "Sequential content: queued next item %s (%d remaining)",
+                        next_id,
+                        len(rest),
+                    )
                 except Exception as seq_exc:
-                    logger.error("Failed to queue next sequential content item %s: %s", next_id, seq_exc)
+                    logger.error(
+                        "Failed to queue next sequential content item %s: %s",
+                        next_id,
+                        seq_exc,
+                    )
 
         # ── Chain: auto-trigger the next workflow in the pipeline ─────
         # Full pipeline chain only runs for "activation" triggers.
@@ -433,7 +538,9 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                         brand_id,
                     )
             except Exception as pi_exc:
-                logger.warning("Could not check research for product_intel chain: %s", pi_exc)
+                logger.warning(
+                    "Could not check research for product_intel chain: %s", pi_exc
+                )
 
         # ── Adaptation -> planning feedback loop (with guardrails) ─
         # Only chain if adaptation produced tier2 or tier3 applied
@@ -441,19 +548,21 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         MAX_CHAIN_DEPTH = 2
         if agent_type == "adaptation" and brand_id and _consumer is not None:
             applied_changes = (result or {}).get("applied_changes", [])
-            has_higher_tier = any(
-                c.get("tier") in (2, 3) for c in applied_changes
-            )
+            has_higher_tier = any(c.get("tier") in (2, 3) for c in applied_changes)
             if has_higher_tier and current_depth + 1 < MAX_CHAIN_DEPTH:
                 next_subject = "planning.trigger"
                 logger.info(
                     "Adaptation -> planning re-plan chain (depth %d/%d) for brand %s",
-                    current_depth + 1, MAX_CHAIN_DEPTH, brand_id,
+                    current_depth + 1,
+                    MAX_CHAIN_DEPTH,
+                    brand_id,
                 )
             elif has_higher_tier:
                 logger.info(
                     "Adaptation has tier2/3 changes but chain_depth %d >= max %d — stopping chain for brand %s",
-                    current_depth, MAX_CHAIN_DEPTH, brand_id,
+                    current_depth,
+                    MAX_CHAIN_DEPTH,
+                    brand_id,
                 )
                 next_subject = None  # Override any default chain
             else:
@@ -467,7 +576,12 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         # When restarting, if the next REPORT stage already completed, skip ahead.
         # Content is per-item and should never be skipped.
         ACTIVATION_CHAIN_ORDER = ["research", "strategy", "planning", "content"]
-        if next_subject and brand_id and trigger_type == "activation" and _consumer is not None:
+        if (
+            next_subject
+            and brand_id
+            and trigger_type == "activation"
+            and _consumer is not None
+        ):
             next_agent_type = next_subject.split(".")[0]
             # Never skip content — it's per-item
             if next_agent_type != "content":
@@ -477,7 +591,11 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                         {"brand_id": brand_id, "agent_type": next_agent_type},
                     )
                     if existing:
-                        logger.info("Skipping %s — already completed for brand %s", next_agent_type, brand_id)
+                        logger.info(
+                            "Skipping %s — already completed for brand %s",
+                            next_agent_type,
+                            brand_id,
+                        )
                         if next_agent_type in ACTIVATION_CHAIN_ORDER:
                             idx = ACTIVATION_CHAIN_ORDER.index(next_agent_type)
                             skipped = True
@@ -493,18 +611,31 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                                     {"brand_id": brand_id, "agent_type": candidate},
                                 )
                                 if candidate_existing:
-                                    logger.info("Skipping %s — already completed for brand %s", candidate, brand_id)
+                                    logger.info(
+                                        "Skipping %s — already completed for brand %s",
+                                        candidate,
+                                        brand_id,
+                                    )
                                     idx += 1
                                 else:
-                                    CHAIN_SUBJECTS = {"strategy": "strategy.trigger", "planning": "planning.trigger", "content": "content.generate"}
+                                    CHAIN_SUBJECTS = {
+                                        "strategy": "strategy.trigger",
+                                        "planning": "planning.trigger",
+                                        "content": "content.generate",
+                                    }
                                     next_subject = CHAIN_SUBJECTS.get(candidate)
                                     skipped = False
                             else:
                                 if skipped:
-                                    logger.info("All activation stages already completed for brand %s — no chaining needed", brand_id)
+                                    logger.info(
+                                        "All activation stages already completed for brand %s — no chaining needed",
+                                        brand_id,
+                                    )
                                     next_subject = None
                 except Exception as skip_exc:
-                    logger.warning("Could not check completed stages for skip logic: %s", skip_exc)
+                    logger.warning(
+                        "Could not check completed stages for skip logic: %s", skip_exc
+                    )
 
         if next_subject and brand_id and _consumer is not None:
             try:
@@ -517,7 +648,11 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                             "SELECT id FROM calendar_items WHERE id = ANY(:ids) ORDER BY scheduled_at ASC",
                             {"ids": calendar_item_ids},
                         )
-                        sorted_ids = [str(r["id"]) for r in items] if items else [str(c) for c in calendar_item_ids]
+                        sorted_ids = (
+                            [str(r["id"]) for r in items]
+                            if items
+                            else [str(c) for c in calendar_item_ids]
+                        )
 
                         # Publish only the FIRST item; remaining are chained via remaining_queue
                         first_id = sorted_ids[0]
@@ -532,13 +667,20 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                         }
                         if payload.get("scope_weeks") is not None:
                             item_msg["scope_weeks"] = payload["scope_weeks"]
-                        await _consumer.js.publish(next_subject, json.dumps(item_msg).encode())
+                        await _consumer.js.publish(
+                            next_subject, json.dumps(item_msg).encode()
+                        )
                         logger.info(
                             "Sequential content: queued first item %s (%d remaining) for brand %s",
-                            first_id, len(remaining_ids), brand_id,
+                            first_id,
+                            len(remaining_ids),
+                            brand_id,
                         )
                     else:
-                        logger.warning("Planning completed but no calendar_item_ids in result for brand %s — querying DB for recent items", brand_id)
+                        logger.warning(
+                            "Planning completed but no calendar_item_ids in result for brand %s — querying DB for recent items",
+                            brand_id,
+                        )
                         # Fallback: query DB for recently stored calendar items
                         db_items = await execute_query(
                             "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'queued' ORDER BY scheduled_at ASC LIMIT 100",
@@ -555,10 +697,20 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                                 "chain_depth": current_depth + 1,
                                 "remaining_queue": remaining_ids,
                             }
-                            await _consumer.js.publish(next_subject, json.dumps(item_msg).encode())
-                            logger.info("Fallback: queued first DB item %s (%d remaining) for brand %s", first_id, len(remaining_ids), brand_id)
+                            await _consumer.js.publish(
+                                next_subject, json.dumps(item_msg).encode()
+                            )
+                            logger.info(
+                                "Fallback: queued first DB item %s (%d remaining) for brand %s",
+                                first_id,
+                                len(remaining_ids),
+                                brand_id,
+                            )
                         else:
-                            logger.warning("No calendar items found in DB for brand %s — content generation skipped", brand_id)
+                            logger.warning(
+                                "No calendar items found in DB for brand %s — content generation skipped",
+                                brand_id,
+                            )
                 else:
                     # Standard single-message chain — propagate trigger & scope_weeks
                     chain_msg: dict[str, Any] = {
@@ -570,24 +722,40 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                         chain_msg["scope_weeks"] = payload["scope_weeks"]
                     chain_payload = json.dumps(chain_msg).encode()
                     await _consumer.js.publish(next_subject, chain_payload)
-                    logger.info("Chained %s -> %s for brand %s (depth %d)", agent_type, next_subject, brand_id, current_depth + 1)
+                    logger.info(
+                        "Chained %s -> %s for brand %s (depth %d)",
+                        agent_type,
+                        next_subject,
+                        brand_id,
+                        current_depth + 1,
+                    )
             except Exception as chain_exc:
-                logger.error("Failed to chain %s -> %s: %s", agent_type, next_subject, chain_exc)
+                logger.error(
+                    "Failed to chain %s -> %s: %s", agent_type, next_subject, chain_exc
+                )
                 # Log chain error separately — do NOT overwrite the already-completed run
                 if run_id:
                     try:
                         await execute_update(
                             "UPDATE agent_runs SET output_payload = output_payload || :patch WHERE id = :id",
-                            {"id": run_id, "patch": json.dumps({"_chain_error": str(chain_exc)})},
+                            {
+                                "id": run_id,
+                                "patch": json.dumps({"_chain_error": str(chain_exc)}),
+                            },
                         )
                     except Exception as patch_exc:
-                        logger.warning("Could not patch chain error onto run %s: %s", run_id, patch_exc)
+                        logger.warning(
+                            "Could not patch chain error onto run %s: %s",
+                            run_id,
+                            patch_exc,
+                        )
 
     except IntegrityError:
         # Unique violation from idx_agent_runs_running — another instance is already running
         logger.warning(
             "Skipping duplicate %s workflow for brand %s — already running (unique constraint)",
-            agent_type, brand_id,
+            agent_type,
+            brand_id,
         )
         await msg.ack()
         return
@@ -595,16 +763,24 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     except asyncio.TimeoutError:
         logger.error("Workflow %s timed out for brand %s", agent_type, brand_id)
         if run_id:
-            await complete_agent_run(run_id, status="failed", error_message=f"Timed out after {WORKFLOW_TIMEOUT}s")
+            await complete_agent_run(
+                run_id,
+                status="failed",
+                error_message=f"Timed out after {WORKFLOW_TIMEOUT}s",
+            )
         await msg.nak(delay=60)
 
     except GraphInterrupt as gi:
-        logger.info("Workflow %s paused for human review (brand %s)", agent_type, brand_id)
+        logger.info(
+            "Workflow %s paused for human review (brand %s)", agent_type, brand_id
+        )
         if run_id:
             await complete_agent_run(
                 run_id,
                 status="paused_for_review",
-                output_payload=gi.value if hasattr(gi, "value") else {"reason": str(gi)},
+                output_payload=gi.value
+                if hasattr(gi, "value")
+                else {"reason": str(gi)},
             )
         await msg.ack()
 
@@ -616,15 +792,20 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
 
 REQUIRED_SUBJECTS = [
-    "research.>", "strategy.>", "content.>",
-    "evaluation.>", "product.>", "planning.>", "adaptation.>",
+    "research.>",
+    "strategy.>",
+    "content.>",
+    "evaluation.>",
+    "product.>",
+    "planning.>",
+    "adaptation.>",
 ]
 
 
 async def _ensure_stream(consumer: NATSConsumer) -> None:
     """Ensure the WORKFLOWS stream exists with the required subjects."""
     try:
-        info = await consumer.js.find_stream_name_by_subject("research.>")
+        await consumer.js.find_stream_name_by_subject("research.>")
         logger.info("Stream %s already exists", STREAM_NAME)
         # Verify all subjects are configured
         try:
@@ -632,7 +813,9 @@ async def _ensure_stream(consumer: NATSConsumer) -> None:
             existing_subjects = set(stream_info.config.subjects or [])
             missing = set(REQUIRED_SUBJECTS) - existing_subjects
             if missing:
-                logger.warning("Stream %s missing subjects: %s — updating", STREAM_NAME, missing)
+                logger.warning(
+                    "Stream %s missing subjects: %s — updating", STREAM_NAME, missing
+                )
                 await consumer.js.update_stream(
                     name=STREAM_NAME,
                     subjects=REQUIRED_SUBJECTS,

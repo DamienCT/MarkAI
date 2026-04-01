@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
 
     # ── Social API Tokens ────────────────────────────────────────────────
-    META_ACCESS_TOKEN: str = ""          # Shared token for Instagram + Facebook Graph API
+    META_ACCESS_TOKEN: str = ""  # Shared token for Instagram + Facebook Graph API
     LINKEDIN_ACCESS_TOKEN: str = ""
 
     @property
@@ -82,6 +82,7 @@ _DEFAULTS_TO_CHECK = {
 }
 if settings.MARKAI_ENV == "production":
     import logging as _log
+
     _startup_logger = _log.getLogger("agents.config")
     _insecure_defaults = []
     for _field, _default in _DEFAULTS_TO_CHECK.items():

@@ -32,7 +32,7 @@ class TestParseLlmJson:
         assert result == {"name": "test", "count": 42}
 
     def test_valid_json_list(self):
-        result = parse_llm_json('[1, 2, 3]')
+        result = parse_llm_json("[1, 2, 3]")
         assert result == [1, 2, 3]
 
     def test_json_with_markdown_fences(self):

@@ -44,10 +44,14 @@ async def _rate_limited_request(
     for attempt in range(_MAX_RETRIES):
         resp = await getattr(client, method)(url, **kwargs)
         if resp.status_code == 429:
-            wait = _BACKOFF_BASE ** attempt
+            wait = _BACKOFF_BASE**attempt
             logger.warning(
                 "Rate limited (429) on %s %s — retrying in %ds (attempt %d/%d)",
-                method.upper(), url, wait, attempt + 1, _MAX_RETRIES,
+                method.upper(),
+                url,
+                wait,
+                attempt + 1,
+                _MAX_RETRIES,
             )
             await asyncio.sleep(wait)
             continue
@@ -66,6 +70,7 @@ _LI_BASE = "https://api.linkedin.com/v2"
 
 
 # ── Instagram ────────────────────────────────────────────────────────────
+
 
 async def ig_get_profile(ig_user_id: str) -> dict[str, Any]:
     """Fetch Instagram business profile info."""
@@ -111,6 +116,7 @@ async def ig_get_post_insights(media_id: str) -> dict[str, Any]:
 
 # ── Facebook ─────────────────────────────────────────────────────────────
 
+
 async def fb_get_page(page_id: str) -> dict[str, Any]:
     """Fetch Facebook Page profile info."""
     resp = await _rate_limited_request(
@@ -131,7 +137,7 @@ async def fb_get_recent_posts(page_id: str, limit: int = 25) -> list[dict[str, A
         f"{_FB_BASE}/{page_id}/posts",
         params={
             "fields": "id,message,created_time,permalink_url,shares,full_picture,"
-                      "reactions.summary(true),comments.summary(true)",
+            "reactions.summary(true),comments.summary(true)",
             "limit": limit,
             "access_token": settings.META_ACCESS_TOKEN,
         },
@@ -141,6 +147,7 @@ async def fb_get_recent_posts(page_id: str, limit: int = 25) -> list[dict[str, A
 
 
 # ── LinkedIn ─────────────────────────────────────────────────────────────
+
 
 async def li_get_organization(org_id: str) -> dict[str, Any]:
     """Fetch LinkedIn organization profile."""
@@ -157,14 +164,19 @@ async def li_get_follower_count(org_id: str) -> int:
     resp = await _rate_limited_request(
         "get",
         f"{_LI_BASE}/organizationalEntityFollowerStatistics",
-        params={"q": "organizationalEntity", "organizationalEntity": f"urn:li:organization:{org_id}"},
+        params={
+            "q": "organizationalEntity",
+            "organizationalEntity": f"urn:li:organization:{org_id}",
+        },
         headers={"Authorization": f"Bearer {settings.LINKEDIN_ACCESS_TOKEN}"},
     )
     data = resp.json()
     elements = data.get("elements", [])
     if elements:
         follower_counts = elements[0].get("followerCounts", {})
-        return follower_counts.get("organicFollowerCount", 0) + follower_counts.get("paidFollowerCount", 0)
+        return follower_counts.get("organicFollowerCount", 0) + follower_counts.get(
+            "paidFollowerCount", 0
+        )
     return 0
 
 
@@ -185,6 +197,7 @@ async def li_get_recent_posts(org_id: str, count: int = 25) -> list[dict[str, An
 
 
 # ── Aggregated helpers ───────────────────────────────────────────────────
+
 
 async def get_social_profiles(
     ig_user_id: str | None = None,

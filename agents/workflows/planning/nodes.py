@@ -25,12 +25,32 @@ from workflows.planning.state import PlanningState
 
 logger = logging.getLogger(__name__)
 
-VALID_CHANNELS = {"instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"}
-VALID_CONTENT_TYPES = {"post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"}
+VALID_CHANNELS = {
+    "instagram",
+    "facebook",
+    "linkedin",
+    "youtube",
+    "tiktok",
+    "x",
+    "website_blog",
+    "teams",
+}
+VALID_CONTENT_TYPES = {
+    "post",
+    "story",
+    "reel",
+    "carousel",
+    "article",
+    "newsletter",
+    "ad",
+    "event",
+    "other",
+}
 
 
 class CalendarItemValidator(BaseModel):
     """Validates LLM-generated calendar items before DB insert."""
+
     scheduled_date: str
     platform: str = "instagram"
     content_type: str = "post"
@@ -62,6 +82,7 @@ class CalendarItemValidator(BaseModel):
         except (ValueError, TypeError):
             # Try date-only format
             from datetime import date as _date
+
             _date.fromisoformat(v[:10])
         return v
 
@@ -89,7 +110,10 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
     brand_id = state["brand_id"]
     strategy = await get_latest_strategy(brand_id)
     if not strategy:
-        return {"errors": [*(state.get("errors") or []), "No strategy found"], "status": "failed"}
+        return {
+            "errors": [*(state.get("errors") or []), "No strategy found"],
+            "status": "failed",
+        }
 
     # Load enabled channels from brand config
     brand_config = await get_brand_config(brand_id)
@@ -102,7 +126,8 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
             channels_cfg = {}
     channels_cfg = channels_cfg.get("channels", {})
     enabled_channels = [
-        ch for ch, cfg in channels_cfg.items()
+        ch
+        for ch, cfg in channels_cfg.items()
         if isinstance(cfg, dict) and cfg.get("enabled")
     ]
     if not enabled_channels:
@@ -120,7 +145,9 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
     try:
         existing_items = await get_recent_calendar_items(brand_id, days=90)
     except Exception as exc:
-        logger.warning("Failed to load existing calendar items for brand %s: %s", brand_id, exc)
+        logger.warning(
+            "Failed to load existing calendar items for brand %s: %s", brand_id, exc
+        )
         existing_items = []
 
     return {
@@ -136,7 +163,13 @@ async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
         return await _generate_campaigns_inner(state)
     except Exception as exc:
         logger.error("generate_campaigns failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_campaigns failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"generate_campaigns failed: {exc}",
+            ],
+        }
 
 
 async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
@@ -145,7 +178,9 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     scope_weeks = state.get("scope_weeks", 4)
     enabled_channels = state.get("enabled_channels", ["instagram"])
     start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime("%Y-%m-%d")
+    end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime(
+        "%Y-%m-%d"
+    )
 
     # Load brand info for strategy document (get_brand returns name, etc.)
     brand = await get_brand(brand_id) or {}
@@ -157,71 +192,100 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
         logger.warning("Failed to load products for brand %s: %s", brand_id, exc)
         products = []
     product_summary = sanitize_json_for_prompt(
-        [{"name": p.get("name"), "category": p.get("category"), "vendor": p.get("vendor"),
-          "description": (p.get("description") or "")[:200]} for p in products[:50]],
+        [
+            {
+                "name": p.get("name"),
+                "category": p.get("category"),
+                "vendor": p.get("vendor"),
+                "description": (p.get("description") or "")[:200],
+            }
+            for p in products[:50]
+        ],
         max_length=3000,
     )
 
     channels_str = ", ".join(enabled_channels)
     prompt = [
-        {"role": "system", "content": (
-            "You are a campaign planner. Based on the brand's target market and strategy, generate specific campaigns "
-            f"for the period {start_date} to {end_date} ({scope_weeks} weeks). "
-            f"Generate content ONLY for these platforms: {channels_str}. "
-            "Do NOT generate content for any other platforms. "
-            "Each campaign should have: name, description, start_date, "
-            "end_date, pillar, platforms, goal, kpis, "
-            "target_metrics (object with reach, engagement_rate targets), "
-            "creative_direction (2-3 sentences describing the visual/tonal approach), "
-            "content_format_mix (object with content_type percentages e.g. {reel: 40, carousel: 30, static: 20, story: 10}), "
-            "target_audience (primary persona name from strategy). "
-            "Return a JSON array."
-        )},
-        {"role": "user", "content": (
-            f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}\n\n"
-            f"Available Products:\n{product_summary}"
-        )},
+        {
+            "role": "system",
+            "content": (
+                "You are a campaign planner. Based on the brand's target market and strategy, generate specific campaigns "
+                f"for the period {start_date} to {end_date} ({scope_weeks} weeks). "
+                f"Generate content ONLY for these platforms: {channels_str}. "
+                "Do NOT generate content for any other platforms. "
+                "Each campaign should have: name, description, start_date, "
+                "end_date, pillar, platforms, goal, kpis, "
+                "target_metrics (object with reach, engagement_rate targets), "
+                "creative_direction (2-3 sentences describing the visual/tonal approach), "
+                "content_format_mix (object with content_type percentages e.g. {reel: 40, carousel: 30, static: 20, story: 10}), "
+                "target_audience (primary persona name from strategy). "
+                "Return a JSON array."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}\n\n"
+                f"Available Products:\n{product_summary}"
+            ),
+        },
     ]
-    result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
-    campaigns = parse_llm_json(result, fallback=[{"name": "General Campaign", "description": result}])
+    result = await chat_completion(
+        prompt, temperature=0.5, response_format={"type": "json_object"}
+    )
+    campaigns = parse_llm_json(
+        result, fallback=[{"name": "General Campaign", "description": result}]
+    )
     if isinstance(campaigns, dict):
         campaigns = next((v for v in campaigns.values() if isinstance(v, list)), [])
 
     # ── Generate year-long content calendar strategy document ──────────────
     strategy_doc_prompt = [
-        {"role": "system", "content": (
-            "You are a senior content strategist. Create a comprehensive Content Calendar Strategy Document "
-            "that covers the full year. This document will be the reference guide for daily content generation. "
-            "Write everything in English.\n\n"
-            "FORMATTING REQUIREMENTS (strict):\n"
-            "- Use '## ' for major section headers (e.g., '## Monthly Overview', '## Q1 Strategy')\n"
-            "- Use '### ' for month names (e.g., '### January', '### February')\n"
-            "- Use bullet lists (- ) for key points\n"
-            "- Use **bold** for emphasis on key terms\n"
-            "- Use '---' horizontal rules between quarters\n"
-            "- Include a markdown table for the yearly overview with columns: Month | Theme | Key Dates | Content Focus | Pillar Rotation\n"
-            "- Include a markdown table for content mix ratios by platform\n"
-            "- Start with an executive summary paragraph\n\n"
-            "CONTENT TO INCLUDE:\n"
-            "- Monthly themes with strategic rationale\n"
-            "- Seasonal hooks and key dates/holidays relevant to the brand's market\n"
-            "- Content pillar rotation schedule\n"
-            "- Content mix ratios per platform\n"
-            "- Strategic rationale for content sequencing"
-        )},
-        {"role": "user", "content": (
-            f"Brand: {sanitize_for_prompt(brand.get('name', '') or '')}\n"
-            f"Positioning: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=3000)}\n"
-            f"Pillars: {sanitize_json_for_prompt(strategy.get('pillars', []), max_length=3000)}\n"
-            f"Audiences: {sanitize_json_for_prompt(strategy.get('audiences', []), max_length=3000)}\n"
-            f"Cadence: {sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=3000)}\n"
-            f"Themes: {sanitize_json_for_prompt(strategy.get('themes', []), max_length=3000)}\n"
-            f"Enabled Channels: {channels_str}\n"
-            f"Generate a full 12-month content calendar strategy document."
-        )},
+        {
+            "role": "system",
+            "content": (
+                "You are a senior content strategist. Create a comprehensive Content Calendar Strategy Document "
+                "that covers the full year. This document will be the reference guide for daily content generation. "
+                "Write everything in English.\n\n"
+                "FORMATTING REQUIREMENTS (strict):\n"
+                "- Use '## ' for major section headers (e.g., '## Monthly Overview', '## Q1 Strategy')\n"
+                "- Use '### ' for month names (e.g., '### January', '### February')\n"
+                "- Use bullet lists (- ) for key points\n"
+                "- Use **bold** for emphasis on key terms\n"
+                "- Use '---' horizontal rules between quarters\n"
+                "- Include a markdown table for the yearly overview with columns: Month | Theme | Key Dates | Content Focus | Pillar Rotation\n"
+                "- Include a markdown table for content mix ratios by platform\n"
+                "- Start with an executive summary paragraph\n\n"
+                "CONTENT TO INCLUDE:\n"
+                "- Monthly themes with strategic rationale\n"
+                "- Seasonal hooks and key dates/holidays relevant to the brand's market\n"
+                "- Content pillar rotation schedule\n"
+                "- Content mix ratios per platform\n"
+                "- Strategic rationale for content sequencing"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Brand: {sanitize_for_prompt(brand.get('name', '') or '')}\n"
+                f"Positioning: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=3000)}\n"
+                f"Pillars: {sanitize_json_for_prompt(strategy.get('pillars', []), max_length=3000)}\n"
+                f"Audiences: {sanitize_json_for_prompt(strategy.get('audiences', []), max_length=3000)}\n"
+                f"Cadence: {sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=3000)}\n"
+                f"Themes: {sanitize_json_for_prompt(strategy.get('themes', []), max_length=3000)}\n"
+                f"Enabled Channels: {channels_str}\n"
+                f"Generate a full 12-month content calendar strategy document."
+            ),
+        },
     ]
-    strategy_document = await chat_completion(strategy_doc_prompt, temperature=0.6, max_tokens=16384)
-    logger.info("Generated year-long strategy document for brand %s (%d chars)", brand_id, len(strategy_document))
+    strategy_document = await chat_completion(
+        strategy_doc_prompt, temperature=0.6, max_tokens=16384
+    )
+    logger.info(
+        "Generated year-long strategy document for brand %s (%d chars)",
+        brand_id,
+        len(strategy_document),
+    )
 
     return {"campaigns": campaigns, "strategy_document": strategy_document}
 
@@ -232,7 +296,13 @@ async def generate_calendar(state: PlanningState) -> dict[str, Any]:
         return await _generate_calendar_inner(state)
     except Exception as exc:
         logger.error("generate_calendar failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_calendar failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"generate_calendar failed: {exc}",
+            ],
+        }
 
 
 async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
@@ -245,10 +315,10 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     existing_items = state.get("existing_items", [])
     start_date_dt = datetime.now(timezone.utc)
     end_date_dt = start_date_dt + timedelta(weeks=scope_weeks)
-    start_date = start_date_dt.strftime("%Y-%m-%d")
-    end_date = end_date_dt.strftime("%Y-%m-%d")
+    start_date_dt.strftime("%Y-%m-%d")
+    end_date_dt.strftime("%Y-%m-%d")
     total_days = (end_date_dt - start_date_dt).days
-    total_items = len(enabled_channels) * total_days
+    len(enabled_channels) * total_days
 
     # Load real products for product-aware content planning
     products = await get_products(brand_id)
@@ -295,47 +365,69 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         # Rebuild dedup context EVERY batch to include items generated so far
         dedup_context = _build_dedup_context()
 
-        logger.info("generate_calendar batch %d: %s to %s (%d days, %d target items, %d existing for dedup)",
-                    batch_num, batch_start_str, batch_end_str, batch_days, batch_items_target, len(existing_items) + len(all_items))
+        logger.info(
+            "generate_calendar batch %d: %s to %s (%d days, %d target items, %d existing for dedup)",
+            batch_num,
+            batch_start_str,
+            batch_end_str,
+            batch_days,
+            batch_items_target,
+            len(existing_items) + len(all_items),
+        )
 
         prompt = [
-            {"role": "system", "content": (
-                "You are a content calendar planner. Write all content in English. "
-                f"Generate content for the period {batch_start_str} to {batch_end_str} ({batch_days} days). "
-                f"Generate content ONLY for these platforms: {channels_str}. "
-                "Do NOT generate content for any other platforms. "
-                f"Generate EXACTLY 1 post per enabled channel per day — {batch_items_target} items total.\n\n"
-                "CRITICAL DEDUPLICATION RULES:\n"
-                "- Each item MUST have a UNIQUE theme + weekly_sub_theme combination\n"
-                "- Do NOT repeat any theme or angle from the ALREADY SCHEDULED list below\n"
-                "- Rotate through ALL content pillars — do not use the same pillar two weeks in a row\n"
-                "- Vary content types (mix post, reel, carousel, story) across the week\n"
-                "- Each content_brief must describe a DISTINCT topic, not a rephrased version of another\n\n"
-                "Each item MUST include ALL of these fields: "
-                "campaign_name, scheduled_date (YYYY-MM-DD), platform "
-                f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
-                "pillar (which content pillar from strategy), "
-                "theme (monthly theme name — MUST be unique per week), "
-                "weekly_sub_theme (specific sub-theme — MUST be unique across all items), "
-                "target_audience (primary persona for this post), "
-                "content_brief (2-3 sentences describing EXACTLY what this post should communicate), "
-                "product_name (from available products if relevant, else null), "
-                "visual_direction (1 sentence on visual style for the image), "
-                "cta_type (what action to drive: shop, learn, engage, or share). "
-                "Return a JSON array."
-            )},
-            {"role": "user", "content": (
-                f"{dedup_context}"
-                f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=3000)}\n\n"
-                f"Strategy cadence:\n{sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=1000)}\n\n"
-                f"Strategy document (use as reference for themes and seasonal hooks):\n"
-                f"{sanitize_for_prompt(strategy_document, max_length=3000)}\n\n"
-                f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=2000)}"
-            )},
+            {
+                "role": "system",
+                "content": (
+                    "You are a content calendar planner. Write all content in English. "
+                    f"Generate content for the period {batch_start_str} to {batch_end_str} ({batch_days} days). "
+                    f"Generate content ONLY for these platforms: {channels_str}. "
+                    "Do NOT generate content for any other platforms. "
+                    f"Generate EXACTLY 1 post per enabled channel per day — {batch_items_target} items total.\n\n"
+                    "CRITICAL DEDUPLICATION RULES:\n"
+                    "- Each item MUST have a UNIQUE theme + weekly_sub_theme combination\n"
+                    "- Do NOT repeat any theme or angle from the ALREADY SCHEDULED list below\n"
+                    "- Rotate through ALL content pillars — do not use the same pillar two weeks in a row\n"
+                    "- Vary content types (mix post, reel, carousel, story) across the week\n"
+                    "- Each content_brief must describe a DISTINCT topic, not a rephrased version of another\n\n"
+                    "Each item MUST include ALL of these fields: "
+                    "campaign_name, scheduled_date (YYYY-MM-DD), platform "
+                    f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
+                    "pillar (which content pillar from strategy), "
+                    "theme (monthly theme name — MUST be unique per week), "
+                    "weekly_sub_theme (specific sub-theme — MUST be unique across all items), "
+                    "target_audience (primary persona for this post), "
+                    "content_brief (2-3 sentences describing EXACTLY what this post should communicate), "
+                    "product_name (from available products if relevant, else null), "
+                    "visual_direction (1 sentence on visual style for the image), "
+                    "cta_type (what action to drive: shop, learn, engage, or share). "
+                    "Return a JSON array."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{dedup_context}"
+                    f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=3000)}\n\n"
+                    f"Strategy cadence:\n{sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=1000)}\n\n"
+                    f"Strategy document (use as reference for themes and seasonal hooks):\n"
+                    f"{sanitize_for_prompt(strategy_document, max_length=3000)}\n\n"
+                    f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=2000)}"
+                ),
+            },
         ]
         try:
-            result = await chat_completion(prompt, temperature=0.5, max_tokens=8192, response_format={"type": "json_object"})
-            logger.info("generate_calendar batch %d LLM response: %d chars", batch_num, len(result))
+            result = await chat_completion(
+                prompt,
+                temperature=0.5,
+                max_tokens=8192,
+                response_format={"type": "json_object"},
+            )
+            logger.info(
+                "generate_calendar batch %d LLM response: %d chars",
+                batch_num,
+                len(result),
+            )
             batch_items = parse_llm_json(result, fallback=[])
             if isinstance(batch_items, dict):
                 # Check if this is a single calendar item (has scheduled_date) vs a wrapper
@@ -344,18 +436,30 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                     batch_items = [batch_items]
                 else:
                     # Try to extract the list value from wrapper dict
-                    batch_items = next((v for v in batch_items.values() if isinstance(v, list)), [])
+                    batch_items = next(
+                        (v for v in batch_items.values() if isinstance(v, list)), []
+                    )
             if not batch_items:
-                logger.warning("generate_calendar batch %d produced 0 items — raw response preview: %s", batch_num, result[:300])
+                logger.warning(
+                    "generate_calendar batch %d produced 0 items — raw response preview: %s",
+                    batch_num,
+                    result[:300],
+                )
             else:
-                logger.info("generate_calendar batch %d produced %d items", batch_num, len(batch_items))
+                logger.info(
+                    "generate_calendar batch %d produced %d items",
+                    batch_num,
+                    len(batch_items),
+                )
             all_items.extend(batch_items)
         except Exception as batch_exc:
             logger.error("generate_calendar batch %d failed: %s", batch_num, batch_exc)
 
         current_dt = batch_end
 
-    logger.info("generate_calendar total: %d items across %d batches", len(all_items), batch_num)
+    logger.info(
+        "generate_calendar total: %d items across %d batches", len(all_items), batch_num
+    )
     return {"calendar_items": all_items}
 
 
@@ -383,7 +487,10 @@ async def assign_products(state: PlanningState) -> dict[str, Any]:
         return {"calendar_items": updated_items}
     except Exception as exc:
         logger.error("assign_products failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"assign_products failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"assign_products failed: {exc}"],
+        }
 
 
 async def store_calendar(state: PlanningState) -> dict[str, Any]:
@@ -402,43 +509,55 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
         try:
             validated = CalendarItemValidator(**item)
         except Exception as ve:
-            logger.warning("Skipping invalid calendar item: %s — %s", item.get("theme", ""), ve)
+            logger.warning(
+                "Skipping invalid calendar item: %s — %s", item.get("theme", ""), ve
+            )
             skipped += 1
             continue
-        db_items.append({
-            "brand_id": brand_id,
-            "campaign_id": None,
-            "title": validated.theme or validated.campaign_name or "",
-            "description": validated.content_brief or item.get("brief", ""),
-            "channel": validated.platform,
-            "scheduled_at": validated.scheduled_date,
-            "content_type": validated.content_type,
-            "product_id": validated.product_id,
-            "theme": validated.theme,
-            "pillar": validated.pillar,
-            "target_audience": validated.target_audience,
-            "weekly_sub_theme": validated.weekly_sub_theme,
-            "content_brief": validated.content_brief,
-            "visual_direction": validated.visual_direction,
-            "cta_type": validated.cta_type,
-            "status": "planned",
-        })
+        db_items.append(
+            {
+                "brand_id": brand_id,
+                "campaign_id": None,
+                "title": validated.theme or validated.campaign_name or "",
+                "description": validated.content_brief or item.get("brief", ""),
+                "channel": validated.platform,
+                "scheduled_at": validated.scheduled_date,
+                "content_type": validated.content_type,
+                "product_id": validated.product_id,
+                "theme": validated.theme,
+                "pillar": validated.pillar,
+                "target_audience": validated.target_audience,
+                "weekly_sub_theme": validated.weekly_sub_theme,
+                "content_brief": validated.content_brief,
+                "visual_direction": validated.visual_direction,
+                "cta_type": validated.cta_type,
+                "status": "planned",
+            }
+        )
     if skipped:
-        logger.warning("Skipped %d invalid calendar items for brand %s", skipped, brand_id)
+        logger.warning(
+            "Skipped %d invalid calendar items for brand %s", skipped, brand_id
+        )
 
-    ids = await store_calendar_items(db_items, max_date=max_date, enabled_channels=enabled_channels)
+    ids = await store_calendar_items(
+        db_items, max_date=max_date, enabled_channels=enabled_channels
+    )
     logger.info("Stored %d calendar items for brand %s", len(ids), brand_id)
 
     # Persist year-long strategy document as an agent_run artifact
     if strategy_document:
         try:
-            await store_strategy(brand_id, {
-                "type": "content_calendar_strategy",
-                "strategy_document": strategy_document,
-                "scope_weeks": scope_weeks,
-                "enabled_channels": enabled_channels,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-            }, agent_type="content_calendar")
+            await store_strategy(
+                brand_id,
+                {
+                    "type": "content_calendar_strategy",
+                    "strategy_document": strategy_document,
+                    "scope_weeks": scope_weeks,
+                    "enabled_channels": enabled_channels,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                agent_type="content_calendar",
+            )
             logger.info("Stored year-long strategy document for brand %s", brand_id)
         except Exception:
             logger.exception("Failed to store strategy document for brand %s", brand_id)

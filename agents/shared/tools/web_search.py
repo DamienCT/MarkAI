@@ -63,11 +63,14 @@ async def web_search(query: str, max_results: int = 10) -> list[SearchResult]:
         if url.startswith("//duckduckgo.com/l/?uddg="):
             # Decode the redirect URL
             import urllib.parse
+
             url = urllib.parse.unquote(url.split("uddg=")[1].split("&")[0])
 
         # Extract title
         title_match = re.search(r'class="result__a"[^>]*>(.*?)</a>', block, re.DOTALL)
-        title = re.sub(r"<[^>]+>", "", title_match.group(1)).strip() if title_match else ""
+        title = (
+            re.sub(r"<[^>]+>", "", title_match.group(1)).strip() if title_match else ""
+        )
 
         # Extract snippet
         snippet_match = re.search(
@@ -75,7 +78,11 @@ async def web_search(query: str, max_results: int = 10) -> list[SearchResult]:
             block,
             re.DOTALL,
         )
-        snippet = re.sub(r"<[^>]+>", "", snippet_match.group(1)).strip() if snippet_match else ""
+        snippet = (
+            re.sub(r"<[^>]+>", "", snippet_match.group(1)).strip()
+            if snippet_match
+            else ""
+        )
 
         if url:
             results.append(SearchResult(title=title, url=url, snippet=snippet))

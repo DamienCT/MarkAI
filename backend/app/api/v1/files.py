@@ -33,7 +33,7 @@ async def serve_file(
     first_segment = file_path.split("/")[0] if "/" in file_path else ""
     if first_segment in KNOWN_BUCKETS:
         bucket = first_segment
-        object_name = file_path[len(first_segment) + 1:]
+        object_name = file_path[len(first_segment) + 1 :]
 
     try:
         data = await minio_service.download_file(object_name, bucket=bucket)

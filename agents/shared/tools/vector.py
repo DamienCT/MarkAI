@@ -48,7 +48,9 @@ def create_collection(
             collection_name=collection_name,
             vectors_config=VectorParams(size=vector_size, distance=distance),
         )
-        logger.info("Created Qdrant collection %s (dim=%d)", collection_name, vector_size)
+        logger.info(
+            "Created Qdrant collection %s (dim=%d)", collection_name, vector_size
+        )
 
 
 def upsert_vectors(
@@ -83,7 +85,9 @@ def search_similar(
     query_filter = None
     if filter_field and filter_value:
         query_filter = Filter(
-            must=[FieldCondition(key=filter_field, match=MatchValue(value=filter_value))]
+            must=[
+                FieldCondition(key=filter_field, match=MatchValue(value=filter_value))
+            ]
         )
 
     results = client.search(
@@ -100,6 +104,7 @@ def search_similar(
 
 
 # ── Async wrappers (non-blocking for async callers) ─────────────────────
+
 
 async def async_create_collection(
     collection_name: str,

@@ -13,12 +13,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from shared.tools.fabric import get_product_image_from_bc
-from shared.tools.image_search import find_product_image, ProductImage
+from shared.tools.image_search import find_product_image
 from shared.tools.browser import scrape_product_images
-from shared.tools.web_search import web_search
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +59,10 @@ async def source_product_image(
             if images:
                 logger.info("Found supplier image for %s", product_name)
                 return ImageSourcingResult(
-                    image_url=images[0], source="supplier", needs_manual=False, confidence=0.85
+                    image_url=images[0],
+                    source="supplier",
+                    needs_manual=False,
+                    confidence=0.85,
                 )
         except Exception:
             logger.exception("Supplier image scrape failed for %s", supplier_url)
@@ -75,7 +76,9 @@ async def source_product_image(
                 brand=brand_name,
             )
             if result:
-                logger.info("Found web image for %s from %s", product_name, result.source)
+                logger.info(
+                    "Found web image for %s from %s", product_name, result.source
+                )
                 return ImageSourcingResult(
                     image_url=result.url,
                     source=result.source,
@@ -88,6 +91,9 @@ async def source_product_image(
     # ── No image found ─────────────────────────────────────────────────
     logger.warning(
         "No real product image found for sku=%s name=%s — flagging needs_manual",
-        product_sku, product_name,
+        product_sku,
+        product_name,
     )
-    return ImageSourcingResult(image_url=None, source=None, needs_manual=True, confidence=0.0)
+    return ImageSourcingResult(
+        image_url=None, source=None, needs_manual=True, confidence=0.0
+    )

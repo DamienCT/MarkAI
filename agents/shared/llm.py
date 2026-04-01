@@ -20,7 +20,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 logger = logging.getLogger(__name__)
 
-from shared.config import settings
+from shared.config import settings  # noqa: E402
 
 
 # ── Shared httpx client (lazy singleton) ────────────────────────────────
@@ -51,7 +51,14 @@ class ChatResult(str):
     completion_tokens: int
     total_tokens: int
 
-    def __new__(cls, content: str = "", *, prompt_tokens: int = 0, completion_tokens: int = 0, total_tokens: int = 0):
+    def __new__(
+        cls,
+        content: str = "",
+        *,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+    ):
         instance = super().__new__(cls, content)
         instance.prompt_tokens = prompt_tokens
         instance.completion_tokens = completion_tokens
@@ -143,7 +150,7 @@ async def get_model_for_category(category: str) -> str:
 
 def strip_markdown_fences(text: str) -> str:
     """Remove markdown code fences (```json ... ```) from LLM output."""
-    return re.sub(r'^```\w*\n?|```$', '', text.strip(), flags=re.MULTILINE).strip()
+    return re.sub(r"^```\w*\n?|```$", "", text.strip(), flags=re.MULTILINE).strip()
 
 
 def parse_llm_json(text: str, fallback: Any = None) -> Any:
@@ -163,11 +170,15 @@ def parse_llm_json(text: str, fallback: Any = None) -> Any:
                 return only_value
         return result
     except json.JSONDecodeError:
-        logger.warning("Failed to parse LLM JSON output (length=%d): %s...", len(text), text[:200])
+        logger.warning(
+            "Failed to parse LLM JSON output (length=%d): %s...", len(text), text[:200]
+        )
         return fallback
 
 
-def validate_llm_output(data: Any, required_fields: list[str] | None = None, expect_list: bool = False) -> bool:
+def validate_llm_output(
+    data: Any, required_fields: list[str] | None = None, expect_list: bool = False
+) -> bool:
     """Validate that LLM output meets basic structural expectations."""
     if expect_list:
         if not isinstance(data, list):
@@ -176,7 +187,9 @@ def validate_llm_output(data: Any, required_fields: list[str] | None = None, exp
         if required_fields and data:
             for idx, item in enumerate(data):
                 if not isinstance(item, dict):
-                    logger.warning("LLM list item %d is not a dict: %s", idx, type(item).__name__)
+                    logger.warning(
+                        "LLM list item %d is not a dict: %s", idx, type(item).__name__
+                    )
                     return False
                 missing = [f for f in required_fields if f not in item]
                 if missing:
@@ -242,14 +255,22 @@ async def chat_completion(
             total_tokens=usage.get("total_tokens", 0),
         )
     except httpx.ConnectError:
-        raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
+        raise RuntimeError(
+            f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?"
+        )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 400:
-            logger.error("LLM API %d error: %s", exc.response.status_code, exc.response.text[:500])
+            logger.error(
+                "LLM API %d error: %s",
+                exc.response.status_code,
+                exc.response.text[:500],
+            )
         # Let tenacity retry handle transient errors (429, 5xx, timeouts)
         raise
     except httpx.TimeoutException:
-        raise TimeoutError(f"LLM call timed out after {call_timeout}s (model={model}, max_tokens={max_tokens})")
+        raise TimeoutError(
+            f"LLM call timed out after {call_timeout}s (model={model}, max_tokens={max_tokens})"
+        )
 
 
 @retry(
@@ -279,7 +300,9 @@ async def get_embedding(
         data = resp.json()
         return data["data"][0]["embedding"]
     except httpx.ConnectError:
-        raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
+        raise RuntimeError(
+            f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?"
+        )
     except httpx.TimeoutException:
         raise
     except httpx.HTTPStatusError:
@@ -323,7 +346,9 @@ async def generate_image(
     last_error: Exception | None = None
     for attempt_model in models_to_try:
         try:
-            logger.info("Generating image with model=%s via direct OpenAI API", attempt_model)
+            logger.info(
+                "Generating image with model=%s via direct OpenAI API", attempt_model
+            )
             client = get_http_client()
             resp = await client.post(
                 "https://api.openai.com/v1/images/generations",
@@ -348,11 +373,17 @@ async def generate_image(
                 raise ValueError("Image generation returned neither url nor b64_json")
         except httpx.HTTPStatusError as exc:
             last_error = exc
-            logger.warning("Image model %s returned %d — trying next model", attempt_model, exc.response.status_code)
+            logger.warning(
+                "Image model %s returned %d — trying next model",
+                attempt_model,
+                exc.response.status_code,
+            )
             continue
         except Exception as exc:
             last_error = exc
-            logger.warning("Image model %s failed: %s — trying next model", attempt_model, exc)
+            logger.warning(
+                "Image model %s failed: %s — trying next model", attempt_model, exc
+            )
             continue
 
     raise RuntimeError(f"All image models failed. Last error: {last_error}")

@@ -25,7 +25,7 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
     if not products:
         # Try loading from Fabric / BC
         try:
-            vendors = await execute_sql(
+            await execute_sql(
                 "SELECT DISTINCT vendorNo FROM itemmodule_item WHERE blocked = 0"
             )
             # Also fetch products
@@ -44,7 +44,10 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
             ]
         except Exception:
             logger.exception("Failed to load products from Fabric")
-            return {"errors": [*(state.get("errors") or []), "No products found"], "status": "failed"}
+            return {
+                "errors": [*(state.get("errors") or []), "No products found"],
+                "status": "failed",
+            }
 
     # Group by vendor
     vendor_groups: dict[str, list[dict[str, Any]]] = {}
@@ -54,20 +57,37 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
 
     # Use LLM to identify brands from vendor groups
     prompt = [
-        {"role": "system", "content": (
-            "You are a product intelligence analyst. Given product data grouped by vendor, "
-            "identify distinct brands. Some vendors may represent multiple brands, some may be the same brand. "
-            "Return JSON: {vendor_name: [{brand_name, brand_website (if known), product_count, category}]}"
-        )},
-        {"role": "user", "content": f"Vendor groups:\n{sanitize_json_for_prompt({v: [{'name': p['name'], 'sku': p.get('sku')} for p in ps[:20]] for v, ps in vendor_groups.items()}, max_length=8000)}"},
+        {
+            "role": "system",
+            "content": (
+                "You are a product intelligence analyst. Given product data grouped by vendor, "
+                "identify distinct brands. Some vendors may represent multiple brands, some may be the same brand. "
+                "Return JSON: {vendor_name: [{brand_name, brand_website (if known), product_count, category}]}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Vendor groups:\n{sanitize_json_for_prompt({v: [{'name': p['name'], 'sku': p.get('sku')} for p in ps[:20]] for v, ps in vendor_groups.items()}, max_length=8000)}",
+        },
     ]
     try:
-        result = await chat_completion(prompt, temperature=0.3, response_format={"type": "json_object"})
-        brand_mappings = parse_llm_json(result, fallback={v: [{"brand_name": v, "product_count": len(ps)}] for v, ps in vendor_groups.items()})
+        result = await chat_completion(
+            prompt, temperature=0.3, response_format={"type": "json_object"}
+        )
+        brand_mappings = parse_llm_json(
+            result,
+            fallback={
+                v: [{"brand_name": v, "product_count": len(ps)}]
+                for v, ps in vendor_groups.items()
+            },
+        )
         return {"products": products, "brand_mappings": brand_mappings}
     except Exception as exc:
         logger.error("discover_brands LLM call failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"discover_brands failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"discover_brands failed: {exc}"],
+        }
 
 
 async def research_brand(state: ProductIntelState) -> dict[str, Any]:
@@ -93,14 +113,26 @@ async def research_brand(state: ProductIntelState) -> dict[str, Any]:
                     try:
                         page_data = await extract_page(website)
                         prompt = [
-                            {"role": "system", "content": (
-                                "Extract brand information: description, target_market, price_range, "
-                                "brand_values, social_media_links. Return JSON."
-                            )},
-                            {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nWebsite data:\n{sanitize_json_for_prompt(page_data, max_length=5000)}"},
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Extract brand information: description, target_market, price_range, "
+                                    "brand_values, social_media_links. Return JSON."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Brand: {sanitize_for_prompt(brand_name)}\nWebsite data:\n{sanitize_json_for_prompt(page_data, max_length=5000)}",
+                            },
                         ]
-                        analysis = await chat_completion(prompt, temperature=0.3, response_format={"type": "json_object"})
-                        brand_data = parse_llm_json(analysis, fallback={"description": analysis})
+                        analysis = await chat_completion(
+                            prompt,
+                            temperature=0.3,
+                            response_format={"type": "json_object"},
+                        )
+                        brand_data = parse_llm_json(
+                            analysis, fallback={"description": analysis}
+                        )
 
                         brand_info.update(brand_data)
                         brand_info["brand_website"] = website
@@ -113,7 +145,10 @@ async def research_brand(state: ProductIntelState) -> dict[str, Any]:
         return {"brand_mappings": enriched}
     except Exception as exc:
         logger.error("research_brand failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"research_brand failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"research_brand failed: {exc}"],
+        }
 
 
 async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
@@ -122,35 +157,54 @@ async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
     brand_mappings = state.get("brand_mappings", {})
 
     prompt = [
-        {"role": "system", "content": (
-            "You are a product cataloging expert. Match each product to its correct brand. "
-            "Return a JSON array of objects with: sku, product_name, brand_name, category, "
-            "is_promotable (boolean based on whether it's suitable for social media promotion)."
-        )},
-        {"role": "user", "content": (
-            f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in products[:100]], max_length=6000)}\n\n"
-            f"Brand mappings:\n{sanitize_json_for_prompt(brand_mappings, max_length=4000)}"
-        )},
+        {
+            "role": "system",
+            "content": (
+                "You are a product cataloging expert. Match each product to its correct brand. "
+                "Return a JSON array of objects with: sku, product_name, brand_name, category, "
+                "is_promotable (boolean based on whether it's suitable for social media promotion)."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in products[:100]], max_length=6000)}\n\n"
+                f"Brand mappings:\n{sanitize_json_for_prompt(brand_mappings, max_length=4000)}"
+            ),
+        },
     ]
     try:
-        result = await chat_completion(prompt, temperature=0.2, max_tokens=8192, response_format={"type": "json_object"})
+        result = await chat_completion(
+            prompt,
+            temperature=0.2,
+            max_tokens=8192,
+            response_format={"type": "json_object"},
+        )
         matched = parse_llm_json(result, fallback=[])
         if isinstance(matched, dict):
             matched = next((v for v in matched.values() if isinstance(v, list)), [])
     except Exception as exc:
         logger.error("match_products_to_brands LLM call failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"match_products_to_brands failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"match_products_to_brands failed: {exc}",
+            ],
+        }
 
     # Update products in DB
     for match in matched:
         sku = match.get("sku")
         matching_product = next((p for p in products if p.get("sku") == sku), None)
         if matching_product:
-            matching_product["metadata"] = json.dumps({
-                "brand_name": match.get("brand_name"),
-                "category": match.get("category"),
-                "is_promotable": match.get("is_promotable", False),
-            })
+            matching_product["metadata"] = json.dumps(
+                {
+                    "brand_name": match.get("brand_name"),
+                    "category": match.get("category"),
+                    "is_promotable": match.get("is_promotable", False),
+                }
+            )
             try:
                 await upsert_product(matching_product)
             except Exception:
@@ -195,7 +249,8 @@ async def flag_promotable(state: ProductIntelState) -> dict[str, Any]:
 
     # Rule-based filtering: must have an image and name
     candidates = [
-        p for p in products
+        p
+        for p in products
         if p.get("name") and (images.get(p.get("id") or p.get("sku", "")))
     ]
 
@@ -203,21 +258,34 @@ async def flag_promotable(state: ProductIntelState) -> dict[str, Any]:
         return {"promotable_items": [], "status": "completed"}
 
     prompt = [
-        {"role": "system", "content": (
-            "You are a social media marketing expert. From this list of products, "
-            "select those most suitable for social media promotion. Consider: visual appeal, "
-            "audience interest, seasonality, margin potential. "
-            "Return a JSON array of objects with: sku, name, promotability_score (0-1), "
-            "recommended_platforms, suggested_angle, priority (high/medium/low)."
-        )},
-        {"role": "user", "content": f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in candidates[:50]], max_length=6000)}"},
+        {
+            "role": "system",
+            "content": (
+                "You are a social media marketing expert. From this list of products, "
+                "select those most suitable for social media promotion. Consider: visual appeal, "
+                "audience interest, seasonality, margin potential. "
+                "Return a JSON array of objects with: sku, name, promotability_score (0-1), "
+                "recommended_platforms, suggested_angle, priority (high/medium/low)."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in candidates[:50]], max_length=6000)}",
+        },
     ]
     try:
-        result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
+        result = await chat_completion(
+            prompt, temperature=0.4, response_format={"type": "json_object"}
+        )
         promotable = parse_llm_json(result, fallback=[])
         if isinstance(promotable, dict):
-            promotable = next((v for v in promotable.values() if isinstance(v, list)), [])
+            promotable = next(
+                (v for v in promotable.values() if isinstance(v, list)), []
+            )
         return {"promotable_items": promotable, "status": "completed"}
     except Exception as exc:
         logger.error("flag_promotable LLM call failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"flag_promotable failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"flag_promotable failed: {exc}"],
+        }

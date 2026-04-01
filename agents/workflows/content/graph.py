@@ -38,15 +38,37 @@ builder.add_node("generate_mockups", generate_mockups_node)
 builder.add_node("store_content", store_content_node)
 
 builder.set_entry_point("load_context")
-builder.add_conditional_edges("load_context", _check_failed, {"end": END, "continue": "generate_hook"})
-builder.add_conditional_edges("generate_hook", _check_failed, {"end": END, "continue": "generate_caption"})
-builder.add_conditional_edges("generate_caption", _check_failed, {"end": END, "continue": "generate_hashtags"})
-builder.add_conditional_edges("generate_hashtags", _check_failed, {"end": END, "continue": "source_product_image"})
-builder.add_conditional_edges("source_product_image", _check_failed, {"end": END, "continue": "generate_background"})
-builder.add_conditional_edges("generate_background", _check_failed, {"end": END, "continue": "apply_branding"})
-builder.add_conditional_edges("apply_branding", _check_failed, {"end": END, "continue": "adapt_platforms"})
-builder.add_conditional_edges("adapt_platforms", _check_failed, {"end": END, "continue": "generate_mockups"})
-builder.add_conditional_edges("generate_mockups", _check_failed, {"end": END, "continue": "store_content"})
-builder.add_conditional_edges("store_content", _check_failed, {"end": END, "continue": END})
+builder.add_conditional_edges(
+    "load_context", _check_failed, {"end": END, "continue": "generate_hook"}
+)
+builder.add_conditional_edges(
+    "generate_hook", _check_failed, {"end": END, "continue": "generate_caption"}
+)
+builder.add_conditional_edges(
+    "generate_caption", _check_failed, {"end": END, "continue": "generate_hashtags"}
+)
+builder.add_conditional_edges(
+    "generate_hashtags", _check_failed, {"end": END, "continue": "source_product_image"}
+)
+builder.add_conditional_edges(
+    "source_product_image",
+    _check_failed,
+    {"end": END, "continue": "generate_background"},
+)
+builder.add_conditional_edges(
+    "generate_background", _check_failed, {"end": END, "continue": "apply_branding"}
+)
+builder.add_conditional_edges(
+    "apply_branding", _check_failed, {"end": END, "continue": "adapt_platforms"}
+)
+builder.add_conditional_edges(
+    "adapt_platforms", _check_failed, {"end": END, "continue": "generate_mockups"}
+)
+builder.add_conditional_edges(
+    "generate_mockups", _check_failed, {"end": END, "continue": "store_content"}
+)
+builder.add_conditional_edges(
+    "store_content", _check_failed, {"end": END, "continue": END}
+)
 
 content_graph = builder.compile()

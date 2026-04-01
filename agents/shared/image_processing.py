@@ -71,13 +71,26 @@ def render_logo_png(svg_bytes: bytes, size: int = 1024) -> bytes | None:
 
     try:
         subprocess.run(
-            ["magick", "-background", "none", "-density", "300",
-             svg_path, "-resize", f"{size}x{size}", png_path],
-            check=True, capture_output=True, timeout=30,
+            [
+                "magick",
+                "-background",
+                "none",
+                "-density",
+                "300",
+                svg_path,
+                "-resize",
+                f"{size}x{size}",
+                png_path,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
         )
         return Path(png_path).read_bytes()
     except (subprocess.CalledProcessError, FileNotFoundError):
-        logger.error("ImageMagick not available — cannot render SVG to PNG. Install ImageMagick.")
+        logger.error(
+            "ImageMagick not available — cannot render SVG to PNG. Install ImageMagick."
+        )
         return None
     finally:
         Path(svg_path).unlink(missing_ok=True)
@@ -116,7 +129,7 @@ def find_best_logo_position(
     for name, (cx, cy) in candidates.items():
         cx = max(0, min(cx, max(0, w - logo_w)))
         cy = max(0, min(cy, max(0, h - logo_h)))
-        region = arr[cy:cy + logo_h, cx:cx + logo_w]
+        region = arr[cy : cy + logo_h, cx : cx + logo_w]
         var = float(np.var(region))
         if var < best_var:
             best_var = var
@@ -155,7 +168,11 @@ def overlay_logo_and_text(
         # Still apply text overlay below, so don't return early
         logo = None
     logo_w = int(base.width * logo_scale) if logo else 0
-    logo_h = int(logo.height * (logo_w / logo.width)) if (logo and logo_w > 0 and logo.width > 0) else 0
+    logo_h = (
+        int(logo.height * (logo_w / logo.width))
+        if (logo and logo_w > 0 and logo.width > 0)
+        else 0
+    )
     if logo and logo_w > 0 and logo_h > 0:
         logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
     else:
@@ -190,13 +207,19 @@ def overlay_logo_and_text(
     bar_x2 = margin + total_w + pad * 2
     bar_y2 = bar_y1 + total_h + pad * 2
 
-    draw.rounded_rectangle([bar_x1, bar_y1, bar_x2, bar_y2], radius=12, fill=(0, 0, 0, 140))
+    draw.rounded_rectangle(
+        [bar_x1, bar_y1, bar_x2, bar_y2], radius=12, fill=(0, 0, 0, 140)
+    )
 
     ty = bar_y1 + pad
-    draw.text((margin + pad, ty), text_line1, font=font_large, fill=(255, 255, 255, 240))
+    draw.text(
+        (margin + pad, ty), text_line1, font=font_large, fill=(255, 255, 255, 240)
+    )
     if text_line2:
         ty += text_h1 + 8
-        draw.text((margin + pad, ty), text_line2, font=font_small, fill=(255, 255, 255, 200))
+        draw.text(
+            (margin + pad, ty), text_line2, font=font_small, fill=(255, 255, 255, 200)
+        )
 
     result = Image.alpha_composite(base, overlay)
     buf = BytesIO()
@@ -243,7 +266,9 @@ def _draw_avatar(
     color: tuple[int, int, int] = (79, 220, 239),
 ):
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
-    draw.text((cx - 8, cy - 11), initial, font=_load_font(18, "bold"), fill=(255, 255, 255))
+    draw.text(
+        (cx - 8, cy - 11), initial, font=_load_font(18, "bold"), fill=(255, 255, 255)
+    )
 
 
 def generate_mockup(
@@ -267,20 +292,71 @@ def generate_mockup(
     post_img = Image.open(BytesIO(image_data)).convert("RGB")
 
     if platform == "instagram":
-        img = _mockup_instagram(img, draw, post_img, caption, username, W, H, initial=initial, avatar_color=avatar_color)
+        img = _mockup_instagram(
+            img,
+            draw,
+            post_img,
+            caption,
+            username,
+            W,
+            H,
+            initial=initial,
+            avatar_color=avatar_color,
+        )
     elif platform == "facebook":
-        img = _mockup_facebook(img, draw, post_img, caption, display_name, W, H, initial=initial, avatar_color=avatar_color)
+        img = _mockup_facebook(
+            img,
+            draw,
+            post_img,
+            caption,
+            display_name,
+            W,
+            H,
+            initial=initial,
+            avatar_color=avatar_color,
+        )
     elif platform == "linkedin":
-        img = _mockup_linkedin(img, draw, post_img, caption, display_name, W, H, initial=initial, avatar_color=avatar_color)
+        img = _mockup_linkedin(
+            img,
+            draw,
+            post_img,
+            caption,
+            display_name,
+            W,
+            H,
+            initial=initial,
+            avatar_color=avatar_color,
+        )
     elif platform == "x":
-        img = _mockup_x(img, draw, post_img, caption, username, display_name, W, H, initial=initial, avatar_color=avatar_color)
+        img = _mockup_x(
+            img,
+            draw,
+            post_img,
+            caption,
+            username,
+            display_name,
+            W,
+            H,
+            initial=initial,
+            avatar_color=avatar_color,
+        )
 
     buf = BytesIO()
     img.save(buf, format="PNG", quality=95)
     return buf.getvalue()
 
 
-def _mockup_instagram(img, draw, post_img, caption, username, W, H, initial="H", avatar_color=(79, 220, 239)):
+def _mockup_instagram(
+    img,
+    draw,
+    post_img,
+    caption,
+    username,
+    W,
+    H,
+    initial="H",
+    avatar_color=(79, 220, 239),
+):
     y = 0
     _draw_status_bar(draw, W, y)
     y += 44
@@ -296,7 +372,9 @@ def _mockup_instagram(img, draw, post_img, caption, username, W, H, initial="H",
     for i, label in enumerate(labels):
         cx, cy = 44 + i * 84, y + 38
         if i > 0:
-            draw.ellipse([cx - 35, cy - 35, cx + 35, cy + 35], outline=(225, 48, 108), width=3)
+            draw.ellipse(
+                [cx - 35, cy - 35, cx + 35, cy + 35], outline=(225, 48, 108), width=3
+            )
         draw.ellipse([cx - 32, cy - 32, cx + 32, cy + 32], fill=(240, 240, 240))
         lf = _load_font(11)
         lw = draw.textbbox((0, 0), label, font=lf)[2]
@@ -316,7 +394,9 @@ def _mockup_instagram(img, draw, post_img, caption, username, W, H, initial="H",
     y += W
 
     # Actions + likes
-    draw.text((16, y + 12), "\u2661  \U0001F4AC  \u2933", font=_load_font(24), fill=(0, 0, 0))
+    draw.text(
+        (16, y + 12), "\u2661  \U0001f4ac  \u2933", font=_load_font(24), fill=(0, 0, 0)
+    )
     y += 50
     draw.text((16, y), "2,847 likes", font=_load_font(14, "bold"), fill=(0, 0, 0))
     y += 22
@@ -338,7 +418,9 @@ def _mockup_instagram(img, draw, post_img, caption, username, W, H, initial="H",
         y += 20
 
     y += 8
-    draw.text((16, y), "View all 42 comments", font=_load_font(14), fill=(150, 150, 150))
+    draw.text(
+        (16, y), "View all 42 comments", font=_load_font(14), fill=(150, 150, 150)
+    )
     y += 22
     draw.text((16, y), "2 hours ago", font=_load_font(12), fill=(150, 150, 150))
 
@@ -346,15 +428,27 @@ def _mockup_instagram(img, draw, post_img, caption, username, W, H, initial="H",
     nav_y = H - 56
     draw.rectangle([0, nav_y, W, H], fill=(255, 255, 255))
     draw.line([(0, nav_y), (W, nav_y)], fill=(219, 219, 219), width=1)
-    icons = ["\U0001F3E0", "\U0001F50D", "\u271A", "\u2661", "\u25CF"]
+    icons = ["\U0001f3e0", "\U0001f50d", "\u271a", "\u2661", "\u25cf"]
     sp = W // len(icons)
     for i, ic in enumerate(icons):
-        draw.text((sp * i + sp // 2 - 10, nav_y + 16), ic, font=_load_font(22), fill=(0, 0, 0))
+        draw.text(
+            (sp * i + sp // 2 - 10, nav_y + 16), ic, font=_load_font(22), fill=(0, 0, 0)
+        )
 
     return img
 
 
-def _mockup_facebook(img, draw, post_img, caption, display_name, W, H, initial="H", avatar_color=(79, 220, 239)):
+def _mockup_facebook(
+    img,
+    draw,
+    post_img,
+    caption,
+    display_name,
+    W,
+    H,
+    initial="H",
+    avatar_color=(79, 220, 239),
+):
     img = Image.new("RGB", (W, H), (240, 242, 245))
     draw = ImageDraw.Draw(img)
     y = 0
@@ -371,7 +465,7 @@ def _mockup_facebook(img, draw, post_img, caption, display_name, W, H, initial="
     # Tabs
     draw.rectangle([0, y, W, y + 48], fill=(255, 255, 255))
     draw.line([(0, y + 47), (W, y + 47)], fill=(219, 219, 219), width=1)
-    tabs = ["\U0001F3E0", "\U0001F465", "\u25B6", "\U0001F514", "\u2630"]
+    tabs = ["\U0001f3e0", "\U0001f465", "\u25b6", "\U0001f514", "\u2630"]
     sp = W // len(tabs)
     for i, t in enumerate(tabs):
         color = (24, 119, 242) if i == 0 else (100, 100, 100)
@@ -381,14 +475,18 @@ def _mockup_facebook(img, draw, post_img, caption, display_name, W, H, initial="
 
     # "What's on your mind?"
     draw.rectangle([0, y, W, y + 60], fill=(255, 255, 255))
-    draw.text((58, y + 18), "What's on your mind?", font=_load_font(15), fill=(150, 150, 150))
+    draw.text(
+        (58, y + 18), "What's on your mind?", font=_load_font(15), fill=(150, 150, 150)
+    )
     y += 68
 
     # Post card
     draw.rectangle([0, y, W, H - 56], fill=(255, 255, 255))
     _draw_avatar(draw, 38, y + 30, initial=initial, color=avatar_color)
     draw.text((68, y + 14), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
-    draw.text((68, y + 34), "2h \u00B7 \U0001F310", font=_load_font(13), fill=(100, 100, 100))
+    draw.text(
+        (68, y + 34), "2h \u00b7 \U0001f310", font=_load_font(13), fill=(100, 100, 100)
+    )
     y += 60
 
     # Caption above image
@@ -405,15 +503,29 @@ def _mockup_facebook(img, draw, post_img, caption, display_name, W, H, initial="
 
     # Reactions
     draw.rectangle([0, y, W, y + 36], fill=(255, 255, 255))
-    draw.text((16, y + 8), "\U0001F44D\u2764\uFE0F 1.2K", font=_load_font(13), fill=(100, 100, 100))
-    draw.text((W - 180, y + 8), "89 comments \u00B7 34 shares", font=_load_font(13), fill=(100, 100, 100))
+    draw.text(
+        (16, y + 8),
+        "\U0001f44d\u2764\ufe0f 1.2K",
+        font=_load_font(13),
+        fill=(100, 100, 100),
+    )
+    draw.text(
+        (W - 180, y + 8),
+        "89 comments \u00b7 34 shares",
+        font=_load_font(13),
+        fill=(100, 100, 100),
+    )
     y += 36
     draw.line([(16, y), (W - 16, y)], fill=(219, 219, 219), width=1)
     y += 1
 
     # Actions
     draw.rectangle([0, y, W, y + 46], fill=(255, 255, 255))
-    actions = [("\U0001F44D Like", W // 6), ("\U0001F4AC Comment", W // 2), ("\u21AA Share", W * 5 // 6)]
+    actions = [
+        ("\U0001f44d Like", W // 6),
+        ("\U0001f4ac Comment", W // 2),
+        ("\u21aa Share", W * 5 // 6),
+    ]
     af = _load_font(14)
     for label, cx in actions:
         lw = draw.textbbox((0, 0), label, font=af)[2]
@@ -427,7 +539,17 @@ def _mockup_facebook(img, draw, post_img, caption, display_name, W, H, initial="
     return img
 
 
-def _mockup_linkedin(img, draw, post_img, caption, display_name, W, H, initial="H", avatar_color=(79, 220, 239)):
+def _mockup_linkedin(
+    img,
+    draw,
+    post_img,
+    caption,
+    display_name,
+    W,
+    H,
+    initial="H",
+    avatar_color=(79, 220, 239),
+):
     img = Image.new("RGB", (W, H), (240, 240, 240))
     draw = ImageDraw.Draw(img)
     y = 0
@@ -440,15 +562,24 @@ def _mockup_linkedin(img, draw, post_img, caption, display_name, W, H, initial="
     draw.rectangle([0, y, W, y + 52], fill=(255, 255, 255))
     draw.text((16, y + 10), "in", font=_load_font(26, "bold"), fill=(0, 119, 181))
     draw.rounded_rectangle([56, y + 10, W - 60, y + 40], radius=6, fill=(238, 242, 246))
-    draw.text((68, y + 14), "\U0001F50D Search", font=_load_font(14), fill=(130, 130, 130))
+    draw.text(
+        (68, y + 14), "\U0001f50d Search", font=_load_font(14), fill=(130, 130, 130)
+    )
     y += 60
 
     # Post card
     draw.rectangle([0, y, W, H - 56], fill=(255, 255, 255))
     _draw_avatar(draw, 40, y + 34, 24, initial=initial, color=avatar_color)
     draw.text((72, y + 14), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
-    draw.text((72, y + 34), "Health & Wellness \u00B7 1,234 followers", font=_load_font(12), fill=(100, 100, 100))
-    draw.text((72, y + 50), "2h \u00B7 \U0001F310", font=_load_font(12), fill=(100, 100, 100))
+    draw.text(
+        (72, y + 34),
+        "Health & Wellness \u00b7 1,234 followers",
+        font=_load_font(12),
+        fill=(100, 100, 100),
+    )
+    draw.text(
+        (72, y + 50), "2h \u00b7 \U0001f310", font=_load_font(12), fill=(100, 100, 100)
+    )
     y += 68
 
     cf = _load_font(14)
@@ -462,15 +593,29 @@ def _mockup_linkedin(img, draw, post_img, caption, display_name, W, H, initial="
     y += W
 
     draw.rectangle([0, y, W, y + 36], fill=(255, 255, 255))
-    draw.text((16, y + 8), "\U0001F44D\u2764\uFE0F\U0001F4A1 847", font=_load_font(13), fill=(100, 100, 100))
-    draw.text((W - 200, y + 8), "52 comments \u00B7 18 reposts", font=_load_font(13), fill=(100, 100, 100))
+    draw.text(
+        (16, y + 8),
+        "\U0001f44d\u2764\ufe0f\U0001f4a1 847",
+        font=_load_font(13),
+        fill=(100, 100, 100),
+    )
+    draw.text(
+        (W - 200, y + 8),
+        "52 comments \u00b7 18 reposts",
+        font=_load_font(13),
+        fill=(100, 100, 100),
+    )
     y += 36
     draw.line([(16, y), (W - 16, y)], fill=(219, 219, 219), width=1)
     y += 1
 
     draw.rectangle([0, y, W, y + 46], fill=(255, 255, 255))
-    actions = [("\U0001F44D Like", W // 8), ("\U0001F4AC Comment", W * 3 // 8),
-               ("\u21BA Repost", W * 5 // 8), ("\u2709 Send", W * 7 // 8)]
+    actions = [
+        ("\U0001f44d Like", W // 8),
+        ("\U0001f4ac Comment", W * 3 // 8),
+        ("\u21ba Repost", W * 5 // 8),
+        ("\u2709 Send", W * 7 // 8),
+    ]
     af = _load_font(13)
     for label, cx in actions:
         lw = draw.textbbox((0, 0), label, font=af)[2]
@@ -483,7 +628,18 @@ def _mockup_linkedin(img, draw, post_img, caption, display_name, W, H, initial="
     return img
 
 
-def _mockup_x(img, draw, post_img, caption, username, display_name, W, H, initial="H", avatar_color=(79, 220, 239)):
+def _mockup_x(
+    img,
+    draw,
+    post_img,
+    caption,
+    username,
+    display_name,
+    W,
+    H,
+    initial="H",
+    avatar_color=(79, 220, 239),
+):
     y = 0
     _draw_status_bar(draw, W, 0)
     y += 44
@@ -496,9 +652,16 @@ def _mockup_x(img, draw, post_img, caption, username, display_name, W, H, initia
     y += 1
 
     # Tabs
-    draw.text((W // 4 - 30, y + 12), "For you", font=_load_font(15, "bold"), fill=(0, 0, 0))
+    draw.text(
+        (W // 4 - 30, y + 12), "For you", font=_load_font(15, "bold"), fill=(0, 0, 0)
+    )
     draw.rectangle([W // 4 - 35, y + 44, W // 4 + 35, y + 48], fill=(29, 155, 240))
-    draw.text((W * 3 // 4 - 40, y + 12), "Following", font=_load_font(15), fill=(100, 100, 100))
+    draw.text(
+        (W * 3 // 4 - 40, y + 12),
+        "Following",
+        font=_load_font(15),
+        fill=(100, 100, 100),
+    )
     y += 49
     draw.line([(0, y), (W, y)], fill=(239, 243, 244), width=1)
     y += 1
@@ -508,8 +671,15 @@ def _mockup_x(img, draw, post_img, caption, username, display_name, W, H, initia
     ay = y + 38
     _draw_avatar(draw, ax, ay, initial=initial, color=avatar_color)
     name_x = ax + 34
-    draw.text((name_x, y + 12), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
-    draw.text((name_x, y + 32), f"@{username} \u00B7 2h", font=_load_font(13), fill=(100, 100, 100))
+    draw.text(
+        (name_x, y + 12), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0)
+    )
+    draw.text(
+        (name_x, y + 32),
+        f"@{username} \u00b7 2h",
+        font=_load_font(13),
+        fill=(100, 100, 100),
+    )
     y += 56
 
     cf = _load_font(15)
@@ -529,7 +699,12 @@ def _mockup_x(img, draw, post_img, caption, username, display_name, W, H, initia
     y += img_w + 12
 
     af = _load_font(13)
-    for label, ox in [("\U0001F4AC 42", 60), ("\U0001F501 128", 180), ("\u2661 847", 300), ("\U0001F4CA 12K", 420)]:
+    for label, ox in [
+        ("\U0001f4ac 42", 60),
+        ("\U0001f501 128", 180),
+        ("\u2661 847", 300),
+        ("\U0001f4ca 12K", 420),
+    ]:
         draw.text((ox, y), label, font=af, fill=(100, 100, 100))
     y += 36
     draw.line([(0, y), (W, y)], fill=(239, 243, 244), width=1)

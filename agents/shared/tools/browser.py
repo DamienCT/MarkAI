@@ -33,6 +33,7 @@ def _get_http_client() -> httpx.AsyncClient:
 
 class _TextExtractor(HTMLParser):
     """Minimal HTML parser that extracts text, title, meta description, and links."""
+
     def __init__(self):
         super().__init__()
         self.text_parts: list[str] = []
@@ -73,10 +74,14 @@ class _TextExtractor(HTMLParser):
 async def _direct_fetch(url: str) -> dict[str, Any]:
     """Fetch a URL directly via HTTP and extract basic content."""
     client = _get_http_client()
-    resp = await client.get(url, headers={
-        "User-Agent": "Mozilla/5.0 (compatible; MarkAI Research Bot/1.0)",
-        "Accept": "text/html",
-    }, timeout=30)
+    resp = await client.get(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; MarkAI Research Bot/1.0)",
+            "Accept": "text/html",
+        },
+        timeout=30,
+    )
     resp.raise_for_status()
     html = resp.text
 
@@ -86,7 +91,7 @@ async def _direct_fetch(url: str) -> dict[str, Any]:
     # Clean and truncate text
     full_text = " ".join(parser.text_parts)
     # Remove excessive whitespace
-    full_text = re.sub(r'\s+', ' ', full_text).strip()
+    full_text = re.sub(r"\s+", " ", full_text).strip()
 
     return {
         "url": url,

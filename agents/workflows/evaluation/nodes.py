@@ -19,8 +19,13 @@ async def load_performance(state: EvaluationState) -> dict[str, Any]:
     """Load engagement metrics from the database."""
     data = await get_performance_data(state["brand_id"], days=30)
     if not data:
-        return {"errors": [*(state.get("errors") or []), "No performance data found"], "status": "failed"}
-    logger.info("Loaded %d performance records for brand %s", len(data), state["brand_id"])
+        return {
+            "errors": [*(state.get("errors") or []), "No performance data found"],
+            "status": "failed",
+        }
+    logger.info(
+        "Loaded %d performance records for brand %s", len(data), state["brand_id"]
+    )
     return {"performance_data": data}
 
 
@@ -30,22 +35,33 @@ async def analyze_patterns(state: EvaluationState) -> dict[str, Any]:
         perf_data = state.get("performance_data", [])
 
         prompt = [
-            {"role": "system", "content": (
-                "You are a social media analytics expert. Analyze the performance data and identify patterns. "
-                "Look for: best performing content types, optimal posting times, engagement trends, "
-                "audience response patterns, content themes that resonate. "
-                "Return JSON with: top_performers (array), worst_performers (array), "
-                "engagement_trends, time_patterns, content_type_performance, theme_performance."
-            )},
-            {"role": "user", "content": f"Performance data (last 30 days):\n{sanitize_json_for_prompt(perf_data)}"},
+            {
+                "role": "system",
+                "content": (
+                    "You are a social media analytics expert. Analyze the performance data and identify patterns. "
+                    "Look for: best performing content types, optimal posting times, engagement trends, "
+                    "audience response patterns, content themes that resonate. "
+                    "Return JSON with: top_performers (array), worst_performers (array), "
+                    "engagement_trends, time_patterns, content_type_performance, theme_performance."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Performance data (last 30 days):\n{sanitize_json_for_prompt(perf_data)}",
+            },
         ]
-        result = await chat_completion(prompt, temperature=0.3, response_format={"type": "json_object"})
+        result = await chat_completion(
+            prompt, temperature=0.3, response_format={"type": "json_object"}
+        )
         patterns = parse_llm_json(result, fallback={"raw_analysis": result})
 
         return {"patterns": patterns}
     except Exception as exc:
         logger.error("analyze_patterns failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"analyze_patterns failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"analyze_patterns failed: {exc}"],
+        }
 
 
 async def generate_recommendations(state: EvaluationState) -> dict[str, Any]:
@@ -54,24 +70,45 @@ async def generate_recommendations(state: EvaluationState) -> dict[str, Any]:
         patterns = state.get("patterns", {})
 
         prompt = [
-            {"role": "system", "content": (
-                "You are a marketing optimization expert. Based on the performance patterns, "
-                "generate specific, actionable recommendations. Each recommendation should have: "
-                "title, description, expected_impact (high/medium/low), confidence (0.0-1.0), "
-                "category (timing/content/audience/format), specific_action. "
-                "Return a JSON array sorted by confidence descending."
-            )},
-            {"role": "user", "content": f"Performance patterns:\n{sanitize_json_for_prompt(patterns, max_length=8000)}"},
+            {
+                "role": "system",
+                "content": (
+                    "You are a marketing optimization expert. Based on the performance patterns, "
+                    "generate specific, actionable recommendations. Each recommendation should have: "
+                    "title, description, expected_impact (high/medium/low), confidence (0.0-1.0), "
+                    "category (timing/content/audience/format), specific_action. "
+                    "Return a JSON array sorted by confidence descending."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Performance patterns:\n{sanitize_json_for_prompt(patterns, max_length=8000)}",
+            },
         ]
-        result = await chat_completion(prompt, temperature=0.4, response_format={"type": "json_object"})
-        recommendations = parse_llm_json(result, fallback=[{"title": "Analysis complete", "description": result, "confidence": 0.5}])
+        result = await chat_completion(
+            prompt, temperature=0.4, response_format={"type": "json_object"}
+        )
+        recommendations = parse_llm_json(
+            result,
+            fallback=[
+                {"title": "Analysis complete", "description": result, "confidence": 0.5}
+            ],
+        )
         if isinstance(recommendations, dict):
-            recommendations = next((v for v in recommendations.values() if isinstance(v, list)), [])
+            recommendations = next(
+                (v for v in recommendations.values() if isinstance(v, list)), []
+            )
 
         return {"recommendations": recommendations}
     except Exception as exc:
         logger.error("generate_recommendations failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_recommendations failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"generate_recommendations failed: {exc}",
+            ],
+        }
 
 
 async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
@@ -85,24 +122,42 @@ async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
         recommendations = state.get("recommendations", [])
 
         prompt = [
-            {"role": "system", "content": (
-                "You are a marketing operations manager. Classify each recommendation into a tier:\n"
-                "- tier1: Safe to auto-apply. Examples: posting time changes, hashtag optimization, minor caption tweaks.\n"
-                "- tier2: Needs human review. Examples: content tone shifts, new audience targeting, format changes.\n"
-                "- tier3: Major strategic change. Examples: pillar restructuring, platform strategy changes, brand voice shifts.\n"
-                "Return a JSON array where each object has the original recommendation fields plus a 'tier' field (1, 2, or 3)."
-            )},
-            {"role": "user", "content": f"Recommendations:\n{sanitize_json_for_prompt(recommendations, max_length=8000)}"},
+            {
+                "role": "system",
+                "content": (
+                    "You are a marketing operations manager. Classify each recommendation into a tier:\n"
+                    "- tier1: Safe to auto-apply. Examples: posting time changes, hashtag optimization, minor caption tweaks.\n"
+                    "- tier2: Needs human review. Examples: content tone shifts, new audience targeting, format changes.\n"
+                    "- tier3: Major strategic change. Examples: pillar restructuring, platform strategy changes, brand voice shifts.\n"
+                    "Return a JSON array where each object has the original recommendation fields plus a 'tier' field (1, 2, or 3)."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Recommendations:\n{sanitize_json_for_prompt(recommendations, max_length=8000)}",
+            },
         ]
-        result = await chat_completion(prompt, temperature=0.2, response_format={"type": "json_object"})
-        classified = parse_llm_json(result, fallback=[{**r, "tier": 2} for r in recommendations])
+        result = await chat_completion(
+            prompt, temperature=0.2, response_format={"type": "json_object"}
+        )
+        classified = parse_llm_json(
+            result, fallback=[{**r, "tier": 2} for r in recommendations]
+        )
         if isinstance(classified, dict):
-            classified = next((v for v in classified.values() if isinstance(v, list)), [])
+            classified = next(
+                (v for v in classified.values() if isinstance(v, list)), []
+            )
 
         return {"adaptations": classified}
     except Exception as exc:
         logger.error("classify_adaptations failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"classify_adaptations failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"classify_adaptations failed: {exc}",
+            ],
+        }
 
 
 async def store_adaptations_node(state: EvaluationState) -> dict[str, Any]:
@@ -113,14 +168,16 @@ async def store_adaptations_node(state: EvaluationState) -> dict[str, Any]:
 
         db_records = []
         for a in adaptations:
-            db_records.append({
-                "brand_id": brand_id,
-                "tier": a.get("tier", 2),
-                "description": a.get("description", a.get("title", "")),
-                "confidence": a.get("confidence", 0.5),
-                "data": json.dumps(a),
-                "status": "auto_applied" if a.get("tier") == 1 else "pending",
-            })
+            db_records.append(
+                {
+                    "brand_id": brand_id,
+                    "tier": a.get("tier", 2),
+                    "description": a.get("description", a.get("title", "")),
+                    "confidence": a.get("confidence", 0.5),
+                    "data": json.dumps(a),
+                    "status": "auto_applied" if a.get("tier") == 1 else "pending",
+                }
+            )
 
         ids = await store_adaptations(db_records)
         logger.info("Stored %d adaptations for brand %s", len(ids), brand_id)
@@ -128,4 +185,10 @@ async def store_adaptations_node(state: EvaluationState) -> dict[str, Any]:
         return {"status": "completed"}
     except Exception as exc:
         logger.error("store_adaptations_node failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"store_adaptations failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"store_adaptations failed: {exc}",
+            ],
+        }

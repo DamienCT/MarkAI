@@ -30,6 +30,7 @@ async def get_session() -> AsyncSession:
 
 # ── Brand operations ─────────────────────────────────────────────────────
 
+
 async def get_brand(brand_id: str) -> dict[str, Any] | None:
     async with async_session_factory() as session:
         result = await session.execute(
@@ -42,7 +43,9 @@ async def get_brand(brand_id: str) -> dict[str, Any] | None:
 async def get_brand_config(brand_id: str) -> dict[str, Any] | None:
     async with async_session_factory() as session:
         result = await session.execute(
-            text("SELECT id, brand_guidelines, tone_of_voice, target_audience, website_url FROM brands WHERE id = :id"),
+            text(
+                "SELECT id, brand_guidelines, tone_of_voice, target_audience, website_url FROM brands WHERE id = :id"
+            ),
             {"id": brand_id},
         )
         row = result.mappings().first()
@@ -50,6 +53,7 @@ async def get_brand_config(brand_id: str) -> dict[str, Any] | None:
 
 
 # ── Agent Run operations (store all workflow results here) ────────────────
+
 
 async def create_agent_run(
     brand_id: str,
@@ -108,6 +112,7 @@ async def complete_agent_run(
 
 # ── Research operations (stored in agent_runs) ────────────────────────────
 
+
 async def store_research(brand_id: str, research_data: dict[str, Any]) -> str:
     """Store research results as a completed agent_run with output_payload."""
     run_id = str(uuid4())
@@ -144,7 +149,10 @@ async def get_latest_research(brand_id: str) -> dict[str, Any] | None:
 
 # ── Strategy operations (stored in agent_runs) ────────────────────────────
 
-async def store_strategy(brand_id: str, strategy_data: dict[str, Any], agent_type: str = "strategy") -> str:
+
+async def store_strategy(
+    brand_id: str, strategy_data: dict[str, Any], agent_type: str = "strategy"
+) -> str:
     """Store strategy results as a completed agent_run with output_payload."""
     run_id = str(uuid4())
     async with async_session_factory() as session:
@@ -181,6 +189,7 @@ async def get_latest_strategy(brand_id: str) -> dict[str, Any] | None:
 
 # ── Competitor operations ─────────────────────────────────────────────────
 
+
 async def store_competitors(brand_id: str, competitors: list[dict[str, Any]]) -> int:
     """Upsert discovered competitors for a brand. Returns count inserted."""
     count = 0
@@ -191,7 +200,9 @@ async def store_competitors(brand_id: str, competitors: list[dict[str, Any]]) ->
                 continue
             # Check if exists
             existing = await session.execute(
-                text("SELECT id FROM competitors WHERE brand_id = :brand_id AND LOWER(name) = LOWER(:name)"),
+                text(
+                    "SELECT id FROM competitors WHERE brand_id = :brand_id AND LOWER(name) = LOWER(:name)"
+                ),
                 {"brand_id": brand_id, "name": name},
             )
             if existing.first():
@@ -216,6 +227,7 @@ async def store_competitors(brand_id: str, competitors: list[dict[str, Any]]) ->
 
 # ── Content operations ────────────────────────────────────────────────────
 
+
 async def get_calendar_item(item_id: str) -> dict[str, Any] | None:
     async with async_session_factory() as session:
         result = await session.execute(
@@ -233,7 +245,9 @@ async def store_content(content_data: dict[str, Any]) -> str:
         cal_item_id = content_data.get("calendar_item_id")
         if cal_item_id:
             await session.execute(
-                text("UPDATE content SET is_current = false WHERE calendar_item_id = :cid AND is_current = true"),
+                text(
+                    "UPDATE content SET is_current = false WHERE calendar_item_id = :cid AND is_current = true"
+                ),
                 {"cid": cal_item_id},
             )
         # Parse hashtags: may be a JSON string or a list
@@ -272,10 +286,15 @@ async def store_content(content_data: dict[str, Any]) -> str:
                 "id": content_id,
                 "brand_id": content_data.get("brand_id"),
                 "calendar_item_id": cal_item_id,
-                "headline": (content_data.get("headline") or content_data.get("hook", ""))[:500],
-                "caption": content_data.get("caption") or content_data.get("body_text", ""),
+                "headline": (
+                    content_data.get("headline") or content_data.get("hook", "")
+                )[:500],
+                "caption": content_data.get("caption")
+                or content_data.get("body_text", ""),
                 "hashtags": raw_hashtags,
-                "cta_text": (content_data.get("cta") or content_data.get("cta_text", ""))[:255],
+                "cta_text": (
+                    content_data.get("cta") or content_data.get("cta_text", "")
+                )[:255],
                 "metadata": json.dumps(gen_metadata, default=str),
             },
         )
@@ -297,10 +316,13 @@ async def get_content_items(brand_id: str, limit: int = 50) -> list[dict[str, An
 
 # ── Product operations ────────────────────────────────────────────────────
 
+
 async def get_products(brand_id: str) -> list[dict[str, Any]]:
     async with async_session_factory() as session:
         result = await session.execute(
-            text("SELECT * FROM products WHERE brand_id = :brand_id AND is_active = true"),
+            text(
+                "SELECT * FROM products WHERE brand_id = :brand_id AND is_active = true"
+            ),
             {"brand_id": brand_id},
         )
         return [dict(r) for r in result.mappings().all()]
@@ -328,6 +350,7 @@ async def upsert_product(product: dict[str, Any]) -> str:
 
 # ── Calendar operations ──────────────────────────────────────────────────
 
+
 def _sanitize_pg_text(value: Any) -> Any:
     """Strip null bytes and fix broken UTF-8 that PostgreSQL rejects."""
     if isinstance(value, str):
@@ -345,9 +368,22 @@ async def store_calendar_items(
     async with async_session_factory() as session:
         for item in items:
             # Validate channel early so we can filter before doing more work
-            VALID_CHANNELS = {"instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"}
+            VALID_CHANNELS = {
+                "instagram",
+                "facebook",
+                "linkedin",
+                "youtube",
+                "tiktok",
+                "x",
+                "website_blog",
+                "teams",
+            }
             raw_channel = (item.get("channel") or "instagram").lower().strip()
-            channel_map = {"twitter": "x", "blog": "website_blog", "web": "website_blog"}
+            channel_map = {
+                "twitter": "x",
+                "blog": "website_blog",
+                "web": "website_blog",
+            }
             channel = channel_map.get(raw_channel, raw_channel)
             if channel not in VALID_CHANNELS:
                 channel = "instagram"
@@ -367,8 +403,11 @@ async def store_calendar_items(
                     # Handle date-only strings like "2026-04-01" on older Pythons
                     try:
                         from datetime import date as _date
+
                         d = _date.fromisoformat(scheduled_at_raw[:10])
-                        scheduled_at_val = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+                        scheduled_at_val = datetime(
+                            d.year, d.month, d.day, tzinfo=timezone.utc
+                        )
                     except Exception:
                         scheduled_at_val = datetime.now(timezone.utc)
             elif isinstance(scheduled_at_raw, datetime):
@@ -379,16 +418,42 @@ async def store_calendar_items(
             # Hard enforcement: skip items scheduled beyond the max_date boundary
             if max_date is not None:
                 # Ensure both are comparable (tz-aware)
-                max_dt = max_date if max_date.tzinfo else max_date.replace(tzinfo=timezone.utc)
-                sched_dt = scheduled_at_val if scheduled_at_val.tzinfo else scheduled_at_val.replace(tzinfo=timezone.utc)
+                max_dt = (
+                    max_date
+                    if max_date.tzinfo
+                    else max_date.replace(tzinfo=timezone.utc)
+                )
+                sched_dt = (
+                    scheduled_at_val
+                    if scheduled_at_val.tzinfo
+                    else scheduled_at_val.replace(tzinfo=timezone.utc)
+                )
                 if sched_dt > max_dt:
-                    logger.info("Skipping calendar item '%s' — scheduled_at %s exceeds max_date %s",
-                                item.get("title", ""), scheduled_at_val.isoformat(), max_date.isoformat())
+                    logger.info(
+                        "Skipping calendar item '%s' — scheduled_at %s exceeds max_date %s",
+                        item.get("title", ""),
+                        scheduled_at_val.isoformat(),
+                        max_date.isoformat(),
+                    )
                     continue
 
             # Validate and map item_type (content_type from LLM)
-            VALID_ITEM_TYPES = {"post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"}
-            raw_type = (item.get("content_type") or item.get("item_type") or "post").lower().strip()
+            VALID_ITEM_TYPES = {
+                "post",
+                "story",
+                "reel",
+                "carousel",
+                "article",
+                "newsletter",
+                "ad",
+                "event",
+                "other",
+            }
+            raw_type = (
+                (item.get("content_type") or item.get("item_type") or "post")
+                .lower()
+                .strip()
+            )
             item_type = raw_type if raw_type in VALID_ITEM_TYPES else "post"
 
             await session.execute(
@@ -409,7 +474,9 @@ async def store_calendar_items(
                     "item_type": item_type,
                     "channel": channel,
                     "scheduled_at": scheduled_at_val,
-                    "product_ids": [item["product_id"]] if item.get("product_id") else None,
+                    "product_ids": [item["product_id"]]
+                    if item.get("product_id")
+                    else None,
                     "pillar": _sanitize_pg_text(item.get("pillar")),
                     "theme": _sanitize_pg_text(item.get("theme")),
                     "target_audience": _sanitize_pg_text(item.get("target_audience")),
@@ -421,14 +488,17 @@ async def store_calendar_items(
             )
             ids.append((item_id, scheduled_at_val))
         await session.commit()
+
     # Sort by scheduled_at ASC and return only IDs (ensure tz-aware for comparison)
     def _tz_aware(dt: datetime) -> datetime:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
     ids.sort(key=lambda x: _tz_aware(x[1]))
     return [item_id for item_id, _ in ids]
 
 
 # ── Performance / Evaluation operations ──────────────────────────────────
+
 
 async def get_performance_data(brand_id: str, days: int = 30) -> list[dict[str, Any]]:
     async with async_session_factory() as session:
@@ -460,11 +530,14 @@ async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
             # Detect which schema the caller is using
             if "brand_id" in a and "tier" in a:
                 # Evaluation-node schema — store tier/confidence/data in adaptation_notes as JSON
-                eval_meta = json.dumps({
-                    "tier": a.get("tier", 2),
-                    "confidence": a.get("confidence", 0.5),
-                    "data": a.get("data", {}),
-                }, default=str)
+                eval_meta = json.dumps(
+                    {
+                        "tier": a.get("tier", 2),
+                        "confidence": a.get("confidence", 0.5),
+                        "data": a.get("data", {}),
+                    },
+                    default=str,
+                )
                 await session.execute(
                     text(
                         "INSERT INTO adaptations (id, source_content_id, target_channel, "
@@ -530,7 +603,10 @@ async def update_adaptation_status(adaptation_id: str, status: str) -> None:
 
 # ── Generic query helper ─────────────────────────────────────────────────
 
-async def execute_query(query: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+
+async def execute_query(
+    query: str, params: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     async with async_session_factory() as session:
         result = await session.execute(text(query), params or {})
         return [dict(r) for r in result.mappings().all()]
@@ -549,7 +625,10 @@ async def execute_update(query: str, params: dict[str, Any] | None = None) -> in
 
 # ── Recent calendar items helper ─────────────────────────────────────────
 
-async def get_recent_calendar_items(brand_id: str, days: int = 90, limit: int = 50) -> list[dict[str, Any]]:
+
+async def get_recent_calendar_items(
+    brand_id: str, days: int = 90, limit: int = 50
+) -> list[dict[str, Any]]:
     """Return recent calendar items for a brand within the last N days."""
     async with async_session_factory() as session:
         result = await session.execute(
@@ -565,6 +644,7 @@ async def get_recent_calendar_items(brand_id: str, days: int = 90, limit: int = 
 
 
 # ── Brand Intelligence ───────────────────────────────────────────────────
+
 
 def _parse_payload(raw: Any) -> dict[str, Any]:
     """Parse an output_payload that may be a JSON string or already a dict."""
@@ -601,7 +681,8 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
     # Derive enabled channels from brand_guidelines
     channels_cfg = brand_guidelines.get("channels", {})
     enabled_channels = [
-        ch for ch, cfg in channels_cfg.items()
+        ch
+        for ch, cfg in channels_cfg.items()
         if isinstance(cfg, dict) and cfg.get("enabled")
     ]
     if not enabled_channels:
@@ -641,7 +722,9 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
             {"brand_id": brand_id},
         )
         planning_row = planning_result.mappings().first()
-    planning_data = _parse_payload((planning_row or {}).get("output_payload") if planning_row else None)
+    planning_data = _parse_payload(
+        (planning_row or {}).get("output_payload") if planning_row else None
+    )
 
     # 6. Latest content_calendar_strategy
     async with async_session_factory() as session:
@@ -654,7 +737,9 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
             {"brand_id": brand_id},
         )
         strategy_doc_row = strategy_doc_result.mappings().first()
-    strategy_doc_data = _parse_payload((strategy_doc_row or {}).get("output_payload") if strategy_doc_row else None)
+    strategy_doc_data = _parse_payload(
+        (strategy_doc_row or {}).get("output_payload") if strategy_doc_row else None
+    )
 
     # 7. Recent calendar items (last 90 days)
     recent_posts = await get_recent_calendar_items(brand_id, days=90, limit=50)
@@ -681,7 +766,9 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
         "research": research_data,
         "strategy": strategy_data,
         "planning": {
-            "strategy_document": strategy_doc_data.get("strategy_document", strategy_doc_data.get("document", "")),
+            "strategy_document": strategy_doc_data.get(
+                "strategy_document", strategy_doc_data.get("document", "")
+            ),
             "campaigns": planning_data.get("campaigns", []),
         },
         "recent_posts": recent_posts,

@@ -37,12 +37,15 @@ async def _get_sql_token() -> str:
 
     token_url = f"https://login.microsoftonline.com/{settings.FABRIC_TENANT_ID}/oauth2/v2.0/token"
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(token_url, data={
-            "grant_type": "client_credentials",
-            "client_id": settings.FABRIC_CLIENT_ID,
-            "client_secret": settings.FABRIC_CLIENT_SECRET,
-            "scope": "https://database.windows.net/.default",
-        })
+        resp = await client.post(
+            token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": settings.FABRIC_CLIENT_ID,
+                "client_secret": settings.FABRIC_CLIENT_SECRET,
+                "scope": "https://database.windows.net/.default",
+            },
+        )
         resp.raise_for_status()
         token = resp.json()["access_token"]
 
@@ -71,7 +74,9 @@ def _get_connection(token: str) -> pyodbc.Connection:
     return pyodbc.connect(conn_str, attrs_before={1256: token_struct})
 
 
-def _execute_sql_sync(conn: pyodbc.Connection, query: str, params: tuple | None = None) -> list[dict[str, Any]]:
+def _execute_sql_sync(
+    conn: pyodbc.Connection, query: str, params: tuple | None = None
+) -> list[dict[str, Any]]:
     """Execute a SQL query synchronously (runs in a thread)."""
     try:
         cursor = conn.cursor()

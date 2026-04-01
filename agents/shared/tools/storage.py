@@ -38,8 +38,13 @@ def ensure_bucket(bucket_name: str) -> None:
             logger.info("Created bucket %s", bucket_name)
         except S3Error as exc:
             # Another worker may have created the bucket concurrently
-            if exc.code == "BucketAlreadyOwnedByYou" or exc.code == "BucketAlreadyExists":
-                logger.debug("Bucket %s already exists (race condition handled)", bucket_name)
+            if (
+                exc.code == "BucketAlreadyOwnedByYou"
+                or exc.code == "BucketAlreadyExists"
+            ):
+                logger.debug(
+                    "Bucket %s already exists (race condition handled)", bucket_name
+                )
             else:
                 raise
 

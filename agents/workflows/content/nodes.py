@@ -13,15 +13,13 @@ from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
     build_brand_intelligence,
     execute_update,
-    get_brand,
-    get_brand_config,
     get_calendar_item,
-    get_latest_strategy,
     store_content,
 )
 from shared.tools.storage import (
-    upload_file, ensure_bucket, download_file,
-    async_upload_file, async_ensure_bucket, async_download_file,
+    async_upload_file,
+    async_ensure_bucket,
+    async_download_file,
 )
 from shared.image_processing import (
     render_logo_png,
@@ -32,13 +30,13 @@ from shared.image_processing import (
 from pydantic import BaseModel, field_validator
 
 from workflows.content.state import ContentState
-from workflows.content.image_sourcing import source_product_image
 
 logger = logging.getLogger(__name__)
 
 
 class ContentRecordValidator(BaseModel):
     """Validates generated content fields before DB insert."""
+
     brand_id: str
     calendar_item_id: str
     hook: str = ""
@@ -83,10 +81,7 @@ def _extract_month_section(strategy_doc: str, month_name: str) -> str:
 
 def _find_product(products: list[dict], calendar_item: dict) -> dict:
     """Match a product from the brand's product list to the calendar item."""
-    product_name = (
-        calendar_item.get("product_name")
-        or calendar_item.get("title", "")
-    )
+    product_name = calendar_item.get("product_name") or calendar_item.get("title", "")
     product_ids = calendar_item.get("product_ids") or []
 
     if not product_name and not product_ids:
@@ -119,9 +114,15 @@ async def load_context(state: ContentState) -> dict[str, Any]:
     calendar_item = await get_calendar_item(item_id)
 
     if not intel.get("brand"):
-        return {"errors": [*(state.get("errors") or []), "Brand not found"], "status": "failed"}
+        return {
+            "errors": [*(state.get("errors") or []), "Brand not found"],
+            "status": "failed",
+        }
     if not calendar_item:
-        return {"errors": [*(state.get("errors") or []), "Calendar item not found"], "status": "failed"}
+        return {
+            "errors": [*(state.get("errors") or []), "Calendar item not found"],
+            "status": "failed",
+        }
 
     # Transition calendar item status to 'working'
     await execute_update(
@@ -134,7 +135,9 @@ async def load_context(state: ContentState) -> dict[str, Any]:
     audience_name = calendar_item.get("target_audience", "")
 
     # Strategy stores pillars as dicts ({"name": "..."}) or plain strings
-    strategy_pillars = intel.get("strategy", {}).get("content_pillars", []) or intel.get("strategy", {}).get("pillars", [])
+    strategy_pillars = intel.get("strategy", {}).get(
+        "content_pillars", []
+    ) or intel.get("strategy", {}).get("pillars", [])
     if not isinstance(strategy_pillars, list):
         strategy_pillars = []
 
@@ -144,8 +147,11 @@ async def load_context(state: ContentState) -> dict[str, Any]:
         return str(p)
 
     relevant_pillar = next(
-        (p for p in strategy_pillars
-         if _pillar_name(p).lower() == (pillar_name or "").lower()),
+        (
+            p
+            for p in strategy_pillars
+            if _pillar_name(p).lower() == (pillar_name or "").lower()
+        ),
         {},
     )
     # Normalize: if pillar is a string, wrap it so downstream code can use .get()
@@ -163,8 +169,11 @@ async def load_context(state: ContentState) -> dict[str, Any]:
         return str(a)
 
     relevant_audience = next(
-        (a for a in research_personas
-         if (audience_name or "").lower() in _persona_name(a).lower()),
+        (
+            a
+            for a in research_personas
+            if (audience_name or "").lower() in _persona_name(a).lower()
+        ),
         {},
     )
     if isinstance(relevant_audience, str):
@@ -208,57 +217,74 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
         top_performing = state.get("top_performing", [])
 
         # Build recent hooks to avoid
-        recent_hooks = "\n".join(
-            f"- {sanitize_for_prompt(str(p.get('title', ''))[:60])}"
-            for p in recent_posts[:10]
-            if p.get("title")
-        ) or "None available"
+        recent_hooks = (
+            "\n".join(
+                f"- {sanitize_for_prompt(str(p.get('title', ''))[:60])}"
+                for p in recent_posts[:10]
+                if p.get("title")
+            )
+            or "None available"
+        )
 
         # Build top performing hooks to learn from
-        top_hooks = "\n".join(
-            f"- {sanitize_for_prompt(str(p.get('caption_snippet', ''))[:60])} "
-            f"(engagement: {p.get('engagement_rate', 0):.1%})"
-            for p in top_performing[:5]
-            if p.get("caption_snippet")
-        ) or "None available"
+        top_hooks = (
+            "\n".join(
+                f"- {sanitize_for_prompt(str(p.get('caption_snippet', ''))[:60])} "
+                f"(engagement: {p.get('engagement_rate', 0):.1%})"
+                for p in top_performing[:5]
+                if p.get("caption_snippet")
+            )
+            or "None available"
+        )
 
         # Audience pain points
         pain_points = ", ".join(relevant_audience.get("pain_points", [])) or "N/A"
         content_prefs = relevant_audience.get("content_preferences", {})
-        tone_pref = content_prefs.get("tone", "") if isinstance(content_prefs, dict) else ""
+        tone_pref = (
+            content_prefs.get("tone", "") if isinstance(content_prefs, dict) else ""
+        )
 
         prompt = [
-            {"role": "system", "content": (
-                "You are an expert social media copywriter. "
-                "Write a scroll-stopping hook (opening line) for a social media post. "
-                "The hook must be under 15 words, emotionally compelling, and aligned with the brand voice. "
-                "Return ONLY the hook text, nothing else."
-            )},
-            {"role": "user", "content": (
-                f"BRAND: {sanitize_for_prompt(brand.get('name', ''))}\n"
-                f"BRAND VOICE: {sanitize_for_prompt(str(positioning.get('brand_voice', '')))}\n"
-                f"BRAND ARCHETYPE: {sanitize_for_prompt(str(positioning.get('brand_archetype', '')))}\n\n"
-                f"THIS POST:\n"
-                f"  Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
-                f"  Content type: {sanitize_for_prompt(item.get('content_type', item.get('item_type', '')))}\n"
-                f"  Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
-                f"  Sub-theme: {sanitize_for_prompt(item.get('weekly_sub_theme', ''))}\n"
-                f"  Brief: {sanitize_for_prompt(item.get('content_brief', item.get('description', '')))}\n"
-                f"  Pillar: {sanitize_for_prompt(relevant_pillar.get('name', ''))}\n\n"
-                f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}\n"
-                f"  Pain points: {sanitize_for_prompt(pain_points)}\n"
-                f"  Tone preference: {sanitize_for_prompt(tone_pref)}\n\n"
-                f"PRODUCT (if applicable): {sanitize_for_prompt(product.get('name', 'N/A'))} — "
-                f"{sanitize_for_prompt(product.get('description', ''))}\n\n"
-                f"RECENTLY POSTED HOOKS (do NOT repeat similar openings):\n{recent_hooks}\n\n"
-                f"TOP PERFORMING HOOKS (learn from these):\n{top_hooks}"
-            )},
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert social media copywriter. "
+                    "Write a scroll-stopping hook (opening line) for a social media post. "
+                    "The hook must be under 15 words, emotionally compelling, and aligned with the brand voice. "
+                    "Return ONLY the hook text, nothing else."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"BRAND: {sanitize_for_prompt(brand.get('name', ''))}\n"
+                    f"BRAND VOICE: {sanitize_for_prompt(str(positioning.get('brand_voice', '')))}\n"
+                    f"BRAND ARCHETYPE: {sanitize_for_prompt(str(positioning.get('brand_archetype', '')))}\n\n"
+                    f"THIS POST:\n"
+                    f"  Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
+                    f"  Content type: {sanitize_for_prompt(item.get('content_type', item.get('item_type', '')))}\n"
+                    f"  Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
+                    f"  Sub-theme: {sanitize_for_prompt(item.get('weekly_sub_theme', ''))}\n"
+                    f"  Brief: {sanitize_for_prompt(item.get('content_brief', item.get('description', '')))}\n"
+                    f"  Pillar: {sanitize_for_prompt(relevant_pillar.get('name', ''))}\n\n"
+                    f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}\n"
+                    f"  Pain points: {sanitize_for_prompt(pain_points)}\n"
+                    f"  Tone preference: {sanitize_for_prompt(tone_pref)}\n\n"
+                    f"PRODUCT (if applicable): {sanitize_for_prompt(product.get('name', 'N/A'))} — "
+                    f"{sanitize_for_prompt(product.get('description', ''))}\n\n"
+                    f"RECENTLY POSTED HOOKS (do NOT repeat similar openings):\n{recent_hooks}\n\n"
+                    f"TOP PERFORMING HOOKS (learn from these):\n{top_hooks}"
+                ),
+            },
         ]
         hook = await chat_completion(prompt, temperature=0.8, max_tokens=256)
         return {"hook": hook.strip().strip('"')}
     except Exception as exc:
         logger.error("generate_hook failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_hook failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"generate_hook failed: {exc}"],
+        }
 
 
 async def generate_caption(state: ContentState) -> dict[str, Any]:
@@ -302,60 +328,75 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
             )
 
         # Recent captions to avoid
-        recent_captions = "\n".join(
-            f"- {sanitize_for_prompt(str(p.get('title', ''))[:80])}"
-            for p in recent_posts[:15]
-            if p.get("title")
-        ) or "None available"
+        recent_captions = (
+            "\n".join(
+                f"- {sanitize_for_prompt(str(p.get('title', ''))[:80])}"
+                for p in recent_posts[:15]
+                if p.get("title")
+            )
+            or "None available"
+        )
 
         # Top performing captions to learn from
-        top_captions = "\n".join(
-            f"- {sanitize_for_prompt(str(p.get('caption_snippet', ''))[:120])} "
-            f"(engagement: {p.get('engagement_rate', 0):.1%})"
-            for p in top_performing[:5]
-            if p.get("caption_snippet")
-        ) or "None available"
+        top_captions = (
+            "\n".join(
+                f"- {sanitize_for_prompt(str(p.get('caption_snippet', ''))[:120])} "
+                f"(engagement: {p.get('engagement_rate', 0):.1%})"
+                for p in top_performing[:5]
+                if p.get("caption_snippet")
+            )
+            or "None available"
+        )
 
         # Brand URL for CTA
         brand_url = brand.get("website_url", "")
 
         prompt = [
-            {"role": "system", "content": (
-                "You are an expert social media copywriter. "
-                "Write a compelling caption for a social media post. "
-                "Start with the provided hook. Keep it engaging, on-brand, and appropriate for the platform. "
-                "AIM FOR MEDIUM LENGTH: 3-5 short paragraphs. Include a strong opening hook, "
-                "1-2 paragraphs of substance (product benefits, lifestyle value, or educational insight), "
-                "and a clear CTA with the brand URL. Do NOT be overly long or overly terse. "
-                "Return ONLY the caption text."
-            )},
-            {"role": "user", "content": (
-                f"BRAND: {sanitize_for_prompt(brand.get('name', ''))}\n"
-                f"BRAND URL: {sanitize_for_prompt(brand_url)}\n\n"
-                f"FULL BRAND POSITIONING:\n{positioning_text}\n\n"
-                f"CONTENT PILLAR: {sanitize_for_prompt(relevant_pillar.get('name', ''))}\n"
-                f"  Description: {sanitize_for_prompt(pillar_desc)}\n\n"
-                f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}\n"
-                f"  Pain points: {sanitize_for_prompt(pain_points)}\n"
-                f"  Content preferences: {sanitize_for_prompt(audience_prefs)}\n\n"
-                f"{product_section}"
-                f"THIS POST:\n"
-                f"  Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
-                f"  Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
-                f"  Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
-                f"  Sub-theme: {sanitize_for_prompt(item.get('weekly_sub_theme', ''))}\n"
-                f"  Brief: {sanitize_for_prompt(item.get('content_brief', item.get('description', '')))}\n\n"
-                f"STRATEGY GUIDANCE FOR THIS MONTH:\n{sanitize_for_prompt(month_context[:5000])}\n\n"
-                f"RECENTLY POSTED CAPTIONS (do NOT repeat similar themes or angles):\n{recent_captions}\n\n"
-                f"TOP PERFORMING CAPTIONS (learn from these):\n{top_captions}\n\n"
-                f"CTA GUIDANCE: Include a call-to-action with brand URL: {sanitize_for_prompt(brand_url)}"
-            )},
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert social media copywriter. "
+                    "Write a compelling caption for a social media post. "
+                    "Start with the provided hook. Keep it engaging, on-brand, and appropriate for the platform. "
+                    "AIM FOR MEDIUM LENGTH: 3-5 short paragraphs. Include a strong opening hook, "
+                    "1-2 paragraphs of substance (product benefits, lifestyle value, or educational insight), "
+                    "and a clear CTA with the brand URL. Do NOT be overly long or overly terse. "
+                    "Return ONLY the caption text."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"BRAND: {sanitize_for_prompt(brand.get('name', ''))}\n"
+                    f"BRAND URL: {sanitize_for_prompt(brand_url)}\n\n"
+                    f"FULL BRAND POSITIONING:\n{positioning_text}\n\n"
+                    f"CONTENT PILLAR: {sanitize_for_prompt(relevant_pillar.get('name', ''))}\n"
+                    f"  Description: {sanitize_for_prompt(pillar_desc)}\n\n"
+                    f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}\n"
+                    f"  Pain points: {sanitize_for_prompt(pain_points)}\n"
+                    f"  Content preferences: {sanitize_for_prompt(audience_prefs)}\n\n"
+                    f"{product_section}"
+                    f"THIS POST:\n"
+                    f"  Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
+                    f"  Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
+                    f"  Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
+                    f"  Sub-theme: {sanitize_for_prompt(item.get('weekly_sub_theme', ''))}\n"
+                    f"  Brief: {sanitize_for_prompt(item.get('content_brief', item.get('description', '')))}\n\n"
+                    f"STRATEGY GUIDANCE FOR THIS MONTH:\n{sanitize_for_prompt(month_context[:5000])}\n\n"
+                    f"RECENTLY POSTED CAPTIONS (do NOT repeat similar themes or angles):\n{recent_captions}\n\n"
+                    f"TOP PERFORMING CAPTIONS (learn from these):\n{top_captions}\n\n"
+                    f"CTA GUIDANCE: Include a call-to-action with brand URL: {sanitize_for_prompt(brand_url)}"
+                ),
+            },
         ]
         caption = await chat_completion(prompt, temperature=0.7, max_tokens=2048)
         return {"caption": caption.strip()}
     except Exception as exc:
         logger.error("generate_caption failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_caption failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"generate_caption failed: {exc}"],
+        }
 
 
 async def generate_hashtags(state: ContentState) -> dict[str, Any]:
@@ -391,23 +432,34 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
             )
 
         prompt = [
-            {"role": "system", "content": (
-                "You are a social media strategist. "
-                "Generate relevant hashtags for this post. "
-                "Mix broad, niche, and branded hashtags. "
-                "Return ONLY a JSON array of strings (no # prefix)."
-            )},
-            {"role": "user", "content": (
-                f"BRAND: {sanitize_for_prompt(brand_name)}\n"
-                f"PLATFORM: {sanitize_for_prompt(channel)}\n"
-                f"PLATFORM HASHTAG LIMIT: {platform_limit}\n\n"
-                f"FULL CAPTION:\n{sanitize_for_prompt(state.get('caption', ''))}\n\n"
-                f"THEME: {sanitize_for_prompt(item.get('theme', ''))}\n\n"
-                f"{top_hashtags_info}\n\n"
-                f"ALWAYS INCLUDE branded hashtag: {brand_slug}"
-            )},
+            {
+                "role": "system",
+                "content": (
+                    "You are a social media strategist. "
+                    "Generate relevant hashtags for this post. "
+                    "Mix broad, niche, and branded hashtags. "
+                    "Return ONLY a JSON array of strings (no # prefix)."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"BRAND: {sanitize_for_prompt(brand_name)}\n"
+                    f"PLATFORM: {sanitize_for_prompt(channel)}\n"
+                    f"PLATFORM HASHTAG LIMIT: {platform_limit}\n\n"
+                    f"FULL CAPTION:\n{sanitize_for_prompt(state.get('caption', ''))}\n\n"
+                    f"THEME: {sanitize_for_prompt(item.get('theme', ''))}\n\n"
+                    f"{top_hashtags_info}\n\n"
+                    f"ALWAYS INCLUDE branded hashtag: {brand_slug}"
+                ),
+            },
         ]
-        result = await chat_completion(prompt, temperature=0.6, max_tokens=512, response_format={"type": "json_object"})
+        result = await chat_completion(
+            prompt,
+            temperature=0.6,
+            max_tokens=512,
+            response_format={"type": "json_object"},
+        )
         hashtags = parse_llm_json(result, fallback=None)
         if isinstance(hashtags, dict):
             hashtags = next((v for v in hashtags.values() if isinstance(v, list)), None)
@@ -416,7 +468,13 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
         return {"hashtags": hashtags}
     except Exception as exc:
         logger.error("generate_hashtags failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"generate_hashtags failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"generate_hashtags failed: {exc}",
+            ],
+        }
 
 
 async def source_product_image_node(state: ContentState) -> dict[str, Any]:
@@ -428,7 +486,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     - If no gallery images exist, mark as lifestyle-only (no product in image)
     """
     item = state.get("calendar_item", {})
-    brand = state.get("brand", {})
+    state.get("brand", {})
     brand_id = state["brand_id"]
 
     # Calendar items store product_ids (UUID array), not product_sku/product_name
@@ -437,7 +495,11 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     product_name = item.get("product_name") or item.get("title", "")
 
     if not product_sku and not product_name and not product_ids:
-        return {"product_image": None, "needs_manual_image": False, "is_lifestyle_only": True}
+        return {
+            "product_image": None,
+            "needs_manual_image": False,
+            "is_lifestyle_only": True,
+        }
 
     # Try to find the product in the database and check its image gallery
     from shared.tools.database import execute_query
@@ -465,7 +527,11 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
 
     if not products:
         logger.info("No matching product found for '%s' — lifestyle only", product_name)
-        return {"product_image": None, "needs_manual_image": False, "is_lifestyle_only": True}
+        return {
+            "product_image": None,
+            "needs_manual_image": False,
+            "is_lifestyle_only": True,
+        }
 
     product = products[0]
     gallery = product.get("image_urls")
@@ -490,7 +556,10 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
             }
 
     # No gallery images — restrict to lifestyle shots
-    logger.info("Product '%s' has no gallery images — lifestyle only, no product placement", product_name)
+    logger.info(
+        "Product '%s' has no gallery images — lifestyle only, no product placement",
+        product_name,
+    )
     return {
         "product_image": None,
         "needs_manual_image": True,
@@ -521,7 +590,9 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             brand_guidelines = {}
     colors = brand_guidelines.get("colors", {})
-    visual_style = brand_guidelines.get("visual_style", "modern, clean, tropical warmth")
+    visual_style = brand_guidelines.get(
+        "visual_style", "modern, clean, tropical warmth"
+    )
 
     # Build color palette directive
     color_directive = (
@@ -536,8 +607,14 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
 
     # Audience aesthetic
     audience_content_prefs = relevant_audience.get("content_preferences", {})
-    audience_tone = audience_content_prefs.get("tone", "aspirational") if isinstance(audience_content_prefs, dict) else "aspirational"
-    audience_directive = f"Target audience aesthetic: {sanitize_for_prompt(str(audience_tone))}. "
+    audience_tone = (
+        audience_content_prefs.get("tone", "aspirational")
+        if isinstance(audience_content_prefs, dict)
+        else "aspirational"
+    )
+    audience_directive = (
+        f"Target audience aesthetic: {sanitize_for_prompt(str(audience_tone))}. "
+    )
 
     # Seasonal direction from month context
     seasonal_directive = (
@@ -594,8 +671,14 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
 
 
 ALL_CHANNELS = [
-    "instagram", "facebook", "linkedin", "youtube",
-    "tiktok", "x", "website_blog", "teams",
+    "instagram",
+    "facebook",
+    "linkedin",
+    "youtube",
+    "tiktok",
+    "x",
+    "website_blog",
+    "teams",
 ]
 
 # Platform-specific constraints used in the adaptation prompt
@@ -617,7 +700,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
 
     # Determine which channels to adapt for based on brand config
     brand = state.get("brand", {})
-    channels_cfg = (brand.get("brand_guidelines") or {})
+    channels_cfg = brand.get("brand_guidelines") or {}
     if isinstance(channels_cfg, str):
         try:
             channels_cfg = json.loads(channels_cfg)
@@ -625,14 +708,16 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
             channels_cfg = {}
     channels_cfg = channels_cfg.get("channels", {})
     enabled = [
-        ch for ch, cfg in channels_cfg.items()
+        ch
+        for ch, cfg in channels_cfg.items()
         if isinstance(cfg, dict) and cfg.get("enabled")
     ]
     channels_to_adapt = enabled if enabled else ["instagram"]
 
     # Build per-platform spec block only for enabled channels
     spec_lines = "\n".join(
-        f"- {name}: {spec}" for name, spec in PLATFORM_SPECS.items()
+        f"- {name}: {spec}"
+        for name, spec in PLATFORM_SPECS.items()
         if name in channels_to_adapt
     )
 
@@ -640,41 +725,63 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
     positioning = state.get("positioning", {})
     relevant_audience = state.get("relevant_audience", {})
     audience_content_prefs = relevant_audience.get("content_preferences", {})
-    audience_tone = audience_content_prefs.get("tone", "") if isinstance(audience_content_prefs, dict) else ""
+    audience_tone = (
+        audience_content_prefs.get("tone", "")
+        if isinstance(audience_content_prefs, dict)
+        else ""
+    )
     key_messages = positioning.get("key_messages", [])
-    key_messages_str = ", ".join(key_messages) if isinstance(key_messages, list) else str(key_messages)
+    key_messages_str = (
+        ", ".join(key_messages) if isinstance(key_messages, list) else str(key_messages)
+    )
 
     prompt = [
-        {"role": "system", "content": (
-            "You are a social media and content marketing expert. "
-            "Adapt the following content "
-            "for each platform below, respecting each platform's constraints and best practices.\n\n"
-            "Platform specifications:\n"
-            f"{spec_lines}\n\n"
-            "Return JSON with platform names as keys. Each platform object must contain:\n"
-            "  caption (string), hashtags (array of strings without # prefix), cta (string), "
-            "  optimal_time (string), format_notes (string).\n"
-            "For youtube also include: title, description, tags, thumbnail_prompt.\n"
-            "For website_blog also include: markdown_body, meta_description, seo_keywords (array).\n"
-            "For teams also include: announcement_text (plain text)."
-        )},
-        {"role": "user", "content": (
-            f"BRAND POSITIONING: {sanitize_for_prompt(str(positioning.get('value_proposition', '')))}\n"
-            f"BRAND VOICE: {sanitize_for_prompt(str(positioning.get('brand_voice', '')))}\n"
-            f"KEY MESSAGES: {sanitize_for_prompt(key_messages_str)}\n"
-            f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))} — "
-            f"{sanitize_for_prompt(audience_tone)}\n"
-            f"BRAND URL: {sanitize_for_prompt(brand.get('website_url', ''))}\n\n"
-            f"Original platform: {sanitize_for_prompt(source_platform)}\n"
-            f"Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
-            f"Caption: {sanitize_for_prompt(state.get('caption', ''))}\n"
-            f"Hashtags: {sanitize_json_for_prompt(state.get('hashtags', []))}\n"
-            f"Adapt for these platforms: {', '.join(channels_to_adapt)}"
-        )},
+        {
+            "role": "system",
+            "content": (
+                "You are a social media and content marketing expert. "
+                "Adapt the following content "
+                "for each platform below, respecting each platform's constraints and best practices.\n\n"
+                "Platform specifications:\n"
+                f"{spec_lines}\n\n"
+                "Return JSON with platform names as keys. Each platform object must contain:\n"
+                "  caption (string), hashtags (array of strings without # prefix), cta (string), "
+                "  optimal_time (string), format_notes (string).\n"
+                "For youtube also include: title, description, tags, thumbnail_prompt.\n"
+                "For website_blog also include: markdown_body, meta_description, seo_keywords (array).\n"
+                "For teams also include: announcement_text (plain text)."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"BRAND POSITIONING: {sanitize_for_prompt(str(positioning.get('value_proposition', '')))}\n"
+                f"BRAND VOICE: {sanitize_for_prompt(str(positioning.get('brand_voice', '')))}\n"
+                f"KEY MESSAGES: {sanitize_for_prompt(key_messages_str)}\n"
+                f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))} — "
+                f"{sanitize_for_prompt(audience_tone)}\n"
+                f"BRAND URL: {sanitize_for_prompt(brand.get('website_url', ''))}\n\n"
+                f"Original platform: {sanitize_for_prompt(source_platform)}\n"
+                f"Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
+                f"Caption: {sanitize_for_prompt(state.get('caption', ''))}\n"
+                f"Hashtags: {sanitize_json_for_prompt(state.get('hashtags', []))}\n"
+                f"Adapt for these platforms: {', '.join(channels_to_adapt)}"
+            ),
+        },
     ]
     try:
-        result = await chat_completion(prompt, temperature=0.5, response_format={"type": "json_object"})
-        adaptations = parse_llm_json(result, fallback={source_platform: {"caption": state.get("caption", ""), "hashtags": state.get("hashtags", [])}})
+        result = await chat_completion(
+            prompt, temperature=0.5, response_format={"type": "json_object"}
+        )
+        adaptations = parse_llm_json(
+            result,
+            fallback={
+                source_platform: {
+                    "caption": state.get("caption", ""),
+                    "hashtags": state.get("hashtags", []),
+                }
+            },
+        )
         # Unwrap dict-wrapping-dict: LLM may return {"platforms": {"instagram": {...}, ...}}
         if isinstance(adaptations, dict) and len(adaptations) == 1:
             only_val = next(iter(adaptations.values()))
@@ -688,10 +795,15 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
         return {"platform_adaptations": adaptations, "cta": cta}
     except Exception as exc:
         logger.error("adapt_platforms failed: %s", exc)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"adapt_platforms failed: {exc}"]}
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"adapt_platforms failed: {exc}"],
+        }
 
 
-async def _replace_product_in_generated_image(state: ContentState, image_data: bytes) -> bytes:
+async def _replace_product_in_generated_image(
+    state: ContentState, image_data: bytes
+) -> bytes:
     """If we have a real product image, use Gemini to replace the generic product."""
     product_image_url = state.get("product_image")
     is_lifestyle_only = state.get("is_lifestyle_only", True)
@@ -710,6 +822,7 @@ async def _replace_product_in_generated_image(state: ContentState, image_data: b
 
         # Use Gemini to replace the generic product
         from shared.config import settings
+
         if not settings.GEMINI_API_KEY:
             logger.warning("GEMINI_API_KEY not set — skipping product replacement")
             return image_data
@@ -738,11 +851,15 @@ async def _replace_product_in_generated_image(state: ContentState, image_data: b
 
         for part in response.candidates[0].content.parts:
             if part.inline_data is not None:
-                logger.info("Gemini product replacement successful for %s", product_name)
+                logger.info(
+                    "Gemini product replacement successful for %s", product_name
+                )
                 return part.inline_data.data
 
     except Exception as exc:
-        logger.warning("Gemini product replacement failed: %s — using original image", exc)
+        logger.warning(
+            "Gemini product replacement failed: %s — using original image", exc
+        )
 
     return image_data
 
@@ -771,7 +888,9 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             _, b64_part = generated_image_url.split(",", 1)
             image_data = _b64.b64decode(b64_part)
         elif generated_image_url.startswith("content-images/"):
-            image_data = await async_download_file("content-images", generated_image_url.replace("content-images/", ""))
+            image_data = await async_download_file(
+                "content-images", generated_image_url.replace("content-images/", "")
+            )
         else:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.get(generated_image_url)
@@ -787,7 +906,9 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             try:
                 if logo_url.endswith(".svg"):
                     # Download SVG and render to PNG
-                    if logo_url.startswith("content-images/") or logo_url.startswith("brand-assets/"):
+                    if logo_url.startswith("content-images/") or logo_url.startswith(
+                        "brand-assets/"
+                    ):
                         bucket, _, obj = logo_url.partition("/")
                         svg_bytes = await async_download_file(bucket, obj)
                     else:
@@ -798,7 +919,9 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
                     logo_png = render_logo_png(svg_bytes)
                 else:
                     # Already a raster image — download it
-                    if logo_url.startswith("content-images/") or logo_url.startswith("brand-assets/"):
+                    if logo_url.startswith("content-images/") or logo_url.startswith(
+                        "brand-assets/"
+                    ):
                         bucket, _, obj = logo_url.partition("/")
                         logo_png = await async_download_file(bucket, obj)
                     else:
@@ -807,7 +930,9 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
                             resp.raise_for_status()
                             logo_png = resp.content
             except Exception:
-                logger.warning("Failed to fetch logo from %s — skipping branding", logo_url)
+                logger.warning(
+                    "Failed to fetch logo from %s — skipping branding", logo_url
+                )
                 logo_png = None
 
         if not logo_png:
@@ -823,7 +948,8 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
 
         # Apply overlay
         branded_bytes = overlay_logo_and_text(
-            image_data, logo_png,
+            image_data,
+            logo_png,
             text_line1=text_line1,
             text_line2=text_line2,
         )
@@ -832,7 +958,9 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         brand_id = state["brand_id"]
         await async_ensure_bucket("content-images")
         branded_obj = f"{brand_id}/{state['calendar_item_id']}/branded.png"
-        await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")
+        await async_upload_file(
+            "content-images", branded_obj, branded_bytes, "image/png"
+        )
 
         return {
             "branded_image": f"content-images/{branded_obj}",
@@ -864,11 +992,13 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
             image_data = await async_download_file("content-images", obj_name)
         else:
             import base64 as _b64
+
             if image_source.startswith("data:"):
                 _, b64_part = image_source.split(",", 1)
                 image_data = _b64.b64decode(b64_part)
             else:
                 import httpx
+
                 async with httpx.AsyncClient(timeout=60) as client:
                     resp = await client.get(image_source)
                     resp.raise_for_status()
@@ -910,7 +1040,8 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
                 brand_guidelines = {}
         channels_cfg = brand_guidelines.get("channels", {})
         enabled_channels = [
-            ch for ch, cfg in channels_cfg.items()
+            ch
+            for ch, cfg in channels_cfg.items()
             if isinstance(cfg, dict) and cfg.get("enabled")
         ]
         # Filter to platforms that support mockups; fall back to all mockup platforms if none enabled
@@ -922,13 +1053,17 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
         for platform in platforms_to_mock:
             try:
                 mockup_bytes = generate_mockup(
-                    image_data, caption, platform,
+                    image_data,
+                    caption,
+                    platform,
                     username=brand_handle,
                     display_name=brand_name,
                     avatar_initial=brand_initial,
                 )
                 obj_name = f"{brand_id}/{item_id}/mockup_{platform}.png"
-                await async_upload_file("content-images", obj_name, mockup_bytes, "image/png")
+                await async_upload_file(
+                    "content-images", obj_name, mockup_bytes, "image/png"
+                )
                 mockup_urls[platform] = f"content-images/{obj_name}"
                 logger.info("Generated %s mockup for %s", platform, item_id)
             except Exception:
@@ -950,6 +1085,7 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
     if generated_image_url and not generated_image_url.startswith("content-images/"):
         import base64 as _b64
         import httpx
+
         try:
             if generated_image_url.startswith("data:"):
                 _, b64_part = generated_image_url.split(",", 1)
@@ -962,7 +1098,9 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
 
             await async_ensure_bucket("content-images")
             object_name = f"{brand_id}/{state['calendar_item_id']}/background.png"
-            await async_upload_file("content-images", object_name, image_data, "image/png")
+            await async_upload_file(
+                "content-images", object_name, image_data, "image/png"
+            )
             generated_image_url = f"content-images/{object_name}"
         except Exception:
             logger.exception("Failed to upload generated image to MinIO")
@@ -993,11 +1131,23 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
     try:
         ContentRecordValidator(**content_record)
     except Exception as ve:
-        logger.error("Content validation failed for calendar item %s: %s", state["calendar_item_id"], ve)
-        return {"status": "failed", "errors": [*(state.get("errors") or []), f"Content validation failed: {ve}"]}
+        logger.error(
+            "Content validation failed for calendar item %s: %s",
+            state["calendar_item_id"],
+            ve,
+        )
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"Content validation failed: {ve}",
+            ],
+        }
 
     content_id = await store_content(content_record)
-    logger.info("Stored content %s for calendar item %s", content_id, state["calendar_item_id"])
+    logger.info(
+        "Stored content %s for calendar item %s", content_id, state["calendar_item_id"]
+    )
 
     # Transition calendar item status to 'in_review'
     if state.get("calendar_item_id"):
@@ -1010,6 +1160,7 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
     try:
         from shared.tools.database import execute_query
         from uuid import uuid4
+
         # Find a manager/admin user to assign as reviewer
         reviewers = await execute_query(
             "SELECT id FROM users WHERE role IN ('admin', 'manager') AND is_active = true LIMIT 1"

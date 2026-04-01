@@ -30,11 +30,23 @@ builder.add_node("build_personas", build_personas)
 builder.add_node("store_results", store_results)
 
 builder.set_entry_point("crawl_website")
-builder.add_conditional_edges("crawl_website", _check_failed, {"end": END, "continue": "analyze_social"})
-builder.add_conditional_edges("analyze_social", _check_failed, {"end": END, "continue": "analyze_competitors"})
-builder.add_conditional_edges("analyze_competitors", _check_failed, {"end": END, "continue": "identify_gaps"})
-builder.add_conditional_edges("identify_gaps", _check_failed, {"end": END, "continue": "build_personas"})
-builder.add_conditional_edges("build_personas", _check_failed, {"end": END, "continue": "store_results"})
-builder.add_conditional_edges("store_results", _check_failed, {"end": END, "continue": END})
+builder.add_conditional_edges(
+    "crawl_website", _check_failed, {"end": END, "continue": "analyze_social"}
+)
+builder.add_conditional_edges(
+    "analyze_social", _check_failed, {"end": END, "continue": "analyze_competitors"}
+)
+builder.add_conditional_edges(
+    "analyze_competitors", _check_failed, {"end": END, "continue": "identify_gaps"}
+)
+builder.add_conditional_edges(
+    "identify_gaps", _check_failed, {"end": END, "continue": "build_personas"}
+)
+builder.add_conditional_edges(
+    "build_personas", _check_failed, {"end": END, "continue": "store_results"}
+)
+builder.add_conditional_edges(
+    "store_results", _check_failed, {"end": END, "continue": END}
+)
 
 research_graph = builder.compile()
