@@ -19,9 +19,9 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatDate } from "@/lib/utils";
 import type { CalendarItem } from "@/types";
 import type { KanbanBoardProps } from "./KanbanBoard";
@@ -141,50 +141,9 @@ function SortableItem({ item }: { item: CalendarItem }) {
   );
 }
 
-/** Full-screen stage modal showing all items */
-function StageModal({
-  column,
-  items,
-  open,
-  onClose,
-  onStatusChange,
-}: {
-  column: { id: string; label: string; color: string };
-  items: CalendarItem[];
-  open: boolean;
-  onClose: () => void;
-  onStatusChange: (itemId: string, newStatus: string) => void;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-3">
-            <span>{column.label}</span>
-            <Badge variant="secondary">{items.length} item{items.length !== 1 ? "s" : ""}</Badge>
-          </DialogTitle>
-        </DialogHeader>
-        <div className="flex-1 overflow-y-auto -mx-6 px-6">
-          {items.length === 0 ? (
-            <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-              No items in this stage
-            </div>
-          ) : (
-            <div className="space-y-2 pb-4">
-              {items.map((item) => (
-                <KanbanCard key={item.id} item={item} />
-              ))}
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [openStage, setOpenStage] = useState<string | null>(null);
+  const router = useRouter();
 
   const itemsByStatus = useMemo(() => {
     const map: Record<string, CalendarItem[]> = {};
@@ -205,7 +164,6 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
   );
 
   const activeItem = items.find((c) => c.id === activeId);
-  const openColumn = COLUMNS.find((c) => c.id === openStage);
 
   function handleDragStart(event: DragStartEvent) {
     setActiveId(event.active.id as string);
@@ -252,7 +210,7 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
         >
           <button
             type="button"
-            onClick={() => columnItems.length > 0 && setOpenStage(column.id)}
+            onClick={() => columnItems.length > 0 && router.push(`/content/stage/${column.id}`)}
             className={`w-full text-left rounded-lg border border-dashed p-2 h-[180px] flex flex-col transition-colors ${column.color} ${
               columnItems.length > 0 ? "cursor-pointer hover:border-primary/50" : "cursor-default"
             }`}
@@ -314,16 +272,6 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
         {activeItem ? <KanbanCard item={activeItem} /> : null}
       </DragOverlay>
 
-      {/* Stage detail modal */}
-      {openColumn && (
-        <StageModal
-          column={openColumn}
-          items={itemsByStatus[openColumn.id] || []}
-          open={!!openStage}
-          onClose={() => setOpenStage(null)}
-          onStatusChange={onStatusChange}
-        />
-      )}
     </DndContext>
   );
 }
