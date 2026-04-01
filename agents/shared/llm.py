@@ -315,26 +315,44 @@ async def generate_image(
     if not openai_key:
         raise RuntimeError("OPENAI_API_KEY not set — required for image generation")
 
-    logger.info("Generating image with model=%s via direct OpenAI API", raw_model)
-    client = get_http_client()
-    resp = await client.post(
-        "https://api.openai.com/v1/images/generations",
-        headers={"Authorization": f"Bearer {openai_key}"},
-        json={
-            "model": raw_model,
-            "prompt": prompt,
-            "size": size,
-            "n": n,
-        },
-        timeout=180,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    result = data["data"][0]
+    # Try the selected model first, fall back to dall-e-3 if it fails (e.g. org not verified)
+    models_to_try = [raw_model]
+    if raw_model != "dall-e-3":
+        models_to_try.append("dall-e-3")
 
-    if result.get("url"):
-        return result["url"]
-    elif result.get("b64_json"):
-        return f"data:image/png;base64,{result['b64_json']}"
-    else:
-        raise ValueError("Image generation returned neither url nor b64_json")
+    last_error: Exception | None = None
+    for attempt_model in models_to_try:
+        try:
+            logger.info("Generating image with model=%s via direct OpenAI API", attempt_model)
+            client = get_http_client()
+            resp = await client.post(
+                "https://api.openai.com/v1/images/generations",
+                headers={"Authorization": f"Bearer {openai_key}"},
+                json={
+                    "model": attempt_model,
+                    "prompt": prompt,
+                    "size": size,
+                    "n": n,
+                },
+                timeout=180,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result = data["data"][0]
+
+            if result.get("url"):
+                return result["url"]
+            elif result.get("b64_json"):
+                return f"data:image/png;base64,{result['b64_json']}"
+            else:
+                raise ValueError("Image generation returned neither url nor b64_json")
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            logger.warning("Image model %s returned %d — trying next model", attempt_model, exc.response.status_code)
+            continue
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Image model %s failed: %s — trying next model", attempt_model, exc)
+            continue
+
+    raise RuntimeError(f"All image models failed. Last error: {last_error}")
