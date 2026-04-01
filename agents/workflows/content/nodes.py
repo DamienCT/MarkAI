@@ -133,18 +133,42 @@ async def load_context(state: ContentState) -> dict[str, Any]:
     pillar_name = calendar_item.get("pillar", "")
     audience_name = calendar_item.get("target_audience", "")
 
-    # Strategy stores pillars under "content_pillars" key
+    # Strategy stores pillars as dicts ({"name": "..."}) or plain strings
     strategy_pillars = intel.get("strategy", {}).get("content_pillars", []) or intel.get("strategy", {}).get("pillars", [])
+    if not isinstance(strategy_pillars, list):
+        strategy_pillars = []
+
+    def _pillar_name(p: Any) -> str:
+        if isinstance(p, dict):
+            return str(p.get("name", ""))
+        return str(p)
+
     relevant_pillar = next(
-        (p for p in (strategy_pillars if isinstance(strategy_pillars, list) else [])
-         if p.get("name", "").lower() == (pillar_name or "").lower()),
+        (p for p in strategy_pillars
+         if _pillar_name(p).lower() == (pillar_name or "").lower()),
         {},
     )
+    # Normalize: if pillar is a string, wrap it so downstream code can use .get()
+    if isinstance(relevant_pillar, str):
+        relevant_pillar = {"name": relevant_pillar}
+
+    # Same for audiences — may be dicts or strings
+    research_personas = intel.get("research", {}).get("personas", [])
+    if not isinstance(research_personas, list):
+        research_personas = []
+
+    def _persona_name(a: Any) -> str:
+        if isinstance(a, dict):
+            return str(a.get("name", ""))
+        return str(a)
+
     relevant_audience = next(
-        (a for a in intel.get("research", {}).get("personas", [])
-         if (audience_name or "").lower() in a.get("name", "").lower()),
+        (a for a in research_personas
+         if (audience_name or "").lower() in _persona_name(a).lower()),
         {},
     )
+    if isinstance(relevant_audience, str):
+        relevant_audience = {"name": relevant_audience}
 
     # Extract current month's strategy document section
     strategy_doc = intel.get("planning", {}).get("strategy_document", "")
