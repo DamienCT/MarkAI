@@ -25,8 +25,18 @@ async def serve_file(
     # Block path traversal attempts
     if ".." in file_path or file_path.startswith("/"):
         raise HTTPException(status_code=403, detail="Invalid file path")
+    # Parse bucket from path: "content-images/brand-id/item-id/file.png"
+    # Known buckets that use bucket-prefix paths
+    KNOWN_BUCKETS = {"content-images", "brand-assets", "markai-assets"}
+    bucket = None
+    object_name = file_path
+    first_segment = file_path.split("/")[0] if "/" in file_path else ""
+    if first_segment in KNOWN_BUCKETS:
+        bucket = first_segment
+        object_name = file_path[len(first_segment) + 1:]
+
     try:
-        data = await minio_service.download_file(file_path)
+        data = await minio_service.download_file(object_name, bucket=bucket)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
 

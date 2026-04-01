@@ -159,6 +159,11 @@ export default function ContentDetailPage() {
   const hasPendingApproval = approvals.some(a => a.status === "pending");
   const mockupUrls = (content.generation_metadata?.mockup_urls ?? null) as Record<string, string> | null;
   const hasMockups = mockupUrls !== null && Object.keys(mockupUrls).length > 0;
+  // Resolve image URL from generation_metadata
+  const rawImagePath = (content.generation_metadata?.raw_image || content.generation_metadata?.generated_image_url || "") as string;
+  const contentImageUrl = rawImagePath
+    ? (rawImagePath.startsWith("http") ? rawImagePath : `${API_BASE_URL}/api/v1/files/${rawImagePath}`)
+    : undefined;
 
   return (
     <div className="space-y-6">
@@ -204,6 +209,7 @@ export default function ContentDetailPage() {
                 brandHandle={brandHandle}
                 caption={caption}
                 hashtags={hashtags}
+                imageUrl={contentImageUrl}
                 cta={content.cta || content.cta_text}
               />
             </div>
