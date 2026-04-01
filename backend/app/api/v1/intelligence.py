@@ -121,12 +121,14 @@ router = APIRouter()
 async def list_intelligence_reports(
     limit: int = 20,
     type: str | None = None,
+    brand_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """List recent agent run reports (research, strategy, planning, content_calendar, product_intel).
 
     Pass ?type=research to filter by a single agent_type.
+    Pass ?brand_id=uuid to filter by brand.
     """
     limit = min(limit, 200)
     allowed_types = ["research", "strategy", "planning", "content_calendar", "content_calendar_strategy", "product_intel"]
@@ -142,6 +144,8 @@ async def list_intelligence_reports(
         .order_by(AgentRun.created_at.desc())
         .limit(limit)
     )
+    if brand_id is not None:
+        stmt = stmt.where(AgentRun.brand_id == brand_id)
     result = await db.execute(stmt)
     runs = result.scalars().all()
 

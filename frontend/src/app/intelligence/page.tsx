@@ -302,20 +302,34 @@ const REPORT_CARDS: ReportCardConfig[] = [
 
 // ── Main page ────────────────────────────────────────────────────────
 
+interface BrandOption {
+  id: string;
+  name: string;
+}
+
 export default function IntelligencePage() {
   const router = useRouter();
   const [reports, setReports] = useState<AgentReport[]>([]);
   const [trends, setTrends] = useState<TrendData[]>([]);
+  const [brands, setBrands] = useState<BrandOption[]>([]);
+  const [selectedBrand, setSelectedBrand] = useState<string>("all");
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.get<BrandOption[]>("/api/v1/brands").then(setBrands).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
 
     async function fetchData() {
+      setLoading(true);
       try {
+        const params: Record<string, string | number> = { limit: 50 };
+        if (selectedBrand !== "all") params.brand_id = selectedBrand;
         const [reportsData, trendsData] = await Promise.allSettled([
-          api.get<AgentReport[]>("/api/v1/intelligence/reports", { limit: 50 }, { signal }),
+          api.get<AgentReport[]>("/api/v1/intelligence/reports", params, { signal }),
           api.get<TrendData[]>("/api/v1/intelligence/trends", { limit: 20 }, { signal }),
         ]);
         if (reportsData.status === "fulfilled") setReports(reportsData.value);
@@ -329,7 +343,7 @@ export default function IntelligencePage() {
     fetchData();
 
     return () => controller.abort();
-  }, []);
+  }, [selectedBrand]);
 
   // Find the latest report for each agent type
   function getLatestByType(agentType: string): AgentReport | undefined {
@@ -353,9 +367,23 @@ export default function IntelligencePage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold">Intelligence</h1>
-        <p className="text-muted-foreground">Research, strategy, planning, and content calendar insights</p>
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Intelligence</h1>
+          <p className="text-muted-foreground">Research, strategy, planning, and content calendar insights</p>
+        </div>
+        {brands.length > 0 && (
+          <select
+            value={selectedBrand}
+            onChange={(e) => setSelectedBrand(e.target.value)}
+            className="rounded-md border bg-background px-3 py-2 text-sm"
+          >
+            <option value="all">All Brands</option>
+            {brands.map(b => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* ── 4 Report Cards ──────────────────────────────────────────── */}

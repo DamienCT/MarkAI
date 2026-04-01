@@ -204,13 +204,15 @@ export default function BrandDetailPage() {
     }
     fetchData();
     // Also fetch products for onboarding progress calculation
-    api.get<Product[]>("/api/v1/products", { brand_id: brandId }, { signal }).then(setProducts).catch(() => {});
+    api.get<Product[]>("/api/v1/products", { brand_id: brandId }, { signal })
+      .then((data) => { setProducts(data); setProductsLoaded(true); })
+      .catch(() => { setProductsLoaded(true); });
     // Fetch pipeline runs for Overview tab
     api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }, { signal }).then(setPipelineRuns).catch(() => {});
     // Fetch competitors for onboarding progress calculation (from DB, same source as BrandOnboarding)
     api.get<CompetitorData[]>(`/api/v1/brands/${brandId}/competitors`, {}, { signal })
-      .then(data => setCompetitors(Array.isArray(data) ? data : []))
-      .catch(() => {});
+      .then(data => { setCompetitors(Array.isArray(data) ? data : []); setCompetitorsLoaded(true); })
+      .catch(() => { setCompetitorsLoaded(true); });
 
     return () => {
       abortRef.current?.abort();
@@ -497,9 +499,13 @@ export default function BrandDetailPage() {
     }
   }, [brand?.status]);
 
+  // Track whether async data has loaded (prevents onboarding flicker 5/7 → 7/7)
+  const [productsLoaded, setProductsLoaded] = useState(false);
+  const [competitorsLoaded, setCompetitorsLoaded] = useState(false);
+
   // Compute onboarding progress — aligned with BrandOnboarding component logic
   const onboardingProgress = (() => {
-    if (!brand) return { completed: 0, total: 7, isComplete: false };
+    if (!brand) return { completed: 0, total: 7, isComplete: false, loaded: false };
     const guidelines = (brand.brand_guidelines || {}) as Record<string, unknown>;
     const logos = guidelines.logos as Record<string, unknown> | undefined;
     const channels = guidelines.channels as Record<string, { enabled?: boolean; configured?: boolean }> | undefined;
@@ -514,7 +520,8 @@ export default function BrandDetailPage() {
       competitors.length > 0,
     ];
     const completed = checks.filter(Boolean).length;
-    return { completed, total: checks.length, isComplete: completed === checks.length };
+    const loaded = productsLoaded && competitorsLoaded;
+    return { completed, total: checks.length, isComplete: completed === checks.length, loaded };
   })();
 
   // Products fetching

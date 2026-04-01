@@ -41,7 +41,7 @@ export interface OverviewTabProps {
   pipelineRuns: AgentRun[];
   loadingPipeline: boolean;
   togglingFactory: boolean;
-  onboardingProgress: { completed: number; total: number; isComplete: boolean };
+  onboardingProgress: { completed: number; total: number; isComplete: boolean; loaded?: boolean };
   onOpenOnboarding: () => void;
   onToggleContentFactory: (turnOn: boolean) => Promise<void>;
   onFetchPipelineRuns: () => Promise<void>;
@@ -71,53 +71,55 @@ export function OverviewTab({
 }: OverviewTabProps) {
   return (
     <div className="space-y-6 mt-6">
-      {/* Onboarding Progress Card */}
-      <button
-        type="button"
-        onClick={onOpenOnboarding}
-        className={`w-full text-left rounded-lg border p-4 transition-colors hover:bg-accent/50 ${
-          onboardingProgress.isComplete
-            ? "border-muted bg-muted/30 opacity-60 hover:opacity-80"
-            : "border-primary/30 bg-primary/5"
-        }`}
-      >
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className={`flex items-center justify-center h-9 w-9 rounded-full shrink-0 ${
-              onboardingProgress.isComplete ? "bg-green-100 dark:bg-green-900/30" : "bg-primary/10"
-            }`}>
-              {onboardingProgress.isComplete ? (
-                <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
-              ) : (
-                <Rocket className="h-5 w-5 text-primary" />
-              )}
+      {/* Onboarding Progress Card — only render once async data is loaded to prevent flicker */}
+      {onboardingProgress.loaded !== false && (
+        <button
+          type="button"
+          onClick={onOpenOnboarding}
+          className={`w-full text-left rounded-lg border p-4 transition-colors hover:bg-accent/50 ${
+            onboardingProgress.isComplete
+              ? "border-muted bg-muted/30 opacity-60 hover:opacity-80"
+              : "border-primary/30 bg-primary/5"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`flex items-center justify-center h-9 w-9 rounded-full shrink-0 ${
+                onboardingProgress.isComplete ? "bg-green-100 dark:bg-green-900/30" : "bg-primary/10"
+              }`}>
+                {onboardingProgress.isComplete ? (
+                  <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
+                ) : (
+                  <Rocket className="h-5 w-5 text-primary" />
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className={`text-sm font-medium ${onboardingProgress.isComplete ? "text-muted-foreground" : ""}`}>
+                  {onboardingProgress.isComplete ? "Setup Complete" : "Brand Setup"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {onboardingProgress.completed}/{onboardingProgress.total} steps completed
+                </p>
+              </div>
             </div>
-            <div className="min-w-0">
-              <p className={`text-sm font-medium ${onboardingProgress.isComplete ? "text-muted-foreground" : ""}`}>
-                {onboardingProgress.isComplete ? "Setup Complete" : "Brand Setup"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {onboardingProgress.completed}/{onboardingProgress.total} steps completed
-              </p>
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="w-32 h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    onboardingProgress.isComplete ? "bg-green-500" : "bg-primary"
+                  }`}
+                  style={{ width: `${Math.round((onboardingProgress.completed / onboardingProgress.total) * 100)}%` }}
+                />
+              </div>
+              <span className={`text-xs font-medium tabular-nums ${
+                onboardingProgress.isComplete ? "text-green-600 dark:text-green-400" : "text-primary"
+              }`}>
+                {Math.round((onboardingProgress.completed / onboardingProgress.total) * 100)}%
+              </span>
             </div>
           </div>
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="w-32 h-2 rounded-full bg-muted overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  onboardingProgress.isComplete ? "bg-green-500" : "bg-primary"
-                }`}
-                style={{ width: `${Math.round((onboardingProgress.completed / onboardingProgress.total) * 100)}%` }}
-              />
-            </div>
-            <span className={`text-xs font-medium tabular-nums ${
-              onboardingProgress.isComplete ? "text-green-600 dark:text-green-400" : "text-primary"
-            }`}>
-              {Math.round((onboardingProgress.completed / onboardingProgress.total) * 100)}%
-            </span>
-          </div>
-        </div>
-      </button>
+        </button>
+      )}
 
       {/* Agent Pipeline Card */}
       <Card>
@@ -285,6 +287,7 @@ export function OverviewTab({
               { key: "research", label: "Research", icon: <Search className="h-6 w-6" /> },
               { key: "strategy", label: "Strategy", icon: <Target className="h-6 w-6" /> },
               { key: "planning", label: "Marketing Plan", icon: <FileText className="h-6 w-6" /> },
+              { key: "content_calendar", label: "Calendar Strategy", icon: <FileText className="h-6 w-6" />, altKey: "content_calendar_strategy" },
             ] as const;
 
             const latestByType: Record<string, AgentRun> = {};
@@ -301,7 +304,10 @@ export function OverviewTab({
             const contentRunning = contentRuns.find(r => r.status === "running");
             const contentFailed = contentRuns.filter(r => r.status === "failed").length;
             const contentTotal = contentRuns.length;
-            const allReportsDone = REPORT_STAGES.every(s => latestByType[s.key]?.status === "completed");
+            const allReportsDone = REPORT_STAGES.every(s => {
+              const r = latestByType[s.key] || (("altKey" in s && s.altKey) ? latestByType[s.altKey] : undefined);
+              return r?.status === "completed";
+            });
 
             const statusBadgeClass = (status: string | undefined) => {
               if (!status) return "bg-muted text-muted-foreground";
@@ -320,7 +326,8 @@ export function OverviewTab({
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Intelligence Reports</p>
                 <div className="flex items-start justify-between gap-0 overflow-x-auto pb-2">
                   {REPORT_STAGES.map((stage, idx) => {
-                    const run = latestByType[stage.key];
+                    // Check both primary key and altKey for content_calendar/content_calendar_strategy
+                    const run = latestByType[stage.key] || (("altKey" in stage && stage.altKey) ? latestByType[stage.altKey] : undefined);
                     const status = run?.status || "pending";
                     return (
                       <React.Fragment key={stage.key}>
