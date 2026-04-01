@@ -328,6 +328,14 @@ async def upsert_product(product: dict[str, Any]) -> str:
 
 # ── Calendar operations ──────────────────────────────────────────────────
 
+def _sanitize_pg_text(value: Any) -> Any:
+    """Strip null bytes and fix broken UTF-8 that PostgreSQL rejects."""
+    if isinstance(value, str):
+        # Remove null bytes (0x00) — PostgreSQL TEXT columns cannot store them
+        return value.replace("\x00", "").replace("\0", "")
+    return value
+
+
 async def store_calendar_items(
     items: list[dict[str, Any]],
     max_date: datetime | None = None,
@@ -396,19 +404,19 @@ async def store_calendar_items(
                     "id": item_id,
                     "brand_id": item.get("brand_id"),
                     "campaign_id": item.get("campaign_id"),
-                    "title": item.get("title", "")[:500],
-                    "description": item.get("description", ""),
+                    "title": _sanitize_pg_text(item.get("title", ""))[:500],
+                    "description": _sanitize_pg_text(item.get("description", "")),
                     "item_type": item_type,
                     "channel": channel,
                     "scheduled_at": scheduled_at_val,
                     "product_ids": [item["product_id"]] if item.get("product_id") else None,
-                    "pillar": item.get("pillar"),
-                    "theme": item.get("theme"),
-                    "target_audience": item.get("target_audience"),
-                    "weekly_sub_theme": item.get("weekly_sub_theme"),
-                    "content_brief": item.get("content_brief"),
-                    "visual_direction": item.get("visual_direction"),
-                    "cta_type": item.get("cta_type"),
+                    "pillar": _sanitize_pg_text(item.get("pillar")),
+                    "theme": _sanitize_pg_text(item.get("theme")),
+                    "target_audience": _sanitize_pg_text(item.get("target_audience")),
+                    "weekly_sub_theme": _sanitize_pg_text(item.get("weekly_sub_theme")),
+                    "content_brief": _sanitize_pg_text(item.get("content_brief")),
+                    "visual_direction": _sanitize_pg_text(item.get("visual_direction")),
+                    "cta_type": _sanitize_pg_text(item.get("cta_type")),
                 },
             )
             ids.append((item_id, scheduled_at_val))
