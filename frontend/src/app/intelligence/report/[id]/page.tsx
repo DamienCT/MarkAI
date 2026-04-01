@@ -1739,7 +1739,7 @@ export default function ReportPage() {
               <CardDescription>Full year-long content calendar strategy</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:text-foreground prose-p:text-muted-foreground prose-strong:text-foreground prose-li:text-muted-foreground">
+              <div className="prose max-w-none dark:prose-invert prose-headings:text-foreground prose-headings:border-b prose-headings:pb-2 prose-headings:mb-4 prose-h2:text-lg prose-h2:border-primary/20 prose-h3:text-base prose-h3:border-none prose-p:text-muted-foreground prose-strong:text-foreground prose-li:text-muted-foreground prose-table:text-sm prose-th:bg-muted prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-hr:border-primary/20">
                 {typeof strategyDocument === "string"
                   ? <ReactMarkdown>{strategyDocument}</ReactMarkdown>
                   : <SafeValue value={strategyDocument} />}

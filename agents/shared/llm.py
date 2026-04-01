@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -298,13 +299,15 @@ async def generate_image(
     size: str = "1024x1024",
     n: int = 1,
 ) -> str:
-    """Generate an image via the LiteLLM proxy and return the first image URL or data URI.
+    """Generate an image and return the first image URL or data URI.
 
-    Handles both url and b64_json response formats (gpt-image-1.5 returns b64_json).
+    Tries LiteLLM proxy first; falls back to direct OpenAI API if proxy returns 400.
+    Handles both url and b64_json response formats.
     """
     if model is None:
         model = await get_model_for_category(category)
 
+    # Try LiteLLM proxy first
     try:
         client = get_http_client()
         resp = await client.post(
@@ -322,17 +325,48 @@ async def generate_image(
         data = resp.json()
         result = data["data"][0]
 
-        # gpt-image-1.5 and newer return b64_json, older models return url
         if result.get("url"):
             return result["url"]
         elif result.get("b64_json"):
-            # Return as data URI — caller can decode if needed
             return f"data:image/png;base64,{result['b64_json']}"
         else:
             raise ValueError("Image generation returned neither url nor b64_json")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 400:
+            raise
+        # LiteLLM returned 400 — fall back to direct OpenAI API
+        logger.warning("LiteLLM image proxy returned 400 for model=%s — trying direct OpenAI API", model)
     except httpx.ConnectError:
         raise RuntimeError(f"Cannot connect to LiteLLM at {settings.LITELLM_BASE_URL} — is the service running?")
     except httpx.TimeoutException:
         raise
-    except httpx.HTTPStatusError:
-        raise
+
+    # Direct OpenAI API fallback
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        raise RuntimeError("LiteLLM image proxy failed and no OPENAI_API_KEY set for direct fallback")
+
+    # Use gpt-image-1 for direct API (known working)
+    direct_model = "gpt-image-1"
+    client = get_http_client()
+    resp = await client.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={"Authorization": f"Bearer {openai_key}"},
+        json={
+            "model": direct_model,
+            "prompt": prompt,
+            "size": size,
+            "n": n,
+        },
+        timeout=180,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    result = data["data"][0]
+
+    if result.get("url"):
+        return result["url"]
+    elif result.get("b64_json"):
+        return f"data:image/png;base64,{result['b64_json']}"
+    else:
+        raise ValueError("Direct OpenAI image generation returned neither url nor b64_json")

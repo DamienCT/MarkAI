@@ -78,7 +78,7 @@ async def analyze_social(state: ResearchState) -> dict[str, Any]:
 
     try:
         analysis_prompt = [
-            {"role": "system", "content": "You are a social media analyst. Analyze the following social media data and provide insights on content performance, audience engagement patterns, posting frequency, and content themes. The brand operates in Mauritius and the Indian Ocean region. Consider local social media landscape: Facebook and Instagram are dominant platforms in Mauritius, WhatsApp is widely used for business communication, and content often needs to work in English, French, and Creole. Factor in local peak usage times (GMT+4 timezone). Include in your analysis: engagement_rate (current average engagement rate as a percentage), benchmark_comparison (how this compares to industry average in Mauritius — health/wellness: ~2.1%), top_content_types (ranked list of content types by engagement, e.g. Reel > Carousel > Static), peak_times (best posting times per platform in GMT+4 with data-backed reasoning), content_gaps (what competitors post about that this brand doesn't), hashtag_analysis (top 10 hashtags by reach from recent posts), and 5 specific, actionable recommendations."},
+            {"role": "system", "content": "You are a social media analyst. Analyze the following social media data and provide insights on content performance, audience engagement patterns, posting frequency, and content themes. Include in your analysis: engagement_rate (current average engagement rate as a percentage), benchmark_comparison (how this compares to industry averages), top_content_types (ranked list of content types by engagement, e.g. Reel > Carousel > Static), peak_times (best posting times per platform with data-backed reasoning), content_gaps (what competitors post about that this brand doesn't), hashtag_analysis (top 10 hashtags by reach from recent posts), and 5 specific, actionable recommendations."},
             {"role": "user", "content": f"Social profiles:\n{sanitize_json_for_prompt(profiles)}\n\nRecent engagement data:\n{sanitize_json_for_prompt(engagement)}"},
         ]
         analysis_text = await chat_completion(analysis_prompt)
@@ -121,7 +121,7 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
 
     # Ask LLM to identify competitors from website data
     identify_prompt = [
-        {"role": "system", "content": "You are a competitive intelligence analyst. The brand operates in Mauritius and the Indian Ocean region. Focus ONLY on direct competitors in Mauritius and the Indian Ocean region. Do NOT include comparison websites, blog sites, review aggregators, or international companies unless they operate locally in Mauritius. Given the brand's website content, identify their top 5 LOCAL competitors in Mauritius. For EACH competitor, provide a comprehensive profile. Return a JSON array where each object has: name (company name), website_url (their website), positioning (their brand positioning statement in 1 sentence), strengths (array of 3+ competitive strengths), weaknesses (array of 3+ competitive weaknesses), social_presence (object with platform names as keys and estimated follower counts as values), content_strategy (description of their social media content approach — frequency, content types, tone), threat_level ('high', 'medium', or 'low' based on market overlap and competitive strength)."},
+        {"role": "system", "content": "You are a competitive intelligence analyst. Focus on direct competitors in the brand's market. Do NOT include comparison websites, blog sites, review aggregators, or unrelated international companies. Given the brand's website content, identify their top 5 competitors. For EACH competitor, provide a comprehensive profile. Return a JSON array where each object has: name (company name), website_url (their website), positioning (their brand positioning statement in 1 sentence), strengths (array of 3+ competitive strengths), weaknesses (array of 3+ competitive weaknesses), social_presence (object with platform names as keys and estimated follower counts as values), content_strategy (description of their social media content approach — frequency, content types, tone), threat_level ('high', 'medium', or 'low' based on market overlap and competitive strength)."},
         {"role": "user", "content": f"Brand: {sanitize_for_prompt(brand_name)}\nIndustry context: {sanitize_for_prompt(brand_industry)} {sanitize_for_prompt(brand_context)}{existing_info}\n\nWebsite content:\n{sanitize_json_for_prompt(website_data[:5], max_length=8000)}"},
     ]
     try:
@@ -140,10 +140,10 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
     if not competitors or len(competitors) < 3:
         # Multiple targeted searches for actual local businesses
         search_queries = [
-            f"health fitness stores Mauritius",
-            f"pharmacy wellness products Mauritius",
-            f"sports nutrition supplements Mauritius shops",
-            f"{brand_name} similar shops Mauritius",
+            f"{brand_name} competitors",
+            f"{brand_context or brand_industry} stores near {brand_name}",
+            f"{brand_context or brand_industry} similar businesses",
+            f"{brand_name} alternatives",
         ]
         all_results = []
         for q in search_queries:
@@ -157,11 +157,11 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
         if all_results:
             filter_prompt = [
                 {"role": "system", "content": (
-                    "You are a local market analyst in Mauritius. From the search results below, "
-                    "identify ONLY actual businesses/stores/pharmacies/retailers in Mauritius that sell "
-                    "health, fitness, or wellness products. EXCLUDE: review sites, comparison sites, "
-                    "directory listings, blog posts, news articles, and international companies without "
-                    "a local presence in Mauritius. Return a JSON array of objects with 'name' (business name) "
+                    "You are a market analyst. From the search results below, "
+                    "identify ONLY actual businesses that are direct competitors to the brand. "
+                    "EXCLUDE: review sites, comparison sites, "
+                    "directory listings, blog posts, news articles, and unrelated companies. "
+                    "Return a JSON array of objects with 'name' (business name) "
                     "and 'website' (their actual website URL) fields. Maximum 5 results."
                 )},
                 {"role": "user", "content": f"Brand context: {sanitize_for_prompt(brand_name)} - {sanitize_for_prompt(brand_industry)}\n\nSearch results:\n" +
@@ -195,13 +195,13 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
             # Quick LLM description
             try:
                 desc_text = await chat_completion([
-                    {"role": "system", "content": "Write a one-sentence description of this business and what they sell. If you don't know, say 'Local competitor in Mauritius'."},
+                    {"role": "system", "content": "Write a one-sentence description of this business and what they sell. If you don't know, say 'Competitor'."},
                     {"role": "user", "content": f"Business: {sanitize_for_prompt(comp_name)}, Website: {sanitize_for_prompt(comp_website)}"},
                 ], temperature=0.3)
                 description = desc_text.strip()[:300]
             except Exception as exc:
                 logger.warning("Failed to generate description for competitor %s: %s", comp_name, exc)
-                description = "Local competitor in Mauritius"
+                description = "Competitor"
 
         analyses.append({
             "name": comp_name,
@@ -233,7 +233,7 @@ async def identify_gaps(state: ResearchState) -> dict[str, Any]:
     """Use LLM to identify content and positioning gaps from all collected data."""
     try:
         prompt = [
-            {"role": "system", "content": "You are a strategic marketing analyst. Based on the brand's website, social media analysis, and competitor analysis, identify gaps and opportunities. Consider the Mauritian market, Indian Ocean region demographics, and local consumer behavior. Return a JSON array where each gap has: title (short descriptive title), category (one of: content, positioning, digital, audience, product, channel), description (what the gap is), opportunity (how to exploit it), priority (high/medium/low), estimated_impact (expected business impact if addressed), implementation_effort (low/medium/high), recommended_timeline (when to implement, e.g. 'Q2 2026'), target_audience (which persona(s) this gap affects most), success_metrics (array of 2-3 measurable KPIs to track)."},
+            {"role": "system", "content": "You are a strategic marketing analyst. Based on the brand's website, social media analysis, and competitor analysis, identify gaps and opportunities. Return a JSON array where each gap has: title (short descriptive title), category (one of: content, positioning, digital, audience, product, channel), description (what the gap is), opportunity (how to exploit it), priority (high/medium/low), estimated_impact (expected business impact if addressed), implementation_effort (low/medium/high), recommended_timeline (when to implement, e.g. 'Q2 2026'), target_audience (which persona(s) this gap affects most), success_metrics (array of 2-3 measurable KPIs to track)."},
             {"role": "user", "content": (
                 f"Website data summary: {sanitize_json_for_prompt(state.get('website_data', [])[:3], max_length=3000)}\n\n"
                 f"Social analysis: {sanitize_json_for_prompt(state.get('social_analysis', {}), max_length=3000)}\n\n"
@@ -254,7 +254,7 @@ async def build_personas(state: ResearchState) -> dict[str, Any]:
     """Build audience personas from research data using LLM."""
     try:
         prompt = [
-            {"role": "system", "content": "You are a marketing strategist. Build 3-5 detailed audience personas based on the research data. Create personas that reflect the Mauritian market. Use local demographics (Mauritius population ~1.3M, diverse ethnic groups, multilingual - English/French/Creole). Consider Indian Ocean region consumer behavior, local income levels, popular local platforms, and cultural context. Do NOT create personas from US cities. Each persona should have: name (a memorable name and archetype, e.g. 'Priya, the Wellness Enthusiast'), demographics (object with age range, gender, location as a Mauritian city, income level, education, occupation), psychographics (values, lifestyle, interests, media habits), pain_points (array of 3+ specific pain points related to the brand's industry), content_preferences (object with: formats — preferred content formats like Reels/Carousels/Stories/Static/Articles; topics — 5+ specific topic interests; tone — preferred communication tone; language_mix — English/French/Kreol preference and ratio), platforms (array of social platforms they use, ordered by preference), buying_triggers (array of 3+ triggers that drive purchase decisions), best_engagement_times (specific times in GMT+4 when this persona is most active), content_avoidance (array of what turns this persona off, e.g. 'hard sells', 'medical jargon'). Return a JSON array."},
+            {"role": "system", "content": "You are a marketing strategist. Build 3-5 detailed audience personas based on the research data. Create personas that reflect the brand's target market. Each persona should have: name (a memorable name and archetype, e.g. 'Sarah, the Wellness Enthusiast'), demographics (object with age range, gender, location, income level, education, occupation), psychographics (values, lifestyle, interests, media habits), pain_points (array of 3+ specific pain points related to the brand's industry), content_preferences (object with: formats — preferred content formats like Reels/Carousels/Stories/Static/Articles; topics — 5+ specific topic interests; tone — preferred communication tone), platforms (array of social platforms they use, ordered by preference), buying_triggers (array of 3+ triggers that drive purchase decisions), best_engagement_times (specific times when this persona is most active), content_avoidance (array of what turns this persona off, e.g. 'hard sells', 'medical jargon'). Return a JSON array."},
             {"role": "user", "content": (
                 f"Social analysis: {sanitize_json_for_prompt(state.get('social_analysis', {}), max_length=3000)}\n\n"
                 f"Gaps identified: {sanitize_json_for_prompt(state.get('gaps', []), max_length=2000)}\n\n"

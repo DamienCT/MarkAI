@@ -1,17 +1,31 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ContentEditor } from "@/components/content/ContentEditor";
+import { ChannelPreview } from "@/components/content/ChannelPreview";
 import { PlatformMockups } from "@/components/content/PlatformMockups";
 import { ApprovalHistory } from "@/components/approval/ApprovalHistory";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { api, API_BASE_URL } from "@/lib/api";
-import type { Content, Approval } from "@/types";
+import type { Content, Approval, CalendarItem } from "@/types";
+
+function safeHashtags(raw: unknown): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw === "string") {
+    try { const p = JSON.parse(raw); if (Array.isArray(p)) return p.map(String); } catch { /* ignore */ }
+    return raw.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  return [];
+}
 
 export default function ContentDetailPage() {
   const params = useParams();
@@ -19,38 +33,38 @@ export default function ContentDetailPage() {
   const contentId = params.id as string;
 
   const [content, setContent] = useState<Content | null>(null);
+  const [calendarItem, setCalendarItem] = useState<CalendarItem | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [loading, setLoading] = useState(true);
+  const [approvalComments, setApprovalComments] = useState("");
+  const [submittingApproval, setSubmittingApproval] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
       try {
-        // The [id] param may be a calendar_item_id (from Content Studio) or a content_id.
-        // Try by calendar_item_id first (most common), then fall back to direct content_id.
         let contentData: Content | null = null;
         try {
           contentData = await api.get<Content>(`/api/v1/content/by-calendar-item/${contentId}`);
         } catch {
-          // Not found by calendar item — try as direct content_id
           try {
             contentData = await api.get<Content>(`/api/v1/content/${contentId}`);
-          } catch {
-            // Neither worked
-          }
+          } catch { /* neither worked */ }
         }
         if (contentData) {
           setContent(contentData);
-          // Fetch approvals using the actual content ID
+          // Fetch the calendar item for channel info
+          if (contentData.calendar_item_id) {
+            try {
+              const calItem = await api.get<CalendarItem>(`/api/v1/calendar/${contentData.calendar_item_id}`);
+              setCalendarItem(calItem);
+            } catch { /* optional */ }
+          }
+          // Fetch approvals
           try {
             const approvalData = await api.get<{ items: Approval[] } | Approval[]>(`/api/v1/approvals`, { content_id: contentData.id });
-            // Backend returns {items: [...]} wrapper, not a plain array
-            const approvalList = Array.isArray(approvalData)
-              ? approvalData
-              : (approvalData as { items: Approval[] }).items || [];
+            const approvalList = Array.isArray(approvalData) ? approvalData : (approvalData as { items: Approval[] }).items || [];
             setApprovals(approvalList);
-          } catch {
-            // Approvals may not exist yet
-          }
+          } catch { /* optional */ }
         }
       } catch {
         toast.error("Failed to load content");
@@ -61,9 +75,8 @@ export default function ContentDetailPage() {
     fetchData();
   }, [contentId]);
 
-  const handleSave = async (data: Partial<Content>) => {
+  const handleSave = useCallback(async (data: Partial<Content>) => {
     try {
-      // Use the actual content ID for updates, not the URL param (which may be a calendar_item_id)
       const actualId = content?.id || contentId;
       const updated = await api.put<Content>(`/api/v1/content/${actualId}`, data);
       setContent(updated);
@@ -72,7 +85,33 @@ export default function ContentDetailPage() {
       const detail = (err as { detail?: string })?.detail || "Failed to save content";
       toast.error(detail);
     }
-  };
+  }, [content, contentId]);
+
+  const handleApproval = useCallback(async (action: "approved" | "rejected") => {
+    const pendingApproval = approvals.find(a => a.status === "pending");
+    if (!pendingApproval) {
+      toast.error("No pending approval found");
+      return;
+    }
+    setSubmittingApproval(true);
+    try {
+      await api.put(`/api/v1/approvals/${pendingApproval.id}`, {
+        status: action,
+        feedback: approvalComments || undefined,
+      });
+      toast.success(`Content ${action}`);
+      // Refresh approvals
+      const approvalData = await api.get<{ items: Approval[] } | Approval[]>(`/api/v1/approvals`, { content_id: content?.id });
+      const approvalList = Array.isArray(approvalData) ? approvalData : (approvalData as { items: Approval[] }).items || [];
+      setApprovals(approvalList);
+      setApprovalComments("");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || `Failed to ${action} content`;
+      toast.error(detail);
+    } finally {
+      setSubmittingApproval(false);
+    }
+  }, [approvals, approvalComments, content]);
 
   if (loading) {
     return (
@@ -94,26 +133,144 @@ export default function ContentDetailPage() {
     );
   }
 
+  const channel = calendarItem?.channel || content.platform || "instagram";
+  const brandName = content.brand_name || "Brand";
+  const brandHandle = brandName.toLowerCase().replace(/\s+/g, "");
+  const caption = content.caption || content.body_text || "";
+  const hashtags = safeHashtags(content.hashtags);
+  const hasPendingApproval = approvals.some(a => a.status === "pending");
+  const mockupUrls = (content.generation_metadata?.mockup_urls ?? null) as Record<string, string> | null;
+  const hasMockups = mockupUrls !== null && Object.keys(mockupUrls).length > 0;
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => router.push("/content")}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        <h1 className="text-3xl font-bold">{content.title || content.headline || "Content"}</h1>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={() => router.push("/content")}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div>
+            <h1 className="text-2xl font-bold">{content.title || content.headline || "Content"}</h1>
+            <div className="flex items-center gap-2 mt-1">
+              <Badge variant="outline" className="capitalize">{channel}</Badge>
+              {calendarItem?.scheduled_at && (
+                <span className="text-xs text-muted-foreground">
+                  Scheduled: {new Date(calendarItem.scheduled_at).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+      <Tabs defaultValue="preview">
+        <TabsList>
+          <TabsTrigger value="preview" className="gap-1.5">
+            <Eye className="h-3.5 w-3.5" /> Preview
+          </TabsTrigger>
+          <TabsTrigger value="edit" className="gap-1.5">
+            <Edit3 className="h-3.5 w-3.5" /> Edit
+          </TabsTrigger>
+          <TabsTrigger value="history" className="gap-1.5">
+            <Clock className="h-3.5 w-3.5" /> History
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Preview Tab */}
+        <TabsContent value="preview" className="mt-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="flex justify-center">
+              <ChannelPreview
+                channel={channel}
+                brandName={brandName}
+                brandHandle={brandHandle}
+                caption={caption}
+                hashtags={hashtags}
+                cta={content.cta || content.cta_text}
+              />
+            </div>
+            <div className="space-y-4">
+              {/* Approval actions */}
+              {hasPendingApproval && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Review & Approve</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Textarea
+                      placeholder="Add feedback or comments (optional)..."
+                      value={approvalComments}
+                      onChange={(e) => setApprovalComments(e.target.value)}
+                      rows={3}
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                        disabled={submittingApproval}
+                        onClick={() => handleApproval("approved")}
+                      >
+                        <CheckCircle className="mr-1.5 h-4 w-4" />
+                        Approve
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        className="flex-1"
+                        disabled={submittingApproval}
+                        onClick={() => handleApproval("rejected")}
+                      >
+                        <XCircle className="mr-1.5 h-4 w-4" />
+                        Reject
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Content details */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Content Details</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  {(content.cta || content.cta_text) ? (
+                    <div>
+                      <p className="text-xs text-muted-foreground">Call to Action</p>
+                      <p>{String(content.cta || content.cta_text || "")}</p>
+                    </div>
+                  ) : null}
+                  {hashtags.length > 0 && (
+                    <div>
+                      <p className="text-xs text-muted-foreground">Hashtags</p>
+                      <p className="text-blue-500 text-xs">{hashtags.map(h => `#${h}`).join(" ")}</p>
+                    </div>
+                  )}
+                  {(content.ai_model || content.ai_generated) ? (
+                    <div>
+                      <p className="text-xs text-muted-foreground">Generation</p>
+                      <p className="text-xs">AI Generated{content.ai_model ? ` by ${String(content.ai_model)}` : ""}</p>
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
+
+              {/* Mockups if available */}
+              {hasMockups && (
+                <PlatformMockups
+                  mockupUrls={mockupUrls!}
+                  imageBaseUrl={API_BASE_URL}
+                />
+              )}
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* Edit Tab */}
+        <TabsContent value="edit" className="mt-6">
           <ContentEditor content={content} onSave={handleSave} />
-        </div>
-        <div className="space-y-6">
-          {content.generation_metadata?.mockup_urls != null && (
-            <PlatformMockups
-              mockupUrls={content.generation_metadata.mockup_urls as Record<string, string>}
-              imageBaseUrl={API_BASE_URL}
-            />
-          )}
+        </TabsContent>
+
+        {/* History Tab */}
+        <TabsContent value="history" className="mt-6">
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Approval History</CardTitle>
@@ -122,8 +279,8 @@ export default function ContentDetailPage() {
               <ApprovalHistory approvals={approvals} />
             </CardContent>
           </Card>
-        </div>
-      </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

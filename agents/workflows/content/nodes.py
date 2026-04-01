@@ -205,10 +205,9 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
 
         prompt = [
             {"role": "system", "content": (
-                "You are an expert social media copywriter for the Mauritian market. "
+                "You are an expert social media copywriter. "
                 "Write a scroll-stopping hook (opening line) for a social media post. "
                 "The hook must be under 15 words, emotionally compelling, and aligned with the brand voice. "
-                "Naturally weave in French or Kreol Morisien phrases where they add warmth and local resonance. "
                 "Return ONLY the hook text, nothing else."
             )},
             {"role": "user", "content": (
@@ -263,8 +262,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         if isinstance(content_prefs, dict):
             audience_prefs = (
                 f"Tone: {content_prefs.get('tone', 'N/A')}, "
-                f"Topics: {', '.join(content_prefs.get('topics', []))}, "
-                f"Language mix: {content_prefs.get('language_mix', 'N/A')}"
+                f"Topics: {', '.join(content_prefs.get('topics', []))}"
             )
         else:
             audience_prefs = str(content_prefs)
@@ -299,12 +297,9 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
 
         prompt = [
             {"role": "system", "content": (
-                "You are an expert social media copywriter for the Mauritian market. "
-                "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
+                "You are an expert social media copywriter. "
                 "Write a compelling caption for a social media post. "
                 "Start with the provided hook. Keep it engaging, on-brand, and appropriate for the platform. "
-                "Naturally integrate French or Kreol Morisien phrases where they add warmth and local flavour "
-                "(e.g. greetings, food terms, common expressions). Primary language should be English. "
                 "AIM FOR MEDIUM LENGTH: 3-5 short paragraphs. Include a strong opening hook, "
                 "1-2 paragraphs of substance (product benefits, lifestyle value, or educational insight), "
                 "and a clear CTA with the brand URL. Do NOT be overly long or overly terse. "
@@ -373,11 +368,9 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
 
         prompt = [
             {"role": "system", "content": (
-                "You are a social media strategist specializing in the Mauritian market. "
-                "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
+                "You are a social media strategist. "
                 "Generate relevant hashtags for this post. "
-                "Mix broad, niche, and branded hashtags. Include relevant local hashtags (e.g. Mauritius, MauritiusIsland, IndianOcean). "
-                "Include a few French/Kreol hashtags where appropriate (e.g. IleMaurice, LaVieMorisien, BienEtre). "
+                "Mix broad, niche, and branded hashtags. "
                 "Return ONLY a JSON array of strings (no # prefix)."
             )},
             {"role": "user", "content": (
@@ -387,7 +380,7 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
                 f"FULL CAPTION:\n{sanitize_for_prompt(state.get('caption', ''))}\n\n"
                 f"THEME: {sanitize_for_prompt(item.get('theme', ''))}\n\n"
                 f"{top_hashtags_info}\n\n"
-                f"ALWAYS INCLUDE these branded/local hashtags: {brand_slug}, Mauritius, IleMaurice"
+                f"ALWAYS INCLUDE branded hashtag: {brand_slug}"
             )},
         ]
         result = await chat_completion(prompt, temperature=0.6, max_tokens=512, response_format={"type": "json_object"})
@@ -526,7 +519,7 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     seasonal_directive = (
         f"Seasonal direction: {sanitize_for_prompt(month_context[:200])}. "
         if month_context
-        else "Seasonal direction: current season in Mauritius. "
+        else "Seasonal direction: current season. "
     )
 
     # Common composition requirements for logo/text overlay
@@ -629,8 +622,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
 
     prompt = [
         {"role": "system", "content": (
-            "You are a social media and content marketing expert. Create content appropriate for the Mauritian market. "
-            "Consider bilingual audience (English/French/Creole), local culture, tropical lifestyle, and Indian Ocean region context. "
+            "You are a social media and content marketing expert. "
             "Adapt the following content "
             "for each platform below, respecting each platform's constraints and best practices.\n\n"
             "Platform specifications:\n"

@@ -165,9 +165,7 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     channels_str = ", ".join(enabled_channels)
     prompt = [
         {"role": "system", "content": (
-            "You are a campaign planner. The brand operates in Mauritius. Consider the local market, "
-            "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
-            "and regional consumer preferences. Based on the strategy, generate specific campaigns "
+            "You are a campaign planner. Based on the brand's target market and strategy, generate specific campaigns "
             f"for the period {start_date} to {end_date} ({scope_weeks} weeks). "
             f"Generate content ONLY for these platforms: {channels_str}. "
             "Do NOT generate content for any other platforms. "
@@ -194,11 +192,22 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
         {"role": "system", "content": (
             "You are a senior content strategist. Create a comprehensive Content Calendar Strategy Document "
             "that covers the full year. This document will be the reference guide for daily content generation. "
-            "Include: monthly themes, seasonal hooks, content pillars rotation, key dates and holidays relevant to "
-            "Mauritius and the Indian Ocean region (Independence Day March 12, Diwali, Eid, Chinese New Year, "
-            "Christmas, Cavadee, Abolition of Slavery Feb 1, Thaipoosam Cavadee, Maha Shivaratri, Ugadi, "
-            "Ganesh Chaturthi, Pere Laval Pilgrimage Sep 9, etc.), content mix ratios, and the strategic rationale "
-            "for the content sequencing. Format as structured markdown."
+            "Write everything in English.\n\n"
+            "FORMATTING REQUIREMENTS (strict):\n"
+            "- Use '## ' for major section headers (e.g., '## Monthly Overview', '## Q1 Strategy')\n"
+            "- Use '### ' for month names (e.g., '### January', '### February')\n"
+            "- Use bullet lists (- ) for key points\n"
+            "- Use **bold** for emphasis on key terms\n"
+            "- Use '---' horizontal rules between quarters\n"
+            "- Include a markdown table for the yearly overview with columns: Month | Theme | Key Dates | Content Focus | Pillar Rotation\n"
+            "- Include a markdown table for content mix ratios by platform\n"
+            "- Start with an executive summary paragraph\n\n"
+            "CONTENT TO INCLUDE:\n"
+            "- Monthly themes with strategic rationale\n"
+            "- Seasonal hooks and key dates/holidays relevant to the brand's market\n"
+            "- Content pillar rotation schedule\n"
+            "- Content mix ratios per platform\n"
+            "- Strategic rationale for content sequencing"
         )},
         {"role": "user", "content": (
             f"Brand: {sanitize_for_prompt(brand.get('name', '') or '')}\n"
@@ -280,9 +289,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
         prompt = [
             {"role": "system", "content": (
-                "You are a content calendar planner. The brand operates in Mauritius. Consider the local market, "
-                "Indian Ocean region, bilingual (English/French) content needs, local holidays and events, "
-                "and regional consumer preferences. Generate content for the period "
+                "You are a content calendar planner. Based on the brand's target market, generate content for the period "
                 f"{batch_start_str} to {batch_end_str} ({batch_days} days). "
                 f"Generate content ONLY for these platforms: {channels_str}. "
                 "Do NOT generate content for any other platforms. "

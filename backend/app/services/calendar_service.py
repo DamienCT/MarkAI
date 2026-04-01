@@ -80,8 +80,8 @@ async def update_calendar_item(
     for key, value in update_data.items():
         setattr(item, key, value)
     await db.commit()
-    await db.refresh(item, attribute_names=["brand"])
-    return _attach_brand_name(item)
+    # Re-query with selectinload to ensure brand relationship is loaded
+    return await get_calendar_item(db, item_id)
 
 
 async def delete_calendar_item(db: AsyncSession, item_id: uuid.UUID) -> bool:
