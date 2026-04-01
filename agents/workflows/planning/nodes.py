@@ -257,17 +257,6 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         for p in products[:50]
     ]
 
-    # Build deduplication context from existing calendar items
-    existing_summary = "\n".join(
-        f"{i.get('scheduled_at', '')[:10] if isinstance(i.get('scheduled_at'), str) else str(i.get('scheduled_at', ''))[:10]} | "
-        f"{i.get('channel', '')} | {i.get('theme') or i.get('title', '')}"
-        for i in existing_items[:50]
-    )
-    dedup_context = (
-        f"EXISTING CALENDAR ITEMS (do NOT duplicate themes or topics):\n{existing_summary}\n\n"
-        if existing_summary else ""
-    )
-
     channels_str = ", ".join(enabled_channels)
 
     # Generate in weekly batches to avoid LLM truncation on large calendars
@@ -275,6 +264,25 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     batch_size_days = 7
     current_dt = start_date_dt
     batch_num = 0
+
+    def _build_dedup_context() -> str:
+        """Build dedup context from BOTH existing DB items AND items generated so far in this run."""
+        combined = list(existing_items) + all_items
+        if not combined:
+            return ""
+        lines = []
+        for i in combined[-60:]:  # Last 60 items (DB + current run)
+            date_val = i.get("scheduled_at") or i.get("scheduled_date", "")
+            date_str = str(date_val)[:10] if date_val else ""
+            theme = i.get("theme") or i.get("title", "")
+            sub = i.get("weekly_sub_theme", "")
+            pillar = i.get("pillar", "")
+            lines.append(f"{date_str} | {pillar} | {theme} | {sub}")
+        summary = "\n".join(lines)
+        return (
+            "ALREADY SCHEDULED CONTENT (you MUST NOT repeat any of these themes, sub-themes, or content angles):\n"
+            f"{summary}\n\n"
+        )
 
     while current_dt < end_date_dt:
         batch_num += 1
@@ -284,22 +292,31 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         batch_days = (batch_end - current_dt).days
         batch_items_target = len(enabled_channels) * batch_days
 
-        logger.info("generate_calendar batch %d: %s to %s (%d days, %d target items)",
-                    batch_num, batch_start_str, batch_end_str, batch_days, batch_items_target)
+        # Rebuild dedup context EVERY batch to include items generated so far
+        dedup_context = _build_dedup_context()
+
+        logger.info("generate_calendar batch %d: %s to %s (%d days, %d target items, %d existing for dedup)",
+                    batch_num, batch_start_str, batch_end_str, batch_days, batch_items_target, len(existing_items) + len(all_items))
 
         prompt = [
             {"role": "system", "content": (
-                "You are a content calendar planner. Based on the brand's target market, generate content for the period "
-                f"{batch_start_str} to {batch_end_str} ({batch_days} days). "
+                "You are a content calendar planner. Write all content in English. "
+                f"Generate content for the period {batch_start_str} to {batch_end_str} ({batch_days} days). "
                 f"Generate content ONLY for these platforms: {channels_str}. "
                 "Do NOT generate content for any other platforms. "
-                f"Generate EXACTLY 1 post per enabled channel per day — {batch_items_target} items total. "
+                f"Generate EXACTLY 1 post per enabled channel per day — {batch_items_target} items total.\n\n"
+                "CRITICAL DEDUPLICATION RULES:\n"
+                "- Each item MUST have a UNIQUE theme + weekly_sub_theme combination\n"
+                "- Do NOT repeat any theme or angle from the ALREADY SCHEDULED list below\n"
+                "- Rotate through ALL content pillars — do not use the same pillar two weeks in a row\n"
+                "- Vary content types (mix post, reel, carousel, story) across the week\n"
+                "- Each content_brief must describe a DISTINCT topic, not a rephrased version of another\n\n"
                 "Each item MUST include ALL of these fields: "
                 "campaign_name, scheduled_date (YYYY-MM-DD), platform "
                 f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
                 "pillar (which content pillar from strategy), "
-                "theme (monthly theme name), "
-                "weekly_sub_theme (specific sub-theme for this week), "
+                "theme (monthly theme name — MUST be unique per week), "
+                "weekly_sub_theme (specific sub-theme — MUST be unique across all items), "
                 "target_audience (primary persona for this post), "
                 "content_brief (2-3 sentences describing EXACTLY what this post should communicate), "
                 "product_name (from available products if relevant, else null), "
