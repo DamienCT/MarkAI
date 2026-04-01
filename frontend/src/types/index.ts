@@ -96,24 +96,35 @@ export interface Competitor {
 export interface Content {
   id: string;
   brand_id: string;
+  calendar_item_id?: string;
   brand_name?: string;
   campaign_id?: string;
-  title: string;
-  caption: string;
-  hashtags: string[];
+  // Backend uses "headline", frontend historically used "title"
+  title?: string;
+  headline?: string;
+  caption?: string;
+  body_text?: string;
+  hashtags?: string[];
   cta?: string;
-  status: ContentStatus;
-  content_type: string;
-  platform: string;
+  cta_text?: string;
+  status?: ContentStatus;
+  content_type?: string;
+  platform?: string;
   platform_adaptations?: Record<string, PlatformAdaptation>;
-  media_urls: string[];
+  media_urls?: string[];
+  image_urls?: Record<string, unknown> | string[];
   thumbnail_url?: string;
   scheduled_at?: string;
   published_at?: string;
   engagement_metrics?: EngagementMetrics;
   ai_model_used?: string;
+  ai_model?: string;
   prompt_version_id?: string;
+  ai_prompt_version?: string;
   generation_metadata?: Record<string, unknown>;
+  ai_generated?: boolean;
+  is_current?: boolean;
+  version?: number;
   created_at: string;
   updated_at: string;
 }

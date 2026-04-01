@@ -19,10 +19,10 @@ interface ContentEditorProps {
 }
 
 export function ContentEditor({ content, onSave }: ContentEditorProps) {
-  const [caption, setCaption] = useState(content.caption);
-  const [hashtags, setHashtags] = useState(content.hashtags.join(", "));
-  const [cta, setCta] = useState(content.cta || "");
-  const [title, setTitle] = useState(content.title);
+  const [caption, setCaption] = useState(content.caption || "");
+  const [hashtags, setHashtags] = useState((content.hashtags || []).join(", "));
+  const [cta, setCta] = useState(content.cta || content.cta_text || "");
+  const [title, setTitle] = useState(content.title || content.headline || "");
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -52,10 +52,12 @@ export function ContentEditor({ content, onSave }: ContentEditorProps) {
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg">Content Editor</CardTitle>
           <div className="flex items-center gap-2">
-            <Badge className={statusColor(content.status)}>{content.status}</Badge>
-            <Badge variant="outline" className="capitalize">
-              {content.platform}
-            </Badge>
+            {content.status && <Badge className={statusColor(content.status)}>{content.status}</Badge>}
+            {content.platform && (
+              <Badge variant="outline" className="capitalize">
+                {content.platform}
+              </Badge>
+            )}
           </div>
         </div>
       </CardHeader>
@@ -130,11 +132,11 @@ export function ContentEditor({ content, onSave }: ContentEditorProps) {
           })}
         </Tabs>
 
-        {content.media_urls.length > 0 && (
+        {(content.media_urls || []).length > 0 && (
           <div className="space-y-2">
             <Label>Media Assets</Label>
             <div className="grid grid-cols-2 gap-4">
-              {content.media_urls.map((url, i) => (
+              {(content.media_urls || []).map((url, i) => (
                 <AssetPreview key={i} url={url} alt={`Asset ${i + 1}`} />
               ))}
             </div>

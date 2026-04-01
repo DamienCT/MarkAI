@@ -96,7 +96,7 @@ export default function ContentDetailPage() {
         <Button variant="ghost" size="icon" onClick={() => router.push("/content")}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <h1 className="text-3xl font-bold">{content.title}</h1>
+        <h1 className="text-3xl font-bold">{content.title || content.headline || "Content"}</h1>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">

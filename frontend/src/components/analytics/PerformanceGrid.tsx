@@ -22,8 +22,8 @@ export function PerformanceGrid({ content }: PerformanceGridProps) {
                 <Badge variant="outline" className="text-[10px] capitalize">
                   {item.platform}
                 </Badge>
-                <Badge className={statusColor(item.status)} variant="outline">
-                  {item.status}
+                <Badge className={statusColor(item.status || "queued")} variant="outline">
+                  {item.status || "queued"}
                 </Badge>
               </div>
             </div>

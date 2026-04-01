@@ -529,8 +529,8 @@ export function OverviewTab({
                     <p className="text-sm font-medium">{item.title}</p>
                     <p className="text-xs text-muted-foreground">{item.platform} - {formatDate(item.created_at)}</p>
                   </div>
-                  <Badge className={statusColor(item.status)} variant="outline">
-                    {item.status}
+                  <Badge className={statusColor(item.status || "queued")} variant="outline">
+                    {item.status || "queued"}
                   </Badge>
                 </div>
               ))}
