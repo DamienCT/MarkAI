@@ -799,7 +799,7 @@ export default function BrandDetailPage() {
         if (val === "products" && products.length === 0) fetchProducts();
         if (val === "overview") fetchPipelineRuns();
       }}>
-        <TabsList className="flex-wrap">
+        <TabsList className="overflow-x-auto flex-nowrap">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="channels">Channels</TabsTrigger>
           <TabsTrigger value="logos">Logos</TabsTrigger>

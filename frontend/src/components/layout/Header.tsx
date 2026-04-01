@@ -98,7 +98,7 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
     .toUpperCase() || "U";
 
   return (
-    <header className="flex h-16 items-center justify-between border-b bg-card px-6">
+    <header className="flex h-16 items-center justify-between border-b bg-card px-4 md:px-6">
       <div className="flex items-center gap-4">
         {breadcrumbs && breadcrumbs.length > 0 && (
           <nav className="flex items-center gap-1 text-sm text-muted-foreground">

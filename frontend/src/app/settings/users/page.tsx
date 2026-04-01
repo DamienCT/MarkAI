@@ -228,7 +228,7 @@ export default function UsersPage() {
                             disabled={alreadyExists}
                             onChange={(e) => { e.stopPropagation(); toggleSelection(result.id); }}
                             onClick={(e) => e.stopPropagation()}
-                            className="h-4 w-4 rounded-sm border-gray-300 cursor-pointer"
+                            className="h-4 w-4 rounded-sm border-input cursor-pointer"
                           />
                         </TableCell>
                         <TableCell className="font-medium">{result.displayName}</TableCell>

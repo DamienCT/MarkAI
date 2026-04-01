@@ -1,11 +1,23 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { signIn } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Loader2 } from "lucide-react";
 
 export default function SignInPage() {
+  const [loading, setLoading] = useState(false);
+
+  const handleSignIn = async () => {
+    setLoading(true);
+    try {
+      await signIn("azure-ad", { callbackUrl: "/" });
+    } catch {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background">
       <Card className="w-full max-w-md">
@@ -20,9 +32,11 @@ export default function SignInPage() {
           <Button
             className="w-full"
             size="lg"
-            onClick={() => signIn("azure-ad", { callbackUrl: "/" })}
+            onClick={handleSignIn}
+            disabled={loading}
           >
-            Sign in with Microsoft
+            {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {loading ? "Signing in..." : "Sign in with Microsoft"}
           </Button>
         </CardContent>
       </Card>

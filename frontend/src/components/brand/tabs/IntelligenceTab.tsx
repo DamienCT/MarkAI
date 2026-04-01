@@ -111,7 +111,7 @@ export function IntelligenceTab({
                         {doc.icon}
                       </div>
                       <div className="flex-1">
-                        <CardTitle className="text-base">{doc.title}</CardTitle>
+                        <CardTitle className="text-lg">{doc.title}</CardTitle>
                         <CardDescription>
                           {hasOutput && run.completed_at
                             ? `Last updated ${formatRelativeTime(run.completed_at)}`
@@ -198,7 +198,7 @@ export function IntelligenceTab({
       {/* Competitors section below documents */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Discovered Competitors</CardTitle>
+          <CardTitle className="text-lg">Discovered Competitors</CardTitle>
           <CardDescription>Competitors identified during research</CardDescription>
         </CardHeader>
         <CardContent>

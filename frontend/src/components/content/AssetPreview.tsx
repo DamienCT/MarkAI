@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { X, ZoomIn } from "lucide-react";
-import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 interface AssetPreviewProps {
   url: string;
@@ -27,6 +27,7 @@ export function AssetPreview({ url, alt = "Asset" }: AssetPreviewProps) {
         </div>
       </DialogTrigger>
       <DialogContent className="max-w-3xl p-0 overflow-hidden">
+        <DialogTitle className="sr-only">Asset preview</DialogTitle>
         {isVideo ? (
           <video src={url} controls className="w-full" />
         ) : (

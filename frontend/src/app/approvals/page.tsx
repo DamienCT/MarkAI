@@ -132,7 +132,7 @@ export default function ApprovalsPage() {
             const title = approval.calendar_item?.title || approval.content?.headline || `Content #${approval.content_id?.substring(0, 8)}`;
             const caption = approval.content?.caption || "";
             const hashtags = Array.isArray(approval.content?.hashtags) ? approval.content.hashtags : [];
-            const brandName = "Brand";
+            const brandName = approval.content?.brand_name || "Brand";
 
             return (
               <Card key={approval.id} className="overflow-hidden">
@@ -153,7 +153,7 @@ export default function ApprovalsPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="max-h-[300px] overflow-hidden rounded-lg">
+                  <div className="relative max-h-[300px] overflow-hidden rounded-lg">
                     <ChannelPreview
                       channel={channel}
                       brandName={brandName}
@@ -162,6 +162,7 @@ export default function ApprovalsPage() {
                       hashtags={hashtags}
                       compact
                     />
+                    <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-card to-transparent pointer-events-none" />
                   </div>
                   <ApprovalActions
                     approvalId={approval.id}

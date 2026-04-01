@@ -6,7 +6,13 @@ import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 import {
@@ -366,23 +372,24 @@ export default function IntelligencePage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold">Intelligence</h1>
           <p className="text-muted-foreground">Research, strategy, planning, and content calendar insights</p>
         </div>
         {brands.length > 0 && (
-          <select
-            value={selectedBrand}
-            onChange={(e) => setSelectedBrand(e.target.value)}
-            className="rounded-md border bg-background px-3 py-2 text-sm"
-          >
-            <option value="all">All Brands</option>
-            {brands.map(b => (
-              <option key={b.id} value={b.id}>{b.name}</option>
-            ))}
-          </select>
+          <Select value={selectedBrand} onValueChange={setSelectedBrand}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="All Brands" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Brands</SelectItem>
+              {brands.map(b => (
+                <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
       </div>
 
@@ -424,23 +431,13 @@ export default function IntelligencePage() {
                     {/* Type-specific preview */}
                     {config.renderPreview(latest)}
 
-                    {/* Footer: timestamp + view link */}
+                    {/* Footer: timestamp + arrow hint */}
                     <div className="flex items-center justify-between pt-2 border-t">
                       <span className="text-xs text-muted-foreground flex items-center gap-1">
                         <Clock className="h-3 w-3" />
                         {formatRelativeTime(latest.completed_at || latest.created_at)}
                       </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-xs gap-1 h-7 px-2"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          router.push(`/intelligence/report/${latest.id}`);
-                        }}
-                      >
-                        View Full Report <ArrowRight className="h-3 w-3" />
-                      </Button>
+                      <ArrowRight className="h-4 w-4 text-muted-foreground" />
                     </div>
                   </>
                 ) : (

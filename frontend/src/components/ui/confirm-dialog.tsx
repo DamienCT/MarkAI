@@ -39,9 +39,9 @@ export function ConfirmDialog({
     setLoading(true);
     try {
       await onConfirm();
-    } finally {
-      setLoading(false);
       onOpenChange(false);
+    } catch {
+      setLoading(false);
     }
   };
 

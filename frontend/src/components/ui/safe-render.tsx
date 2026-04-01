@@ -83,7 +83,7 @@ export function renderValue(value: unknown): ReactNode {
               {value.map((row, i) => (
                 <tr key={i} className="border-t">
                   {keys.map((k) => (
-                    <td key={k} className="p-2 text-muted-foreground">
+                    <td key={k} className="p-2 text-foreground">
                       {typeof row[k] === "string" || typeof row[k] === "number"
                         ? String(row[k])
                         : row[k] == null

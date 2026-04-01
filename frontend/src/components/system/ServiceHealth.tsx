@@ -41,7 +41,7 @@ export function ServiceHealth({ services }: ServiceHealthProps) {
             {service.latency_ms !== undefined && (
               <span className="text-xs text-muted-foreground">{service.latency_ms}ms</span>
             )}
-            <span className={cn("inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold", statusColor(service.status))}>
+            <span className={cn("inline-flex items-center rounded-full border px-3 py-0.5 text-xs font-semibold", statusColor(service.status))}>
               {service.status}
             </span>
           </div>

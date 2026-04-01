@@ -173,7 +173,7 @@ export default function SettingsPage() {
           <h1 className="text-3xl font-bold">Settings</h1>
           <p className="text-muted-foreground">Global application configuration</p>
         </div>
-        <Button onClick={handleSave} disabled={saving} size="lg">
+        <Button onClick={handleSave} disabled={saving} size="default">
           {saving ? "Saving..." : "Save Settings"}
         </Button>
       </div>
@@ -360,7 +360,7 @@ export default function SettingsPage() {
       {/* -- Row 2b: Content Queue Window -- */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Content Queue Window</CardTitle>
+          <CardTitle className="text-lg">Content Queue Window</CardTitle>
           <CardDescription>How many days ahead to generate content for</CardDescription>
         </CardHeader>
         <CardContent>
@@ -385,7 +385,7 @@ export default function SettingsPage() {
           <CardDescription>Channels enabled by default for new content</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
               { value: "instagram", label: "Instagram" },
               { value: "facebook", label: "Facebook" },

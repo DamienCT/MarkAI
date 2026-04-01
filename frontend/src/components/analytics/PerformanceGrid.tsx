@@ -28,7 +28,7 @@ export function PerformanceGrid({ content }: PerformanceGridProps) {
               </div>
             </div>
             {item.engagement_metrics && (
-              <div className="flex gap-4 text-right ml-4">
+              <div className="flex flex-wrap gap-4 text-right ml-4">
                 <div>
                   <p className="text-xs text-muted-foreground">Likes</p>
                   <p className="text-sm font-medium">{item.engagement_metrics.likes.toLocaleString()}</p>

@@ -283,9 +283,9 @@ export function ProductsTab({
                               type="button"
                               className={`inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-sm transition-colors hover:bg-muted ${
                                 (product.remaining_qty ?? 0) <= 0
-                                  ? "text-red-500 font-medium"
+                                  ? "text-red-500 dark:text-red-400 font-medium"
                                   : (product.remaining_qty ?? 0) <= 10
-                                  ? "text-yellow-600 font-medium"
+                                  ? "text-yellow-600 dark:text-yellow-400 font-medium"
                                   : ""
                               }`}
                               onClick={() => onSetExpandedProductId(
@@ -445,10 +445,10 @@ export function ProductsTab({
                     loading="lazy"
                   />
                   {galleryProduct?.primary_image_url === (typeof img === "string" ? img : img.url) && (
-                    <Badge className="absolute top-1 left-1 text-[9px] h-4 bg-primary">Primary</Badge>
+                    <Badge className="absolute top-1 left-1 text-[10px] h-4 bg-primary">Primary</Badge>
                   )}
                   {typeof img !== "string" && img.source && (
-                    <Badge variant="secondary" className="absolute bottom-1 left-1 text-[9px] h-4">
+                    <Badge variant="secondary" className="absolute bottom-1 left-1 text-[10px] h-4">
                       {img.source === "web_search" ? "Web" : img.source === "upload" ? "Upload" : img.source}
                     </Badge>
                   )}

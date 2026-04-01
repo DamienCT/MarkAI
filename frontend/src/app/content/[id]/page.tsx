@@ -177,7 +177,7 @@ export default function ContentDetailPage() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">{content.title || content.headline || "Content"}</h1>
+            <h1 className="text-3xl font-bold">{content.title || content.headline || "Content"}</h1>
             <div className="flex items-center gap-2 mt-1">
               <Badge variant="outline" className="capitalize">{channel}</Badge>
               {calendarItem?.scheduled_at && (
@@ -233,7 +233,7 @@ export default function ContentDetailPage() {
                     />
                     <div className="flex gap-2">
                       <Button
-                        className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-700 dark:hover:bg-emerald-600"
                         disabled={submittingApproval}
                         onClick={() => handleApproval("approved")}
                       >

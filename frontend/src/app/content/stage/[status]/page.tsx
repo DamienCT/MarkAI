@@ -108,7 +108,7 @@ export default function StagePage() {
           </Button>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold">{label}</h1>
+              <h1 className="text-3xl font-bold">{label}</h1>
               <Badge className={STATUS_COLORS[status] || ""}>{filtered.length} item{filtered.length !== 1 ? "s" : ""}</Badge>
             </div>
             <p className="text-sm text-muted-foreground mt-0.5">Content in the {label.toLowerCase()} stage</p>

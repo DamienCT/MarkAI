@@ -190,7 +190,7 @@ export function OverviewTab({
               ) : brand.status === 'onboarding' && onboardingProgress.isComplete ? (
                 <Button
                   size="sm"
-                  className="bg-green-600 hover:bg-green-700 text-white"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-700 dark:hover:bg-emerald-600"
                   disabled={togglingFactory}
                   onClick={() => onToggleContentFactory(true)}
                 >
@@ -215,7 +215,7 @@ export function OverviewTab({
                   const hasRunning = currentRuns.some(r => r.status === "running");
                   if (hasFailed && !hasRunning) {
                     return (
-                      <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white"
+                      <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-700 dark:hover:bg-emerald-600"
                         disabled={togglingFactory} onClick={() => onToggleContentFactory(true)}>
                         {togglingFactory ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Play className="mr-1.5 h-4 w-4" />}
                         Retry Content Factory
@@ -247,7 +247,7 @@ export function OverviewTab({
               ) : (
                 <Button
                   size="sm"
-                  className="bg-green-600 hover:bg-green-700 text-white"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-700 dark:hover:bg-emerald-600"
                   disabled={togglingFactory}
                   onClick={() => onToggleContentFactory(true)}
                 >

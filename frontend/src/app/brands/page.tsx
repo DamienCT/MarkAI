@@ -35,12 +35,14 @@ export default function BrandsPage() {
           <h1 className="text-3xl font-bold">Brands</h1>
           <p className="text-muted-foreground">Manage your brand profiles and social accounts</p>
         </div>
-        <Link href="/brands/new">
-          <Button>
-            <Plus className="mr-2 h-4 w-4" />
-            New Brand
-          </Button>
-        </Link>
+        {brands.length > 0 && (
+          <Link href="/brands/new">
+            <Button>
+              <Plus className="mr-2 h-4 w-4" />
+              New Brand
+            </Button>
+          </Link>
+        )}
       </div>
 
       {loading ? (

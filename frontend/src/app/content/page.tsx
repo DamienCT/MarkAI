@@ -6,6 +6,7 @@ import { Plus, LayoutGrid, List } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -312,11 +313,11 @@ export default function ContentStudioPage() {
             {/* Description */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Description</label>
-              <textarea
-                className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              <Textarea
                 placeholder="Optional description"
                 value={formDescription}
                 onChange={(e) => setFormDescription(e.target.value)}
+                rows={3}
               />
             </div>
 

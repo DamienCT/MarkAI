@@ -151,13 +151,13 @@ export default function ProvidersPage() {
         <Card>
           <CardContent className="py-4">
             <div className="text-sm text-muted-foreground">Available Models</div>
-            <div className="text-2xl font-bold">{totalModels}</div>
+            <div className="text-3xl font-bold">{totalModels}</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="py-4">
             <div className="text-sm text-muted-foreground">Categories</div>
-            <div className="text-2xl font-bold">{categories.length}</div>
+            <div className="text-3xl font-bold">{categories.length}</div>
           </CardContent>
         </Card>
         <Card>

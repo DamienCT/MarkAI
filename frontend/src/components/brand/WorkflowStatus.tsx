@@ -114,7 +114,7 @@ export function WorkflowStatus({ brandId, filterType, autoPolling = true }: Work
                   <CheckCircle2 className="h-3 w-3 text-green-500" />
                 )}
                 <span className="capitalize">{run.agent_type}</span>
-                <Badge variant="outline" className="text-[9px] h-3.5">
+                <Badge variant="outline" className="text-[10px] h-3.5">
                   {run.status}
                 </Badge>
               </div>

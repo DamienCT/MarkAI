@@ -1,8 +1,10 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { CalendarView } from "@/components/content/CalendarView";
 import { api } from "@/lib/api";
 import type { CalendarItem } from "@/types";
@@ -55,6 +57,9 @@ export default function ContentCalendarPage() {
           <p className="text-sm text-muted-foreground mt-1">
             Content will appear here once you schedule posts from the Content Studio
           </p>
+          <Button variant="outline" className="mt-4" asChild>
+            <Link href="/content">Go to Content Studio</Link>
+          </Button>
         </div>
       ) : (
         <CalendarView items={items} onReschedule={handleReschedule} />

@@ -19,6 +19,14 @@ import { QueueDepth } from "@/components/system/QueueDepth";
 import { api } from "@/lib/api";
 import { statusColor } from "@/lib/utils";
 import type { ServiceStatus, AgentRun, SchedulerJob, QueueInfo, Brand } from "@/types";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Activity, ChevronDown, ChevronRight, Play } from "lucide-react";
 import { formatRelativeTime } from "@/lib/utils";
 import { useRequireRole } from "@/lib/hooks";
@@ -148,21 +156,21 @@ export default function SystemPage() {
             <div className="flex items-center gap-3 rounded-md border p-4">
               <div className="h-3 w-3 rounded-full bg-blue-500" />
               <div>
-                <p className="text-2xl font-bold">{runningCount}</p>
+                <p className="text-3xl font-bold">{runningCount}</p>
                 <p className="text-xs text-muted-foreground">Running / Pending</p>
               </div>
             </div>
             <div className="flex items-center gap-3 rounded-md border p-4">
               <div className="h-3 w-3 rounded-full bg-green-500" />
               <div>
-                <p className="text-2xl font-bold">{completedCount}</p>
+                <p className="text-3xl font-bold">{completedCount}</p>
                 <p className="text-xs text-muted-foreground">Completed</p>
               </div>
             </div>
             <div className="flex items-center gap-3 rounded-md border p-4">
               <div className="h-3 w-3 rounded-full bg-red-500" />
               <div>
-                <p className="text-2xl font-bold">{failedCount}</p>
+                <p className="text-3xl font-bold">{failedCount}</p>
                 <p className="text-xs text-muted-foreground">Failed</p>
               </div>
             </div>
@@ -312,36 +320,36 @@ export default function SystemPage() {
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left py-2 px-3 font-medium">Brand</th>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Brand</TableHead>
                     {WORKFLOW_TYPES.map((wf) => (
-                      <th key={wf} className="text-center py-2 px-2 font-medium text-xs">{wf.replace(/_/g, " ")}</th>
+                      <TableHead key={wf} className="text-center text-xs">{wf.replace(/_/g, " ")}</TableHead>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {brands.filter((b) => b.is_active).map((brand) => (
-                    <tr key={brand.id} className="border-b last:border-0">
-                      <td className="py-2 px-3 font-medium">{brand.name}</td>
+                    <TableRow key={brand.id}>
+                      <TableCell className="font-medium">{brand.name}</TableCell>
                       {WORKFLOW_TYPES.map((wf) => (
-                        <td key={wf} className="text-center py-2 px-2">
+                        <TableCell key={wf} className="text-center">
                           <Button
-                            size="sm"
+                            size="icon"
                             variant="ghost"
-                            className="h-7 w-7 p-0"
+                            className="h-8 w-8"
                             onClick={() => handleTriggerWorkflow(wf, brand.id)}
                             title={`Trigger ${wf} for ${brand.name}`}
                           >
                             <Play className="h-3 w-3" />
                           </Button>
-                        </td>
+                        </TableCell>
                       ))}
-                    </tr>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
           </CardContent>
         </Card>

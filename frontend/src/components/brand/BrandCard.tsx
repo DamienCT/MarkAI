@@ -75,7 +75,7 @@ export function BrandCard({ brand }: BrandCardProps) {
   return (
     <Link href={`/brands/${brand.id}`}>
       <Card className="hover:shadow-md transition-shadow cursor-pointer h-full">
-        <CardContent className="p-5 space-y-4">
+        <CardContent className="p-4 space-y-4">
           {/* Header: Avatar + Name + Status */}
           <div className="flex items-start gap-3">
             <Avatar className="h-12 w-12 shrink-0">
@@ -100,7 +100,7 @@ export function BrandCard({ brand }: BrandCardProps) {
                     <span className="text-[10px] text-orange-600 dark:text-orange-400 font-medium">Setup required</span>
                   </span>
                 ) : (
-                  <span className="h-2.5 w-2.5 rounded-full bg-gray-400 shrink-0" title="Inactive" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground shrink-0" title="Inactive" />
                 )}
               </div>
               {brand.description && (

@@ -127,7 +127,7 @@ export default function AuditLogPage() {
                       <TableCell className="text-sm">{entry.user_name || entry.user_id || "System"}</TableCell>
                       <TableCell className="text-sm capitalize">{entry.action}</TableCell>
                       <TableCell className="text-sm capitalize">{entry.resource_type}</TableCell>
-                      <TableCell className="text-sm font-mono text-xs">
+                      <TableCell className="text-xs font-mono">
                         {entry.resource_id ? entry.resource_id.substring(0, 8) + "..." : "N/A"}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{entry.ip_address || "N/A"}</TableCell>

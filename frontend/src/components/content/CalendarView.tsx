@@ -158,7 +158,7 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
         <div className="flex items-center gap-1">
           {item.channel && (
             <span className={cn(
-              "inline-flex items-center rounded px-1 py-px text-[8px] font-bold uppercase shrink-0",
+              "inline-flex items-center rounded px-1 py-px text-[10px] font-bold uppercase shrink-0",
               CHANNEL_COLORS[item.channel] || "bg-gray-200 text-gray-700"
             )}>
               {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
@@ -167,7 +167,7 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
           <span className="truncate">{item.title || "Untitled"}</span>
         </div>
         {item.brand_name && (
-          <div className="text-[8px] opacity-60 truncate">{item.brand_name}</div>
+          <div className="text-[10px] opacity-60 truncate">{item.brand_name}</div>
         )}
       </div>
     );

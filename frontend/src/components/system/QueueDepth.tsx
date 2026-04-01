@@ -62,7 +62,7 @@ export function QueueDepth({ queues }: QueueDepthProps) {
                 />
               )}
             </div>
-            <div className="flex gap-4 text-xs text-muted-foreground">
+            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
               <span className="flex items-center gap-1">
                 <span className="h-2 w-2 rounded-full bg-amber-500" /> Pending: {queue.pending}
               </span>

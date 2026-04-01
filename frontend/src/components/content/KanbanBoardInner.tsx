@@ -73,14 +73,14 @@ function CompactItem({ item }: { item: CalendarItem }) {
   return (
     <Link href={`/content/${item.id}`} className="block">
       <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 transition-colors group">
-        <Badge variant="outline" className={`text-[9px] px-1 py-0 shrink-0 ${CHANNEL_COLORS[item.channel] || ""}`}>
+        <Badge variant="outline" className={`text-[10px] px-1 py-0 shrink-0 ${CHANNEL_COLORS[item.channel] || ""}`}>
           {CHANNEL_PREFIX[item.channel] || item.channel}
         </Badge>
         <span className="text-xs truncate flex-1 group-hover:text-primary transition-colors">
           {item.title || "Untitled"}
         </span>
         {item.scheduled_at && (
-          <span className="text-[9px] text-muted-foreground shrink-0">
+          <span className="text-[10px] text-muted-foreground shrink-0">
             {new Date(item.scheduled_at).toLocaleDateString("en", { month: "short", day: "numeric" })}
           </span>
         )}
@@ -211,7 +211,7 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
           <button
             type="button"
             onClick={() => columnItems.length > 0 && router.push(`/content/stage/${column.id}`)}
-            className={`w-full text-left rounded-lg border border-dashed p-2 h-[180px] flex flex-col transition-colors ${column.color} ${
+            className={`w-full text-left rounded-lg border border-dashed p-2 min-h-[180px] flex flex-col transition-colors ${column.color} ${
               columnItems.length > 0 ? "cursor-pointer hover:border-primary/50" : "cursor-default"
             }`}
           >

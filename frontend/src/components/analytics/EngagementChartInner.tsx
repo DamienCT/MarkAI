@@ -14,6 +14,13 @@ import {
 import { format, parseISO } from "date-fns";
 import type { EngagementChartProps } from "./EngagementChart";
 
+// ── Chart line colors ────────────────────────────────────────────────
+const CHART_COLORS = {
+  likes: "var(--primary)",                // App primary (blue)
+  comments: "hsl(142 76% 36%)",           // Green — no semantic CSS variable available
+  shares: "hsl(38 92% 50%)",              // Amber — no semantic CSS variable available
+} as const;
+
 export function EngagementChartInner({ data }: EngagementChartProps) {
   const formattedData = data.map((d) => ({
     ...d,
@@ -25,7 +32,7 @@ export function EngagementChartInner({ data }: EngagementChartProps) {
     <div className="h-[350px]">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={formattedData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--muted)" />
           <XAxis
             dataKey="dateLabel"
             className="text-xs"
@@ -47,7 +54,7 @@ export function EngagementChartInner({ data }: EngagementChartProps) {
           <Line
             type="monotone"
             dataKey="likes"
-            stroke="hsl(228, 76%, 59%)"
+            stroke={CHART_COLORS.likes}
             strokeWidth={2}
             dot={false}
             name="Likes"
@@ -55,7 +62,7 @@ export function EngagementChartInner({ data }: EngagementChartProps) {
           <Line
             type="monotone"
             dataKey="comments"
-            stroke="hsl(142, 76%, 36%)"
+            stroke={CHART_COLORS.comments}
             strokeWidth={2}
             dot={false}
             name="Comments"
@@ -63,7 +70,7 @@ export function EngagementChartInner({ data }: EngagementChartProps) {
           <Line
             type="monotone"
             dataKey="shares"
-            stroke="hsl(38, 92%, 50%)"
+            stroke={CHART_COLORS.shares}
             strokeWidth={2}
             dot={false}
             name="Shares"

@@ -336,7 +336,7 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        <div className="flex gap-1">
+                        <div className="flex flex-wrap gap-1">
                           {Object.entries(competitor.social_handles || {}).map(([platform, handle]) => (
                             <Badge key={platform} variant="outline" className="text-[10px] capitalize">
                               {platform}: @{handle}
