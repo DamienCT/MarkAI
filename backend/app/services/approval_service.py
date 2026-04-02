@@ -76,16 +76,21 @@ async def resolve_approval(
     approval.feedback = decision.feedback
     approval.decided_at = datetime.now(timezone.utc)
 
-    # Update the associated calendar item status based on the decision
+    # Update the associated calendar item status based on the decision,
+    # using the same state-machine validation as content_service.
     if approval.calendar_item_id:
+        from app.services.content_service import _validate_transition
+
         result = await db.execute(
             select(CalendarItem).where(CalendarItem.id == approval.calendar_item_id)
         )
         cal_item = result.scalar_one_or_none()
         if cal_item is not None:
             if decision.status == "approved":
+                _validate_transition(cal_item.status, "approved")
                 cal_item.status = "approved"
             elif decision.status in ("rejected", "revision_requested"):
+                _validate_transition(cal_item.status, "reworking")
                 cal_item.status = "reworking"
 
     await db.commit()

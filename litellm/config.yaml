@@ -93,6 +93,6 @@ litellm_settings:
     port: os.environ/VALKEY_PORT
     password: os.environ/VALKEY_PASSWORD
   num_retries: 3
-  request_timeout: 120
+  request_timeout: 600
   set_verbose: false
   drop_params: true

@@ -68,7 +68,7 @@ class ChatResult(str):
 
 def _is_retryable(exc: BaseException) -> bool:
     """Return True for transient errors worth retrying."""
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in (429, 500, 502, 503)

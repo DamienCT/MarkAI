@@ -1,3 +1,4 @@
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
@@ -35,32 +36,45 @@ _SENSITIVE_GUIDELINE_KEYS = {
     "refresh_token",
     "webhook_url",
     "client_secret",
+    "password",
+    "private_key",
+    "secret",
+    "signing_key",
 }
+
+# Regex for safe logo labels — alphanumeric, hyphens, underscores, max 50 chars
+_SAFE_LABEL_RE = re.compile(r"^[a-zA-Z0-9_-]{1,50}$")
+
+
+def _strip_sensitive_recursive(obj: object) -> object:
+    """Recursively strip sensitive keys from nested dicts."""
+    if isinstance(obj, dict):
+        return {
+            k: _strip_sensitive_recursive(v)
+            for k, v in obj.items()
+            if k not in _SENSITIVE_GUIDELINE_KEYS
+        }
+    if isinstance(obj, list):
+        return [_strip_sensitive_recursive(item) for item in obj]
+    return obj
 
 
 def _strip_sensitive_guidelines(brand):
     """Return a brand object with sensitive fields removed from brand_guidelines.
 
-    Operates on the ORM instance before serialization so the response
-    model never sees secrets.  Does NOT mutate the DB — works on a shallow copy.
+    Works on a deep copy so the ORM instance is never mutated — prevents
+    accidental persistence of stripped data via autoflush/commit.
     """
+    from copy import deepcopy
+
     guidelines = brand.brand_guidelines
     if not guidelines or not isinstance(guidelines, dict):
         return brand
-    # Check channels sub-dicts for sensitive keys
-    cleaned = {}
-    for key, value in guidelines.items():
-        if key in _SENSITIVE_GUIDELINE_KEYS:
-            continue
-        if isinstance(value, dict):
-            cleaned[key] = {
-                k: v for k, v in value.items() if k not in _SENSITIVE_GUIDELINE_KEYS
-            }
-        else:
-            cleaned[key] = value
-    # Temporarily override for serialization (not committed)
-    brand.brand_guidelines = cleaned
-    return brand
+    cleaned = _strip_sensitive_recursive(deepcopy(guidelines))
+    # Work on an expunged copy to prevent DB mutation
+    brand_copy = deepcopy(brand)
+    brand_copy.brand_guidelines = cleaned
+    return brand_copy
 
 
 @router.get("/bc-companies")
@@ -346,6 +360,13 @@ async def upload_brand_logo(
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    # Validate label to prevent path traversal in MinIO object names
+    if not _SAFE_LABEL_RE.match(label):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid label — use only alphanumeric characters, hyphens, and underscores (max 50 chars)",
+        )
+
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
@@ -407,6 +428,9 @@ async def get_brand_logo(
     db: AsyncSession = Depends(get_db),
 ):
     """Serve a brand logo by label (public — used by img tags)."""
+    if not _SAFE_LABEL_RE.match(label):
+        raise HTTPException(status_code=400, detail="Invalid label")
+
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
@@ -441,6 +465,9 @@ async def delete_brand_logo(
     """Delete a brand logo."""
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    if not _SAFE_LABEL_RE.match(label):
+        raise HTTPException(status_code=400, detail="Invalid label")
 
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:

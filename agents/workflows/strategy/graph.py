@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
 
 from workflows.strategy.state import StrategyState
@@ -54,5 +55,5 @@ builder.add_conditional_edges(
     "human_review", _check_failed, {"end": END, "continue": END}
 )
 
-# Compile without checkpointer — these are one-shot linear workflows
-strategy_graph = builder.compile()
+# Checkpointer required for interrupt() in human_review node
+strategy_graph = builder.compile(checkpointer=MemorySaver())

@@ -172,7 +172,10 @@ async def upload_product_image(
     if len(file_data) > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File size must be under 5MB")
 
-    object_name = f"products/{product_id}/{file.filename}"
+    import os as _os
+
+    safe_filename = f"{uuid.uuid4().hex}{_os.path.splitext(file.filename or '.jpg')[1]}"
+    object_name = f"products/{product_id}/{safe_filename}"
     content_type = file.content_type or "image/jpeg"
 
     await minio_service.upload_file(object_name, file_data, content_type)

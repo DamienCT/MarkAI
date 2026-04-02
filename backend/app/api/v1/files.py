@@ -7,33 +7,40 @@ can load images without mixed-content or DNS resolution issues.
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
+from app.auth.models import User
+from app.deps import get_current_user
 from app.services import minio_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+KNOWN_BUCKETS = {"content-images", "brand-assets", "markai-assets"}
+
 
 @router.get("/{file_path:path}")
 async def serve_file(
     file_path: str,
+    current_user: User = Depends(get_current_user),
 ):
-    """Proxy a file from MinIO to the browser (public — scoped to known object paths)."""
-    # Block path traversal attempts
-    if ".." in file_path or file_path.startswith("/"):
+    """Proxy a file from MinIO to the browser (requires authentication)."""
+    # Block path traversal attempts (including backslash variants)
+    if ".." in file_path or file_path.startswith("/") or "\\" in file_path:
         raise HTTPException(status_code=403, detail="Invalid file path")
-    # Parse bucket from path: "content-images/brand-id/item-id/file.png"
-    # Known buckets that use bucket-prefix paths
-    KNOWN_BUCKETS = {"content-images", "brand-assets", "markai-assets"}
-    bucket = None
-    object_name = file_path
+
+    # Parse bucket from first path segment — reject unknown buckets
     first_segment = file_path.split("/")[0] if "/" in file_path else ""
-    if first_segment in KNOWN_BUCKETS:
-        bucket = first_segment
-        object_name = file_path[len(first_segment) + 1 :]
+    if first_segment not in KNOWN_BUCKETS:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    bucket = first_segment
+    object_name = file_path[len(first_segment) + 1 :]
+
+    if not object_name:
+        raise HTTPException(status_code=404, detail="File not found")
 
     try:
         data = await minio_service.download_file(object_name, bucket=bucket)

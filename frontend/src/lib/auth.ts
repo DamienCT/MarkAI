@@ -116,13 +116,13 @@ export const authOptions: NextAuthOptions = {
           });
           if (res.ok) {
             const userData = await res.json();
-            token.role = userData.role || "manager";
+            token.role = userData.role || "viewer";
           } else {
-            // Default to manager if backend is unreachable (first login creates user)
-            token.role = "manager";
+            // Default to least-privilege role if backend is unreachable
+            token.role = "viewer";
           }
         } catch {
-          token.role = "manager";
+          token.role = "viewer";
         }
       }
       return {
@@ -132,7 +132,7 @@ export const authOptions: NextAuthOptions = {
         user: {
           ...session.user,
           id: token.sub,
-          role: (token.role as string) || "manager",
+          role: (token.role as string) || "viewer",
         },
       };
     },
