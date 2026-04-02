@@ -8,7 +8,7 @@ const _rawApiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 // Multiple concurrent api.get() calls share a single in-flight request.
 let _sessionPromise: Promise<Session | null> | null = null;
 let _sessionCachedAt = 0;
-const SESSION_CACHE_MS = 5_000; // 5 seconds
+const SESSION_CACHE_MS = 30_000; // 30 seconds — role changes are rare
 
 function getCachedSession(): Promise<Session | null> {
   const now = Date.now();

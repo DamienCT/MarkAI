@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-KNOWN_BUCKETS = {"content-images", "brand-assets", "markai-assets"}
+KNOWN_BUCKETS = {"content-images", "brand-assets", "markai-assets", "products"}
 
 
 @router.get("/{file_path:path}")

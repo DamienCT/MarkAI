@@ -161,10 +161,15 @@ export default function ContentDetailPage() {
   const caption = content.caption || content.body_text || "";
   const hashtags = safeHashtags(content.hashtags);
   const hasPendingApproval = approvals.some(a => a.status === "pending");
-  // Resolve image URL from generation_metadata
-  const rawImagePath = (content.generation_metadata?.raw_image || content.generation_metadata?.generated_image_url || "") as string;
-  const contentImageUrl = rawImagePath
-    ? (rawImagePath.startsWith("http") ? rawImagePath : `${API_BASE_URL}/api/v1/files/${rawImagePath}`)
+  // Resolve image URL from generation_metadata — prefer branded (has logo+text) over raw
+  const imagePath = (
+    content.generation_metadata?.branded_image ||
+    content.generation_metadata?.raw_image ||
+    content.generation_metadata?.generated_image_url ||
+    ""
+  ) as string;
+  const contentImageUrl = imagePath
+    ? (imagePath.startsWith("http") ? imagePath : `${API_BASE_URL}/api/v1/files/${imagePath}`)
     : undefined;
 
   return (

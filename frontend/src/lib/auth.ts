@@ -95,8 +95,8 @@ export const authOptions: NextAuthOptions = {
         token.roleFetchedAt = undefined;
       }
 
-      // Fetch role if missing or stale (re-check every 5 minutes)
-      const ROLE_TTL = 5 * 60;
+      // Fetch role if missing or stale (re-check every 30 minutes — role changes are rare)
+      const ROLE_TTL = 30 * 60;
       const now = Math.floor(Date.now() / 1000);
       const roleStale = !token.role || !token.roleFetchedAt || now - (token.roleFetchedAt as number) > ROLE_TTL;
       if (roleStale && token.accessToken) {
