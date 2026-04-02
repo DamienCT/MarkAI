@@ -311,7 +311,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     {
                         "brand_id": brand_id,
                         "trigger": payload.get("trigger", "activation"),
-                        "scope_weeks": payload.get("scope_weeks", 12),
+                        "scope_weeks": payload.get("scope_weeks", 1),
                     }
                 ).encode()
                 await _consumer.js.publish("planning.trigger", chain_msg)
@@ -359,7 +359,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                                 {
                                     "brand_id": brand_id,
                                     "trigger": "activation",
-                                    "scope_weeks": payload.get("scope_weeks", 12),
+                                    "scope_weeks": payload.get("scope_weeks", 1),
                                 }
                             ).encode()
                             await _consumer.js.publish("content.generate", chain_msg)
@@ -380,7 +380,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                                     {
                                         "brand_id": brand_id,
                                         "trigger": "activation",
-                                        "scope_weeks": payload.get("scope_weeks", 12),
+                                        "scope_weeks": payload.get("scope_weeks", 1),
                                     }
                                 ).encode()
                                 await _consumer.js.publish(next_subj, chain_msg)
@@ -662,16 +662,27 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 if agent_type == "planning" and next_subject == "content.generate":
                     calendar_item_ids = (result or {}).get("calendar_item_ids", [])
                     if calendar_item_ids:
-                        # Sort by scheduled_at (nearest first) so content is generated in order
+                        # Filter to only items within the content_generation_days_ahead window
+                        days_ahead = payload.get("scope_weeks", 1) * 7
                         items = await execute_query(
-                            "SELECT id FROM calendar_items WHERE id = ANY(:ids) ORDER BY scheduled_at ASC",
-                            {"ids": calendar_item_ids},
+                            "SELECT id FROM calendar_items "
+                            "WHERE id = ANY(:ids) "
+                            "AND (scheduled_at IS NULL OR scheduled_at <= NOW() + MAKE_INTERVAL(days => :days)) "
+                            "ORDER BY scheduled_at ASC",
+                            {"ids": calendar_item_ids, "days": days_ahead},
                         )
                         sorted_ids = (
                             [str(r["id"]) for r in items]
                             if items
-                            else [str(c) for c in calendar_item_ids]
+                            else []
                         )
+                        if not sorted_ids:
+                            logger.info(
+                                "No calendar items within %d-day window for brand %s — skipping content generation",
+                                days_ahead, brand_id,
+                            )
+                            await msg.ack()
+                            return
 
                         # Publish only the FIRST item; remaining are chained via remaining_queue
                         first_id = sorted_ids[0]
