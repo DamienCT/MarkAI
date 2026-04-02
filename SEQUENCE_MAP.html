@@ -291,7 +291,7 @@ const DATA = [
     dot:"var(--orange)",
     html:`
       <div class="nats-label">content.generate</div>
-      <p class="desc">Processes <strong>one item at a time</strong> sequentially. Each item flows through hook, caption, hashtag generation, then image creation with <strong>GPT Image</strong>, branding overlay, platform adaptation, and mockup rendering. On completion, chains to the next queued item.</p>
+      <p class="desc">Processes <strong>one item at a time</strong> sequentially. Each item flows through hook, caption, hashtag generation, then image creation with <strong>GPT Image</strong>, product swap via <strong>Gemini Vision</strong> (replaces generic product with real catalog photo), logo &amp; text branding overlay, platform adaptation, and mockup rendering. On completion, chains to the next queued item.</p>
       <div class="flow">
         <div class="flow-node trigger">NATS Trigger<small>content.generate</small></div>
         <div class="flow-arrow">&rarr;</div>
@@ -308,6 +308,8 @@ const DATA = [
       <div class="flow" style="margin-top:0">
         <div class="flow-arrow" style="visibility:hidden">&rarr;</div>
         <div class="flow-node external">generate_background<small>GPT Image API</small></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node external">replace_product<small>Gemini vision swap</small></div>
         <div class="flow-arrow">&rarr;</div>
         <div class="flow-node agent">apply_branding<small>Logo + text overlay</small></div>
         <div class="flow-arrow">&rarr;</div>

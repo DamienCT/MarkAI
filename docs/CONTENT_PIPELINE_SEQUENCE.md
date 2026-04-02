@@ -99,7 +99,7 @@ Only items within this window get content generated.
 
 ## Phase 6: Content Generation (agent_type = "content")
 
-**Workflow:** `agents/workflows/content/graph.py` — 10 sequential nodes
+**Workflow:** `agents/workflows/content/graph.py` — 11 sequential steps
 
 **Runs once per calendar item.** Multiple items are chained sequentially via `remaining_queue`.
 
@@ -111,10 +111,11 @@ Only items within this window get content generated.
 | 4 | `generate_hashtags` | LLM generates platform-appropriate hashtags | Instagram: 20-25, LinkedIn: 3-5, X: 2-3 |
 | 5 | `source_product_image` | Find real product image from gallery | NEVER AI-generates product photos; uses gallery images only |
 | 6 | `generate_background` | DALL-E generates lifestyle photograph | Uses brand colors, NO TEXT/logos in image, composition rules for overlay zones |
-| 7 | `apply_branding` | Overlay logo + text hook on the image | SVG→PNG via ImageMagick+rsvg-convert; places logo on monotone region; text bar at bottom-left. If product image available, Gemini replaces generic product first. |
-| 8 | `adapt_platforms` | LLM adapts content for all enabled channels | Different caption length, hashtag count, CTA per platform |
-| 9 | `generate_mockups` | Create platform feed preview mockups | Instagram/Facebook/LinkedIn/X mobile mockups via Pillow |
-| 10 | `store_content` | Save content to DB, create approval record | Sets calendar item status → `in_review`, auto-assigns reviewer |
+| 7 | `replace_product` | Gemini Vision swaps generic product for real one | Uses `_replace_product_in_generated_image()` — sends both images to Gemini with "replace generic with real" prompt. Skipped if lifestyle-only (no product). |
+| 8 | `apply_branding` | Overlay logo + text hook on the image | SVG→PNG via ImageMagick+rsvg-convert; places logo on monotone region; text bar at bottom-left |
+| 9 | `adapt_platforms` | LLM adapts content for all enabled channels | Different caption length, hashtag count, CTA per platform |
+| 10 | `generate_mockups` | Create platform feed preview mockups | Instagram/Facebook/LinkedIn/X mobile mockups via Pillow |
+| 11 | `store_content` | Save content to DB, create approval record | Sets calendar item status → `in_review`, auto-assigns reviewer |
 
 **Step tracking:** Each node updates `calendar_items.generation_metadata` with `current_step`, `step_index`, `total_steps` for the real-time workflow tracker UI.
 
