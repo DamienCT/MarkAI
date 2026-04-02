@@ -7,11 +7,9 @@ can load images without mixed-content or DNS resolution issues.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from app.auth.models import User
-from app.deps import get_current_user
 from app.services import minio_service
 
 logger = logging.getLogger(__name__)
@@ -24,9 +22,13 @@ KNOWN_BUCKETS = {"content-images", "brand-assets", "markai-assets"}
 @router.get("/{file_path:path}")
 async def serve_file(
     file_path: str,
-    current_user: User = Depends(get_current_user),
 ):
-    """Proxy a file from MinIO to the browser (requires authentication)."""
+    """Proxy a file from MinIO to the browser.
+
+    Public endpoint — files are behind unguessable UUID paths.
+    Content images, brand assets, and mockups need to load in <img> tags
+    which cannot send Authorization headers.
+    """
     # Block path traversal attempts (including backslash variants)
     if ".." in file_path or file_path.startswith("/") or "\\" in file_path:
         raise HTTPException(status_code=403, detail="Invalid file path")
