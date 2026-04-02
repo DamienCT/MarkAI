@@ -853,10 +853,35 @@ async def _replace_product_in_generated_image(
         import httpx as _httpx
 
         # Download the product image from gallery
-        async with _httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(product_image_url)
-            resp.raise_for_status()
-            product_image_data = resp.content
+        # Product image URLs may be: full http(s) URLs, MinIO bucket paths, or backend API paths
+        if product_image_url.startswith("http://") or product_image_url.startswith("https://"):
+            async with _httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(product_image_url)
+                resp.raise_for_status()
+                product_image_data = resp.content
+        elif product_image_url.startswith("/"):
+            # Relative API path — resolve via backend
+            from shared.config import settings as _cfg
+            full_url = f"{_cfg.BACKEND_URL}{product_image_url}"
+            async with _httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(full_url)
+                resp.raise_for_status()
+                product_image_data = resp.content
+        else:
+            # MinIO object path (e.g., "products/brand_id/image.png")
+            # Try to download from known buckets
+            bucket = product_image_url.split("/")[0] if "/" in product_image_url else "content-images"
+            obj = product_image_url[len(bucket) + 1:] if "/" in product_image_url else product_image_url
+            try:
+                product_image_data = await async_download_file(bucket, obj)
+            except Exception:
+                # Fallback: try via backend file proxy
+                from shared.config import settings as _cfg
+                full_url = f"{_cfg.BACKEND_URL}/api/v1/files/{product_image_url}"
+                async with _httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(full_url)
+                    resp.raise_for_status()
+                    product_image_data = resp.content
 
         # Use Gemini to replace the generic product
         from shared.config import settings

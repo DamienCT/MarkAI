@@ -29,6 +29,7 @@ RUN apt-get update && \
         libpq5 \
         unixodbc \
         imagemagick \
+        librsvg2-bin \
         fonts-dejavu-core \
         procps \
         curl \
