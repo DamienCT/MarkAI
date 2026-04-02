@@ -943,31 +943,29 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         logo_png = state.get("logo_png_data")
         if not logo_png and logo_url:
             try:
-                if logo_url.endswith(".svg"):
-                    # Download SVG and render to PNG
-                    if logo_url.startswith("content-images/") or logo_url.startswith(
-                        "brand-assets/"
-                    ):
-                        bucket, _, obj = logo_url.partition("/")
-                        svg_bytes = await async_download_file(bucket, obj)
-                    else:
-                        async with httpx.AsyncClient(timeout=30) as client:
-                            resp = await client.get(logo_url)
-                            resp.raise_for_status()
-                            svg_bytes = resp.content
-                    logo_png = render_logo_png(svg_bytes)
+                # Download logo bytes first
+                if logo_url.startswith("content-images/") or logo_url.startswith(
+                    "brand-assets/"
+                ):
+                    bucket, _, obj = logo_url.partition("/")
+                    logo_raw = await async_download_file(bucket, obj)
                 else:
-                    # Already a raster image — download it
-                    if logo_url.startswith("content-images/") or logo_url.startswith(
-                        "brand-assets/"
-                    ):
-                        bucket, _, obj = logo_url.partition("/")
-                        logo_png = await async_download_file(bucket, obj)
-                    else:
-                        async with httpx.AsyncClient(timeout=30) as client:
-                            resp = await client.get(logo_url)
-                            resp.raise_for_status()
-                            logo_png = resp.content
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.get(logo_url)
+                        resp.raise_for_status()
+                        logo_raw = resp.content
+
+                # Detect SVG by content (not URL extension — API URLs don't have .svg)
+                is_svg = (
+                    logo_raw[:5] == b"<?xml"
+                    or logo_raw[:4] == b"<svg"
+                    or b"<svg" in logo_raw[:500]
+                )
+
+                if is_svg:
+                    logo_png = render_logo_png(logo_raw)
+                else:
+                    logo_png = logo_raw
             except Exception:
                 logger.warning(
                     "Failed to fetch logo from %s — skipping branding", logo_url
