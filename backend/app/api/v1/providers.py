@@ -72,12 +72,10 @@ async def get_models(
 
 @router.get("/active")
 async def get_active_models(
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the active model for each category (dict: slug -> model_id).
-
-    No auth required — used by agents service internally and only returns model IDs.
-    """
+    """Get the active model for each category (dict: slug -> model_id)."""
     models = await get_all_active_models(db)
     return {"models": models}
 

@@ -8,9 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { BrandForm } from "@/components/brand/BrandForm";
 import { api } from "@/lib/api";
+import { useRequireRole } from "@/lib/hooks";
 import type { Brand } from "@/types";
 
 export default function NewBrandPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("editor");
   const router = useRouter();
   const [saving, setSaving] = useState(false);
 

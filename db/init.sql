@@ -42,7 +42,7 @@ CREATE TABLE brands (
     is_bc_linked    BOOLEAN NOT NULL DEFAULT FALSE,
     bc_company      VARCHAR(255),
     bc_locations    JSONB DEFAULT '[]',
-    created_by      UUID REFERENCES users(id),
+    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -111,7 +111,7 @@ CREATE TABLE campaigns (
     target_channels TEXT[] DEFAULT '{}',
     target_audience JSONB DEFAULT '{}',
     kpis            JSONB DEFAULT '{}',
-    created_by      UUID REFERENCES users(id),
+    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -151,7 +151,8 @@ CREATE TABLE calendar_items (
     product_ids     UUID[] DEFAULT '{}',
     tags            TEXT[] DEFAULT '{}',
     priority        SMALLINT DEFAULT 0 CHECK (priority BETWEEN 0 AND 5),
-    created_by      UUID REFERENCES users(id),
+    generation_metadata JSONB DEFAULT '{}',
+    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -234,9 +235,9 @@ CREATE TABLE prompt_versions (
     variables       JSONB DEFAULT '[]',
     version         INTEGER NOT NULL DEFAULT 1,
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
-    performance_score NUMERIC(5,4),
+    performance_score NUMERIC(7,4),
     a_b_group       VARCHAR(1) CHECK (a_b_group IN ('A', 'B')),
-    created_by      UUID REFERENCES users(id),
+    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (slug, version)
@@ -315,7 +316,7 @@ CREATE TABLE competitors (
     description     TEXT,
     monitoring_config JSONB DEFAULT '{}',
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
-    created_by      UUID REFERENCES users(id),
+    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -372,7 +373,7 @@ CREATE INDEX idx_scheduled_job_log_started_at ON scheduled_job_log (started_at D
 -- ── Audit Log ───────────────────────────────────────────────────
 CREATE TABLE audit_log (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID REFERENCES users(id),
+    user_id         UUID REFERENCES users(id) ON DELETE SET NULL,
     action          VARCHAR(100) NOT NULL,
     entity_type     VARCHAR(100) NOT NULL,
     entity_id       UUID,

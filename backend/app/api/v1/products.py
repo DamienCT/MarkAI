@@ -162,15 +162,36 @@ async def upload_product_image(
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Validate content type — images only
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    # Validate content type — images only (SVG excluded to prevent stored XSS)
+    _allowed_types = {"image/png", "image/jpeg", "image/webp"}
+    if not file.content_type or file.content_type not in _allowed_types:
+        raise HTTPException(
+            status_code=400, detail="Only PNG, JPEG, and WebP images are allowed"
+        )
 
     file_data = await file.read()
 
     # Validate file size — max 5 MB
     if len(file_data) > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File size must be under 5MB")
+
+    # Validate magic bytes match declared content type
+    _magic_ok = False
+    if file_data[:4] == b"\x89PNG" and file.content_type == "image/png":
+        _magic_ok = True
+    elif file_data[:3] == b"\xff\xd8\xff" and file.content_type == "image/jpeg":
+        _magic_ok = True
+    elif (
+        file_data[:4] == b"RIFF"
+        and file_data[8:12] == b"WEBP"
+        and file.content_type == "image/webp"
+    ):
+        _magic_ok = True
+    if not _magic_ok:
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not match declared content type",
+        )
 
     import os as _os
 
@@ -315,6 +336,10 @@ async def batch_fetch_product_images(
     current_user: User = Depends(get_current_user),
 ):
     """Fetch images for multiple products at once."""
+    if len(req.product_ids) > 20:
+        raise HTTPException(
+            status_code=400, detail="Maximum 20 product IDs per batch request"
+        )
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 

@@ -15,10 +15,10 @@ class Content(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     calendar_item_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("calendar_items.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("calendar_items.id", ondelete="CASCADE"), nullable=False
     )
     brand_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("brands.id", ondelete="CASCADE"), nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -54,7 +54,7 @@ class Content(Base):
 
     # Relationships
     calendar_item = relationship("CalendarItem", back_populates="content_items")
-    brand = relationship("Brand")
+    brand = relationship("Brand", back_populates="content_items")
     engagement_metrics = relationship("EngagementMetric", back_populates="content")
     approvals = relationship("Approval", back_populates="content")
     adaptations = relationship("Adaptation", back_populates="source_content")

@@ -50,6 +50,7 @@ class CalendarItemBase(BaseModel):
     product_ids: list[uuid.UUID] | None = None
     tags: list[str] | None = None
     priority: int | None = None
+    generation_metadata: dict | None = None
 
 
 class CalendarItemCreate(CalendarItemBase):

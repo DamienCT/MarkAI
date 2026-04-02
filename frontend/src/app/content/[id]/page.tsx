@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ContentEditor } from "@/components/content/ContentEditor";
 import { ChannelPreview } from "@/components/content/ChannelPreview";
-import { PlatformMockups } from "@/components/content/PlatformMockups";
+
 import { ApprovalHistory } from "@/components/approval/ApprovalHistory";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -161,8 +161,6 @@ export default function ContentDetailPage() {
   const caption = content.caption || content.body_text || "";
   const hashtags = safeHashtags(content.hashtags);
   const hasPendingApproval = approvals.some(a => a.status === "pending");
-  const mockupUrls = (content.generation_metadata?.mockup_urls ?? null) as Record<string, string> | null;
-  const hasMockups = mockupUrls !== null && Object.keys(mockupUrls).length > 0;
   // Resolve image URL from generation_metadata
   const rawImagePath = (content.generation_metadata?.raw_image || content.generation_metadata?.generated_image_url || "") as string;
   const contentImageUrl = rawImagePath
@@ -313,13 +311,6 @@ export default function ContentDetailPage() {
                 </CardContent>
               </Card>
 
-              {/* Mockups if available */}
-              {hasMockups && (
-                <PlatformMockups
-                  mockupUrls={mockupUrls!}
-                  imageBaseUrl={API_BASE_URL}
-                />
-              )}
             </div>
           </div>
         </TabsContent>

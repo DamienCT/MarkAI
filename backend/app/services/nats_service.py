@@ -35,7 +35,10 @@ STREAMS = {
 async def connect() -> NATSClient:
     """Connect to NATS and set up JetStream streams."""
     global _nc, _js
-    _nc = await nats.connect(settings.NATS_URL, connect_timeout=5)
+    connect_opts: dict = {"servers": settings.NATS_URL, "connect_timeout": 5}
+    if settings.NATS_AUTH_TOKEN:
+        connect_opts["token"] = settings.NATS_AUTH_TOKEN
+    _nc = await nats.connect(**connect_opts)
     _js = _nc.jetstream()
 
     # Ensure all streams exist with correct subjects

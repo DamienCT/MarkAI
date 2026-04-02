@@ -17,6 +17,7 @@ import {
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { CHANNEL_COLORS } from "@/lib/constants";
 import type { CalendarItem } from "@/types";
 
 const CHANNEL_PREFIX: Record<string, string> = {
@@ -28,17 +29,6 @@ const CHANNEL_PREFIX: Record<string, string> = {
   x: "X",
   website_blog: "BL",
   teams: "TM",
-};
-
-const CHANNEL_COLORS: Record<string, string> = {
-  instagram: "bg-pink-200 text-pink-800 dark:bg-pink-900 dark:text-pink-200",
-  facebook: "bg-blue-200 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-  linkedin: "bg-sky-200 text-sky-800 dark:bg-sky-900 dark:text-sky-200",
-  youtube: "bg-red-200 text-red-800 dark:bg-red-900 dark:text-red-200",
-  tiktok: "bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200",
-  x: "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200",
-  website_blog: "bg-emerald-200 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200",
-  teams: "bg-violet-200 text-violet-800 dark:bg-violet-900 dark:text-violet-200",
 };
 
 // Color palette for brand-based color coding

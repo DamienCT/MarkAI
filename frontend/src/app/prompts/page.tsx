@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { useRequireRole } from "@/lib/hooks";
 import { formatDate } from "@/lib/utils";
 import type { PromptVersion } from "@/types";
 
@@ -36,6 +37,7 @@ interface AIModelOption {
 }
 
 export default function PromptsPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("manager");
   const [prompts, setPrompts] = useState<PromptVersion[]>([]);
   const [loading, setLoading] = useState(true);
 

@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 def _verify_webhook_secret(request: Request) -> None:
-    """Validate X-Webhook-Secret header against configured secret."""
+    """Validate X-Webhook-Secret header and timestamp against replay attacks."""
     configured_secret = settings.N8N_WEBHOOK_SECRET
     if not configured_secret:
         logger.error("N8N_WEBHOOK_SECRET is not configured; rejecting webhook call")
@@ -27,6 +27,23 @@ def _verify_webhook_secret(request: Request) -> None:
     incoming_secret = request.headers.get("X-Webhook-Secret", "")
     if not secrets.compare_digest(incoming_secret, configured_secret):
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
+    # Replay protection: reject requests with timestamps older than 5 minutes
+    ts_header = request.headers.get("X-Webhook-Timestamp")
+    if ts_header:
+        try:
+            ts = datetime.fromisoformat(ts_header)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+            if abs(age) > 300:  # 5 minutes
+                raise HTTPException(
+                    status_code=403, detail="Webhook timestamp too old or in the future"
+                )
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=400, detail="Invalid X-Webhook-Timestamp format"
+            )
 
 
 class PublishResultPayload(BaseModel):

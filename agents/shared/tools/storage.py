@@ -49,6 +49,16 @@ def ensure_bucket(bucket_name: str) -> None:
                 raise
 
 
+def _validate_object_path(object_name: str) -> None:
+    """Validate that object_name does not contain path traversal sequences."""
+    if ".." in object_name or object_name.startswith("/"):
+        raise ValueError("Invalid object path")
+    # Also check individual path components
+    for part in object_name.split("/"):
+        if part == "..":
+            raise ValueError("Invalid object path")
+
+
 def upload_file(
     bucket: str,
     object_name: str,
@@ -56,6 +66,7 @@ def upload_file(
     content_type: str = "application/octet-stream",
 ) -> str:
     """Upload *data* to MinIO and return the object name (sync)."""
+    _validate_object_path(object_name)
     ensure_bucket(bucket)
     client = _get_client()
     client.put_object(
@@ -81,6 +92,7 @@ async def async_upload_file(
 
 def download_file(bucket: str, object_name: str) -> bytes:
     """Download an object from MinIO and return its bytes (sync)."""
+    _validate_object_path(object_name)
     client = _get_client()
     response = client.get_object(bucket, object_name)
     try:

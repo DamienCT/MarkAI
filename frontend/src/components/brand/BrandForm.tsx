@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
+import { ColorPalette, type ColorPaletteValue } from "@/components/brand/ColorPalette";
 import type { Brand } from "@/types";
 
 interface BrandFormProps {
@@ -106,6 +107,14 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
       ? (brand.target_audience as Record<string, string>).description || ""
       : ""
   );
+
+  const DEFAULT_COLORS: ColorPaletteValue = { primary: "#1a1a2e", secondary: "#16213e", accent: "#e94560" };
+  const existingPalette = brand?.color_palette as Partial<ColorPaletteValue> | undefined;
+  const [colorPalette, setColorPalette] = useState<ColorPaletteValue>({
+    primary: existingPalette?.primary || DEFAULT_COLORS.primary,
+    secondary: existingPalette?.secondary || DEFAULT_COLORS.secondary,
+    accent: existingPalette?.accent || DEFAULT_COLORS.accent,
+  });
 
   const [bcCompany, setBcCompany] = useState<string | null>(brand?.bc_company ?? null);
   const [bcLocations, setBcLocations] = useState<string[]>(brand?.bc_locations ?? []);
@@ -322,7 +331,7 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
       tone_of_voice: toneOfVoice || null,
       target_audience: targetAudience ? { description: targetAudience } : {},
       brand_guidelines: newGuidelines,
-      color_palette: {},
+      color_palette: colorPalette,
       is_bc_linked: !!bcCompany,
       bc_company: bcCompany || null,
       bc_locations: bcLocations,
@@ -460,6 +469,11 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
               placeholder="e.g., Women 25-45, fashion-conscious"
             />
           </div>
+
+          <Separator />
+
+          {/* Brand Colors */}
+          <ColorPalette value={colorPalette} onChange={setColorPalette} />
         </TabsContent>
 
         <TabsContent value="voice" className="space-y-4 mt-4">

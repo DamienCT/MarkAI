@@ -65,6 +65,7 @@ async def get_engagement_timeseries(
     current_user: User = Depends(get_current_user),
 ):
     """Daily engagement metrics over time."""
+    days = min(max(days, 1), 365)
     query = """
         SELECT
             DATE(fetched_at) as date,

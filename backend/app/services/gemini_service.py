@@ -132,13 +132,16 @@ async def search_product_images(
 
     logger.info("Found %d candidate image URLs for '%s'", len(image_urls), product_name)
 
-    # Download and validate images
+    # Download and validate images (with SSRF protection)
+    from app.utils.url_validator import validate_url
+
     results: list[dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         for url in image_urls:
             if len(results) >= max_results:
                 break
             try:
+                validate_url(url)
                 resp = await client.get(url, headers=headers)
                 ct = resp.headers.get("content-type", "")
                 if not any(t in ct for t in ["image/jpeg", "image/png", "image/webp"]):

@@ -26,7 +26,7 @@ class Product(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     brand_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("brands.id", ondelete="CASCADE"), nullable=False
     )
     bc_item_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     bc_item_category: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -36,7 +36,7 @@ class Product(Base):
     sku: Mapped[str | None] = mapped_column(String(255), nullable=True)
     barcode: Mapped[str | None] = mapped_column(String(255), nullable=True)
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
-    currency: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(255), nullable=True, default="MUR")
     category: Mapped[str | None] = mapped_column(String(255), nullable=True)
     subcategory: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attributes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

@@ -38,6 +38,23 @@ def get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+def accumulate_tokens(state: dict, result: "ChatResult") -> None:
+    """Add token counts from a ChatResult to the running total in state.
+
+    Accumulates into ``state["_total_tokens"]``, ``state["_total_prompt_tokens"]``,
+    and ``state["_total_completion_tokens"]``.
+    """
+    state["_total_tokens"] = state.get("_total_tokens", 0) + getattr(
+        result, "total_tokens", 0
+    )
+    state["_total_prompt_tokens"] = state.get("_total_prompt_tokens", 0) + getattr(
+        result, "prompt_tokens", 0
+    )
+    state["_total_completion_tokens"] = state.get(
+        "_total_completion_tokens", 0
+    ) + getattr(result, "completion_tokens", 0)
+
+
 class ChatResult(str):
     """Return type for chat_completion — behaves like a str (the content)
     but also carries token usage metadata.
@@ -171,8 +188,15 @@ def parse_llm_json(text: str, fallback: Any = None) -> Any:
         return result
     except json.JSONDecodeError:
         logger.warning(
-            "Failed to parse LLM JSON output (length=%d): %s...", len(text), text[:200]
+            "Failed to parse LLM JSON output (length=%d), falling back to default value: %s...",
+            len(text),
+            text[:200],
         )
+        if fallback is not None:
+            logger.warning(
+                "parse_llm_json: using fallback value of type %s",
+                type(fallback).__name__,
+            )
         return fallback
 
 

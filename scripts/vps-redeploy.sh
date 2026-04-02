@@ -65,8 +65,33 @@ echo ""
 echo "=== Step 3: Stop everything ==="
 docker compose -f docker-compose.yml -f docker-compose.vps.yml down
 
-echo "=== Step 4: Wipe DB volumes (schema changes require fresh init) ==="
-docker volume rm markai_pgdata markai_qdrant_data 2>/dev/null || true
+echo "=== Step 4: Database backup & optional volume wipe ==="
+# Always create a pg_dump backup before any destructive operation
+BACKUP_DIR="/var/www/markai/backups"
+mkdir -p "$BACKUP_DIR"
+BACKUP_FILE="${BACKUP_DIR}/pgdump_$(date +%Y%m%d_%H%M%S).sql.gz"
+
+# Start a temporary postgres container to dump data from the existing volume
+if docker volume inspect markai_pgdata &>/dev/null; then
+  echo "  Backing up PostgreSQL to ${BACKUP_FILE}..."
+  docker run --rm \
+    -v markai_pgdata:/var/lib/postgresql/data:ro \
+    -v "${BACKUP_DIR}:/backup" \
+    -e POSTGRES_PASSWORD=backup \
+    postgres:16-alpine \
+    bash -c "pg_dump -U ${POSTGRES_USER:-markai} -d ${POSTGRES_DB:-markai} -h /var/run/postgresql 2>/dev/null | gzip > /backup/$(basename $BACKUP_FILE)" \
+    || echo "  WARNING: pg_dump failed (volume may be empty on first deploy)"
+  echo "  Backup complete: ${BACKUP_FILE}"
+else
+  echo "  No existing pgdata volume — skipping backup."
+fi
+
+if [[ "${1:-}" == "--force-wipe" ]]; then
+  echo "  --force-wipe flag detected: wiping DB volumes..."
+  docker volume rm markai_pgdata markai_qdrant_data 2>/dev/null || true
+else
+  echo "  Using migrations/restart (pass --force-wipe to wipe volumes)."
+fi
 
 echo "=== Step 5: Rebuild all services ==="
 docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend frontend agents browser-worker notifications

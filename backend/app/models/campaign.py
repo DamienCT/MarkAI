@@ -15,11 +15,11 @@ class Campaign(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     brand_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("brands.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    objective: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    objective: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)

@@ -16,15 +16,15 @@ class EngagementMetric(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     content_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("content.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("content.id", ondelete="CASCADE"), nullable=False
     )
     calendar_item_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("calendar_items.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("calendar_items.id", ondelete="CASCADE"), nullable=False
     )
     brand_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("brands.id", ondelete="CASCADE"), nullable=False
     )
-    channel: Mapped[str] = mapped_column(String(255), nullable=False)
+    channel: Mapped[str] = mapped_column(String(50), nullable=False)
     impressions: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reach: Mapped[int | None] = mapped_column(Integer, nullable=True)
     likes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -50,4 +50,4 @@ class EngagementMetric(Base):
     # Relationships
     content = relationship("Content", back_populates="engagement_metrics")
     calendar_item = relationship("CalendarItem", back_populates="engagement_metrics")
-    brand = relationship("Brand")
+    brand = relationship("Brand", back_populates="engagement_metrics")

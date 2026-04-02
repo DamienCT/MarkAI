@@ -371,17 +371,31 @@ async def upload_brand_logo(
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
 
-    # Validate file type
-    allowed = {"image/png", "image/jpeg", "image/svg+xml", "image/webp"}
+    # Validate file type (SVG excluded to prevent stored XSS)
+    allowed = {"image/png", "image/jpeg", "image/webp"}
     if file.content_type not in allowed:
         raise HTTPException(
-            status_code=400, detail="Only PNG, JPEG, SVG, and WebP images are allowed"
+            status_code=400, detail="Only PNG, JPEG, and WebP images are allowed"
         )
 
     # Read file and upload to MinIO
     data = await file.read()
     if len(data) > 5 * 1024 * 1024:  # 5MB limit
         raise HTTPException(status_code=400, detail="File size must be under 5MB")
+
+    # Validate magic bytes match declared content type
+    _magic_ok = False
+    if data[:4] == b"\x89PNG" and file.content_type == "image/png":
+        _magic_ok = True
+    elif data[:3] == b"\xff\xd8\xff" and file.content_type == "image/jpeg":
+        _magic_ok = True
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP" and file.content_type == "image/webp":
+        _magic_ok = True
+    if not _magic_ok:
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not match declared content type",
+        )
 
     ext = (
         file.filename.rsplit(".", 1)[-1].lower()

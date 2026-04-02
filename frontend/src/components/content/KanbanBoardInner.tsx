@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -23,29 +23,15 @@ import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { formatDate } from "@/lib/utils";
-import type { CalendarItem } from "@/types";
+import { api } from "@/lib/api";
+import type { CalendarItem, ActiveAgentRun } from "@/types";
 import type { KanbanBoardProps } from "./KanbanBoard";
+import { CHANNEL_COLORS, CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
+import { PipelineProgressDots } from "./WorkingStageTracker";
 
 const CHANNEL_PREFIX: Record<string, string> = {
   instagram: "IG", facebook: "FB", linkedin: "LI", youtube: "YT",
   tiktok: "TT", x: "X", website_blog: "BL", teams: "TM",
-};
-
-const CHANNEL_COLORS: Record<string, string> = {
-  instagram: "bg-pink-100 text-pink-700 dark:bg-pink-900 dark:text-pink-300",
-  facebook: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
-  linkedin: "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300",
-  youtube: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
-  tiktok: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
-  x: "bg-zinc-100 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
-  website_blog: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
-  teams: "bg-violet-100 text-violet-700 dark:bg-violet-900 dark:text-violet-300",
-};
-
-const CHANNEL_DISPLAY_NAMES: Record<string, string> = {
-  instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn",
-  youtube: "YouTube", tiktok: "TikTok", x: "X (Twitter)",
-  website_blog: "Blog", teams: "Teams",
 };
 
 // Row 1: Content Pipeline (pre-publish)
@@ -69,7 +55,7 @@ const COLUMNS = [...ROW1_COLUMNS, ...ROW2_COLUMNS];
 const MAX_VISIBLE_ITEMS = 3;
 
 /** Compact single-line item shown in the column preview */
-function CompactItem({ item }: { item: CalendarItem }) {
+function CompactItem({ item, currentStep }: { item: CalendarItem; currentStep?: string }) {
   return (
     <Link href={`/content/${item.id}`} className="block">
       <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 transition-colors group">
@@ -79,7 +65,10 @@ function CompactItem({ item }: { item: CalendarItem }) {
         <span className="text-xs truncate flex-1 group-hover:text-primary transition-colors">
           {item.title || "Untitled"}
         </span>
-        {item.scheduled_at && (
+        {currentStep && (
+          <PipelineProgressDots currentStep={currentStep} size="xs" />
+        )}
+        {!currentStep && item.scheduled_at && (
           <span className="text-[10px] text-muted-foreground shrink-0">
             {new Date(item.scheduled_at).toLocaleDateString("en", { month: "short", day: "numeric" })}
           </span>
@@ -143,7 +132,45 @@ function SortableItem({ item }: { item: CalendarItem }) {
 
 export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeRuns, setActiveRuns] = useState<ActiveAgentRun[]>([]);
   const router = useRouter();
+
+  // Fetch active content runs for progress dots on working items
+  const hasWorkingItems = useMemo(
+    () => items.some((i) => i.status === "working"),
+    [items]
+  );
+
+  const fetchActiveRuns = useCallback(async () => {
+    if (!hasWorkingItems) return;
+    try {
+      const runs = await api.get<ActiveAgentRun[]>(
+        "/api/v1/agents/runs/active",
+        { agent_type: "content" }
+      );
+      setActiveRuns(Array.isArray(runs) ? runs : []);
+    } catch {
+      // Non-critical
+    }
+  }, [hasWorkingItems]);
+
+  useEffect(() => {
+    fetchActiveRuns();
+    if (!hasWorkingItems) return;
+    const interval = setInterval(fetchActiveRuns, 5000);
+    return () => clearInterval(interval);
+  }, [fetchActiveRuns, hasWorkingItems]);
+
+  // Map calendar_item_id -> current_step for quick lookup
+  const runStepMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const run of activeRuns) {
+      if (run.calendar_item_id && run.current_step) {
+        map[run.calendar_item_id] = run.current_step;
+      }
+    }
+    return map;
+  }, [activeRuns]);
 
   const itemsByStatus = useMemo(() => {
     const map: Record<string, CalendarItem[]> = {};
@@ -223,7 +250,11 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
               <>
                 <div className="flex-1 overflow-hidden space-y-0.5">
                   {visibleItems.map((item) => (
-                    <CompactItem key={item.id} item={item} />
+                    <CompactItem
+                      key={item.id}
+                      item={item}
+                      currentStep={column.id === "working" ? runStepMap[item.id] : undefined}
+                    />
                   ))}
                 </div>
                 {hiddenCount > 0 && (

@@ -13,13 +13,18 @@ x-common-env: &common-env
 services:
   # ── Reverse Proxy (local dev only — VPS overlay disables this) ──
   traefik:
-    image: traefik:v3.6
+    image: traefik:v3.6.12
     container_name: markai-traefik
     restart: unless-stopped
     deploy:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     volumes:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
@@ -45,6 +50,11 @@ services:
       resources:
         limits:
           memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-markai}
       POSTGRES_USER: ${POSTGRES_USER:-markai}
@@ -70,6 +80,11 @@ services:
       resources:
         limits:
           memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     environment:
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?QDRANT_API_KEY must be set in .env}
     volumes:
@@ -92,6 +107,11 @@ services:
       resources:
         limits:
           memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-markai-minio}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
@@ -116,11 +136,16 @@ services:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     command: ["valkey-server", "--requirepass", "${VALKEY_PASSWORD:?VALKEY_PASSWORD must be set in .env}"]
     volumes:
       - valkey_data:/data
     healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:?VALKEY_PASSWORD must be set in .env}", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$VALKEY_PASSWORD valkey-cli ping"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -137,7 +162,12 @@ services:
       resources:
         limits:
           memory: 256M
-    command: "-js -m 8222"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    command: "-js -m 8222 --auth ${NATS_AUTH_TOKEN:?NATS_AUTH_TOKEN required}"
     volumes:
       - nats_data:/data
     healthcheck:
@@ -151,13 +181,18 @@ services:
 
   # ── LiteLLM (LLM Gateway) ─────────────────────────────────────
   litellm:
-    image: ghcr.io/berriai/litellm:v1.82.3-stable.patch.2
+    image: ghcr.io/berriai/litellm:v1.83.0
     container_name: markai-litellm
     restart: unless-stopped
     deploy:
       resources:
         limits:
           memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
     environment:
@@ -189,6 +224,11 @@ services:
       resources:
         limits:
           memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     volumes:
       - n8n_data:/home/node/.n8n
     healthcheck:
@@ -217,6 +257,7 @@ services:
       - .env
     environment:
       MARKAI_ENV: ${MARKAI_ENV:-production}
+      NATS_AUTH_TOKEN: ${NATS_AUTH_TOKEN:?NATS_AUTH_TOKEN required}
     deploy:
       resources:
         limits:
@@ -292,6 +333,8 @@ services:
           memory: 2G
     env_file:
       - .env
+    environment:
+      NATS_AUTH_TOKEN: ${NATS_AUTH_TOKEN:?NATS_AUTH_TOKEN required}
     logging:
       driver: json-file
       options:
@@ -329,6 +372,11 @@ services:
       resources:
         limits:
           memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     env_file:
       - .env
     healthcheck:
@@ -351,6 +399,11 @@ services:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     env_file:
       - .env
     healthcheck:
@@ -376,6 +429,17 @@ services:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     environment:
       GF_PATHS_CONFIG: /etc/grafana/grafana.ini
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD must be set in .env}
@@ -395,6 +459,17 @@ services:
       resources:
         limits:
           memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     volumes:
       - prometheus_data:/prometheus
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -415,6 +490,11 @@ services:
       resources:
         limits:
           memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     volumes:
       - loki_data:/loki
       - ./observability/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
@@ -431,6 +511,11 @@ services:
       resources:
         limits:
           memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     volumes:
       - ./observability/promtail/promtail-config.yaml:/etc/promtail/config.yaml:ro
       - /var/lib/docker/containers:/var/log/containers:ro
@@ -450,6 +535,11 @@ services:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     volumes:
       - ./observability/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
     networks:

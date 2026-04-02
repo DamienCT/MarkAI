@@ -110,6 +110,38 @@ async def complete_agent_run(
         await session.commit()
 
 
+async def update_agent_run_step(
+    run_id: str,
+    step_key: str,
+    step_index: int,
+    total_steps: int = 10,
+) -> None:
+    """Update the current step on a running agent_run's output_payload.
+
+    This allows the frontend to display real-time progress for content generation.
+    """
+    if not run_id:
+        return
+    step_info = json.dumps(
+        {
+            "current_step": step_key,
+            "step_index": step_index,
+            "total_steps": total_steps,
+        },
+        default=str,
+    )
+    async with async_session_factory() as session:
+        await session.execute(
+            text(
+                "UPDATE agent_runs "
+                "SET output_payload = COALESCE(output_payload, '{}'::jsonb) || :patch "
+                "WHERE id = :id AND status = 'running'"
+            ),
+            {"id": run_id, "patch": step_info},
+        )
+        await session.commit()
+
+
 # ── Research operations (stored in agent_runs) ────────────────────────────
 
 
@@ -688,15 +720,23 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
     if not enabled_channels:
         enabled_channels = ["instagram"]
 
+    # Resolve logo_url to a full URL for agents to download
+    raw_logo_url = brand.get("logo_url", "")
+    if raw_logo_url and raw_logo_url.startswith("/"):
+        from shared.config import settings
+        api_base = getattr(settings, "BACKEND_URL", "") or "http://backend:8000"
+        raw_logo_url = f"{api_base}{raw_logo_url}"
+
     brand_info = {
         "name": brand.get("name", ""),
         "description": brand.get("description", ""),
         "website_url": brand.get("website_url", ""),
         "industry": brand.get("industry", ""),
         "tone_of_voice": brand.get("tone_of_voice", ""),
-        "logo_url": brand.get("logo_url", ""),
+        "logo_url": raw_logo_url,
         "slug": brand.get("slug", ""),
         "brand_guidelines": brand_guidelines,
+        "color_palette": brand.get("color_palette", {}),
         "enabled_channels": enabled_channels,
     }
 

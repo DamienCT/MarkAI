@@ -43,7 +43,13 @@ export function renderValue(value: unknown): ReactNode {
     if (value.includes("\n") || value.length > 200) {
       return (
         <div className="prose prose-sm max-w-none dark:prose-invert">
-          <ReactMarkdown>{value}</ReactMarkdown>
+          <ReactMarkdown
+            skipHtml
+            disallowedElements={['script', 'iframe', 'object', 'embed', 'form']}
+            unwrapDisallowed
+          >
+            {value}
+          </ReactMarkdown>
         </div>
       );
     }

@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { useRequireRole } from "@/lib/hooks";
 import { formatRelativeTime } from "@/lib/utils";
 import {
   FileText,
@@ -314,6 +315,7 @@ interface BrandOption {
 }
 
 export default function IntelligencePage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("viewer");
   const router = useRouter();
   const [reports, setReports] = useState<AgentReport[]>([]);
   const [trends, setTrends] = useState<TrendData[]>([]);

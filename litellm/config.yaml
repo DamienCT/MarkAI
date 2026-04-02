@@ -7,52 +7,64 @@ model_list:
     litellm_params:
       model: openai/gpt-5.4
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 60
+      tpm: 200000
 
   - model_name: gpt-5.4-mini
     litellm_params:
       model: openai/gpt-5.4-mini
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 120
+      tpm: 400000
 
   - model_name: text-embedding-3-small
     litellm_params:
       model: openai/text-embedding-3-small
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 200
 
   # Image generation
   - model_name: gpt-image-1.5
     litellm_params:
       model: openai/gpt-image-1.5
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 30
 
   - model_name: gpt-image-1
     litellm_params:
       model: openai/gpt-image-1
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 30
 
   - model_name: gpt-image-1-mini
     litellm_params:
       model: openai/gpt-image-1-mini
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 30
 
   - model_name: chatgpt-image-latest
     litellm_params:
       model: openai/chatgpt-image-latest
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 30
 
   - model_name: dall-e-3
     litellm_params:
       model: openai/dall-e-3
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 30
 
   - model_name: dall-e-2
     litellm_params:
       model: openai/dall-e-2
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 30
 
   - model_name: text-embedding-3-large
     litellm_params:
       model: openai/text-embedding-3-large
       api_key: os.environ/OPENAI_API_KEY
+      rpm: 200
 
   # Video generation
   - model_name: sora-2

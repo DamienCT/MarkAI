@@ -14,7 +14,7 @@ dependencies = [
     "alembic>=1.18",
     "pydantic>=2.12",
     "pydantic-settings>=2.13",
-    "PyJWT[crypto]",
+    "PyJWT[crypto]>=2.12.0",
     "httpx>=0.28",
     "pyodbc>=5.3",
     "apscheduler>=3.11",
@@ -34,7 +34,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "prometheus-fastapi-instrumentator>=7.0",
     "python-json-logger>=3.0",
-    "tenacity>=8.2",
+    "tenacity>=9.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -44,6 +44,7 @@ packages = ["app"]
 dev = [
     "pytest",
     "pytest-asyncio",
+    "pytest-cov",
     "anyio[trio]",
     "httpx",
     "ruff",

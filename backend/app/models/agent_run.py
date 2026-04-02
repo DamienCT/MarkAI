@@ -15,8 +15,8 @@ class AgentRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    agent_type: Mapped[str] = mapped_column(String(255), nullable=False)
-    trigger: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     input_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     output_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -25,13 +25,13 @@ class AgentRun(Base):
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("prompt_versions.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("prompt_versions.id", ondelete="SET NULL"), nullable=True
     )
     brand_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("brands.id", ondelete="CASCADE"), nullable=False
     )
     initiated_by: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

@@ -18,9 +18,10 @@ export function BrandSwitcher() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const controller = new AbortController();
     async function fetchBrands() {
       try {
-        const data = await api.get<Brand[]>("/api/v1/brands");
+        const data = await api.get<Brand[]>("/api/v1/brands", undefined, { signal: controller.signal });
         setBrands(data);
       } catch {
         // Silently fail on initial load — API may not be ready yet
@@ -29,6 +30,7 @@ export function BrandSwitcher() {
       }
     }
     fetchBrands();
+    return () => controller.abort();
   }, []);
 
   const handleChange = (value: string) => {

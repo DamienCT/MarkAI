@@ -11,10 +11,10 @@ import { useEffect } from "react";
  */
 
 const ROLE_LEVELS: Record<string, number> = {
-  viewer: 0,
-  editor: 1,
-  manager: 2,
-  admin: 3,
+  viewer: 10,
+  editor: 60,
+  manager: 80,
+  admin: 100,
 };
 
 export function useRequireRole(minRole: "viewer" | "editor" | "manager" | "admin") {

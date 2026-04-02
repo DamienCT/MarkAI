@@ -25,6 +25,7 @@ _VALID_SETTING_KEYS = frozenset(
         "auto_approve_threshold",
         "default_channels",
         "notification_channels",
+        "content_generation_days_ahead",
     }
 )
 

@@ -25,6 +25,7 @@ import {
 import { KanbanBoard } from "@/components/content/KanbanBoard";
 import { ContentCard } from "@/components/content/ContentCard";
 import { api } from "@/lib/api";
+import { useRequireRole } from "@/lib/hooks";
 import type { CalendarItem, Brand, Channel } from "@/types";
 import { ALL_CHANNELS, CHANNEL_DISPLAY_NAMES } from "@/types";
 
@@ -33,6 +34,7 @@ interface BrandChannelConfig {
 }
 
 export default function ContentStudioPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("editor");
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"kanban" | "grid">("kanban");

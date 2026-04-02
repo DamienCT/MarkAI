@@ -90,25 +90,16 @@ export const authOptions: NextAuthOptions = {
         token.refreshToken = account.refresh_token;
         token.expiresAt = account.expires_at;
         token.error = undefined;
-        return token;
+        // Fetch user role on initial sign-in so it persists in the JWT
+        token.role = undefined;
+        token.roleFetchedAt = undefined;
       }
 
-      if (!token.expiresAt) {
-        return token;
-      }
-
+      // Fetch role if missing or stale (re-check every 5 minutes)
+      const ROLE_TTL = 5 * 60;
       const now = Math.floor(Date.now() / 1000);
-      const shouldRefresh = now >= token.expiresAt - REFRESH_BUFFER_SECONDS;
-
-      if (!shouldRefresh) {
-        return token;
-      }
-
-      return refreshAzureToken(token);
-    },
-    async session({ session, token }) {
-      // Fetch user role from backend if not already cached
-      if (!token.role && token.accessToken) {
+      const roleStale = !token.role || !token.roleFetchedAt || now - (token.roleFetchedAt as number) > ROLE_TTL;
+      if (roleStale && token.accessToken) {
         try {
           const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://backend:8000";
           const res = await fetch(`${apiUrl}/api/v1/users/me`, {
@@ -117,14 +108,30 @@ export const authOptions: NextAuthOptions = {
           if (res.ok) {
             const userData = await res.json();
             token.role = userData.role || "viewer";
-          } else {
-            // Default to least-privilege role if backend is unreachable
+            token.roleFetchedAt = now;
+          } else if (!token.role) {
             token.role = "viewer";
           }
         } catch {
-          token.role = "viewer";
+          if (!token.role) {
+            token.role = "viewer";
+          }
         }
       }
+
+      if (!token.expiresAt) {
+        return token;
+      }
+
+      const shouldRefresh = now >= (token.expiresAt as number) - REFRESH_BUFFER_SECONDS;
+
+      if (!shouldRefresh) {
+        return token;
+      }
+
+      return refreshAzureToken(token);
+    },
+    async session({ session, token }) {
       return {
         ...session,
         accessToken: token.accessToken as string,

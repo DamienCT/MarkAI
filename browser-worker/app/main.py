@@ -4,11 +4,12 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from playwright.async_api import Browser, async_playwright
 from pydantic import BaseModel, HttpUrl
 
 from app.capture import extract_page, take_screenshot
+from app.config import settings
 from app.product_image import search_supplier_website, web_search_product_image
 from app.social_scraper import (
     scrape_facebook_page,
@@ -17,6 +18,16 @@ from app.social_scraper import (
 )
 
 logger = logging.getLogger("browser-worker")
+
+
+async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")) -> str:
+    """Validate the API key from the X-API-Key header."""
+    if not settings.BROWSER_WORKER_API_KEY:
+        # No key configured — allow (dev mode)
+        return x_api_key
+    if x_api_key != settings.BROWSER_WORKER_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return x_api_key
 
 # Shared browser instance, set during lifespan
 _browser: Browser | None = None
@@ -101,7 +112,7 @@ class SocialPageResponse(BaseModel):
 # ── Endpoints ──────────────────────────────────────────────────────
 
 
-@app.post("/capture/screenshot", response_model=ScreenshotResponse)
+@app.post("/capture/screenshot", response_model=ScreenshotResponse, dependencies=[Depends(verify_api_key)])
 async def capture_screenshot(req: ScreenshotRequest):
     try:
         result = await take_screenshot(get_browser(), str(req.url))
@@ -111,7 +122,7 @@ async def capture_screenshot(req: ScreenshotRequest):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/capture/extract", response_model=ExtractResponse)
+@app.post("/capture/extract", response_model=ExtractResponse, dependencies=[Depends(verify_api_key)])
 async def capture_extract(req: ExtractRequest):
     try:
         result = await extract_page(get_browser(), str(req.url))
@@ -121,7 +132,7 @@ async def capture_extract(req: ExtractRequest):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/capture/product-image", response_model=ProductImageResponse)
+@app.post("/capture/product-image", response_model=ProductImageResponse, dependencies=[Depends(verify_api_key)])
 async def capture_product_image(req: ProductImageRequest):
     try:
         # First try direct supplier website search
@@ -145,7 +156,7 @@ async def capture_product_image(req: ProductImageRequest):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/capture/social-page", response_model=SocialPageResponse)
+@app.post("/capture/social-page", response_model=SocialPageResponse, dependencies=[Depends(verify_api_key)])
 async def capture_social_page(req: SocialPageRequest):
     url_str = str(req.url)
     try:

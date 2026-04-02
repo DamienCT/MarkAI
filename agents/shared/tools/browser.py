@@ -13,6 +13,7 @@ from html.parser import HTMLParser
 import httpx
 
 from shared.config import settings
+from shared.url_validator import validate_url
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class _TextExtractor(HTMLParser):
 
 async def _direct_fetch(url: str) -> dict[str, Any]:
     """Fetch a URL directly via HTTP and extract basic content."""
+    validate_url(url)
     client = _get_http_client()
     resp = await client.get(
         url,
@@ -104,6 +106,7 @@ async def _direct_fetch(url: str) -> dict[str, Any]:
 
 async def take_screenshot(url: str, full_page: bool = True) -> bytes:
     """Capture a screenshot via browser-worker."""
+    validate_url(url)
     client = _get_http_client()
     resp = await client.post(
         f"{settings.BROWSER_WORKER_URL}/screenshot",
@@ -116,6 +119,7 @@ async def take_screenshot(url: str, full_page: bool = True) -> bytes:
 
 async def extract_page(url: str) -> dict[str, Any]:
     """Extract structured content from a URL. Falls back to direct HTTP if browser-worker is down."""
+    validate_url(url)
     try:
         client = _get_http_client()
         resp = await client.post(
@@ -136,6 +140,7 @@ async def extract_page(url: str) -> dict[str, Any]:
 
 async def scrape_product_images(url: str) -> list[str]:
     """Scrape product image URLs from the given page."""
+    validate_url(url)
     client = _get_http_client()
     resp = await client.post(
         f"{settings.BROWSER_WORKER_URL}/scrape-images",
@@ -149,6 +154,7 @@ async def scrape_product_images(url: str) -> list[str]:
 
 async def crawl_site(url: str, max_pages: int = 20) -> list[dict[str, Any]]:
     """Crawl a website. Falls back to direct HTTP fetch of the homepage if browser-worker is down."""
+    validate_url(url)
     try:
         client = _get_http_client()
         resp = await client.post(

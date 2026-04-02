@@ -46,7 +46,7 @@ export interface Brand {
   brand_guidelines: Record<string, unknown>;
   tone_of_voice: string | null;
   target_audience: Record<string, unknown>;
-  color_palette: Record<string, unknown>;
+  color_palette: { primary?: string; secondary?: string; accent?: string } | Record<string, unknown>;
   is_active: boolean;
   is_bc_linked: boolean;
   bc_company: string | null;
@@ -167,6 +167,12 @@ export interface CalendarItem {
   theme?: string;
   target_audience?: string;
   content_brief?: string;
+  generation_metadata?: {
+    current_step?: string;
+    step_index?: number;
+    total_steps?: number;
+    [key: string]: unknown;
+  };
   created_by?: string | null;
   created_at?: string;
   updated_at?: string;
@@ -268,6 +274,22 @@ export interface AgentRun {
   duration_ms?: number;
   started_at?: string;
   completed_at?: string;
+  created_at: string;
+}
+
+export interface ActiveAgentRun {
+  id: string;
+  agent_type: string;
+  trigger?: string;
+  brand_id?: string;
+  status: string;
+  started_at?: string;
+  input_payload?: Record<string, unknown>;
+  output_payload?: Record<string, unknown>;
+  calendar_item_id?: string;
+  current_step?: string;
+  step_index?: number;
+  total_steps?: number;
   created_at: string;
 }
 

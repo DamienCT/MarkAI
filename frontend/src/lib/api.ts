@@ -1,7 +1,26 @@
 import { getSession } from "next-auth/react";
+import type { Session } from "next-auth";
 
 // NEXT_PUBLIC_API_URL is inlined at build time by Next.js.
 const _rawApiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// Cache getSession() to avoid redundant /api/auth/session fetches.
+// Multiple concurrent api.get() calls share a single in-flight request.
+let _sessionPromise: Promise<Session | null> | null = null;
+let _sessionCachedAt = 0;
+const SESSION_CACHE_MS = 5_000; // 5 seconds
+
+function getCachedSession(): Promise<Session | null> {
+  const now = Date.now();
+  if (!_sessionPromise || now - _sessionCachedAt > SESSION_CACHE_MS) {
+    _sessionCachedAt = now;
+    _sessionPromise = getSession().finally(() => {
+      // Allow next call after cache expires to start fresh
+      setTimeout(() => { _sessionPromise = null; }, SESSION_CACHE_MS);
+    });
+  }
+  return _sessionPromise;
+}
 
 // Force HTTPS: if the inlined URL starts with http:// and contains a real domain
 // (not localhost), upgrade it. This catches misconfigured env vars at build time.
@@ -27,7 +46,7 @@ class ApiClient {
   }
 
   private async getHeaders(): Promise<HeadersInit> {
-    const session = await getSession();
+    const session = await getCachedSession();
     const headers: HeadersInit = {
       "Content-Type": "application/json",
     };
@@ -121,7 +140,7 @@ class ApiClient {
   }
 
   async uploadFile<T>(path: string, file: File, extraFields?: Record<string, string>): Promise<T> {
-    const session = await getSession();
+    const session = await getCachedSession();
     const headers: HeadersInit = {};
     if (session?.accessToken) {
       headers["Authorization"] = `Bearer ${session.accessToken}`;

@@ -15,6 +15,7 @@ from shared.tools.database import (
     execute_update,
     get_calendar_item,
     store_content,
+    update_agent_run_step,
 )
 from shared.tools.storage import (
     async_upload_file,
@@ -32,6 +33,21 @@ from pydantic import BaseModel, field_validator
 from workflows.content.state import ContentState
 
 logger = logging.getLogger(__name__)
+
+# Step tracking: maps node key to (index, key) for progress reporting
+CONTENT_PIPELINE_STEPS = [
+    "load_context",
+    "generate_hook",
+    "generate_caption",
+    "generate_hashtags",
+    "source_product_image",
+    "generate_background",
+    "apply_branding",
+    "adapt_platforms",
+    "generate_mockups",
+    "store_content",
+]
+_STEP_INDEX = {key: idx for idx, key in enumerate(CONTENT_PIPELINE_STEPS)}
 
 
 class ContentRecordValidator(BaseModel):
@@ -106,6 +122,7 @@ def _find_product(products: list[dict], calendar_item: dict) -> dict:
 
 async def load_context(state: ContentState) -> dict[str, Any]:
     """Load full brand intelligence, calendar item, and all enriched context."""
+    await update_agent_run_step(state.get("run_id", ""), "load_context", _STEP_INDEX["load_context"])
     brand_id = state["brand_id"]
     item_id = state["calendar_item_id"]
 
@@ -206,6 +223,7 @@ async def load_context(state: ContentState) -> dict[str, Any]:
 
 async def generate_hook(state: ContentState) -> dict[str, Any]:
     """Generate an attention-grabbing hook via LLM."""
+    await update_agent_run_step(state.get("run_id", ""), "generate_hook", _STEP_INDEX["generate_hook"])
     try:
         brand = state.get("brand", {})
         item = state.get("calendar_item", {})
@@ -289,6 +307,7 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
 
 async def generate_caption(state: ContentState) -> dict[str, Any]:
     """Generate the full caption body via LLM."""
+    await update_agent_run_step(state.get("run_id", ""), "generate_caption", _STEP_INDEX["generate_caption"])
     try:
         brand = state.get("brand", {})
         item = state.get("calendar_item", {})
@@ -401,6 +420,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
 
 async def generate_hashtags(state: ContentState) -> dict[str, Any]:
     """Generate relevant hashtags via LLM."""
+    await update_agent_run_step(state.get("run_id", ""), "generate_hashtags", _STEP_INDEX["generate_hashtags"])
     try:
         brand = state.get("brand", {})
         item = state.get("calendar_item", {})
@@ -485,6 +505,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     - Only use images from the product's image_urls gallery (real web photos)
     - If no gallery images exist, mark as lifestyle-only (no product in image)
     """
+    await update_agent_run_step(state.get("run_id", ""), "source_product_image", _STEP_INDEX["source_product_image"])
     item = state.get("calendar_item", {})
     state.get("brand", {})
     brand_id = state["brand_id"]
@@ -575,6 +596,7 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     If product image is available, generate a scene with a generic product placeholder
     that will later be replaced by Gemini with the real product photo.
     """
+    await update_agent_run_step(state.get("run_id", ""), "generate_background", _STEP_INDEX["generate_background"])
     brand = state.get("brand", {})
     item = state.get("calendar_item", {})
     is_lifestyle_only = state.get("is_lifestyle_only", True)
@@ -582,14 +604,26 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     relevant_audience = state.get("relevant_audience", {})
     month_context = state.get("month_context", "")
 
-    # Extract brand colors and visual style from brand_guidelines
+    # Extract brand colors from the dedicated color_palette field (preferred)
+    # with fallback to brand_guidelines.colors for backwards compat
+    color_palette = brand.get("color_palette") or {}
+    if isinstance(color_palette, str):
+        try:
+            color_palette = json.loads(color_palette)
+        except (json.JSONDecodeError, TypeError):
+            color_palette = {}
+
     brand_guidelines = brand.get("brand_guidelines", {})
     if isinstance(brand_guidelines, str):
         try:
             brand_guidelines = json.loads(brand_guidelines)
         except (json.JSONDecodeError, TypeError):
             brand_guidelines = {}
-    colors = brand_guidelines.get("colors", {})
+
+    # Merge: color_palette takes priority, then brand_guidelines.colors
+    legacy_colors = brand_guidelines.get("colors", {})
+    colors = {**legacy_colors, **color_palette} if color_palette else legacy_colors
+
     visual_style = brand_guidelines.get(
         "visual_style", "modern, clean, tropical warmth"
     )
@@ -643,23 +677,26 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"{seasonal_directive}"
             f"Golden hour or warm natural lighting. Editorial quality, shot on 50mm lens. "
             f"{composition_rules}"
-            f"Do NOT include any products, text, logos, or watermarks. "
-            f"Focus on the lifestyle and mood, not products."
+            f"CRITICAL: The image must contain ABSOLUTELY NO TEXT, NO WORDS, NO LETTERS, "
+            f"NO NUMBERS, NO LOGOS, NO WATERMARKS, NO LABELS, NO SIGNS, NO TYPOGRAPHY of any kind. "
+            f"This is a photograph, not a graphic design. "
+            f"Do NOT include any products. Focus on the lifestyle and mood."
         )
     else:
         # Scene with generic product placeholder — will be replaced by Gemini later
         prompt_text = (
             f"Create a professional social media product lifestyle photo for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
-            f"Include a generic health/wellness product (a simple pouch or box) placed naturally in the scene. "
+            f"Include a simple generic unlabeled product container (a plain matte box or pouch with NO writing on it) placed naturally in the scene. "
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"
             f"{seasonal_directive}"
             f"Golden hour or warm natural lighting. Editorial quality, shot on 50mm lens. "
             f"{composition_rules}"
-            f"The product should be clearly visible and will be replaced with the real product later. "
-            f"Do NOT include any text, logos, or watermarks on the product."
+            f"CRITICAL: The image must contain ABSOLUTELY NO TEXT, NO WORDS, NO LETTERS, "
+            f"NO NUMBERS, NO LOGOS, NO WATERMARKS, NO LABELS, NO SIGNS, NO TYPOGRAPHY of any kind. "
+            f"The product container must be completely blank — it will be digitally replaced later."
         )
 
     try:
@@ -696,6 +733,7 @@ PLATFORM_SPECS = {
 
 async def adapt_platforms(state: ContentState) -> dict[str, Any]:
     """Create platform-specific adaptations of the content via LLM for enabled channels."""
+    await update_agent_run_step(state.get("run_id", ""), "adapt_platforms", _STEP_INDEX["adapt_platforms"])
     source_platform = state.get("calendar_item", {}).get("channel", "instagram")
 
     # Determine which channels to adapt for based on brand config
@@ -871,6 +909,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
     then composites it onto the best monotone region of the image.
     Also adds a tagline text bar at the bottom-left.
     """
+    await update_agent_run_step(state.get("run_id", ""), "apply_branding", _STEP_INDEX["apply_branding"])
     generated_image_url = state.get("generated_image")
     if not generated_image_url:
         return {}
@@ -967,9 +1006,10 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             "logo_png_data": logo_png,
         }
 
-    except Exception:
-        logger.exception("Branding overlay failed")
-        return {}
+    except Exception as exc:
+        logger.exception("Branding overlay failed: %s", exc)
+        # Don't fail the whole pipeline — continue without branding
+        return {"errors": [*(state.get("errors") or []), f"Branding overlay failed: {exc}"]}
 
 
 async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
@@ -978,6 +1018,7 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
     Creates mockups for Instagram, Facebook, LinkedIn, and X showing how
     the post would appear in each platform's feed on a mobile device.
     """
+    await update_agent_run_step(state.get("run_id", ""), "generate_mockups", _STEP_INDEX["generate_mockups"])
     branded_url = state.get("branded_image")
     generated_url = state.get("generated_image")
     image_source = branded_url or generated_url
@@ -1078,6 +1119,7 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
 
 async def store_content_node(state: ContentState) -> dict[str, Any]:
     """Persist generated content to the database and upload images to MinIO."""
+    await update_agent_run_step(state.get("run_id", ""), "store_content", _STEP_INDEX["store_content"])
     brand_id = state["brand_id"]
 
     # Upload raw generated image to MinIO if not already there

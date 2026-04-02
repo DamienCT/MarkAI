@@ -16,6 +16,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { BrandOnboarding } from "@/components/brand/BrandOnboarding";
 import { api, apiUrl } from "@/lib/api";
 import type { Brand, Content, EngagementMetrics, Channel, Product, AgentRun } from "@/types";
+import { CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
 
 import {
   OverviewTab,
@@ -42,17 +43,6 @@ const CHANNEL_ICON_STYLED: Record<string, { icon: React.ReactNode; color: string
   x: { icon: <Twitter className="h-4 w-4" />, color: "bg-black text-white dark:bg-white dark:text-black" },
   website_blog: { icon: <Globe className="h-4 w-4" />, color: "bg-emerald-600 text-white" },
   teams: { icon: <MessageSquare className="h-4 w-4" />, color: "bg-[#6264A7] text-white" },
-};
-
-const CHANNEL_DISPLAY_NAMES: Record<Channel, string> = {
-  instagram: "Instagram",
-  facebook: "Facebook",
-  linkedin: "LinkedIn",
-  youtube: "YouTube",
-  tiktok: "TikTok",
-  x: "X (Twitter)",
-  website_blog: "Website / Blog",
-  teams: "Teams",
 };
 
 const CHANNEL_CONFIG_FIELDS: Record<Channel, { key: string; label: string; placeholder: string }[]> = {

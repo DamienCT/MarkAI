@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = "markai-assets"
     MINIO_SECURE: bool = False
 
+    # --- API Key ---
+    BROWSER_WORKER_API_KEY: str = ""
+
     # --- Browser ---
     BROWSER_HEADLESS: bool = True
     PAGE_TIMEOUT_MS: int = 30_000

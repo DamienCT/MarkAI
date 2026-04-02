@@ -131,7 +131,9 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
 
     # Build image prompt
     if custom_prompt:
-        image_prompt = custom_prompt
+        from shared.sanitize import sanitize_for_prompt
+
+        image_prompt = sanitize_for_prompt(custom_prompt, max_length=500)
     else:
         image_prompt = (
             f"Create a professional social media lifestyle image. "
@@ -221,6 +223,9 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         await msg.ack()  # Don't retry bad payloads
         return
 
+    # Track this run in the database
+    agent_type = subject.split(".")[0]
+
     # Build initial state from the message payload
     initial_state: dict[str, Any] = {
         "brand_id": payload.get("brand_id", ""),
@@ -229,13 +234,27 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         "errors": [],
         "messages": [],
     }
-    # Merge any extra fields from the payload into the initial state
+
+    # Whitelist of allowed external payload fields per workflow type
+    # Fields not in the whitelist are silently dropped to prevent injection
+    _PAYLOAD_WHITELIST: dict[str, set[str]] = {
+        "research": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "triggered_by", "timestamp"},
+        "strategy": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "triggered_by", "timestamp"},
+        "planning": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "triggered_by", "timestamp"},
+        "content": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "calendar_item_id", "chain_depth", "remaining_queue", "triggered_by", "timestamp"},
+        "evaluation": {"brand_id", "run_id", "trigger", "params", "content_id", "triggered_by", "timestamp"},
+        "product": {"brand_id", "run_id", "trigger", "params", "triggered_by", "timestamp"},
+        "adaptation": {"brand_id", "run_id", "trigger", "params", "chain_depth", "triggered_by", "timestamp"},
+    }
+    # "auto_approve" is intentionally excluded from all whitelists
+
+    allowed_fields = _PAYLOAD_WHITELIST.get(agent_type, {"brand_id", "run_id", "trigger", "params"})
+
+    # Merge only whitelisted fields from the payload into the initial state
     for key, value in payload.items():
-        if key not in initial_state:
+        if key not in initial_state and key in allowed_fields:
             initial_state[key] = value
 
-    # Track this run in the database
-    agent_type = subject.split(".")[0]
     brand_id = initial_state.get("brand_id", "")
     run_id = ""
 

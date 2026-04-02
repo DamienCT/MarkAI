@@ -6,6 +6,7 @@ import {
   ThumbsUp, MoreHorizontal, Globe, Repeat2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { sanitizeImageUrl } from "@/lib/utils";
 
 interface PreviewProps {
   brandName: string;
@@ -60,8 +61,8 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
         <MoreHorizontal className="h-5 w-5 text-muted-foreground" />
       </div>
       {/* Image */}
-      {imageUrl ? (
-        <img src={imageUrl} alt="Post" className="w-full aspect-square object-cover" />
+      {imageUrl && sanitizeImageUrl(imageUrl) ? (
+        <img src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-square object-cover" />
       ) : (
         <ImagePlaceholder />
       )}
@@ -109,8 +110,8 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
         <HashtagsDisplay hashtags={hashtags} />
       </div>
       {/* Image */}
-      {imageUrl ? (
-        <img src={imageUrl} alt="Post" className="w-full aspect-[16/9] object-cover" />
+      {imageUrl && sanitizeImageUrl(imageUrl) ? (
+        <img src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[16/9] object-cover" />
       ) : (
         <div className="w-full aspect-[16/9] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
           <Globe className="h-10 w-10 opacity-20" />
@@ -156,8 +157,8 @@ export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, ima
         <HashtagsDisplay hashtags={hashtags} />
       </div>
       {/* Image */}
-      {imageUrl ? (
-        <img src={imageUrl} alt="Post" className="w-full aspect-[1.91/1] object-cover" />
+      {imageUrl && sanitizeImageUrl(imageUrl) ? (
+        <img src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[1.91/1] object-cover" />
       ) : (
         <div className="w-full aspect-[1.91/1] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
           <Globe className="h-10 w-10 opacity-20" />

@@ -9,10 +9,12 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { useRequireRole } from "@/lib/hooks";
 import { statusColor, formatRelativeTime } from "@/lib/utils";
 import type { Adaptation } from "@/types";
 
 export default function LearningPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("editor");
   const [adaptations, setAdaptations] = useState<Adaptation[]>([]);
   const [loading, setLoading] = useState(true);
   const [bulkApproving, setBulkApproving] = useState(false);

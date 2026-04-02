@@ -1,4 +1,7 @@
-"""Input sanitization for LLM prompts to prevent prompt injection."""
+"""Input sanitization for LLM prompts to prevent prompt injection.
+
+Mirrors agents/shared/sanitize.py — kept in sync for the backend package.
+"""
 
 import re
 import unicodedata

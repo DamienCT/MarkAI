@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ChannelPreview } from "@/components/content/ChannelPreview";
 import { ApprovalActions } from "@/components/approval/ApprovalActions";
 import { api } from "@/lib/api";
+import { useRequireRole } from "@/lib/hooks";
 import { formatRelativeTime, statusColor } from "@/lib/utils";
 import type { Approval, Brand } from "@/types";
 
@@ -23,6 +24,7 @@ interface ApprovalWithExtra extends Approval {
 }
 
 export default function ApprovalsPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("editor");
   const [approvals, setApprovals] = useState<ApprovalWithExtra[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [loading, setLoading] = useState(true);

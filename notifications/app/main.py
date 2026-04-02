@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 from enum import Enum
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from app.config import settings
 from app.portal import publish_notification, sse_stream
 from app.teams import send_approval_notification, send_failure_alert, send_teams_message
 
@@ -109,8 +110,13 @@ async def _handle_portal(req: NotifyRequest) -> NotifyResponse:
 
 
 @app.get("/stream/{user_id}")
-async def stream_notifications(user_id: str):
+async def stream_notifications(user_id: str, token: str = Query(...)):
     """SSE endpoint for real-time in-app notifications for a specific user."""
+    if not settings.NOTIFICATIONS_AUTH_TOKEN:
+        # No token configured — allow (dev mode)
+        pass
+    elif token != settings.NOTIFICATIONS_AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid token")
     return EventSourceResponse(sse_stream(user_id))
 
 

@@ -102,9 +102,25 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
+
+# Security headers middleware
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Global exception handler — ensures CORS headers are present on 500 errors
 from fastapi import Request  # noqa: E402
@@ -122,7 +138,19 @@ async def global_exception_handler(request: Request, exc: Exception):
         for line in tb_text.splitlines()
         if not any(
             s in line.lower()
-            for s in ("secret", "password", "api_key", "token", "credential")
+            for s in (
+                "secret",
+                "password",
+                "api_key",
+                "token",
+                "credential",
+                "connection_string",
+                "private_key",
+                "signing_key",
+                "access_key",
+                "bearer",
+                "client_secret",
+            )
         )
     )
     logger.error(
@@ -159,7 +187,7 @@ else:
     logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set; OpenTelemetry disabled")
 
 # Prometheus metrics
-Instrumentator().instrument(app).expose(app)
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 # Mount all v1 routers
 app.include_router(api_router)

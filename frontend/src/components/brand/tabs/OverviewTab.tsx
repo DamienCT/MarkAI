@@ -452,6 +452,35 @@ export function OverviewTab({
               <p className="text-sm text-muted-foreground">Created</p>
               <p className="text-sm">{formatDate(brand.created_at)}</p>
             </div>
+            {/* Brand Colors */}
+            {(() => {
+              const palette = brand.color_palette as { primary?: string; secondary?: string; accent?: string } | undefined;
+              if (!palette?.primary && !palette?.secondary && !palette?.accent) return null;
+              return (
+                <div>
+                  <p className="text-sm text-muted-foreground mb-2">Brand Colors</p>
+                  <div className="flex items-center gap-3">
+                    {([
+                      { key: "primary" as const, label: "Primary" },
+                      { key: "secondary" as const, label: "Secondary" },
+                      { key: "accent" as const, label: "Accent" },
+                    ] as const).map(({ key, label }) => {
+                      const hex = palette?.[key];
+                      if (!hex) return null;
+                      return (
+                        <div key={key} className="flex items-center gap-1.5" title={`${label}: ${hex}`}>
+                          <span
+                            className="inline-block h-5 w-5 rounded-full border border-border shadow-sm"
+                            style={{ backgroundColor: hex }}
+                          />
+                          <span className="text-xs font-mono text-muted-foreground uppercase">{hex}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </CardContent>
         </Card>
 

@@ -34,6 +34,8 @@ class User(Base):
 
     # Relationships
     notifications = relationship("Notification", back_populates="user")
+    reviewed_approvals = relationship("Approval", back_populates="reviewer", foreign_keys="[Approval.reviewer_id]")
+    created_prompt_versions = relationship("PromptVersion", back_populates="creator", foreign_keys="[PromptVersion.created_by]")
 
 
 class Notification(Base):
@@ -43,12 +45,12 @@ class Notification(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     notification_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    channel: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel: Mapped[str] = mapped_column(String(50), nullable=False, default="in_app")
     reference_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     reference_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
@@ -75,10 +77,10 @@ class AuditLog(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    action: Mapped[str] = mapped_column(String(255), nullable=False)
-    entity_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(100), nullable=False)
     entity_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
@@ -98,7 +100,7 @@ class ScheduledJobLog(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     job_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    job_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    job_type: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

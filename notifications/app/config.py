@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     VALKEY_PORT: int = 6379
     VALKEY_PASSWORD: str = ""
 
+    # --- Notifications Auth ---
+    NOTIFICATIONS_AUTH_TOKEN: str = ""
+
     # --- Microsoft Teams ---
     TEAMS_WEBHOOK_URL: str = ""
 

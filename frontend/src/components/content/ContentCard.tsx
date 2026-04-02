@@ -6,18 +6,8 @@ import { Calendar, FileText } from "lucide-react";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
+import { STATUS_COLORS } from "@/lib/constants";
 import type { CalendarItem } from "@/types";
-
-const STATUS_COLORS: Record<string, string> = {
-  queued: "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200",
-  working: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200",
-  in_review: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
-  reworking: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
-  approved: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200",
-  scheduled: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-  published: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-  failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-};
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "Queued", working: "Working", in_review: "In Review",

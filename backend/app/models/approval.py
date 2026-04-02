@@ -15,10 +15,10 @@ class Approval(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     content_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("content.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("content.id", ondelete="CASCADE"), nullable=False
     )
     calendar_item_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("calendar_items.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("calendar_items.id", ondelete="CASCADE"), nullable=False
     )
     reviewer_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
@@ -41,4 +41,4 @@ class Approval(Base):
     # Relationships
     content = relationship("Content", back_populates="approvals")
     calendar_item = relationship("CalendarItem", back_populates="approvals")
-    reviewer = relationship("User")
+    reviewer = relationship("User", back_populates="reviewed_approvals")

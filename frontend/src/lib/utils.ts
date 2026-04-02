@@ -60,6 +60,32 @@ export function statusColor(status: string): string {
   return map[status.toLowerCase()] || "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300";
 }
 
+export function sanitizeImageUrl(url: string): string {
+  if (!url) return "";
+  const trimmed = url.trim().toLowerCase();
+  if (
+    trimmed.startsWith("javascript:") ||
+    trimmed.startsWith("data:text/html") ||
+    trimmed.startsWith("vbscript:")
+  ) {
+    return "";
+  }
+  // Allow https, http, absolute paths, and relative paths
+  if (
+    url.startsWith("https://") ||
+    url.startsWith("http://") ||
+    url.startsWith("/") ||
+    (!url.includes(":"))
+  ) {
+    return url;
+  }
+  // Allow data:image/* URLs (safe image data URIs)
+  if (trimmed.startsWith("data:image/")) {
+    return url;
+  }
+  return "";
+}
+
 export function platformIcon(platform: string): string {
   const map: Record<string, string> = {
     instagram: "Instagram",
@@ -68,6 +94,7 @@ export function platformIcon(platform: string): string {
     linkedin: "Linkedin",
     tiktok: "Music2",
     youtube: "Youtube",
+    x: "Twitter",
   };
   return map[platform.toLowerCase()] || "Globe";
 }

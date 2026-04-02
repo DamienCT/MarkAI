@@ -3,6 +3,7 @@ from typing import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.content import Content
 from app.schemas.content import ContentCreate, ContentUpdate
@@ -20,7 +21,13 @@ async def list_content(
     skip: int = 0,
     limit: int = 100,
 ) -> Sequence[Content]:
-    stmt = select(Content).offset(skip).limit(limit).order_by(Content.created_at.desc())
+    stmt = (
+        select(Content)
+        .options(selectinload(Content.calendar_item), selectinload(Content.brand))
+        .offset(skip)
+        .limit(limit)
+        .order_by(Content.created_at.desc())
+    )
     if brand_id is not None:
         stmt = stmt.where(Content.brand_id == brand_id)
     if is_current is not None:

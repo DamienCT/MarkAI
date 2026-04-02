@@ -89,3 +89,5 @@ class Brand(Base):
     calendar_items = relationship("CalendarItem", back_populates="brand")
     competitors = relationship("Competitor", back_populates="brand")
     agent_runs = relationship("AgentRun", back_populates="brand")
+    content_items = relationship("Content", back_populates="brand", foreign_keys="[Content.brand_id]")
+    engagement_metrics = relationship("EngagementMetric", back_populates="brand", foreign_keys="[EngagementMetric.brand_id]")

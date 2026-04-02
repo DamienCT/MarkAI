@@ -63,7 +63,7 @@ async def search_entra_users(
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Failed to search Entra ID users: {exc}",
+            detail="Failed to search Entra ID users",
         )
     return results
 
@@ -89,13 +89,31 @@ async def grant_access(
     if data.role not in ("admin", "manager", "editor", "viewer"):
         raise HTTPException(status_code=400, detail="Invalid role")
 
+    # Prevent granting admin role unless the current user is in the security group
+    if data.role == "admin":
+        from app.auth.entra import check_user_in_security_group
+
+        if not settings.ADMIN_SECURITY_GROUP_ID:
+            raise HTTPException(
+                status_code=403,
+                detail="Admin security group not configured; cannot grant admin role",
+            )
+        is_in_group = await check_user_in_security_group(
+            current_user.entra_id, settings.ADMIN_SECURITY_GROUP_ID
+        )
+        if not is_in_group:
+            raise HTTPException(
+                status_code=403,
+                detail="Only security group members can grant admin role",
+            )
+
     # Fetch user details from Graph API
     try:
         graph_users = await get_graph_users_by_ids(data.user_ids)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Failed to fetch user details from Entra ID: {exc}",
+            detail="Failed to fetch user details from Entra ID",
         )
 
     graph_user_map: dict[str, dict[str, Any]] = {u["id"]: u for u in graph_users}
@@ -117,11 +135,21 @@ async def grant_access(
         existing = result.scalar_one_or_none()
 
         if existing:
+            old_role = existing.role
             existing.is_active = True
             existing.role = data.role
             existing.display_name = display_name
             if email:
                 existing.email = email
+            if old_role != data.role:
+                logger.info(
+                    "AUDIT: User %s role changed from '%s' to '%s' by %s (%s)",
+                    user_id,
+                    old_role,
+                    data.role,
+                    current_user.id,
+                    current_user.email,
+                )
         else:
             new_user = User(
                 entra_id=user_id,
@@ -131,6 +159,13 @@ async def grant_access(
                 is_active=True,
             )
             db.add(new_user)
+            logger.info(
+                "AUDIT: New user %s granted role '%s' by %s (%s)",
+                user_id,
+                data.role,
+                current_user.id,
+                current_user.email,
+            )
 
         granted.append(user_id)
 

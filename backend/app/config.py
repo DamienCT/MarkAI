@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = "markai-minio"
     MINIO_SECRET_KEY: str = "change-me"
     MINIO_BUCKET: str = "markai-assets"
+    MINIO_SECURE: bool = False
 
     # --- Valkey ---
     VALKEY_HOST: str = "valkey"
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
 
     # --- NATS ---
     NATS_URL: str = "nats://nats:4222"
+    NATS_AUTH_TOKEN: str = ""
 
     # --- LiteLLM ---
     LITELLM_BASE_URL: str = "http://litellm:4000"
@@ -163,4 +165,12 @@ if settings.MARKAI_ENV == "production":
         raise RuntimeError(
             f"Refusing to start in production without Azure AD config: "
             f"{', '.join(_missing_auth)}. Set these in .env."
+        )
+    # Validate additional required production settings
+    _REQUIRED_PROD = ["N8N_WEBHOOK_SECRET", "FRONTEND_URL"]
+    _missing_prod = [f for f in _REQUIRED_PROD if not getattr(settings, f, "")]
+    if _missing_prod:
+        raise RuntimeError(
+            f"Refusing to start in production without required config: "
+            f"{', '.join(_missing_prod)}. Set these in .env."
         )

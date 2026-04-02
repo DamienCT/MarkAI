@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { useRequireRole } from "@/lib/hooks";
 import type { AIModel, AIModelCategory } from "@/types";
 
 interface DiscoverResult {
@@ -23,6 +24,7 @@ interface HealthStatus {
 }
 
 export default function ProvidersPage() {
+  const { hasAccess, loading: roleLoading } = useRequireRole("manager");
   const [categories, setCategories] = useState<AIModelCategory[]>([]);
   const [modelsByCategory, setModelsByCategory] = useState<Record<string, AIModel[]>>({});
   const [loading, setLoading] = useState(true);

@@ -27,11 +27,14 @@ class NATSConsumer:
 
     async def connect(self) -> None:
         """Connect to the NATS server."""
-        self._nc = await nats.connect(
-            settings.NATS_URL,
-            reconnect_time_wait=2,
-            max_reconnect_attempts=-1,
-        )
+        connect_opts: dict = {
+            "servers": settings.NATS_URL,
+            "reconnect_time_wait": 2,
+            "max_reconnect_attempts": -1,
+        }
+        if settings.NATS_AUTH_TOKEN:
+            connect_opts["token"] = settings.NATS_AUTH_TOKEN
+        self._nc = await nats.connect(**connect_opts)
         self._js = self._nc.jetstream()
         logger.info("Connected to NATS at %s", settings.NATS_URL)
 

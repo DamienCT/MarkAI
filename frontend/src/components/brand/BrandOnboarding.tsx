@@ -160,7 +160,9 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
 
   const renderStepContent = (stepId: string) => {
     switch (stepId) {
-      case "basic_info":
+      case "basic_info": {
+        const palette = brand.color_palette as { primary?: string; secondary?: string; accent?: string } | undefined;
+        const hasColors = !!(palette?.primary || palette?.secondary || palette?.accent);
         return (
           <div className="space-y-3">
             <div className="text-sm">
@@ -174,6 +176,27 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
               <span className={brand.description ? "font-medium" : "text-muted-foreground italic"}>
                 {brand.description || "Not set"}
               </span>
+            </div>
+            <div className="text-sm">
+              <span className="text-muted-foreground">Brand Colors:</span>{" "}
+              {hasColors ? (
+                <span className="inline-flex items-center gap-1.5 ml-1">
+                  {(["primary", "secondary", "accent"] as const).map((key) => {
+                    const hex = palette?.[key];
+                    if (!hex) return null;
+                    return (
+                      <span
+                        key={key}
+                        className="inline-block h-4 w-4 rounded-full border border-border shadow-sm"
+                        style={{ backgroundColor: hex }}
+                        title={`${key}: ${hex}`}
+                      />
+                    );
+                  })}
+                </span>
+              ) : (
+                <span className="text-muted-foreground italic">Not set</span>
+              )}
             </div>
             <div className="flex gap-2">
               <Button
@@ -197,6 +220,7 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboa
             </div>
           </div>
         );
+      }
 
       case "business_central":
         return (

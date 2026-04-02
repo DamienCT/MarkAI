@@ -1,5 +1,4 @@
 import logging
-import re
 import uuid
 from datetime import datetime, timezone
 
@@ -25,31 +24,8 @@ from app.services import brand_service, nats_service  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# ── Prompt sanitization (mirrors agents/shared/sanitize.py) ──────────────
-_INJECTION_PATTERNS = [
-    re.compile(p)
-    for p in [
-        r"(?i)ignore\s+(all\s+)?previous\s+instructions",
-        r"(?i)system\s*:\s*",
-        r"(?i)you\s+are\s+now\s+",
-        r"(?i)forget\s+(all\s+)?previous",
-        r"(?i)disregard\s+(all\s+)?",
-        r"(?i)new\s+instructions?\s*:",
-        r"(?i)\[INST\]",
-        r"(?i)<\|im_start\|>",
-        r"(?i)<<SYS>>",
-    ]
-]
-
-
-def _sanitize(text: str, max_length: int = 10000) -> str:
-    """Sanitize user-provided text before including in an LLM prompt."""
-    if not text:
-        return ""
-    text = text[:max_length]
-    for pattern in _INJECTION_PATTERNS:
-        text = pattern.sub("[FILTERED]", text)
-    return text
+# ── Prompt sanitization (shared implementation) ──────────────────────────
+from app.utils.sanitize import sanitize_for_prompt as _sanitize  # noqa: E402
 
 
 def _is_retryable_llm(exc: BaseException) -> bool:
@@ -687,7 +663,7 @@ async def generate_brand_fields(
         raise HTTPException(status_code=502, detail="AI returned invalid JSON response")
     except Exception as exc:
         logger.error("AI field generation failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"AI generation failed: {str(exc)}")
+        raise HTTPException(status_code=502, detail="AI generation failed")
 
 
 class AIRewriteFieldRequest(BaseModel):
@@ -762,4 +738,4 @@ async def rewrite_brand_field(
 
     except Exception as exc:
         logger.error("AI rewrite failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"AI rewrite failed: {str(exc)}")
+        raise HTTPException(status_code=502, detail="AI rewrite failed")

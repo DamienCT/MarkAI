@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -18,7 +19,7 @@ async def _get_jwks_client(tenant_id: str) -> PyJWKClient:
     global _jwks_client
     if _jwks_client is None:
         jwks_url = f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
-        _jwks_client = PyJWKClient(jwks_url)
+        _jwks_client = PyJWKClient(jwks_url, lifespan=3600)
     return _jwks_client
 
 
@@ -29,7 +30,14 @@ async def validate_entra_token(token: str) -> dict[str, Any]:
     Raises jwt.exceptions.PyJWTError or related errors on failure.
     """
     client = await _get_jwks_client(settings.AZURE_AD_TENANT_ID)
-    signing_key = await asyncio.to_thread(client.get_signing_key_from_jwt, token)
+    try:
+        signing_key = await asyncio.to_thread(client.get_signing_key_from_jwt, token)
+    except jwt.exceptions.PyJWKClientError:
+        # Key not found — invalidate cache and retry once (handles key rotation)
+        logger.info("JWKS key not found, invalidating cache and retrying")
+        invalidate_jwks_cache()
+        client = await _get_jwks_client(settings.AZURE_AD_TENANT_ID)
+        signing_key = await asyncio.to_thread(client.get_signing_key_from_jwt, token)
 
     issuer = f"https://login.microsoftonline.com/{settings.AZURE_AD_TENANT_ID}/v2.0"
 
@@ -153,10 +161,18 @@ async def get_graph_users_by_ids(user_ids: list[str]) -> list[dict[str, Any]]:
     if not user_ids:
         return []
 
+    # Validate each user_id is a valid UUID to prevent OData injection
+    _UUID_RE = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+    )
+    valid_ids = [uid for uid in user_ids if _UUID_RE.match(uid)]
+    if not valid_ids:
+        return []
+
     token = await get_graph_api_token()
 
     # Use $filter with 'in' operator for batch lookup
-    ids_filter = ",".join(f"'{uid}'" for uid in user_ids)
+    ids_filter = ",".join(f"'{uid}'" for uid in valid_ids)
     graph_url = "https://graph.microsoft.com/v1.0/users"
     params = {
         "$filter": f"id in ({ids_filter})",

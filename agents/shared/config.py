@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # ── NATS ─────────────────────────────────────────────────────────────
     NATS_URL: str = "nats://nats:4222"
+    NATS_AUTH_TOKEN: str = ""
 
     # ── Postgres ─────────────────────────────────────────────────────────
     POSTGRES_HOST: str = "postgres"

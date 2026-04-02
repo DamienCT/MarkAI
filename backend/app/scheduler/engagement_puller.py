@@ -57,6 +57,10 @@ async def pull_all_engagement() -> None:
             select(CalendarItem)
             .where(CalendarItem.status == "published")
             .where(CalendarItem.published_at >= cutoff)
+            .options(
+                selectinload(CalendarItem.content_items),
+                selectinload(CalendarItem.brand),
+            )
         )
 
         calendar_items = result.scalars().all()

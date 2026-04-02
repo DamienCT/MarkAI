@@ -34,7 +34,7 @@ class PromptVersion(Base):
     performance_score: Mapped[Decimal | None] = mapped_column(
         Numeric(7, 4), nullable=True
     )
-    a_b_group: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    a_b_group: Mapped[str | None] = mapped_column(String(1), nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
@@ -49,5 +49,5 @@ class PromptVersion(Base):
     )
 
     # Relationships
-    creator = relationship("User")
+    creator = relationship("User", back_populates="created_prompt_versions")
     agent_runs = relationship("AgentRun", back_populates="prompt_version")

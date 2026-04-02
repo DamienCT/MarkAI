@@ -27,6 +27,10 @@ async def check_due_content() -> None:
             select(CalendarItem)
             .where(CalendarItem.status == "scheduled")
             .where(CalendarItem.scheduled_at <= func.now())
+            .options(
+                selectinload(CalendarItem.content_items),
+                selectinload(CalendarItem.brand),
+            )
         )
 
         due_items = result.scalars().all()

@@ -3,12 +3,56 @@ import uuid
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.auth.models import User
 from app.deps import get_current_user, get_db
 from app.models.agent_run import AgentRun
 
 router = APIRouter()
+
+
+@router.get("/runs/active")
+async def list_active_agent_runs(
+    agent_type: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return currently running agent runs with step progress info.
+
+    Used by the frontend workflow tracker to show real-time pipeline progress.
+    Includes the calendar_item_id from input_payload and current_step from output_payload.
+    """
+    stmt = (
+        select(AgentRun)
+        .where(AgentRun.status == "running")
+        .order_by(AgentRun.started_at.desc())
+        .limit(50)
+    )
+    if agent_type:
+        stmt = stmt.where(AgentRun.agent_type == agent_type)
+
+    result = await db.execute(stmt)
+    runs = result.scalars().all()
+
+    return [
+        {
+            "id": str(run.id),
+            "agent_type": run.agent_type,
+            "trigger": run.trigger,
+            "brand_id": str(run.brand_id) if run.brand_id else None,
+            "status": run.status,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "input_payload": run.input_payload,
+            "output_payload": run.output_payload,
+            "calendar_item_id": (run.input_payload or {}).get("calendar_item_id"),
+            "current_step": (run.output_payload or {}).get("current_step"),
+            "step_index": (run.output_payload or {}).get("step_index"),
+            "total_steps": (run.output_payload or {}).get("total_steps", 10),
+            "created_at": run.created_at.isoformat(),
+        }
+        for run in runs
+    ]
 
 
 @router.get("/runs")
