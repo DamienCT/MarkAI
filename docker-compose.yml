@@ -181,7 +181,7 @@ services:
 
   # ── LiteLLM (LLM Gateway) ─────────────────────────────────────
   litellm:
-    image: ghcr.io/berriai/litellm:v1.83.0
+    image: ghcr.io/berriai/litellm:v1.82.3-stable.patch.2
     container_name: markai-litellm
     restart: unless-stopped
     deploy:
