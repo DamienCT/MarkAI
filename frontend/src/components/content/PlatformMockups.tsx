@@ -49,9 +49,13 @@ export function PlatformMockups({ mockupUrls, imageBaseUrl = "" }: PlatformMocku
           </TabsList>
 
           {platforms.map((p) => {
-            const url = mockupUrls[p].startsWith("http")
+            const fullUrl = mockupUrls[p].startsWith("http")
               ? mockupUrls[p]
               : `${imageBaseUrl}/${mockupUrls[p]}`;
+            // Thumbnail: 400px wide, JPEG quality 70 for fast preview
+            const thumbUrl = fullUrl.includes("?")
+              ? `${fullUrl}&w=400&q=70`
+              : `${fullUrl}?w=400&q=70`;
 
             return (
               <TabsContent key={p} value={p} className="mt-4">
@@ -59,7 +63,7 @@ export function PlatformMockups({ mockupUrls, imageBaseUrl = "" }: PlatformMocku
                   <DialogTrigger asChild>
                     <div className="cursor-pointer mx-auto max-w-[280px] rounded-2xl border-2 border-muted shadow-lg overflow-hidden hover:shadow-xl transition-shadow bg-black">
                       <img
-                        src={url}
+                        src={thumbUrl}
                         alt={`${PLATFORM_LABELS[p] || p} preview`}
                         className="w-full h-auto"
                         loading="lazy"
@@ -68,7 +72,7 @@ export function PlatformMockups({ mockupUrls, imageBaseUrl = "" }: PlatformMocku
                   </DialogTrigger>
                   <DialogContent className="max-w-md p-2 overflow-hidden bg-black">
                     <img
-                      src={url}
+                      src={fullUrl}
                       alt={`${PLATFORM_LABELS[p] || p} preview`}
                       className="w-full h-auto rounded-lg"
                       loading="lazy"

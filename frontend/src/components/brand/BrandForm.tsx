@@ -155,6 +155,10 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
   }, []);
 
   useEffect(() => {
+    fetchCompanies();
+  }, [fetchCompanies]);
+
+  useEffect(() => {
     if (bcCompany) fetchLocations(bcCompany);
     else setAvailableLocations([]);
   }, [bcCompany, fetchLocations]);
@@ -599,11 +603,8 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
           <div className="space-y-2">
             <Label htmlFor="bc-company">Select BC Company</Label>
             <Select
-              value={bcCompany ?? ""}
+              value={bcCompany ?? "__skip__"}
               onValueChange={handleCompanyChange}
-              onOpenChange={(open) => {
-                if (open && availableCompanies.length === 0) fetchCompanies();
-              }}
             >
               <SelectTrigger className="flex-1">
                 <SelectValue placeholder={loadingCompanies ? "Loading companies..." : "Select a company"} />

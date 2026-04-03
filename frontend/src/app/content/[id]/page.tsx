@@ -171,6 +171,10 @@ export default function ContentDetailPage() {
   const contentImageUrl = imagePath
     ? (imagePath.startsWith("http") ? imagePath : `${API_BASE_URL}/api/v1/files/${imagePath}`)
     : undefined;
+  // Thumbnail for faster preview loading (600px wide, quality 75)
+  const contentThumbUrl = contentImageUrl
+    ? `${contentImageUrl}${contentImageUrl.includes("?") ? "&" : "?"}w=600&q=75`
+    : undefined;
 
   return (
     <div className="space-y-6">
@@ -216,7 +220,7 @@ export default function ContentDetailPage() {
                 brandHandle={brandHandle}
                 caption={caption}
                 hashtags={hashtags}
-                imageUrl={contentImageUrl}
+                imageUrl={contentThumbUrl || contentImageUrl}
                 cta={content.cta || content.cta_text}
               />
             </div>

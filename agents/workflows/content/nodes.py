@@ -869,11 +869,11 @@ async def _replace_product_in_generated_image(
                 product_image_data = resp.content
         else:
             # MinIO object path (e.g., "products/brand_id/image.png")
-            # Try to download from known buckets
-            bucket = product_image_url.split("/")[0] if "/" in product_image_url else "content-images"
-            obj = product_image_url[len(bucket) + 1:] if "/" in product_image_url else product_image_url
+            # These are stored in the default bucket, not in a bucket named "products"
+            from shared.config import settings as _storage_cfg
+            default_bucket = _storage_cfg.MINIO_BUCKET if hasattr(_storage_cfg, "MINIO_BUCKET") else "markai-assets"
             try:
-                product_image_data = await async_download_file(bucket, obj)
+                product_image_data = await async_download_file(default_bucket, product_image_url)
             except Exception:
                 # Fallback: try via backend file proxy
                 from shared.config import settings as _cfg
