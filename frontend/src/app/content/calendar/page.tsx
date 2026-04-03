@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,19 +12,33 @@ import type { CalendarItem } from "@/types";
 export default function ContentCalendarPage() {
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [brandFilter, setBrandFilter] = useState<string | null>(null);
+
+  const fetchCalendar = useCallback(async (brandId?: string | null) => {
+    setLoading(true);
+    try {
+      const params: Record<string, string> = {};
+      if (brandId) params.brand_id = brandId;
+      const data = await api.get<CalendarItem[]>("/api/v1/calendar", params);
+      setItems(Array.isArray(data) ? data : []);
+    } catch {
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function fetchCalendar() {
-      try {
-        const data = await api.get<CalendarItem[]>("/api/v1/calendar");
-        setItems(Array.isArray(data) ? data : []);
-      } catch {
-        setItems([]);
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchCalendar();
+    fetchCalendar(brandFilter);
+  }, [fetchCalendar, brandFilter]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const brandId = (e as CustomEvent).detail?.brandId;
+      setBrandFilter(brandId || null);
+    };
+    window.addEventListener("brand-changed", handler);
+    return () => window.removeEventListener("brand-changed", handler);
   }, []);
 
   const handleReschedule = async (itemId: string, newDate: string) => {

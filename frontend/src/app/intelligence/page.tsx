@@ -325,6 +325,13 @@ export default function IntelligencePage() {
 
   useEffect(() => {
     api.get<BrandOption[]>("/api/v1/brands").then(setBrands).catch(() => {});
+
+    const handler = (e: Event) => {
+      const brandId = (e as CustomEvent).detail?.brandId;
+      setSelectedBrand(brandId || "all");
+    };
+    window.addEventListener("brand-changed", handler);
+    return () => window.removeEventListener("brand-changed", handler);
   }, []);
 
   useEffect(() => {

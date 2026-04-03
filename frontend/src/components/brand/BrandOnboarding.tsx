@@ -17,6 +17,8 @@ interface BrandOnboardingProps {
   brand: Brand;
   onComplete: () => void;
   onNavigateTab?: (tab: string) => void;
+  initialHasProducts?: boolean;
+  initialCompetitorCount?: number;
 }
 
 interface StepDef {
@@ -37,13 +39,13 @@ const STEPS: StepDef[] = [
   { id: "review", label: "Review & Activate", icon: <Rocket className="h-4 w-4" />, description: "Activate the content factory" },
 ];
 
-export function BrandOnboarding({ brand, onComplete, onNavigateTab }: BrandOnboardingProps) {
+export function BrandOnboarding({ brand, onComplete, onNavigateTab, initialHasProducts, initialCompetitorCount }: BrandOnboardingProps) {
   const [expandedStep, setExpandedStep] = useState<string | null>("basic_info");
   const [triggering, setTriggering] = useState<string | null>(null);
   const [activating, setActivating] = useState(false);
-  const [hasProducts, setHasProducts] = useState(false);
-  const [checkingProducts, setCheckingProducts] = useState(true);
-  const [competitorCount, setCompetitorCount] = useState(0);
+  const [hasProducts, setHasProducts] = useState(initialHasProducts ?? false);
+  const [checkingProducts, setCheckingProducts] = useState(initialHasProducts === undefined);
+  const [competitorCount, setCompetitorCount] = useState(initialCompetitorCount ?? 0);
 
   // Check if products exist
   useEffect(() => {

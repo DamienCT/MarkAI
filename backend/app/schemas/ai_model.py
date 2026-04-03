@@ -54,3 +54,5 @@ class DiscoverModelsResponse(BaseModel):
     discovered: int
     updated: int
     unavailable: int
+    total_from_api: int = 0
+    total_in_db: int = 0

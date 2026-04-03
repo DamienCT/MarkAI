@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import {
   format,
   startOfMonth,
@@ -74,10 +75,15 @@ function getStatusStyle(status: string) {
 const MAX_VISIBLE_ITEMS = 4;
 
 export function CalendarView({ items, onReschedule }: CalendarViewProps) {
+  const router = useRouter();
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [dragItem, setDragItem] = useState<CalendarItem | null>(null);
   const [expandedDay, setExpandedDay] = useState<Date | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+
+  const handleItemClick = useCallback((item: CalendarItem) => {
+    router.push(`/content/${item.id}`);
+  }, [router]);
 
   // Track viewport width for responsive layout
   React.useEffect(() => {
@@ -137,8 +143,9 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
         key={item.id}
         draggable
         onDragStart={() => handleDragStart(item)}
+        onClick={() => handleItemClick(item)}
         className={cn(
-          "rounded-sm px-1.5 py-0.5 text-[10px] leading-tight cursor-move transition-opacity hover:opacity-80 border-l-2",
+          "rounded-sm px-1.5 py-0.5 text-[10px] leading-tight cursor-pointer transition-opacity hover:opacity-80 border-l-2",
           style.bg,
           style.text,
           brandColor,
@@ -222,8 +229,9 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
                     return (
                       <div
                         key={item.id}
+                        onClick={() => handleItemClick(item)}
                         className={cn(
-                          "rounded-md px-3 py-2 text-xs border-l-2",
+                          "rounded-md px-3 py-2 text-xs border-l-2 cursor-pointer hover:opacity-80 transition-opacity",
                           style.bg,
                           style.text,
                           brandColor,
@@ -348,8 +356,9 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
                 return (
                   <div
                     key={item.id}
+                    onClick={() => handleItemClick(item)}
                     className={cn(
-                      "rounded-sm px-2 py-1.5 text-xs border-l-2",
+                      "rounded-sm px-2 py-1.5 text-xs border-l-2 cursor-pointer hover:opacity-80 transition-opacity",
                       style.bg,
                       style.text,
                       brandColor,

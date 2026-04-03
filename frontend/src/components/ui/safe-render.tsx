@@ -1,5 +1,6 @@
 import React, { type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Badge } from "@/components/ui/badge";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ export function renderValue(value: unknown): ReactNode {
       return (
         <div className="prose prose-sm max-w-none dark:prose-invert">
           <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
             skipHtml
             disallowedElements={['script', 'iframe', 'object', 'embed', 'form']}
             unwrapDisallowed

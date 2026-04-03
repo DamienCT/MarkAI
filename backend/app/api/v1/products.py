@@ -268,16 +268,61 @@ async def fetch_product_images(
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    from app.services.gemini_service import search_product_images
+    # Use the browser worker (Playwright) for reliable image search
+    import httpx
 
-    results = await search_product_images(
-        product_name=product.name,
-        product_description=product.description or "",
-        max_results=3,
-    )
+    vendor_name = ""
+    if product.attributes and isinstance(product.attributes, dict):
+        vendor_name = product.attributes.get("vendor_name", "")
 
-    if not results:
-        return {"product_id": str(product_id), "images_found": 0, "images": []}
+    image_url = None
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{settings.BROWSER_WORKER_URL}/capture/product-image",
+                json={
+                    "vendor_name": vendor_name,
+                    "product_name": product.name,
+                },
+                headers={"X-API-Key": getattr(settings, "BROWSER_WORKER_API_KEY", "") or "internal"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            image_url = data.get("image_url")
+    except Exception as e:
+        logger.warning("Browser worker image search failed for '%s': %s", product.name, e)
+
+    if not image_url:
+        # Fallback: try the DuckDuckGo scraper
+        from app.services.gemini_service import search_product_images
+
+        results = await search_product_images(
+            product_name=product.name,
+            product_description=product.description or "",
+            max_results=3,
+        )
+        if not results:
+            return {"product_id": str(product_id), "images_found": 0, "images": []}
+    else:
+        # Download the image from the URL the browser worker found
+        results = []
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(image_url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                })
+                ct = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+                if resp.status_code == 200 and len(resp.content) > 5000:
+                    results.append({
+                        "url": image_url,
+                        "content_type": ct,
+                        "size_bytes": len(resp.content),
+                        "image_data": resp.content,
+                    })
+        except Exception as e:
+            logger.warning("Failed to download image from %s: %s", image_url, e)
+        if not results:
+            return {"product_id": str(product_id), "images_found": 0, "images": []}
 
     # Save images to MinIO and build gallery entries
     gallery = list(product.image_urls) if isinstance(product.image_urls, list) else []

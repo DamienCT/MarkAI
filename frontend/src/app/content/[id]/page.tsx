@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, CalendarClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -40,6 +40,9 @@ export default function ContentDetailPage() {
   const [submittingApproval, setSubmittingApproval] = useState(false);
   const [imagePrompt, setImagePrompt] = useState("");
   const [regeneratingImage, setRegeneratingImage] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("09:00");
+  const [scheduling, setScheduling] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -130,6 +133,48 @@ export default function ContentDetailPage() {
       setSubmittingApproval(false);
     }
   }, [approvals, approvalComments, content]);
+
+  const handleSchedule = useCallback(async () => {
+    if (!calendarItem?.id || !scheduleDate) {
+      toast.error("Please select a date");
+      return;
+    }
+    setScheduling(true);
+    try {
+      const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
+      await api.patch(`/api/v1/calendar/${calendarItem.id}`, {
+        status: "scheduled",
+        scheduled_at: scheduledAt,
+      });
+      toast.success("Content scheduled for publishing");
+      // Refresh calendar item
+      const updated = await api.get<CalendarItem>(`/api/v1/calendar/${calendarItem.id}`);
+      setCalendarItem(updated);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to schedule content";
+      toast.error(detail);
+    } finally {
+      setScheduling(false);
+    }
+  }, [calendarItem, scheduleDate, scheduleTime]);
+
+  const handleDiscard = useCallback(async () => {
+    if (!calendarItem?.id) {
+      toast.error("No calendar item to discard");
+      return;
+    }
+    if (!window.confirm("Are you sure you want to permanently discard this content? This cannot be undone.")) {
+      return;
+    }
+    try {
+      await api.delete(`/api/v1/calendar/${calendarItem.id}`);
+      toast.success("Content discarded");
+      router.push("/content");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to discard content";
+      toast.error(detail);
+    }
+  }, [calendarItem, router]);
 
   if (loading) {
     return (
@@ -259,6 +304,64 @@ export default function ContentDetailPage() {
                     </div>
                   </CardContent>
                 </Card>
+              )}
+
+              {/* Schedule for publishing — visible when content is approved */}
+              {calendarItem && calendarItem.status === "approved" && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <CalendarClock className="h-4 w-4" />
+                      Schedule for Publishing
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-xs text-muted-foreground">Date</label>
+                        <input
+                          type="date"
+                          value={scheduleDate}
+                          onChange={(e) => setScheduleDate(e.target.value)}
+                          min={new Date().toISOString().split("T")[0]}
+                          className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground">Time</label>
+                        <input
+                          type="time"
+                          value={scheduleTime}
+                          onChange={(e) => setScheduleTime(e.target.value)}
+                          className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                      disabled={scheduling || !scheduleDate}
+                      onClick={handleSchedule}
+                    >
+                      {scheduling ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Scheduling...</> : "Schedule & Publish"}
+                    </Button>
+                    <p className="text-[10px] text-muted-foreground">
+                      The content will be sent to n8n for publishing at the scheduled time.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Discard content — visible for in_review and reworking statuses */}
+              {calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="w-full"
+                  onClick={handleDiscard}
+                >
+                  <Trash2 className="mr-1.5 h-4 w-4" />
+                  Discard Content
+                </Button>
               )}
 
               {/* Image regeneration */}

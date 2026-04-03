@@ -940,6 +940,8 @@ export default function BrandDetailPage() {
           <BrandOnboarding
             brand={brand}
             onComplete={handleOnboardingComplete}
+            initialHasProducts={products.length > 0}
+            initialCompetitorCount={competitors.length}
             onNavigateTab={(tab) => {
               setOnboardingOpen(false);
               setActiveTab(tab);

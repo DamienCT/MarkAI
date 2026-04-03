@@ -14,6 +14,8 @@ interface DiscoverResult {
   discovered: number;
   updated: number;
   unavailable: number;
+  total_from_api: number;
+  total_in_db: number;
 }
 
 interface HealthStatus {
@@ -93,7 +95,10 @@ export default function ProvidersPage() {
     try {
       const result = await api.post<DiscoverResult>("/api/v1/providers/discover");
       setDiscoverResult(result);
-      toast.success(`Discovery complete: ${result.discovered} new, ${result.updated} updated`);
+      toast.success(
+        `Discovery complete: ${result.discovered} new, ${result.updated} updated` +
+        (result.total_from_api ? ` (${result.total_from_api} from API, ${result.total_in_db} total)` : "")
+      );
       await fetchData();
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "Discovery failed";
@@ -186,6 +191,12 @@ export default function ProvidersPage() {
               Discovery complete: <strong>{discoverResult.discovered}</strong> new models found,{" "}
               <strong>{discoverResult.updated}</strong> updated,{" "}
               <strong>{discoverResult.unavailable}</strong> marked unavailable.
+              {discoverResult.total_from_api > 0 && (
+                <> Fetched <strong>{discoverResult.total_from_api}</strong> models from OpenAI API ({discoverResult.total_in_db} total available).</>
+              )}
+              {discoverResult.total_from_api === 0 && discoverResult.discovered === 0 && (
+                <span className="text-destructive"> OpenAI API returned 0 models — check your OPENAI_API_KEY.</span>
+              )}
             </p>
           </CardContent>
         </Card>

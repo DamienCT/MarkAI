@@ -1,0 +1,86 @@
+trigger:
+  branches:
+    include:
+      - main
+      - feature/*
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  - stage: Backend
+    jobs:
+      - job: LintAndTest
+        displayName: "Backend Lint & Tests"
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.13"
+
+          - script: |
+              cd backend
+              pip install -e ".[dev]"
+            displayName: "Install dependencies"
+
+          - script: |
+              cd backend
+              ruff check .
+              ruff format --check .
+            displayName: "Ruff lint & format check"
+
+          - script: |
+              cd backend
+              pytest tests/ -v --cov=app --cov-report=term-missing
+            displayName: "Run backend tests"
+
+  - stage: Agents
+    dependsOn: []
+    jobs:
+      - job: Test
+        displayName: "Agents Tests"
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.13"
+
+          - script: |
+              cd agents
+              pip install -e ".[dev]" 2>/dev/null || pip install -e .
+              pip install pytest
+            displayName: "Install dependencies"
+
+          - script: |
+              cd agents
+              pytest tests/ -v
+            displayName: "Run agents tests"
+
+  - stage: Frontend
+    dependsOn: []
+    jobs:
+      - job: LintAndBuild
+        displayName: "Frontend Lint & Build"
+        steps:
+          - task: UseNode@1
+            inputs:
+              version: "22.x"
+
+          - script: |
+              cd frontend
+              npm ci
+            displayName: "Install dependencies"
+
+          - script: |
+              cd frontend
+              npm run lint
+              npx tsc --noEmit
+            displayName: "ESLint & TypeScript check"
+
+          - script: |
+              cd frontend
+              npm run build
+            displayName: "Build"

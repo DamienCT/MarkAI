@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import select, update, cast
+from sqlalchemy import func, select, update, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -202,7 +202,7 @@ async def discover_models() -> dict[str, int]:
 
     if not settings.OPENAI_API_KEY:
         logger.error("OPENAI_API_KEY not configured, skipping model discovery")
-        return {"discovered": 0, "updated": 0, "unavailable": 0}
+        return {"discovered": 0, "updated": 0, "unavailable": 0, "total_from_api": 0, "total_in_db": 0}
 
     # Fetch models from OpenAI
     try:
@@ -315,13 +315,29 @@ async def discover_models() -> dict[str, int]:
     # Invalidate active model cache
     await _cache_delete_pattern("markai:active_model:*")
 
+    # Count total models in DB after discovery
+    async with async_session_factory() as db:
+        count_result = await db.execute(
+            select(func.count()).select_from(AIModel).where(AIModel.is_available == True)
+        )
+        total_in_db = count_result.scalar() or 0
+
     logger.info(
-        "Model discovery complete: %d discovered, %d updated, %d marked unavailable",
+        "Model discovery complete: %d discovered, %d updated, %d marked unavailable, "
+        "%d from API, %d total in DB",
         discovered,
         updated,
         unavailable,
+        len(api_models),
+        total_in_db,
     )
-    return {"discovered": discovered, "updated": updated, "unavailable": unavailable}
+    return {
+        "discovered": discovered,
+        "updated": updated,
+        "unavailable": unavailable,
+        "total_from_api": len(api_models),
+        "total_in_db": total_in_db,
+    }
 
 
 async def get_active_model(category_slug: str) -> str:

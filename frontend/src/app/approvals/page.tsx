@@ -34,6 +34,13 @@ export default function ApprovalsPage() {
   useEffect(() => {
     fetchApprovals();
     api.get<Brand[]>("/api/v1/brands").then(setBrands).catch(() => {});
+
+    const handler = (e: Event) => {
+      const brandId = (e as CustomEvent).detail?.brandId;
+      setBrandFilter(brandId || "all");
+    };
+    window.addEventListener("brand-changed", handler);
+    return () => window.removeEventListener("brand-changed", handler);
   }, []);
 
   async function fetchApprovals() {

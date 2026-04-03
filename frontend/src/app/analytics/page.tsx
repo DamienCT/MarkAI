@@ -120,6 +120,15 @@ export default function AnalyticsPage() {
     return () => controller.abort();
   }, [fetchAnalytics]);
 
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const brandId = (e as CustomEvent).detail?.brandId;
+      setSelectedBrandId(brandId || "all");
+    };
+    window.addEventListener("brand-changed", handler);
+    return () => window.removeEventListener("brand-changed", handler);
+  }, []);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-4">

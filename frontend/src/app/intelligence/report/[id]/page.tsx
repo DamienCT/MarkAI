@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { SafeValue, formatKeyValue } from "@/components/ui/safe-render";
 import {
   ArrowLeft,
@@ -1664,7 +1665,7 @@ export default function ReportPage() {
             <CardContent>
               {typeof calendarSummary === "string" ? (
                 <div className="prose prose-sm max-w-none dark:prose-invert">
-                  <ReactMarkdown>{calendarSummary}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{calendarSummary}</ReactMarkdown>
                 </div>
               ) : (
                 <div className="text-sm">
@@ -1741,7 +1742,7 @@ export default function ReportPage() {
             <CardContent>
               <div className="prose max-w-none dark:prose-invert prose-headings:text-foreground prose-headings:border-b prose-headings:pb-2 prose-headings:mb-4 prose-h2:text-lg prose-h2:border-primary/20 prose-h3:text-base prose-h3:border-none prose-p:text-muted-foreground prose-strong:text-foreground prose-li:text-muted-foreground prose-table:text-sm prose-th:bg-muted prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-hr:border-primary/20">
                 {typeof strategyDocument === "string"
-                  ? <ReactMarkdown>{strategyDocument}</ReactMarkdown>
+                  ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{strategyDocument}</ReactMarkdown>
                   : <SafeValue value={strategyDocument} />}
               </div>
             </CardContent>
