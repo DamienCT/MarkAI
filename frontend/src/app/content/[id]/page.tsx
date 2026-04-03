@@ -62,6 +62,12 @@ export default function ContentDetailPage() {
             try {
               const calItem = await api.get<CalendarItem>(`/api/v1/calendar/${contentData.calendar_item_id}`);
               setCalendarItem(calItem);
+              // Pre-fill schedule date/time from calendar item
+              if (calItem.scheduled_at) {
+                const d = new Date(calItem.scheduled_at);
+                setScheduleDate(d.toLocaleDateString("en-CA")); // YYYY-MM-DD format
+                setScheduleTime(d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })); // HH:MM format
+              }
             } catch { /* optional */ }
           }
           // Fetch approvals
@@ -234,7 +240,7 @@ export default function ContentDetailPage() {
               <Badge variant="outline" className="capitalize">{channel}</Badge>
               {calendarItem?.scheduled_at && (
                 <span className="text-xs text-muted-foreground">
-                  Scheduled: {new Date(calendarItem.scheduled_at).toLocaleDateString()}
+                  Scheduled: {new Date(calendarItem.scheduled_at).toLocaleDateString()} at {new Date(calendarItem.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
               )}
             </div>
