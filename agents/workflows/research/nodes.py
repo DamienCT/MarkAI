@@ -266,6 +266,11 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
     )
     analyses: list[dict[str, Any]] = []
     for comp in competitors[:5]:
+        # Handle LLM returning strings instead of dicts (e.g., ["Omron", "Withings"])
+        if isinstance(comp, str):
+            comp = {"name": comp, "website": "", "description": ""}
+        if not isinstance(comp, dict):
+            continue
         comp_name = comp.get("name", "Unknown")
         comp_website = comp.get("website", "")
 
