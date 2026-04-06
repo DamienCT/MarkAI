@@ -320,7 +320,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     # TODO: Change to Dec 31 for production — limited to March 31 for testing
     end_date_dt = datetime(now.year, 3, 31, tzinfo=timezone.utc)
 
-    # Build cadence string from strategy so the LLM respects weekly post counts
+    # Build cadence string from strategy so the LLM respects weekly post counts.
+    # Try structured cadence data first, then fall back to extracting from strategy document.
     cadence = strategy.get("cadence", {})
     cadence_lines = []
     for ch in enabled_channels:
@@ -330,12 +331,28 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         elif isinstance(ch_cadence, (int, float)):
             posts_per_week = ch_cadence
         else:
-            posts_per_week = str(ch_cadence)
+            posts_per_week = str(ch_cadence) if ch_cadence else ""
         if posts_per_week:
             cadence_lines.append(f"- {ch}: {posts_per_week} posts per week")
-        else:
-            cadence_lines.append(f"- {ch}: follow strategy guidance")
-    cadence_instruction = "\n".join(cadence_lines) if cadence_lines else "Follow the strategy document for posting frequency per channel."
+
+    # If structured cadence is incomplete, extract from strategy document text
+    if len(cadence_lines) < len(enabled_channels) and strategy_document:
+        import re as _re
+        for ch in enabled_channels:
+            if any(ch in line for line in cadence_lines):
+                continue  # Already have this channel
+            # Search for patterns like "Instagram\n5 posts per week" or "instagram: 3 posts/week"
+            pattern = _re.compile(
+                rf"{ch}[:\s\n]*(\d+)\s*posts?\s*(?:per|/)\s*week",
+                _re.IGNORECASE,
+            )
+            match = pattern.search(strategy_document)
+            if match:
+                cadence_lines.append(f"- {ch}: {match.group(1)} posts per week")
+            else:
+                cadence_lines.append(f"- {ch}: 3 posts per week")  # Safe default
+
+    cadence_instruction = "\n".join(cadence_lines) if cadence_lines else "3 posts per week per channel."
 
     # Load real products for product-aware content planning
     products = await get_products(brand_id)
@@ -349,58 +366,85 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     def _extract_month_strategy(month_name: str) -> str:
         """Extract the relevant month/quarter section from the strategy document.
 
-        Instead of sending the entire 10K+ char document (which gets truncated),
-        this extracts the section for the specific month so the LLM gets full
-        detail on themes, hooks, pillars, and cadence for that period.
+        Searches for the month name in any header format (##, ###, **, bold, etc.)
+        and captures everything until the next month header. Also captures the
+        quarter section and channel strategy guidance.
         """
         if not strategy_document:
             return ""
-        doc = strategy_document
-        lines = doc.split("\n")
-        result_lines: list[str] = []
-        capturing = False
 
-        # Month names for matching section headers
         all_months = [
             "January", "February", "March", "April", "May", "June",
             "July", "August", "September", "October", "November", "December",
         ]
-
-        # Determine which quarter this month belongs to
         month_idx = next((i for i, m in enumerate(all_months) if m.lower() == month_name.lower()), -1)
         quarter = f"Q{(month_idx // 3) + 1}" if month_idx >= 0 else ""
 
+        lines = strategy_document.split("\n")
+        result_lines: list[str] = []
+        capturing = False
+
         for line in lines:
             stripped = line.strip().lower()
-            # Start capturing at month header or quarter header
-            if (
-                month_name.lower() in stripped
-                and (stripped.startswith("#") or stripped.startswith("**"))
-            ) or (
-                quarter and quarter.lower() in stripped
-                and (stripped.startswith("#") or stripped.startswith("**"))
-            ):
-                capturing = True
-                result_lines.append(line)
-                continue
 
-            if capturing:
-                # Stop when we hit the next month or quarter header
-                is_next_section = False
+            # Start capturing if line contains this month's name or quarter
+            if not capturing:
+                if month_name.lower() in stripped or (quarter and quarter.lower() in stripped and "strategy" in stripped):
+                    capturing = True
+                    result_lines.append(line)
+                    continue
+            else:
+                # Stop when we hit a DIFFERENT month's header
+                is_next_month = False
                 for m in all_months:
-                    if m.lower() != month_name.lower() and m.lower() in stripped and (stripped.startswith("#") or stripped.startswith("**")):
-                        is_next_section = True
+                    if m.lower() == month_name.lower():
+                        continue
+                    if m.lower() in stripped and any(
+                        stripped.startswith(p) for p in ("#", "**", "###")
+                    ):
+                        is_next_month = True
                         break
-                if is_next_section:
-                    break
+                # Also stop at next quarter header (unless it's our quarter)
+                if not is_next_month and "q" in stripped and "strategy" in stripped:
+                    for q in ["q1", "q2", "q3", "q4"]:
+                        if q in stripped and q != quarter.lower():
+                            is_next_month = True
+                            break
+                if is_next_month:
+                    capturing = False
+                    continue
                 result_lines.append(line)
 
         extracted = "\n".join(result_lines).strip()
-        if extracted:
-            return extracted
 
-        # Fallback: return first 3000 chars (executive summary + overview table)
-        return doc[:3000]
+        # Also extract channel strategy section (posting frequency, best times)
+        channel_section: list[str] = []
+        capturing_channels = False
+        for line in lines:
+            stripped = line.strip().lower()
+            if "channel strategy" in stripped or "publishing structure" in stripped or "posting frequency" in stripped:
+                capturing_channels = True
+                channel_section.append(line)
+                continue
+            if capturing_channels:
+                if stripped.startswith("#") and "channel" not in stripped and "publishing" not in stripped:
+                    break
+                channel_section.append(line)
+
+        channel_text = "\n".join(channel_section).strip()
+
+        # Combine month section + channel guidance
+        parts = []
+        if extracted:
+            parts.append(extracted)
+        if channel_text:
+            parts.append(f"\nCHANNEL STRATEGY & POSTING SCHEDULE:\n{channel_text}")
+
+        if parts:
+            return "\n\n".join(parts)
+
+        # Fallback: return first 4000 chars (executive summary + overview)
+        return strategy_document[:4000]
 
     # Generate in weekly batches to avoid LLM truncation on large calendars
     all_items: list[dict[str, Any]] = []
@@ -431,7 +475,9 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         batch_num += 1
         batch_end = min(current_dt + timedelta(days=batch_size_days), end_date_dt)
         batch_start_str = current_dt.strftime("%Y-%m-%d")
-        batch_end_str = batch_end.strftime("%Y-%m-%d")
+        # Use day before batch_end as the last day (avoids off-by-one confusion)
+        batch_last_day = (batch_end - timedelta(days=1))
+        batch_end_str = batch_last_day.strftime("%Y-%m-%d")
         batch_days = (batch_end - current_dt).days
 
         # Rebuild dedup context EVERY batch to include items generated so far
@@ -457,13 +503,16 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                 "role": "system",
                 "content": (
                     "You are a content calendar planner. Write all content in English. "
-                    f"Generate content for the period {batch_start_str} to {batch_end_str} ({batch_days} days). "
+                    f"Generate content for {batch_start_str} through {batch_end_str}. "
                     f"Generate content ONLY for these platforms: {channels_str}. "
                     "Do NOT generate content for any other platforms.\n\n"
-                    "POSTING FREQUENCY (from the approved strategy — you MUST follow this exactly):\n"
+                    "IMPORTANT: You MUST return a JSON array of content items. Do NOT return error messages, "
+                    "questions, or clarification requests. Use the information provided and make reasonable assumptions "
+                    "for anything missing.\n\n"
+                    "POSTING FREQUENCY (you MUST follow this exactly):\n"
                     f"{cadence_instruction}\n"
                     "Spread posts evenly across the week. Do NOT post on every day for channels with fewer posts per week. "
-                    "For example, if LinkedIn is 3 posts/week, pick 3 non-consecutive days (e.g., Mon, Wed, Fri).\n\n"
+                    "For example, if a channel has 3 posts/week, pick 3 non-consecutive days (e.g., Mon, Wed, Fri).\n\n"
                     "CRITICAL DEDUPLICATION RULES:\n"
                     "- Each item MUST have a UNIQUE theme + weekly_sub_theme combination\n"
                     "- Do NOT repeat any theme or angle from the ALREADY SCHEDULED list below\n"
@@ -471,7 +520,9 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                     "- Vary content types (mix post, reel, carousel, story) across the week\n"
                     "- Each content_brief must describe a DISTINCT topic, not a rephrased version of another\n\n"
                     "Each item MUST include ALL of these fields: "
-                    "campaign_name, scheduled_date (YYYY-MM-DD), platform "
+                    "campaign_name, scheduled_date (YYYY-MM-DD), "
+                    "scheduled_time (HH:MM in 24h format — use best posting times from the strategy), "
+                    "platform "
                     f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
                     "pillar (which content pillar from strategy), "
                     "theme (monthly theme name — MUST be unique per week), "
@@ -595,6 +646,16 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             )
             skipped += 1
             continue
+        # Combine scheduled_date + scheduled_time into a full datetime
+        scheduled_dt = validated.scheduled_date
+        scheduled_time_str = item.get("scheduled_time", "")
+        if scheduled_time_str and scheduled_dt:
+            try:
+                h, m = scheduled_time_str.strip().split(":")
+                scheduled_dt = scheduled_dt.replace(hour=int(h), minute=int(m))
+            except (ValueError, AttributeError):
+                pass  # Keep date-only if time parsing fails
+
         db_items.append(
             {
                 "brand_id": brand_id,
@@ -602,7 +663,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
                 "title": validated.theme or validated.campaign_name or "",
                 "description": validated.content_brief or item.get("brief", ""),
                 "channel": validated.platform,
-                "scheduled_at": validated.scheduled_date,
+                "scheduled_at": scheduled_dt,
                 "content_type": validated.content_type,
                 "product_id": validated.product_id,
                 "theme": validated.theme,
