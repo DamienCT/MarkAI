@@ -743,8 +743,15 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
         if scheduled_time_str and scheduled_dt:
             try:
                 h, m = scheduled_time_str.strip().split(":")
-                scheduled_dt = scheduled_dt.replace(hour=int(h), minute=int(m))
-            except (ValueError, AttributeError):
+                # scheduled_dt may be a date object — convert to datetime first
+                if not isinstance(scheduled_dt, datetime):
+                    scheduled_dt = datetime(
+                        scheduled_dt.year, scheduled_dt.month, scheduled_dt.day,
+                        int(h), int(m), tzinfo=timezone.utc,
+                    )
+                else:
+                    scheduled_dt = scheduled_dt.replace(hour=int(h), minute=int(m))
+            except (ValueError, AttributeError, TypeError):
                 pass  # Keep date-only if time parsing fails
 
         db_items.append(
