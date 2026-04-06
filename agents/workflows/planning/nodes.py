@@ -346,6 +346,62 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
     channels_str = ", ".join(enabled_channels)
 
+    def _extract_month_strategy(month_name: str) -> str:
+        """Extract the relevant month/quarter section from the strategy document.
+
+        Instead of sending the entire 10K+ char document (which gets truncated),
+        this extracts the section for the specific month so the LLM gets full
+        detail on themes, hooks, pillars, and cadence for that period.
+        """
+        if not strategy_document:
+            return ""
+        doc = strategy_document
+        lines = doc.split("\n")
+        result_lines: list[str] = []
+        capturing = False
+
+        # Month names for matching section headers
+        all_months = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        ]
+
+        # Determine which quarter this month belongs to
+        month_idx = next((i for i, m in enumerate(all_months) if m.lower() == month_name.lower()), -1)
+        quarter = f"Q{(month_idx // 3) + 1}" if month_idx >= 0 else ""
+
+        for line in lines:
+            stripped = line.strip().lower()
+            # Start capturing at month header or quarter header
+            if (
+                month_name.lower() in stripped
+                and (stripped.startswith("#") or stripped.startswith("**"))
+            ) or (
+                quarter and quarter.lower() in stripped
+                and (stripped.startswith("#") or stripped.startswith("**"))
+            ):
+                capturing = True
+                result_lines.append(line)
+                continue
+
+            if capturing:
+                # Stop when we hit the next month or quarter header
+                is_next_section = False
+                for m in all_months:
+                    if m.lower() != month_name.lower() and m.lower() in stripped and (stripped.startswith("#") or stripped.startswith("**")):
+                        is_next_section = True
+                        break
+                if is_next_section:
+                    break
+                result_lines.append(line)
+
+        extracted = "\n".join(result_lines).strip()
+        if extracted:
+            return extracted
+
+        # Fallback: return first 3000 chars (executive summary + overview table)
+        return doc[:3000]
+
     # Generate in weekly batches to avoid LLM truncation on large calendars
     all_items: list[dict[str, Any]] = []
     batch_size_days = 7
@@ -381,12 +437,18 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         # Rebuild dedup context EVERY batch to include items generated so far
         dedup_context = _build_dedup_context()
 
+        # Extract the relevant month's strategy section for this batch
+        batch_month_name = current_dt.strftime("%B")  # e.g., "January"
+        month_strategy = _extract_month_strategy(batch_month_name)
+
         logger.info(
-            "generate_calendar batch %d: %s to %s (%d days, %d existing for dedup)",
+            "generate_calendar batch %d: %s to %s (%d days, month=%s, strategy_section=%d chars, %d existing for dedup)",
             batch_num,
             batch_start_str,
             batch_end_str,
             batch_days,
+            batch_month_name,
+            len(month_strategy),
             len(existing_items) + len(all_items),
         )
 
@@ -427,9 +489,9 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                 "content": (
                     f"{dedup_context}"
                     f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=3000)}\n\n"
-                    f"Strategy document (THIS IS THE PRIMARY REFERENCE — follow its monthly themes, "
-                    f"seasonal hooks, pillar rotation, and cadence guidance strictly):\n"
-                    f"{sanitize_for_prompt(strategy_document, max_length=4000)}\n\n"
+                    f"STRATEGY FOR {batch_month_name.upper()} (THIS IS THE PRIMARY REFERENCE — "
+                    f"follow its themes, seasonal hooks, pillar rotation, and content focus strictly):\n"
+                    f"{sanitize_for_prompt(month_strategy, max_length=6000)}\n\n"
                     f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=2000)}"
                 ),
             },
