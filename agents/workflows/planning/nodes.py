@@ -446,19 +446,69 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         # Fallback: return first 4000 chars (executive summary + overview)
         return strategy_document[:4000]
 
-    # Generate in weekly batches to avoid LLM truncation on large calendars
+    # ── Build per-channel cadence lookup ──────────────────────────────
+    import re as _re
+
+    channel_cadence: dict[str, int] = {}
+    channel_best_days: dict[str, str] = {}
+    channel_best_times: dict[str, str] = {}
+
+    for ch in enabled_channels:
+        # Extract posts per week
+        posts = 3  # safe default
+        ch_cad = cadence.get(ch, {}) if isinstance(cadence, dict) else {}
+        if isinstance(ch_cad, dict) and ch_cad.get("posts_per_week"):
+            posts = int(ch_cad["posts_per_week"])
+        elif strategy_document:
+            m = _re.search(rf"{ch}[\s\S]*?(\d+)\s*posts?\s*(?:per|/)\s*week", strategy_document, _re.IGNORECASE)
+            if m:
+                posts = int(m.group(1))
+        channel_cadence[ch] = posts
+
+        # Extract best days
+        if strategy_document:
+            days_m = _re.search(rf"{ch}[\s\S]*?best\s*days?[:\s]*([^\n]+)", strategy_document, _re.IGNORECASE)
+            if days_m:
+                channel_best_days[ch] = days_m.group(1).strip()
+
+        # Extract best times
+        if strategy_document:
+            times_m = _re.search(rf"{ch}[\s\S]*?best\s*times?[:\s]*([^\n]+)", strategy_document, _re.IGNORECASE)
+            if times_m:
+                channel_best_times[ch] = times_m.group(1).strip()
+
+    logger.info("PROMPT_DEBUG channel_cadence: %s", channel_cadence)
+    logger.info("PROMPT_DEBUG channel_best_days: %s", channel_best_days)
+    logger.info("PROMPT_DEBUG channel_best_times: %s", channel_best_times)
+
+    # ── Extract weekly pillar rotation from strategy ────────────────
+    pillar_rotation = ""
+    if strategy_document:
+        rot_match = _re.search(
+            r"(?:weekly\s*pillar\s*rotation|recommended\s*weekly.*rotation)[:\s]*\n((?:.*\n)*?)(?:\n\n|\Z)",
+            strategy_document,
+            _re.IGNORECASE,
+        )
+        if rot_match:
+            pillar_rotation = rot_match.group(1).strip()
+
+    # ── Generate per-channel per-week ──────────────────────────────
     all_items: list[dict[str, Any]] = []
     batch_size_days = 7
     current_dt = start_date_dt
     batch_num = 0
+    # Track expected vs actual for summary
+    expected_total = 0
+    channel_counts: dict[str, int] = {ch: 0 for ch in enabled_channels}
 
-    def _build_dedup_context() -> str:
-        """Build dedup context from BOTH existing DB items AND items generated so far in this run."""
+    def _build_dedup_context(channel: str) -> str:
+        """Build dedup context filtered to this channel from existing + generated items."""
         combined = list(existing_items) + all_items
-        if not combined:
+        channel_items = [i for i in combined if (i.get("platform") or i.get("channel", "")) == channel]
+        if not channel_items:
             return ""
         lines = []
-        for i in combined[-60:]:  # Last 60 items (DB + current run)
+        for i in channel_items[-30:]:
             date_val = i.get("scheduled_at") or i.get("scheduled_date", "")
             date_str = str(date_val)[:10] if date_val else ""
             theme = i.get("theme") or i.get("title", "")
@@ -467,129 +517,170 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
             lines.append(f"{date_str} | {pillar} | {theme} | {sub}")
         summary = "\n".join(lines)
         return (
-            "ALREADY SCHEDULED CONTENT (you MUST NOT repeat any of these themes, sub-themes, or content angles):\n"
+            f"ALREADY SCHEDULED {channel.upper()} CONTENT (do NOT repeat these):\n"
             f"{summary}\n\n"
         )
 
     while current_dt < end_date_dt:
-        batch_num += 1
         batch_end = min(current_dt + timedelta(days=batch_size_days), end_date_dt)
         batch_start_str = current_dt.strftime("%Y-%m-%d")
-        # Use day before batch_end as the last day (avoids off-by-one confusion)
         batch_last_day = (batch_end - timedelta(days=1))
         batch_end_str = batch_last_day.strftime("%Y-%m-%d")
-        batch_days = (batch_end - current_dt).days
-
-        # Rebuild dedup context EVERY batch to include items generated so far
-        dedup_context = _build_dedup_context()
-
-        # Extract the relevant month's strategy section for this batch
-        batch_month_name = current_dt.strftime("%B")  # e.g., "January"
+        batch_month_name = current_dt.strftime("%B")
         month_strategy = _extract_month_strategy(batch_month_name)
 
-        logger.info(
-            "generate_calendar batch %d: %s to %s (%d days, month=%s, strategy_section=%d chars, %d existing for dedup)",
-            batch_num,
-            batch_start_str,
-            batch_end_str,
-            batch_days,
-            batch_month_name,
-            len(month_strategy),
-            len(existing_items) + len(all_items),
-        )
+        # Generate for EACH channel separately
+        for channel in enabled_channels:
+            batch_num += 1
+            posts_needed = channel_cadence.get(channel, 3)
+            expected_total += posts_needed
+            best_days = channel_best_days.get(channel, "")
+            best_times = channel_best_times.get(channel, "")
+            dedup = _build_dedup_context(channel)
 
-        prompt = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a content calendar planner. Write all content in English. "
-                    f"Generate content for {batch_start_str} through {batch_end_str}. "
-                    f"Generate content ONLY for these platforms: {channels_str}. "
-                    "Do NOT generate content for any other platforms.\n\n"
-                    "IMPORTANT: You MUST return a JSON array of content items. Do NOT return error messages, "
-                    "questions, or clarification requests. Use the information provided and make reasonable assumptions "
-                    "for anything missing.\n\n"
-                    "POSTING FREQUENCY (you MUST follow this exactly):\n"
-                    f"{cadence_instruction}\n"
-                    "Spread posts evenly across the week. Do NOT post on every day for channels with fewer posts per week. "
-                    "For example, if a channel has 3 posts/week, pick 3 non-consecutive days (e.g., Mon, Wed, Fri).\n\n"
-                    "CRITICAL DEDUPLICATION RULES:\n"
-                    "- Each item MUST have a UNIQUE theme + weekly_sub_theme combination\n"
-                    "- Do NOT repeat any theme or angle from the ALREADY SCHEDULED list below\n"
-                    "- Rotate through ALL content pillars — do not use the same pillar two weeks in a row\n"
-                    "- Vary content types (mix post, reel, carousel, story) across the week\n"
-                    "- Each content_brief must describe a DISTINCT topic, not a rephrased version of another\n\n"
-                    "Each item MUST include ALL of these fields: "
-                    "campaign_name, scheduled_date (YYYY-MM-DD), "
-                    "scheduled_time (HH:MM in 24h format — use best posting times from the strategy), "
-                    "platform "
-                    f"(one of: {channels_str}), content_type (post/reel/story/carousel), "
-                    "pillar (which content pillar from strategy), "
-                    "theme (monthly theme name — MUST be unique per week), "
-                    "weekly_sub_theme (specific sub-theme — MUST be unique across all items), "
-                    "target_audience (primary persona for this post), "
-                    "content_brief (2-3 sentences describing EXACTLY what this post should communicate), "
-                    "product_name (from available products if relevant, else null), "
-                    "visual_direction (1 sentence on visual style for the image), "
-                    "cta_type (what action to drive: shop, learn, engage, or share). "
-                    "Return a JSON array."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"{dedup_context}"
-                    f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=3000)}\n\n"
-                    f"STRATEGY FOR {batch_month_name.upper()} (THIS IS THE PRIMARY REFERENCE — "
-                    f"follow its themes, seasonal hooks, pillar rotation, and content focus strictly):\n"
-                    f"{sanitize_for_prompt(month_strategy, max_length=6000)}\n\n"
-                    f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=2000)}"
-                ),
-            },
-        ]
-        try:
-            result = await chat_completion(
-                prompt,
-                temperature=0.5,
-                max_tokens=8192,
-                response_format={"type": "json_object"},
-            )
+            prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a content calendar planner. Write all content in English.\n\n"
+                        f"Generate EXACTLY {posts_needed} posts for {channel.upper()} "
+                        f"for the week of {batch_start_str} through {batch_end_str}.\n\n"
+                        "IMPORTANT: You MUST return a JSON array with the items. "
+                        "Do NOT return error messages, questions, or clarification requests. "
+                        "Use the information provided and make reasonable assumptions for anything missing.\n\n"
+                        f"POSTING SCHEDULE:\n"
+                        f"- Posts this week: {posts_needed}\n"
+                        f"- Best days: {best_days or 'spread evenly across the week'}\n"
+                        f"- Best times: {best_times or '07:00, 13:00, 20:00'}\n"
+                        f"- Assign each post a specific date and time from the best days/times\n\n"
+                        + (f"WEEKLY PILLAR ROTATION:\n{pillar_rotation}\n\n" if pillar_rotation else "")
+                        + "RULES:\n"
+                        "- Each item MUST have a UNIQUE weekly_sub_theme\n"
+                        "- Do NOT repeat any theme from the ALREADY SCHEDULED list\n"
+                        "- Vary content types (mix post, reel, carousel, story)\n"
+                        "- Each content_brief must describe a DISTINCT topic\n\n"
+                        "Each item MUST include ALL fields: "
+                        "campaign_name, scheduled_date (YYYY-MM-DD), "
+                        "scheduled_time (HH:MM 24h format), "
+                        f"platform (always \"{channel}\"), "
+                        "content_type (post/reel/story/carousel), "
+                        "pillar, theme, weekly_sub_theme, target_audience, "
+                        "content_brief (2-3 sentences), "
+                        "product_name (from products list or null), "
+                        "visual_direction (1 sentence), "
+                        "cta_type (shop/learn/engage/share).\n"
+                        "Return a JSON array."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"{dedup}"
+                        f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=2000)}\n\n"
+                        f"STRATEGY FOR {batch_month_name.upper()} ({channel.upper()}):\n"
+                        f"{sanitize_for_prompt(month_strategy, max_length=5000)}\n\n"
+                        f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=1500)}"
+                    ),
+                },
+            ]
+
+            # Debug log: what context is the LLM getting?
             logger.info(
-                "generate_calendar batch %d LLM response: %d chars",
-                batch_num,
-                len(result),
+                "PROMPT_DEBUG batch=%d channel=%s week=%s→%s posts_needed=%d best_days=%s best_times=%s strategy_chars=%d",
+                batch_num, channel, batch_start_str, batch_end_str,
+                posts_needed, best_days[:50] if best_days else "none",
+                best_times[:50] if best_times else "none", len(month_strategy),
             )
-            batch_items = parse_llm_json(result, fallback=[])
-            if isinstance(batch_items, dict):
-                # Check if this is a single calendar item (has scheduled_date) vs a wrapper
-                if "scheduled_date" in batch_items or "platform" in batch_items:
-                    # LLM returned a single item instead of an array — wrap it
-                    batch_items = [batch_items]
-                else:
-                    # Try to extract the list value from wrapper dict
-                    batch_items = next(
-                        (v for v in batch_items.values() if isinstance(v, list)), []
-                    )
-            if not batch_items:
-                logger.warning(
-                    "generate_calendar batch %d produced 0 items — raw response preview: %s",
-                    batch_num,
-                    result[:300],
+
+            try:
+                result = await chat_completion(
+                    prompt,
+                    temperature=0.5,
+                    max_tokens=4096,
                 )
-            else:
+
+                # Debug log: what did the LLM return?
                 logger.info(
-                    "generate_calendar batch %d produced %d items",
-                    batch_num,
-                    len(batch_items),
+                    "RESPONSE_DEBUG batch=%d channel=%s response_chars=%d preview=%s",
+                    batch_num, channel, len(result), result[:300],
                 )
-            all_items.extend(batch_items)
-        except Exception as batch_exc:
-            logger.error("generate_calendar batch %d failed: %s", batch_num, batch_exc)
+
+                batch_items = parse_llm_json(result, fallback=[])
+                if isinstance(batch_items, dict):
+                    if "scheduled_date" in batch_items or "platform" in batch_items:
+                        batch_items = [batch_items]
+                    else:
+                        batch_items = next(
+                            (v for v in batch_items.values() if isinstance(v, list)), []
+                        )
+
+                # Force correct platform on all items
+                for item in batch_items:
+                    item["platform"] = channel
+
+                items_got = len(batch_items)
+
+                # ── Retry if under-producing ──────────────────────
+                if items_got < posts_needed and items_got > 0:
+                    missing = posts_needed - items_got
+                    logger.warning(
+                        "RETRY batch=%d channel=%s: got %d/%d, retrying for %d more",
+                        batch_num, channel, items_got, posts_needed, missing,
+                    )
+                    # Build list of dates already used
+                    used_dates = [i.get("scheduled_date", "") for i in batch_items]
+                    retry_prompt = [
+                        {
+                            "role": "system",
+                            "content": (
+                                f"Generate EXACTLY {missing} more {channel.upper()} posts "
+                                f"for {batch_start_str} through {batch_end_str}. "
+                                f"Do NOT use these dates (already taken): {', '.join(used_dates)}. "
+                                f"Best days: {best_days or 'any remaining day'}. "
+                                f"Best times: {best_times or '07:00, 13:00, 20:00'}. "
+                                "Return a JSON array. Same fields as before."
+                            ),
+                        },
+                        {"role": "user", "content": prompt[1]["content"]},
+                    ]
+                    try:
+                        retry_result = await chat_completion(retry_prompt, temperature=0.5, max_tokens=4096)
+                        retry_items = parse_llm_json(retry_result, fallback=[])
+                        if isinstance(retry_items, dict):
+                            retry_items = next((v for v in retry_items.values() if isinstance(v, list)), [])
+                        for item in retry_items:
+                            item["platform"] = channel
+                        batch_items.extend(retry_items)
+                        logger.info("RETRY got %d more items for %s", len(retry_items), channel)
+                    except Exception as retry_exc:
+                        logger.warning("RETRY failed for %s: %s", channel, retry_exc)
+
+                if not batch_items:
+                    logger.warning(
+                        "BATCH_ZERO batch=%d channel=%s produced 0 items — response: %s",
+                        batch_num, channel, result[:500],
+                    )
+                else:
+                    channel_counts[channel] = channel_counts.get(channel, 0) + len(batch_items)
+                    logger.info(
+                        "BATCH_OK batch=%d channel=%s produced %d items",
+                        batch_num, channel, len(batch_items),
+                    )
+
+                all_items.extend(batch_items)
+
+            except Exception as batch_exc:
+                logger.error("BATCH_FAIL batch=%d channel=%s: %s", batch_num, channel, batch_exc)
 
         current_dt = batch_end
 
+    # ── Batch summary ─────────────────────────────────────────────
     logger.info(
-        "generate_calendar total: %d items across %d batches", len(all_items), batch_num
+        "BATCH_SUMMARY total=%d expected=%d (%.0f%%). Per channel: %s",
+        len(all_items),
+        expected_total,
+        (len(all_items) / expected_total * 100) if expected_total else 0,
+        ", ".join(f"{ch}={cnt}" for ch, cnt in channel_counts.items()),
     )
     return {"calendar_items": all_items}
 
