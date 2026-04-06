@@ -310,15 +310,31 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     campaigns = state.get("campaigns", [])
     strategy = state.get("strategy", {})
     strategy_document = state.get("strategy_document", "")
-    scope_weeks = state.get("scope_weeks", 4)
     enabled_channels = state.get("enabled_channels", ["instagram"])
     existing_items = state.get("existing_items", [])
-    start_date_dt = datetime.now(timezone.utc)
-    end_date_dt = start_date_dt + timedelta(weeks=scope_weeks)
-    start_date_dt.strftime("%Y-%m-%d")
-    end_date_dt.strftime("%Y-%m-%d")
-    total_days = (end_date_dt - start_date_dt).days
-    len(enabled_channels) * total_days
+
+    # Always start from January 1 of current year — the Content Strategy
+    # covers the full year with events tied to specific dates.
+    now = datetime.now(timezone.utc)
+    start_date_dt = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    end_date_dt = datetime(now.year, 12, 31, tzinfo=timezone.utc)
+
+    # Build cadence string from strategy so the LLM respects weekly post counts
+    cadence = strategy.get("cadence", {})
+    cadence_lines = []
+    for ch in enabled_channels:
+        ch_cadence = cadence.get(ch, {}) if isinstance(cadence, dict) else {}
+        if isinstance(ch_cadence, dict):
+            posts_per_week = ch_cadence.get("posts_per_week", ch_cadence.get("frequency", ""))
+        elif isinstance(ch_cadence, (int, float)):
+            posts_per_week = ch_cadence
+        else:
+            posts_per_week = str(ch_cadence)
+        if posts_per_week:
+            cadence_lines.append(f"- {ch}: {posts_per_week} posts per week")
+        else:
+            cadence_lines.append(f"- {ch}: follow strategy guidance")
+    cadence_instruction = "\n".join(cadence_lines) if cadence_lines else "Follow the strategy document for posting frequency per channel."
 
     # Load real products for product-aware content planning
     products = await get_products(brand_id)
@@ -360,18 +376,16 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         batch_start_str = current_dt.strftime("%Y-%m-%d")
         batch_end_str = batch_end.strftime("%Y-%m-%d")
         batch_days = (batch_end - current_dt).days
-        batch_items_target = len(enabled_channels) * batch_days
 
         # Rebuild dedup context EVERY batch to include items generated so far
         dedup_context = _build_dedup_context()
 
         logger.info(
-            "generate_calendar batch %d: %s to %s (%d days, %d target items, %d existing for dedup)",
+            "generate_calendar batch %d: %s to %s (%d days, %d existing for dedup)",
             batch_num,
             batch_start_str,
             batch_end_str,
             batch_days,
-            batch_items_target,
             len(existing_items) + len(all_items),
         )
 
@@ -382,8 +396,11 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                     "You are a content calendar planner. Write all content in English. "
                     f"Generate content for the period {batch_start_str} to {batch_end_str} ({batch_days} days). "
                     f"Generate content ONLY for these platforms: {channels_str}. "
-                    "Do NOT generate content for any other platforms. "
-                    f"Generate EXACTLY 1 post per enabled channel per day — {batch_items_target} items total.\n\n"
+                    "Do NOT generate content for any other platforms.\n\n"
+                    "POSTING FREQUENCY (from the approved strategy — you MUST follow this exactly):\n"
+                    f"{cadence_instruction}\n"
+                    "Spread posts evenly across the week. Do NOT post on every day for channels with fewer posts per week. "
+                    "For example, if LinkedIn is 3 posts/week, pick 3 non-consecutive days (e.g., Mon, Wed, Fri).\n\n"
                     "CRITICAL DEDUPLICATION RULES:\n"
                     "- Each item MUST have a UNIQUE theme + weekly_sub_theme combination\n"
                     "- Do NOT repeat any theme or angle from the ALREADY SCHEDULED list below\n"
@@ -409,9 +426,9 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                 "content": (
                     f"{dedup_context}"
                     f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=3000)}\n\n"
-                    f"Strategy cadence:\n{sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=1000)}\n\n"
-                    f"Strategy document (use as reference for themes and seasonal hooks):\n"
-                    f"{sanitize_for_prompt(strategy_document, max_length=3000)}\n\n"
+                    f"Strategy document (THIS IS THE PRIMARY REFERENCE — follow its monthly themes, "
+                    f"seasonal hooks, pillar rotation, and cadence guidance strictly):\n"
+                    f"{sanitize_for_prompt(strategy_document, max_length=4000)}\n\n"
                     f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=2000)}"
                 ),
             },
@@ -499,8 +516,9 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     items = state.get("calendar_items", [])
     strategy_document = state.get("strategy_document", "")
     enabled_channels = state.get("enabled_channels", [])
-    scope_weeks = state.get("scope_weeks", 4)
-    max_date = datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)
+    # Store all calendar items through end of year (strategy covers full year)
+    now = datetime.now(timezone.utc)
+    max_date = datetime(now.year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
     db_items = []
     skipped = 0
