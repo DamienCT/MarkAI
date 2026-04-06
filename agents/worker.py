@@ -531,7 +531,6 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             CHAIN_NEXT = {
                 "research": "strategy.trigger",
                 "strategy": "planning.trigger",
-                "planning": "content.generate",
             }
         # Evaluation always chains to adaptation regardless of trigger
         CHAIN_NEXT["evaluation"] = "adaptation.trigger"
@@ -594,7 +593,10 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         # ── Skip completed report stages on restart ─────────────────────
         # When restarting, if the next REPORT stage already completed, skip ahead.
         # Content is per-item and should never be skipped.
-        ACTIVATION_CHAIN_ORDER = ["research", "strategy", "planning", "content"]
+        # ── Skip completed report stages on restart ─────────────────────
+        # When restarting activation, if the next stage already completed, skip ahead.
+        # Context Generation chain: research → strategy → planning (no content).
+        ACTIVATION_CHAIN_ORDER = ["research", "strategy", "planning"]
         if (
             next_subject
             and brand_id
@@ -602,163 +604,71 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             and _consumer is not None
         ):
             next_agent_type = next_subject.split(".")[0]
-            # Never skip content — it's per-item
-            if next_agent_type != "content":
-                try:
-                    existing = await execute_query(
-                        "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
-                        {"brand_id": brand_id, "agent_type": next_agent_type},
+            try:
+                existing = await execute_query(
+                    "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
+                    {"brand_id": brand_id, "agent_type": next_agent_type},
+                )
+                if existing:
+                    logger.info(
+                        "Skipping %s — already completed for brand %s",
+                        next_agent_type,
+                        brand_id,
                     )
-                    if existing:
-                        logger.info(
-                            "Skipping %s — already completed for brand %s",
-                            next_agent_type,
-                            brand_id,
-                        )
-                        if next_agent_type in ACTIVATION_CHAIN_ORDER:
-                            idx = ACTIVATION_CHAIN_ORDER.index(next_agent_type)
-                            skipped = True
-                            while skipped and idx + 1 < len(ACTIVATION_CHAIN_ORDER):
-                                candidate = ACTIVATION_CHAIN_ORDER[idx + 1]
-                                if candidate == "content":
-                                    # Always forward to content — it processes queued items
-                                    next_subject = "content.generate"
-                                    skipped = False
-                                    break
-                                candidate_existing = await execute_query(
-                                    "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
-                                    {"brand_id": brand_id, "agent_type": candidate},
+                    if next_agent_type in ACTIVATION_CHAIN_ORDER:
+                        idx = ACTIVATION_CHAIN_ORDER.index(next_agent_type)
+                        skipped = True
+                        while skipped and idx + 1 < len(ACTIVATION_CHAIN_ORDER):
+                            candidate = ACTIVATION_CHAIN_ORDER[idx + 1]
+                            candidate_existing = await execute_query(
+                                "SELECT id FROM agent_runs WHERE brand_id = :brand_id AND agent_type = :agent_type AND status = 'completed' LIMIT 1",
+                                {"brand_id": brand_id, "agent_type": candidate},
+                            )
+                            if candidate_existing:
+                                logger.info(
+                                    "Skipping %s — already completed for brand %s",
+                                    candidate,
+                                    brand_id,
                                 )
-                                if candidate_existing:
-                                    logger.info(
-                                        "Skipping %s — already completed for brand %s",
-                                        candidate,
-                                        brand_id,
-                                    )
-                                    idx += 1
-                                else:
-                                    CHAIN_SUBJECTS = {
-                                        "strategy": "strategy.trigger",
-                                        "planning": "planning.trigger",
-                                        "content": "content.generate",
-                                    }
-                                    next_subject = CHAIN_SUBJECTS.get(candidate)
-                                    skipped = False
+                                idx += 1
                             else:
-                                if skipped:
-                                    logger.info(
-                                        "All activation stages already completed for brand %s — no chaining needed",
-                                        brand_id,
-                                    )
-                                    next_subject = None
-                except Exception as skip_exc:
-                    logger.warning(
-                        "Could not check completed stages for skip logic: %s", skip_exc
-                    )
+                                CHAIN_SUBJECTS = {
+                                    "strategy": "strategy.trigger",
+                                    "planning": "planning.trigger",
+                                }
+                                next_subject = CHAIN_SUBJECTS.get(candidate)
+                                skipped = False
+                        else:
+                            if skipped:
+                                logger.info(
+                                    "All context generation stages already completed for brand %s — no chaining needed",
+                                    brand_id,
+                                )
+                                next_subject = None
+            except Exception as skip_exc:
+                logger.warning(
+                    "Could not check completed stages for skip logic: %s", skip_exc
+                )
 
         if next_subject and brand_id and _consumer is not None:
             try:
-                # ── Planning -> Content sequential: publish ONE item at a time
-                if agent_type == "planning" and next_subject == "content.generate":
-                    calendar_item_ids = (result or {}).get("calendar_item_ids", [])
-                    if calendar_item_ids:
-                        # Filter to only items within the content_generation_days_ahead window
-                        days_ahead = payload.get("scope_weeks", 1) * 7
-                        items = await execute_query(
-                            "SELECT id FROM calendar_items "
-                            "WHERE id = ANY(:ids) "
-                            "AND (scheduled_at IS NULL OR scheduled_at <= NOW() + MAKE_INTERVAL(days => :days)) "
-                            "ORDER BY scheduled_at ASC",
-                            {"ids": calendar_item_ids, "days": days_ahead},
-                        )
-                        sorted_ids = (
-                            [str(r["id"]) for r in items]
-                            if items
-                            else []
-                        )
-                        if not sorted_ids:
-                            logger.info(
-                                "No calendar items within %d-day window for brand %s — skipping content generation",
-                                days_ahead, brand_id,
-                            )
-                            await msg.ack()
-                            return
-
-                        # Publish only the FIRST item; remaining are chained via remaining_queue
-                        first_id = sorted_ids[0]
-                        remaining_ids = sorted_ids[1:]
-
-                        item_msg: dict[str, Any] = {
-                            "brand_id": brand_id,
-                            "calendar_item_id": first_id,
-                            "trigger": payload.get("trigger", "event"),
-                            "chain_depth": current_depth + 1,
-                            "remaining_queue": remaining_ids,
-                        }
-                        if payload.get("scope_weeks") is not None:
-                            item_msg["scope_weeks"] = payload["scope_weeks"]
-                        await _consumer.js.publish(
-                            next_subject, json.dumps(item_msg).encode()
-                        )
-                        logger.info(
-                            "Sequential content: queued first item %s (%d remaining) for brand %s",
-                            first_id,
-                            len(remaining_ids),
-                            brand_id,
-                        )
-                    else:
-                        logger.warning(
-                            "Planning completed but no calendar_item_ids in result for brand %s — querying DB for recent items",
-                            brand_id,
-                        )
-                        # Fallback: query DB for recently stored calendar items
-                        db_items = await execute_query(
-                            "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'queued' ORDER BY scheduled_at ASC LIMIT 100",
-                            {"brand_id": brand_id},
-                        )
-                        if db_items:
-                            sorted_ids = [str(r["id"]) for r in db_items]
-                            first_id = sorted_ids[0]
-                            remaining_ids = sorted_ids[1:]
-                            item_msg = {
-                                "brand_id": brand_id,
-                                "calendar_item_id": first_id,
-                                "trigger": payload.get("trigger", "event"),
-                                "chain_depth": current_depth + 1,
-                                "remaining_queue": remaining_ids,
-                            }
-                            await _consumer.js.publish(
-                                next_subject, json.dumps(item_msg).encode()
-                            )
-                            logger.info(
-                                "Fallback: queued first DB item %s (%d remaining) for brand %s",
-                                first_id,
-                                len(remaining_ids),
-                                brand_id,
-                            )
-                        else:
-                            logger.warning(
-                                "No calendar items found in DB for brand %s — content generation skipped",
-                                brand_id,
-                            )
-                else:
-                    # Standard single-message chain — propagate trigger & scope_weeks
-                    chain_msg: dict[str, Any] = {
-                        "brand_id": brand_id,
-                        "trigger": payload.get("trigger", "event"),
-                        "chain_depth": current_depth + 1,
-                    }
-                    if payload.get("scope_weeks") is not None:
-                        chain_msg["scope_weeks"] = payload["scope_weeks"]
-                    chain_payload = json.dumps(chain_msg).encode()
-                    await _consumer.js.publish(next_subject, chain_payload)
-                    logger.info(
-                        "Chained %s -> %s for brand %s (depth %d)",
-                        agent_type,
-                        next_subject,
-                        brand_id,
-                        current_depth + 1,
-                    )
+                # Standard single-message chain — propagate trigger & scope_weeks
+                chain_msg: dict[str, Any] = {
+                    "brand_id": brand_id,
+                    "trigger": payload.get("trigger", "event"),
+                    "chain_depth": current_depth + 1,
+                }
+                if payload.get("scope_weeks") is not None:
+                    chain_msg["scope_weeks"] = payload["scope_weeks"]
+                chain_payload = json.dumps(chain_msg).encode()
+                await _consumer.js.publish(next_subject, chain_payload)
+                logger.info(
+                    "Chained %s -> %s for brand %s (depth %d)",
+                    agent_type,
+                    next_subject,
+                    brand_id,
+                    current_depth + 1,
+                )
             except Exception as chain_exc:
                 logger.error(
                     "Failed to chain %s -> %s: %s", agent_type, next_subject, chain_exc
@@ -779,6 +689,31 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                             run_id,
                             patch_exc,
                         )
+
+        # ── Context Generation complete: mark brand as active ─────
+        # When planning finishes during activation and there's no next
+        # chain step, context generation is done.
+        if (
+            not next_subject
+            and agent_type == "planning"
+            and trigger_type == "activation"
+            and brand_id
+        ):
+            try:
+                await execute_update(
+                    "UPDATE brands SET status = 'active' WHERE id = :bid",
+                    {"bid": brand_id},
+                )
+                logger.info(
+                    "Context Generation complete for brand %s — status set to 'active'",
+                    brand_id,
+                )
+            except Exception as status_exc:
+                logger.warning(
+                    "Failed to update brand %s status to active: %s",
+                    brand_id,
+                    status_exc,
+                )
 
     except IntegrityError:
         # Unique violation from idx_agent_runs_running — another instance is already running

@@ -286,7 +286,7 @@ async def activate_content_factory(
     return {
         "status": "activating",
         "brand_id": str(brand_id),
-        "message": "Content Factory pipeline started. Research → Strategy → Plan → Content (12 weeks).",
+        "message": "Context Generation started. Research → Strategy → Plan.",
     }
 
 
