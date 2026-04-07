@@ -59,9 +59,8 @@ async def check_due_content() -> None:
             brand = content.brand
 
             try:
-                calendar_item.status = "publishing"
-                await db.commit()
-
+                # Keep status as "scheduled" during dispatch — n8n callback
+                # will set it to "published" or "failed" directly.
                 await dispatch_to_n8n(content, calendar_item, brand)
 
                 log = ScheduledJobLog(

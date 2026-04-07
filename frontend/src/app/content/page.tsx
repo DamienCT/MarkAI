@@ -67,7 +67,19 @@ export default function ContentStudioPage() {
       const params: Record<string, string | number> = {};
       if (brandId) params.brand_id = brandId;
       const data = await api.get<CalendarItem[]>("/api/v1/calendar", params, { signal });
-      setItems(Array.isArray(data) ? data : []);
+      const allItems = Array.isArray(data) ? data : [];
+      // Filter queued/planned items to next 7 days only — other statuses show regardless
+      const now = new Date();
+      const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const filtered = allItems.filter((item) => {
+        if (item.status === "queued" || item.status === "planned") {
+          if (!item.scheduled_at) return false;
+          const d = new Date(item.scheduled_at);
+          return d >= now && d <= horizon;
+        }
+        return true; // Show all other statuses (working, in_review, scheduled, etc.)
+      });
+      setItems(filtered);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       setItems([]);

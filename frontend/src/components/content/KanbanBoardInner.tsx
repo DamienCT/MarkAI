@@ -42,11 +42,9 @@ const ROW1_COLUMNS: { id: string; label: string; color: string }[] = [
   { id: "reworking", label: "Reworking", color: "bg-orange-50 dark:bg-orange-950" },
 ];
 
-// Row 2: Publishing Pipeline (post-approve)
+// Row 2: Publishing Pipeline (approve → scheduled → published)
 const ROW2_COLUMNS: { id: string; label: string; color: string }[] = [
-  { id: "approved", label: "Approved", color: "bg-cyan-50 dark:bg-cyan-950" },
   { id: "scheduled", label: "Scheduled", color: "bg-blue-50 dark:bg-blue-950" },
-  { id: "publishing", label: "Publishing", color: "bg-violet-50 dark:bg-violet-950" },
   { id: "published", label: "Published", color: "bg-green-50 dark:bg-green-950" },
   { id: "failed", label: "Failed", color: "bg-red-50 dark:bg-red-950" },
 ];

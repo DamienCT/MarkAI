@@ -87,8 +87,9 @@ async def resolve_approval(
         cal_item = result.scalar_one_or_none()
         if cal_item is not None:
             if decision.status == "approved":
-                _validate_transition(cal_item.status, "approved")
-                cal_item.status = "approved"
+                # Auto-schedule: skip "approved" status, go directly to "scheduled"
+                _validate_transition(cal_item.status, "scheduled")
+                cal_item.status = "scheduled"
             elif decision.status in ("rejected", "revision_requested"):
                 _validate_transition(cal_item.status, "reworking")
                 cal_item.status = "reworking"

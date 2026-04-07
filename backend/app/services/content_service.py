@@ -82,11 +82,9 @@ async def update_content(
 VALID_TRANSITIONS: dict[str, list[str]] = {
     "queued": ["working"],
     "working": ["in_review", "failed"],
-    "in_review": ["approved", "reworking"],
+    "in_review": ["scheduled", "reworking"],  # Approve → auto-schedule (no "approved" step)
     "reworking": ["in_review"],
-    "approved": ["scheduled"],
-    "scheduled": ["publishing", "failed"],
-    "publishing": ["published", "failed", "scheduled"],
+    "scheduled": ["published", "failed"],  # Publish checker dispatches to n8n directly
     "published": [],
     "failed": ["scheduled"],
 }
