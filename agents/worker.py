@@ -24,8 +24,8 @@ from sqlalchemy.exc import IntegrityError
 
 # Maximum time (seconds) a single workflow invocation may run before being cancelled
 WORKFLOW_TIMEOUT = int(
-    os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "1800")
-)  # 30 min default
+    os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400")
+)  # 90 min default (full-year calendar = 200+ LLM calls)
 from shared.nats_consumer import NATSConsumer  # noqa: E402
 from shared.tools.database import (  # noqa: E402
     create_agent_run,
