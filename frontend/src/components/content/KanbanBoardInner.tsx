@@ -71,8 +71,8 @@ function CompactItem({ item, currentStep }: { item: CalendarItem; currentStep?: 
         {!currentStep && item.scheduled_at && (
           <span className="text-[10px] text-muted-foreground shrink-0">
             {new Date(item.scheduled_at).toLocaleDateString("en", { month: "short", day: "numeric" })}
-            {item.status === "scheduled" && (
-              <> {new Date(item.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>
+            {new Date(item.scheduled_at).getUTCHours() > 0 && (
+              <> {`${String(new Date(item.scheduled_at).getUTCHours()).padStart(2, "0")}:${String(new Date(item.scheduled_at).getUTCMinutes()).padStart(2, "0")}`}</>
             )}
           </span>
         )}
@@ -107,6 +107,9 @@ function KanbanCard({ item }: { item: CalendarItem }) {
         {item.scheduled_at && (
           <p className="text-[10px] text-muted-foreground mt-2">
             {formatDate(item.scheduled_at)}
+            {new Date(item.scheduled_at).getUTCHours() > 0 && (
+              <> at {`${String(new Date(item.scheduled_at).getUTCHours()).padStart(2, "0")}:${String(new Date(item.scheduled_at).getUTCMinutes()).padStart(2, "0")}`}</>
+            )}
           </p>
         )}
       </Card>

@@ -32,6 +32,15 @@ const CHANNEL_PREFIX: Record<string, string> = {
   teams: "TM",
 };
 
+function formatItemTime(item: CalendarItem): string {
+  if (!item.scheduled_at) return "";
+  const d = new Date(item.scheduled_at);
+  const h = d.getUTCHours();
+  const m = d.getUTCMinutes();
+  if (h === 0 && m === 0) return "";
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
 // Color palette for brand-based color coding
 const BRAND_COLORS = [
   "border-l-blue-400",
@@ -161,6 +170,9 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
               {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
             </span>
           )}
+          {formatItemTime(item) && (
+            <span className="text-[9px] opacity-50 shrink-0">{formatItemTime(item)}</span>
+          )}
           <span className="truncate">{item.title || "Untitled"}</span>
         </div>
         {item.brand_name && (
@@ -246,6 +258,9 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
                               )}>
                                 {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
                               </span>
+                            )}
+                            {formatItemTime(item) && (
+                              <span className="text-[10px] opacity-50 shrink-0">{formatItemTime(item)}</span>
                             )}
                             <span className="font-medium truncate">{item.title || "Untitled"}</span>
                           </div>
@@ -373,6 +388,9 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
                           )}>
                             {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
                           </span>
+                        )}
+                        {formatItemTime(item) && (
+                          <span className="text-[10px] opacity-50 shrink-0">{formatItemTime(item)}</span>
                         )}
                         <span className="font-medium truncate">
                           {item.title || "Untitled"}
