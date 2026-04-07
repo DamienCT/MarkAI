@@ -772,21 +772,20 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             skipped += 1
             continue
         # Combine scheduled_date + scheduled_time into a full datetime
-        scheduled_dt = validated.scheduled_date
+        # validated.scheduled_date is a string like "2026-01-01"
         scheduled_time_str = item.get("scheduled_time", "")
-        if scheduled_time_str and scheduled_dt:
-            try:
-                h, m = scheduled_time_str.strip().split(":")
-                # scheduled_dt may be a date object — convert to datetime first
-                if not isinstance(scheduled_dt, datetime):
-                    scheduled_dt = datetime(
-                        scheduled_dt.year, scheduled_dt.month, scheduled_dt.day,
-                        int(h), int(m), tzinfo=timezone.utc,
-                    )
-                else:
-                    scheduled_dt = scheduled_dt.replace(hour=int(h), minute=int(m))
-            except (ValueError, AttributeError, TypeError):
-                pass  # Keep date-only if time parsing fails
+        try:
+            date_str = str(validated.scheduled_date)[:10]
+            if scheduled_time_str:
+                time_str = scheduled_time_str.strip()[:5]  # "18:00"
+                scheduled_dt = datetime.strptime(
+                    f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
+                ).replace(tzinfo=timezone.utc)
+            else:
+                scheduled_dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            # Fallback: use the raw string (store_calendar_items handles parsing)
+            scheduled_dt = validated.scheduled_date
 
         db_items.append(
             {
