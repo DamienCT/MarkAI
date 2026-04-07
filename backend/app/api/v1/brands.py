@@ -290,6 +290,99 @@ async def activate_content_factory(
     }
 
 
+@router.post("/{brand_id}/generate-content")
+@_limiter.limit("5/minute")
+async def generate_content(
+    request: Request,
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate content for calendar items in the next 7 days.
+
+    Separate from Context Generation — this only creates content (images, captions,
+    mockups) for calendar items that are already planned. Skips items that already
+    have content in progress.
+    """
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    if not brand.is_active:
+        raise HTTPException(status_code=422, detail="Brand is not active. Run Context Generation first.")
+
+    # Verify context generation completed
+    context_check = await db.execute(
+        text(
+            "SELECT agent_type FROM agent_runs "
+            "WHERE brand_id = :bid AND status = 'completed' "
+            "AND agent_type IN ('research', 'strategy', 'planning') "
+            "GROUP BY agent_type"
+        ),
+        {"bid": str(brand_id)},
+    )
+    completed_types = {row[0] for row in context_check.fetchall()}
+    missing = {"research", "strategy", "planning"} - completed_types
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Run Context Generation first. Missing: {', '.join(sorted(missing))}.",
+        )
+
+    # Query calendar items in the next 7 days that need content
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=7)
+
+    result = await db.execute(
+        text(
+            "SELECT id FROM calendar_items "
+            "WHERE brand_id = :bid "
+            "  AND status IN ('queued', 'planned') "
+            "  AND scheduled_at IS NOT NULL "
+            "  AND scheduled_at BETWEEN :now AND :horizon "
+            "ORDER BY scheduled_at ASC"
+        ),
+        {"bid": str(brand_id), "now": now, "horizon": horizon},
+    )
+    items = [str(row[0]) for row in result.fetchall()]
+
+    if not items:
+        return {
+            "status": "no_items",
+            "items_queued": 0,
+            "brand_id": str(brand_id),
+            "message": "No content items need generation in the next 7 days.",
+        }
+
+    # Publish content.generate for the first item, rest go in remaining_queue
+    from app.services import nats_service
+
+    first_id = items[0]
+    remaining = items[1:]
+
+    await nats_service.publish(
+        "content.generate",
+        {
+            "brand_id": str(brand_id),
+            "calendar_item_id": first_id,
+            "trigger": "content_generation",
+            "remaining_queue": remaining,
+        },
+    )
+
+    return {
+        "status": "generating",
+        "items_queued": len(items),
+        "brand_id": str(brand_id),
+        "message": f"Content generation started for {len(items)} items in the next 7 days.",
+    }
+
+
 @router.get("/{brand_id}/channels")
 async def get_brand_channels(
     brand_id: uuid.UUID,

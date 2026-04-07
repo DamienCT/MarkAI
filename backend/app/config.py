@@ -75,6 +75,7 @@ class Settings(BaseSettings):
 
     # --- Browser Worker ---
     BROWSER_WORKER_URL: str = "http://browser-worker:8001"
+    BROWSER_WORKER_API_KEY: str = ""
 
     # --- Notifications (Microsoft Teams) ---
     TEAMS_WEBHOOK_URL: str = ""

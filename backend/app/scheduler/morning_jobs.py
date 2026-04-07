@@ -118,7 +118,7 @@ async def _topup_content_generation() -> None:
             text(
                 "SELECT id, brand_id, title, scheduled_at "
                 "FROM calendar_items "
-                "WHERE status = 'queued' "
+                "WHERE status IN ('queued', 'planned') "
                 "  AND scheduled_at IS NOT NULL "
                 "  AND scheduled_at BETWEEN :now AND :horizon "
                 "ORDER BY scheduled_at ASC "
