@@ -8,6 +8,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.auth.models import User
 from app.auth.permissions import role_has_access
+from app.config import settings
 from app.deps import get_current_user, get_db
 from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
 from app.services import fabric_service, minio_service, product_service
