@@ -312,46 +312,12 @@ export default function ContentDetailPage() {
                 </Card>
               )}
 
-              {/* Schedule for publishing — visible when content is approved */}
-              {calendarItem && calendarItem.status === "approved" && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <CalendarClock className="h-4 w-4" />
-                      Schedule for Publishing
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-xs text-muted-foreground">Date</label>
-                        <input
-                          type="date"
-                          value={scheduleDate}
-                          onChange={(e) => setScheduleDate(e.target.value)}
-                          min={new Date().toISOString().split("T")[0]}
-                          className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-muted-foreground">Time</label>
-                        <input
-                          type="time"
-                          value={scheduleTime}
-                          onChange={(e) => setScheduleTime(e.target.value)}
-                          className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                        />
-                      </div>
-                    </div>
-                    <Button
-                      className="w-full bg-blue-600 hover:bg-blue-700 text-white"
-                      disabled={scheduling || !scheduleDate}
-                      onClick={handleSchedule}
-                    >
-                      {scheduling ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Scheduling...</> : "Schedule & Publish"}
-                    </Button>
-                    <p className="text-[10px] text-muted-foreground">
-                      The content will be sent to n8n for publishing at the scheduled time.
+              {/* Scheduled info — shown when content is auto-scheduled after approval */}
+              {calendarItem && calendarItem.status === "scheduled" && calendarItem.scheduled_at && (
+                <Card className="border-blue-500/30 bg-blue-500/5">
+                  <CardContent className="py-3">
+                    <p className="text-sm text-blue-600 dark:text-blue-400 font-medium">
+                      Scheduled for publishing on {new Date(calendarItem.scheduled_at).toLocaleDateString()} at {new Date(calendarItem.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </CardContent>
                 </Card>
