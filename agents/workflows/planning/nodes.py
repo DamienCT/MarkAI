@@ -325,8 +325,9 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     # Always start from January 1 of current year — the Content Strategy
     # covers the full year with events tied to specific dates.
     now = datetime.now(timezone.utc)
-    start_date_dt = datetime(now.year, 1, 1, tzinfo=timezone.utc)
-    end_date_dt = datetime(now.year, 12, 31, tzinfo=timezone.utc)
+    start_date_dt = datetime(now.year, 4, 1, tzinfo=timezone.utc)
+    # TODO: Change to Jan 1 - Dec 31 for production. Limited to Q2 (Apr-Jun) for testing.
+    end_date_dt = datetime(now.year, 6, 30, tzinfo=timezone.utc)
 
     # Build cadence string from strategy so the LLM respects weekly post counts.
     # Try structured cadence data first, then fall back to extracting from strategy document.
