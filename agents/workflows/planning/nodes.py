@@ -261,7 +261,16 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
                 "- Seasonal hooks and key dates/holidays relevant to the brand's market\n"
                 "- Content pillar rotation schedule\n"
                 "- Content mix ratios per platform\n"
-                "- Strategic rationale for content sequencing"
+                "- Strategic rationale for content sequencing\n\n"
+                "CHANNEL CADENCE SECTION (REQUIRED — include a section titled '## Channel Posting Cadence' with this exact format):\n"
+                "For EACH enabled channel, include:\n"
+                "### [Channel Name]\n"
+                "- Weekly cadence: [N] posts per week\n"
+                "- Best days: [day1], [day2], [day3]\n"
+                "- Best times: [HH:MM], [HH:MM], [HH:MM]\n"
+                "- Primary role: [one sentence]\n"
+                "- Best formats: [format1], [format2]\n"
+                "This section is critical — the content calendar generator reads these exact numbers."
             ),
         },
         {
@@ -447,6 +456,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         return strategy_document[:4000]
 
     # ── Build per-channel cadence lookup ──────────────────────────────
+    # Primary source: structured cadence from strategy state (populated by plan_cadence node)
+    # Fallback: regex extraction from strategy document text
     import re as _re
 
     channel_cadence: dict[str, int] = {}
@@ -454,28 +465,51 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     channel_best_times: dict[str, str] = {}
 
     for ch in enabled_channels:
-        # Extract posts per week
         posts = 3  # safe default
+        best_days = ""
+        best_times = ""
+
+        # Try structured cadence first (from strategy state)
         ch_cad = cadence.get(ch, {}) if isinstance(cadence, dict) else {}
-        if isinstance(ch_cad, dict) and ch_cad.get("posts_per_week"):
-            posts = int(ch_cad["posts_per_week"])
-        elif strategy_document:
-            m = _re.search(rf"{ch}[\s\S]*?(\d+)\s*posts?\s*(?:per|/)\s*week", strategy_document, _re.IGNORECASE)
-            if m:
-                posts = int(m.group(1))
-        channel_cadence[ch] = posts
+        if isinstance(ch_cad, dict):
+            if ch_cad.get("posts_per_week"):
+                posts = int(ch_cad["posts_per_week"])
+            if ch_cad.get("best_days"):
+                days = ch_cad["best_days"]
+                best_days = ", ".join(days) if isinstance(days, list) else str(days)
+            if ch_cad.get("best_times"):
+                times = ch_cad["best_times"]
+                best_times = ", ".join(times) if isinstance(times, list) else str(times)
 
-        # Extract best days
-        if strategy_document:
-            days_m = _re.search(rf"{ch}[\s\S]*?best\s*days?[:\s]*([^\n]+)", strategy_document, _re.IGNORECASE)
+        # Fallback: extract from strategy document text
+        if posts == 3 and strategy_document:
+            # Match "### Instagram\n- Weekly cadence: 5 posts per week" or "Instagram\n5 posts per week"
+            patterns = [
+                rf"###?\s*{ch}[\s\S]*?(?:weekly\s*cadence|cadence)[:\s]*(\d+)\s*posts",
+                rf"###?\s*{ch}[\s\S]*?(\d+)\s*posts?\s*(?:per|/)\s*week",
+                rf"{ch}\s*\n[^#]*?(\d+)\s*posts?\s*(?:per|/)\s*week",
+            ]
+            for pattern in patterns:
+                m = _re.search(pattern, strategy_document, _re.IGNORECASE)
+                if m:
+                    posts = int(m.group(1))
+                    break
+
+        if not best_days and strategy_document:
+            days_m = _re.search(rf"###?\s*{ch}[\s\S]*?best\s*days?[:\s]*([^\n]+)", strategy_document, _re.IGNORECASE)
             if days_m:
-                channel_best_days[ch] = days_m.group(1).strip()
+                best_days = days_m.group(1).strip()
 
-        # Extract best times
-        if strategy_document:
-            times_m = _re.search(rf"{ch}[\s\S]*?best\s*times?[:\s]*([^\n]+)", strategy_document, _re.IGNORECASE)
+        if not best_times and strategy_document:
+            times_m = _re.search(rf"###?\s*{ch}[\s\S]*?best\s*times?[:\s]*([^\n]+)", strategy_document, _re.IGNORECASE)
             if times_m:
-                channel_best_times[ch] = times_m.group(1).strip()
+                best_times = times_m.group(1).strip()
+
+        channel_cadence[ch] = posts
+        if best_days:
+            channel_best_days[ch] = best_days
+        if best_times:
+            channel_best_times[ch] = best_times
 
     logger.info("PROMPT_DEBUG channel_cadence: %s", channel_cadence)
     logger.info("PROMPT_DEBUG channel_best_days: %s", channel_best_days)

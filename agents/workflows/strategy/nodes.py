@@ -10,7 +10,7 @@ from langgraph.types import interrupt
 
 from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_json_for_prompt
-from shared.tools.database import get_latest_research, store_strategy
+from shared.tools.database import get_brand_config, get_latest_research, store_strategy
 
 from workflows.strategy.state import StrategyState
 
@@ -144,14 +144,45 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
 async def plan_cadence(state: StrategyState) -> dict[str, Any]:
     """Plan posting cadence per platform."""
     try:
+        # Load enabled channels from brand config
+        brand_config = await get_brand_config(state["brand_id"])
+        channels_cfg = (brand_config or {}).get("brand_guidelines", {})
+        if isinstance(channels_cfg, str):
+            try:
+                import json as _json
+                channels_cfg = _json.loads(channels_cfg)
+            except Exception:
+                channels_cfg = {}
+        channels_cfg = channels_cfg.get("channels", {})
+        enabled_channels = [
+            ch for ch, cfg in channels_cfg.items()
+            if isinstance(cfg, dict) and cfg.get("enabled")
+        ]
+        if not enabled_channels:
+            enabled_channels = ["instagram"]
+        channels_str = ", ".join(enabled_channels)
+
         prompt = [
             {
                 "role": "system",
-                "content": "You are a social media strategist. Based on the brand's target market, create a posting cadence plan. Return JSON with platforms as keys, each having: posts_per_week, best_days, best_times, content_mix (mapping pillar to percentage), content_format_mix (percentage breakdown of content formats per platform, e.g. reels, carousels, stories, static — as an object with format names as keys and percentage as values).",
+                "content": (
+                    "You are a social media strategist. Create a posting cadence plan "
+                    f"for EXACTLY these platforms: {channels_str}.\n\n"
+                    "Return a JSON object with each platform as a key. Each platform MUST have:\n"
+                    "- posts_per_week (integer, e.g., 5)\n"
+                    "- best_days (array of day names, e.g., [\"Monday\", \"Wednesday\", \"Friday\"])\n"
+                    "- best_times (array of times in HH:MM format, e.g., [\"07:00\", \"13:00\", \"20:00\"])\n"
+                    "- content_mix (object mapping pillar name to percentage)\n"
+                    "- content_format_mix (object mapping format to percentage, e.g., {\"reel\": 30, \"carousel\": 25})\n\n"
+                    "Consider the brand's target market in Mauritius. Instagram and Facebook "
+                    "typically need 4-5 posts/week, LinkedIn 2-3, YouTube 1-2."
+                ),
             },
             {
                 "role": "user",
                 "content": (
+                    f"Enabled channels: {channels_str}\n\n"
+                    f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}), max_length=1000)}\n\n"
                     f"Audiences:\n{sanitize_json_for_prompt(state.get('audiences', []))}\n\n"
                     f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}"
                 ),
@@ -160,7 +191,12 @@ async def plan_cadence(state: StrategyState) -> dict[str, Any]:
         result = await chat_completion(
             prompt, temperature=0.4, response_format={"type": "json_object"}
         )
-        cadence = parse_llm_json(result, fallback={"raw": result})
+        cadence = parse_llm_json(result, fallback={})
+        # Validate: ensure every enabled channel has a cadence entry
+        for ch in enabled_channels:
+            if ch not in cadence:
+                cadence[ch] = {"posts_per_week": 3, "best_days": ["Monday", "Wednesday", "Friday"], "best_times": ["07:00", "13:00", "20:00"]}
+        logger.info("plan_cadence result: %s", {ch: cadence[ch].get("posts_per_week") for ch in enabled_channels if ch in cadence})
         return {"cadence": cadence}
     except Exception as exc:
         logger.error("plan_cadence failed: %s", exc)
