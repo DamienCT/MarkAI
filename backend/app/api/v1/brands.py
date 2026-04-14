@@ -350,6 +350,16 @@ async def generate_content(
             "message": "No calendar items need content generation in the next 7 days.",
         }
 
+    # Transition planned items to queued so they appear in Content Studio
+    await db.execute(
+        text(
+            "UPDATE calendar_items SET status = 'queued' "
+            "WHERE id = ANY(:ids) AND status = 'planned'"
+        ),
+        {"ids": item_ids},
+    )
+    await db.commit()
+
     # Publish first item with remaining_queue for sequential processing
     from app.services import nats_service
 

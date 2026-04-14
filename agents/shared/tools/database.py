@@ -494,7 +494,7 @@ async def store_calendar_items(
                     "item_type, channel, scheduled_at, status, product_ids, "
                     "pillar, theme, target_audience, weekly_sub_theme, content_brief, visual_direction, cta_type) "
                     "VALUES (:id, :brand_id, :campaign_id, :title, :description, "
-                    ":item_type, :channel, :scheduled_at, 'queued', :product_ids, "
+                    ":item_type, :channel, :scheduled_at, 'planned', :product_ids, "
                     ":pillar, :theme, :target_audience, :weekly_sub_theme, :content_brief, :visual_direction, :cta_type)"
                 ),
                 {
