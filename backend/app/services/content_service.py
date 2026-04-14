@@ -80,6 +80,7 @@ async def update_content(
 
 
 VALID_TRANSITIONS: dict[str, list[str]] = {
+    "planned": ["queued"],
     "queued": ["working"],
     "working": ["in_review", "failed"],
     "in_review": ["scheduled", "reworking"],  # Approve → auto-schedule (no "approved" step)

@@ -18,6 +18,7 @@ ItemType = Literal[
     "post", "story", "reel", "carousel", "article", "newsletter", "ad", "event", "other"
 ]
 CalendarItemStatus = Literal[
+    "planned",
     "queued",
     "working",
     "in_review",
@@ -38,7 +39,7 @@ class CalendarItemBase(BaseModel):
     item_type: ItemType
     channel: ChannelType
     scheduled_at: datetime | None = None
-    status: CalendarItemStatus = "queued"
+    status: CalendarItemStatus = "planned"
     assigned_to: uuid.UUID | None = None
     pillar: str | None = None
     theme: str | None = None
