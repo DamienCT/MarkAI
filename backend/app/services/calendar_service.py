@@ -24,7 +24,7 @@ async def list_calendar_items(
     end_date: datetime | None = None,
     status: str | None = None,
     skip: int = 0,
-    limit: int = 200,
+    limit: int = 1000,
 ) -> Sequence[CalendarItem]:
     stmt = (
         select(CalendarItem)

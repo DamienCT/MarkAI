@@ -160,6 +160,7 @@ export default function BrandDetailPage() {
   const [pipelineRuns, setPipelineRuns] = useState<AgentRun[]>([]);
   const [loadingPipeline, setLoadingPipeline] = useState(false);
   const [togglingFactory, setTogglingFactory] = useState(false);
+  const [generatingContent, setGeneratingContent] = useState(false);
 
   // Abort previous requests and create new controller on each fetch cycle
   useEffect(() => {
@@ -271,7 +272,7 @@ export default function BrandDetailPage() {
         if (updatedBrand.status !== "activating") {
           setBrand(updatedBrand);
           if (updatedBrand.status === "active") {
-            toast.success("Content Factory is ready! Your brand is now active.");
+            toast.success("Context Generation complete! Your brand is now active.");
           }
           return; // interval will be cleared by the status change re-render
         }
@@ -331,7 +332,7 @@ export default function BrandDetailPage() {
           await api.put(`/api/v1/brands/${brandId}`, { status: "onboarding" });
         }
         await api.post(`/api/v1/brands/${brandId}/activate`);
-        toast.success("Content Factory started. AI agents are now working on your brand.");
+        toast.success("Context Generation started. Research → Strategy → Plan → Calendar.");
         const updated = await api.get<Brand>(`/api/v1/brands/${brandId}`);
         setBrand(updated);
         setTimeout(fetchPipelineRuns, 3000);
@@ -339,14 +340,34 @@ export default function BrandDetailPage() {
         await api.put(`/api/v1/brands/${brandId}`, { is_active: false });
         const updated = await api.get<Brand>(`/api/v1/brands/${brandId}`);
         setBrand(updated);
-        toast.success("Content Factory stopped. Running agents have been cancelled.");
+        toast.success("Context Generation stopped.");
         setTimeout(fetchPipelineRuns, 1000);
       }
     } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to toggle Content Factory";
+      const detail = (err as { detail?: string })?.detail || "Failed to toggle Context Generation";
       toast.error(detail);
     } finally {
       setTogglingFactory(false);
+    }
+  }, [brandId, fetchPipelineRuns]);
+
+  const handleGenerateContent = useCallback(async () => {
+    setGeneratingContent(true);
+    try {
+      const result = await api.post<{ status: string; items_queued: number; message: string }>(
+        `/api/v1/brands/${brandId}/generate-content`
+      );
+      if (result.status === "no_items") {
+        toast.info(result.message);
+      } else {
+        toast.success(`Content generation started for ${result.items_queued} calendar items.`);
+        setTimeout(fetchPipelineRuns, 3000);
+      }
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to start content generation";
+      toast.error(detail);
+    } finally {
+      setGeneratingContent(false);
     }
   }, [brandId, fetchPipelineRuns]);
 
@@ -815,6 +836,8 @@ export default function BrandDetailPage() {
             onboardingProgress={onboardingProgress}
             onOpenOnboarding={() => setOnboardingOpen(true)}
             onToggleContentFactory={handleToggleContentFactory}
+            onGenerateContent={handleGenerateContent}
+            generatingContent={generatingContent}
             onFetchPipelineRuns={fetchPipelineRuns}
             onSetActiveTab={setActiveTab}
             onFetchIntelligence={fetchIntelligence}

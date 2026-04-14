@@ -77,11 +77,11 @@ async def list_calendar_items(
     end_date: datetime | None = None,
     status_filter: str | None = None,
     skip: int = 0,
-    limit: int = 200,
+    limit: int = 1000,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    limit = min(limit, 200)
+    limit = min(limit, 1000)
     return await calendar_service.list_calendar_items(
         db,
         brand_id=brand_id,

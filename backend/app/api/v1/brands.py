@@ -239,7 +239,7 @@ async def activate_content_factory(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Start the Content Factory pipeline: research → strategy → plan → content."""
+    """Start Context Generation pipeline: research → strategy → plan → calendar."""
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -286,7 +286,7 @@ async def activate_content_factory(
     return {
         "status": "activating",
         "brand_id": str(brand_id),
-        "message": "Context Generation started. Research → Strategy → Plan.",
+        "message": "Context Generation started. Research → Strategy → Plan → Calendar.",
     }
 
 
@@ -298,12 +298,7 @@ async def generate_content(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Generate content for calendar items in the next 7 days.
-
-    Separate from Context Generation — this only creates content (images, captions,
-    mockups) for calendar items that are already planned. Skips items that already
-    have content in progress.
-    """
+    """Trigger content generation for queued calendar items."""
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -311,11 +306,8 @@ async def generate_content(
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
 
-    if not brand.is_active:
-        raise HTTPException(status_code=422, detail="Brand is not active. Run Context Generation first.")
-
     # Verify context generation completed
-    context_check = await db.execute(
+    ctx_check = await db.execute(
         text(
             "SELECT agent_type FROM agent_runs "
             "WHERE brand_id = :bid AND status = 'completed' "
@@ -324,46 +316,38 @@ async def generate_content(
         ),
         {"bid": str(brand_id)},
     )
-    completed_types = {row[0] for row in context_check.fetchall()}
+    completed_types = {row[0] for row in ctx_check.fetchall()}
     missing = {"research", "strategy", "planning"} - completed_types
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"Run Context Generation first. Missing: {', '.join(sorted(missing))}.",
+            detail=f"Run Context Generation first. Missing: {', '.join(sorted(missing))}",
         )
 
-    # Query calendar items in the next 7 days that need content
-    from datetime import datetime, timezone, timedelta
-
-    now = datetime.now(timezone.utc)
-    horizon = now + timedelta(days=7)
-
-    result = await db.execute(
+    # Query calendar items that need content generation
+    items_result = await db.execute(
         text(
             "SELECT id FROM calendar_items "
-            "WHERE brand_id = :bid "
-            "  AND status IN ('queued', 'planned') "
-            "  AND scheduled_at IS NOT NULL "
-            "  AND scheduled_at BETWEEN :now AND :horizon "
+            "WHERE brand_id = :bid AND status IN ('queued', 'planned') "
             "ORDER BY scheduled_at ASC"
         ),
-        {"bid": str(brand_id), "now": now, "horizon": horizon},
+        {"bid": str(brand_id)},
     )
-    items = [str(row[0]) for row in result.fetchall()]
+    item_ids = [str(row[0]) for row in items_result.fetchall()]
 
-    if not items:
+    if not item_ids:
         return {
             "status": "no_items",
             "items_queued": 0,
             "brand_id": str(brand_id),
-            "message": "No content items need generation in the next 7 days.",
+            "message": "No calendar items need content generation.",
         }
 
-    # Publish content.generate for the first item, rest go in remaining_queue
+    # Publish first item with remaining_queue for sequential processing
     from app.services import nats_service
 
-    first_id = items[0]
-    remaining = items[1:]
+    first_id = item_ids[0]
+    remaining = item_ids[1:]
 
     await nats_service.publish(
         "content.generate",
@@ -377,9 +361,9 @@ async def generate_content(
 
     return {
         "status": "generating",
-        "items_queued": len(items),
+        "items_queued": len(item_ids),
         "brand_id": str(brand_id),
-        "message": f"Content generation started for {len(items)} items in the next 7 days.",
+        "message": f"Content generation started for {len(item_ids)} calendar items.",
     }
 
 

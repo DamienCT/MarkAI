@@ -44,6 +44,8 @@ export interface OverviewTabProps {
   onboardingProgress: { completed: number; total: number; isComplete: boolean; loaded?: boolean };
   onOpenOnboarding: () => void;
   onToggleContentFactory: (turnOn: boolean) => Promise<void>;
+  onGenerateContent: () => Promise<void>;
+  generatingContent: boolean;
   onFetchPipelineRuns: () => Promise<void>;
   onSetActiveTab: (tab: string) => void;
   onFetchIntelligence: () => void;
@@ -64,6 +66,8 @@ export function OverviewTab({
   onboardingProgress,
   onOpenOnboarding,
   onToggleContentFactory,
+  onGenerateContent,
+  generatingContent,
   onFetchPipelineRuns,
   onSetActiveTab,
   onFetchIntelligence,
@@ -126,8 +130,8 @@ export function OverviewTab({
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-lg">Content Factory</CardTitle>
-              <CardDescription>Automated research, strategy, planning, and content generation</CardDescription>
+              <CardTitle className="text-lg">Context Generation</CardTitle>
+              <CardDescription>Automated research, strategy, planning, and calendar strategy</CardDescription>
             </div>
             <div className="flex items-center gap-3">
               {(() => {
@@ -185,7 +189,7 @@ export function OverviewTab({
                   disabled
                 >
                   <Play className="mr-1.5 h-4 w-4" />
-                  Start Content Factory
+                  Run Context Generation
                 </Button>
               ) : brand.status === 'onboarding' && onboardingProgress.isComplete ? (
                 <Button
@@ -199,7 +203,7 @@ export function OverviewTab({
                   ) : (
                     <Play className="mr-1.5 h-4 w-4" />
                   )}
-                  Start Content Factory
+                  Run Context Generation
                 </Button>
               ) : brand.status === 'activating' ? (
                 (() => {
@@ -218,7 +222,7 @@ export function OverviewTab({
                       <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-700 dark:hover:bg-emerald-600"
                         disabled={togglingFactory} onClick={() => onToggleContentFactory(true)}>
                         {togglingFactory ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Play className="mr-1.5 h-4 w-4" />}
-                        Retry Content Factory
+                        Retry Context Generation
                       </Button>
                     );
                   }
@@ -226,7 +230,7 @@ export function OverviewTab({
                     <Button size="sm" variant="destructive"
                       disabled={togglingFactory} onClick={() => onToggleContentFactory(false)}>
                       {togglingFactory ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Square className="mr-1.5 h-4 w-4" />}
-                      Stop Content Factory
+                      Stop Context Generation
                     </Button>
                   );
                 })()
@@ -242,7 +246,7 @@ export function OverviewTab({
                   ) : (
                     <Square className="mr-1.5 h-4 w-4" />
                   )}
-                  Stop Content Factory
+                  Stop Context Generation
                 </Button>
               ) : (
                 <Button
@@ -256,7 +260,7 @@ export function OverviewTab({
                   ) : (
                     <Play className="mr-1.5 h-4 w-4" />
                   )}
-                  Start Content Factory
+                  Run Context Generation
                 </Button>
               )}
             </div>
@@ -266,18 +270,18 @@ export function OverviewTab({
           {brand.status === 'onboarding' && !onboardingProgress.isComplete && (
             <div className="flex flex-col items-center justify-center py-8 text-center">
               <Rocket className="h-10 w-10 text-orange-500 mb-3" />
-              <p className="text-sm font-medium">Complete setup to start your Content Factory</p>
+              <p className="text-sm font-medium">Complete setup to run Context Generation</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Finish the required onboarding steps, then activate to begin automated content generation.
+                Finish the required onboarding steps, then activate to begin automated research, strategy, and planning.
               </p>
             </div>
           )}
           {brand.status === 'onboarding' && onboardingProgress.isComplete && pipelineRuns.length === 0 && (
             <div className="flex flex-col items-center justify-center py-8 text-center">
               <Rocket className="h-10 w-10 text-green-500 mb-3" />
-              <p className="text-sm font-medium">Ready to launch your Content Factory</p>
+              <p className="text-sm font-medium">Ready to run Context Generation</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Setup is complete. Click Start Content Factory above to begin automated content generation.
+                Setup is complete. Click Run Context Generation above to begin automated research, strategy, and planning.
               </p>
             </div>
           )}
@@ -379,43 +383,56 @@ export function OverviewTab({
                   })}
                 </div>
 
-                {/* Content Generation Progress (separate from reports) */}
-                {(allReportsDone || contentTotal > 0) && (
-                  <div className="border-t pt-4">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">Content Generation</p>
-                    <div className="flex items-center gap-3">
-                      <div className={`flex items-center justify-center h-10 w-10 rounded-full border-2 transition-colors ${
-                        contentTotal === 0 && !contentRunning ? "border-muted-foreground/30 bg-muted/30 text-muted-foreground" :
-                        contentFailed > 0 && !contentRunning ? "border-red-500 bg-red-50 dark:bg-red-900/30 text-red-600" :
-                        contentRunning ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-600" :
-                        contentCompleted > 0 ? "border-green-500 bg-green-50 dark:bg-green-900/30 text-green-600" :
-                        "border-muted-foreground/30 bg-muted/30 text-muted-foreground"
-                      }`}>
-                        {contentRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Zap className="h-5 w-5" />}
-                      </div>
-                      <div className="flex-1">
-                        {contentTotal === 0 && !contentRunning ? (
-                          <p className="text-sm text-muted-foreground">
-                            {allReportsDone ? "Waiting for content generation to start..." : "Reports must complete first"}
-                          </p>
-                        ) : contentRunning ? (
-                          <p className="text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                            <span>Generating content...</span>
-                            <span className="text-muted-foreground">({contentCompleted} completed{contentFailed > 0 ? `, ${contentFailed} failed` : ""})</span>
-                          </p>
-                        ) : (
-                          <p className="text-sm">
-                            <span className="font-medium">{contentCompleted}</span>
-                            <span className="text-muted-foreground"> content item{contentCompleted !== 1 ? "s" : ""} generated</span>
-                            {contentFailed > 0 && (
-                              <span className="text-red-500 ml-1">({contentFailed} failed)</span>
-                            )}
-                          </p>
-                        )}
-                      </div>
+                {/* Content Generation (Step 2 — separate from Context Generation) */}
+                <div className="border-t pt-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Content Generation</p>
+                    <Button
+                      size="sm"
+                      className="bg-blue-600 hover:bg-blue-700 text-white dark:bg-blue-700 dark:hover:bg-blue-600"
+                      disabled={!allReportsDone || generatingContent || !!contentRunning}
+                      onClick={onGenerateContent}
+                    >
+                      {generatingContent ? (
+                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Zap className="mr-1.5 h-4 w-4" />
+                      )}
+                      Generate Content
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className={`flex items-center justify-center h-10 w-10 rounded-full border-2 transition-colors ${
+                      contentTotal === 0 && !contentRunning ? "border-muted-foreground/30 bg-muted/30 text-muted-foreground" :
+                      contentFailed > 0 && !contentRunning ? "border-red-500 bg-red-50 dark:bg-red-900/30 text-red-600" :
+                      contentRunning ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-600" :
+                      contentCompleted > 0 ? "border-green-500 bg-green-50 dark:bg-green-900/30 text-green-600" :
+                      "border-muted-foreground/30 bg-muted/30 text-muted-foreground"
+                    }`}>
+                      {contentRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Zap className="h-5 w-5" />}
+                    </div>
+                    <div className="flex-1">
+                      {contentTotal === 0 && !contentRunning ? (
+                        <p className="text-sm text-muted-foreground">
+                          {allReportsDone ? "Ready — click Generate Content to start" : "Complete Context Generation first"}
+                        </p>
+                      ) : contentRunning ? (
+                        <p className="text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                          <span>Generating content...</span>
+                          <span className="text-muted-foreground">({contentCompleted} completed{contentFailed > 0 ? `, ${contentFailed} failed` : ""})</span>
+                        </p>
+                      ) : (
+                        <p className="text-sm">
+                          <span className="font-medium">{contentCompleted}</span>
+                          <span className="text-muted-foreground"> content item{contentCompleted !== 1 ? "s" : ""} generated</span>
+                          {contentFailed > 0 && (
+                            <span className="text-red-500 ml-1">({contentFailed} failed)</span>
+                          )}
+                        </p>
+                      )}
                     </div>
                   </div>
-                )}
+                </div>
 
                 {loadingPipeline && (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
