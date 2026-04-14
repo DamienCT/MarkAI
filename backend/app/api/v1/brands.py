@@ -324,14 +324,21 @@ async def generate_content(
             detail=f"Run Context Generation first. Missing: {', '.join(sorted(missing))}",
         )
 
-    # Query calendar items that need content generation
+    # Query calendar items within TODAY + 7 days that need content generation
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=7)
+
     items_result = await db.execute(
         text(
             "SELECT id FROM calendar_items "
             "WHERE brand_id = :bid AND status IN ('queued', 'planned') "
+            "  AND scheduled_at IS NOT NULL "
+            "  AND scheduled_at BETWEEN :now AND :horizon "
             "ORDER BY scheduled_at ASC"
         ),
-        {"bid": str(brand_id)},
+        {"bid": str(brand_id), "now": now, "horizon": horizon},
     )
     item_ids = [str(row[0]) for row in items_result.fetchall()]
 
@@ -340,7 +347,7 @@ async def generate_content(
             "status": "no_items",
             "items_queued": 0,
             "brand_id": str(brand_id),
-            "message": "No calendar items need content generation.",
+            "message": "No calendar items need content generation in the next 7 days.",
         }
 
     # Publish first item with remaining_queue for sequential processing
@@ -363,7 +370,7 @@ async def generate_content(
         "status": "generating",
         "items_queued": len(item_ids),
         "brand_id": str(brand_id),
-        "message": f"Content generation started for {len(item_ids)} calendar items.",
+        "message": f"Content generation started for {len(item_ids)} items ({now.strftime('%b %d')} – {horizon.strftime('%b %d')}).",
     }
 
 

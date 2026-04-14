@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -10,6 +10,52 @@ from app.deps import get_current_user, get_db
 from app.models.agent_run import AgentRun
 
 router = APIRouter()
+
+
+@router.get("/runs/latest-by-type")
+async def latest_runs_by_type(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the single most recent run per agent_type for a brand.
+
+    Used by the pipeline display so context generation stages are never
+    hidden by a large number of content runs.
+    """
+    result = await db.execute(
+        text(
+            "SELECT DISTINCT ON (agent_type) "
+            "id, agent_type, trigger, brand_id, status, "
+            "started_at, completed_at, error_message, "
+            "output_payload, input_payload, tokens_used, "
+            "cost_usd, duration_ms, created_at "
+            "FROM agent_runs "
+            "WHERE brand_id = :bid "
+            "ORDER BY agent_type, created_at DESC"
+        ),
+        {"bid": str(brand_id)},
+    )
+    rows = result.fetchall()
+    return [
+        {
+            "id": str(r.id),
+            "agent_type": r.agent_type,
+            "trigger": r.trigger,
+            "brand_id": str(r.brand_id),
+            "status": r.status,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            "error_message": r.error_message,
+            "output_payload": r.output_payload,
+            "input_payload": r.input_payload,
+            "tokens_used": r.tokens_used,
+            "cost_usd": float(r.cost_usd) if r.cost_usd else None,
+            "duration_ms": r.duration_ms,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
 
 
 @router.get("/runs/active")
