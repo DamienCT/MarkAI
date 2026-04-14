@@ -46,6 +46,7 @@ export interface OverviewTabProps {
   onToggleContentFactory: (turnOn: boolean) => Promise<void>;
   onGenerateContent: () => Promise<void>;
   generatingContent: boolean;
+  contentItemsQueued: number;
   onFetchPipelineRuns: () => Promise<void>;
   onSetActiveTab: (tab: string) => void;
   onFetchIntelligence: () => void;
@@ -68,6 +69,7 @@ export function OverviewTab({
   onToggleContentFactory,
   onGenerateContent,
   generatingContent,
+  contentItemsQueued,
   onFetchPipelineRuns,
   onSetActiveTab,
   onFetchIntelligence,
@@ -401,37 +403,45 @@ export function OverviewTab({
                       Generate Content
                     </Button>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <div className={`flex items-center justify-center h-10 w-10 rounded-full border-2 transition-colors ${
-                      contentTotal === 0 && !contentRunning ? "border-muted-foreground/30 bg-muted/30 text-muted-foreground" :
-                      contentFailed > 0 && !contentRunning ? "border-red-500 bg-red-50 dark:bg-red-900/30 text-red-600" :
-                      contentRunning ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-600" :
-                      contentCompleted > 0 ? "border-green-500 bg-green-50 dark:bg-green-900/30 text-green-600" :
-                      "border-muted-foreground/30 bg-muted/30 text-muted-foreground"
-                    }`}>
-                      {contentRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Zap className="h-5 w-5" />}
-                    </div>
-                    <div className="flex-1">
-                      {contentTotal === 0 && !contentRunning ? (
-                        <p className="text-sm text-muted-foreground">
-                          {allReportsDone ? "Ready — click Generate Content to start" : "Complete Context Generation first"}
-                        </p>
-                      ) : contentRunning ? (
-                        <p className="text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                          <span>Generating content...</span>
-                          <span className="text-muted-foreground">({contentCompleted} completed{contentFailed > 0 ? `, ${contentFailed} failed` : ""})</span>
-                        </p>
-                      ) : (
-                        <p className="text-sm">
-                          <span className="font-medium">{contentCompleted}</span>
-                          <span className="text-muted-foreground"> content item{contentCompleted !== 1 ? "s" : ""} generated</span>
-                          {contentFailed > 0 && (
-                            <span className="text-red-500 ml-1">({contentFailed} failed)</span>
+                  {(() => {
+                    const isGenerating = !!contentRunning || (contentItemsQueued > 0 && contentCompleted < contentItemsQueued);
+                    return (
+                      <div className="flex items-center gap-3">
+                        <div className={`flex items-center justify-center h-10 w-10 rounded-full border-2 transition-colors ${
+                          isGenerating ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-600" :
+                          contentFailed > 0 ? "border-red-500 bg-red-50 dark:bg-red-900/30 text-red-600" :
+                          contentCompleted > 0 ? "border-green-500 bg-green-50 dark:bg-green-900/30 text-green-600" :
+                          "border-muted-foreground/30 bg-muted/30 text-muted-foreground"
+                        }`}>
+                          {isGenerating ? <Loader2 className="h-5 w-5 animate-spin" /> : <Zap className="h-5 w-5" />}
+                        </div>
+                        <div className="flex-1">
+                          {isGenerating ? (
+                            <div>
+                              <p className="text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                                <span>Generating content...</span>
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                {contentCompleted} of {contentItemsQueued} items completed{contentFailed > 0 ? ` · ${contentFailed} failed` : ""}
+                              </p>
+                            </div>
+                          ) : contentTotal === 0 && contentItemsQueued === 0 ? (
+                            <p className="text-sm text-muted-foreground">
+                              {allReportsDone ? "Ready — click Generate Content to start" : "Complete Context Generation first"}
+                            </p>
+                          ) : (
+                            <p className="text-sm">
+                              <span className="font-medium">{contentCompleted}</span>
+                              <span className="text-muted-foreground"> content item{contentCompleted !== 1 ? "s" : ""} generated</span>
+                              {contentFailed > 0 && (
+                                <span className="text-red-500 ml-1">({contentFailed} failed)</span>
+                              )}
+                            </p>
                           )}
-                        </p>
-                      )}
-                    </div>
-                  </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {loadingPipeline && (

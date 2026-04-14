@@ -161,6 +161,7 @@ export default function BrandDetailPage() {
   const [loadingPipeline, setLoadingPipeline] = useState(false);
   const [togglingFactory, setTogglingFactory] = useState(false);
   const [generatingContent, setGeneratingContent] = useState(false);
+  const [contentItemsQueued, setContentItemsQueued] = useState(0);
 
   // Abort previous requests and create new controller on each fetch cycle
   useEffect(() => {
@@ -364,8 +365,12 @@ export default function BrandDetailPage() {
       if (result.status === "no_items") {
         toast.info(result.message);
       } else {
-        toast.success(`Content generation started for ${result.items_queued} calendar items.`);
-        setTimeout(fetchPipelineRuns, 3000);
+        setContentItemsQueued(result.items_queued);
+        toast.success(result.message);
+        // Poll rapidly until the agent run is detected
+        setTimeout(fetchPipelineRuns, 2000);
+        setTimeout(fetchPipelineRuns, 5000);
+        setTimeout(fetchPipelineRuns, 10000);
       }
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "Failed to start content generation";
@@ -842,6 +847,7 @@ export default function BrandDetailPage() {
             onToggleContentFactory={handleToggleContentFactory}
             onGenerateContent={handleGenerateContent}
             generatingContent={generatingContent}
+            contentItemsQueued={contentItemsQueued}
             onFetchPipelineRuns={fetchPipelineRuns}
             onSetActiveTab={setActiveTab}
             onFetchIntelligence={fetchIntelligence}
