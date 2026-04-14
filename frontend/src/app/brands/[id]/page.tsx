@@ -199,7 +199,7 @@ export default function BrandDetailPage() {
       .then((data) => { setProducts(data); setProductsLoaded(true); })
       .catch(() => { setProductsLoaded(true); });
     // Fetch pipeline runs for Overview tab
-    api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }, { signal }).then(setPipelineRuns).catch(() => {});
+    api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 200 }, { signal }).then(setPipelineRuns).catch(() => {});
     // Fetch competitors for onboarding progress calculation (from DB, same source as BrandOnboarding)
     api.get<CompetitorData[]>(`/api/v1/brands/${brandId}/competitors`, {}, { signal })
       .then(data => { setCompetitors(Array.isArray(data) ? data : []); setCompetitorsLoaded(true); })
@@ -214,7 +214,7 @@ export default function BrandDetailPage() {
     setLoadingIntel(true);
     try {
       const [runsData, compData] = await Promise.allSettled([
-        api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }),
+        api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 200 }),
         api.get<{ competitors: CompetitorData[] }>(`/api/v1/intelligence/research/${brandId}`),
       ]);
       if (runsData.status === "fulfilled") {
@@ -238,7 +238,7 @@ export default function BrandDetailPage() {
     const interval = setInterval(() => {
       if (isFetchingRunsRef.current) return;
       isFetchingRunsRef.current = true;
-      api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 })
+      api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 200 })
         .then((runs) => {
           setResearch(runs);
           setPipelineRuns(runs);
@@ -262,7 +262,7 @@ export default function BrandDetailPage() {
         // Fetch brand status and agent runs in parallel
         const [updatedBrand, runs] = await Promise.all([
           api.get<Brand>(`/api/v1/brands/${brandId}`),
-          api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }),
+          api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 200 }),
         ]);
 
         setPipelineRuns(runs);
@@ -314,7 +314,7 @@ export default function BrandDetailPage() {
   const fetchPipelineRuns = useCallback(async () => {
     setLoadingPipeline(true);
     try {
-      const runs = await api.get<AgentRun[]>(`/api/v1/agents/runs`, { brand_id: brandId, limit: 20 });
+      const runs = await api.get<AgentRun[]>(`/api/v1/agents/runs`, { brand_id: brandId, limit: 200 });
       setPipelineRuns(runs);
     } catch {
       // Pipeline data is optional
