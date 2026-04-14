@@ -412,15 +412,26 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             trigger=payload.get("trigger", "manual"),
             input_payload=safe_payload,
         )
-        initial_state["run_id"] = run_id
-
-        logger.info(
-            "Dispatching %s workflow for brand %s (run %s)",
+    except IntegrityError as ie:
+        logger.warning(
+            "Skipping duplicate %s workflow for brand %s — already running (unique constraint). Detail: %s",
             agent_type,
             brand_id,
-            run_id,
+            str(ie),
         )
+        await msg.ack()
+        return
 
+    initial_state["run_id"] = run_id
+
+    logger.info(
+        "Dispatching %s workflow for brand %s (run %s)",
+        agent_type,
+        brand_id,
+        run_id,
+    )
+
+    try:
         config: dict[str, Any] = {}
         if hasattr(graph, "checkpointer") and graph.checkpointer is not None:
             config["configurable"] = {"thread_id": run_id or brand_id}
@@ -714,16 +725,6 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     brand_id,
                     status_exc,
                 )
-
-    except IntegrityError:
-        # Unique violation from idx_agent_runs_running — another instance is already running
-        logger.warning(
-            "Skipping duplicate %s workflow for brand %s — already running (unique constraint)",
-            agent_type,
-            brand_id,
-        )
-        await msg.ack()
-        return
 
     except asyncio.TimeoutError:
         logger.error("Workflow %s timed out for brand %s", agent_type, brand_id)
