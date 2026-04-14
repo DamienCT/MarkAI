@@ -63,8 +63,8 @@ class CalendarItem(Base):
     # Relationships
     brand = relationship("Brand", back_populates="calendar_items")
     campaign = relationship("Campaign", back_populates="calendar_items")
-    content_items = relationship("Content", back_populates="calendar_item")
-    approvals = relationship("Approval", back_populates="calendar_item")
+    content_items = relationship("Content", back_populates="calendar_item", passive_deletes=True)
+    approvals = relationship("Approval", back_populates="calendar_item", passive_deletes=True)
     engagement_metrics = relationship(
-        "EngagementMetric", back_populates="calendar_item"
+        "EngagementMetric", back_populates="calendar_item", passive_deletes=True
     )
