@@ -66,6 +66,12 @@ async def update_product(
     return product
 
 
+# Fields controlled by the user in the UI. BC sync must NOT overwrite these
+# on update, or manual "Include" toggles would flip back to "Exclude" on every
+# re-sync. They are still honored on initial create (as defaults).
+_USER_CONTROLLED_FIELDS = frozenset({"is_active"})
+
+
 async def upsert_from_bc(
     db: AsyncSession,
     bc_item_no: str,
@@ -77,6 +83,10 @@ async def upsert_from_bc(
     Upsert a product from Business Central sync data.
     Creates if not existing, updates if it does.
 
+    User-controlled fields (see ``_USER_CONTROLLED_FIELDS``) are preserved on
+    update — sync only sets them on initial creation. Manual overrides via the
+    UI survive re-syncs.
+
     When ``_batch_mode`` is True, the caller is responsible for committing.
     """
     product = await get_product_by_bc_item_no(db, bc_item_no)
@@ -85,6 +95,8 @@ async def upsert_from_bc(
         db.add(product)
     else:
         for key, value in data.items():
+            if key in _USER_CONTROLLED_FIELDS:
+                continue
             if hasattr(product, key):
                 setattr(product, key, value)
     product.bc_last_synced_at = datetime.now(timezone.utc)
