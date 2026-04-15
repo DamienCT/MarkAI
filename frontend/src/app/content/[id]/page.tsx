@@ -40,6 +40,7 @@ export default function ContentDetailPage() {
   const [submittingApproval, setSubmittingApproval] = useState(false);
   const [imagePrompt, setImagePrompt] = useState("");
   const [regeneratingImage, setRegeneratingImage] = useState(false);
+  const [imageCacheBust, setImageCacheBust] = useState("");
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduleTime, setScheduleTime] = useState("09:00");
   const [scheduling, setScheduling] = useState(false);
@@ -120,6 +121,7 @@ export default function ContentDetailPage() {
               const updated = await api.get<Content>(`/api/v1/content/${content.id}`);
               setContent(updated);
               setCalendarItem(calItem);
+              setImageCacheBust(`_cb=${Date.now()}`);
               toast.success("Image regenerated successfully");
               break;
             }
@@ -240,7 +242,7 @@ export default function ContentDetailPage() {
     ""
   ) as string;
   const contentImageUrl = imagePath
-    ? (imagePath.startsWith("http") ? imagePath : `${API_BASE_URL}/api/v1/files/${imagePath}`)
+    ? (imagePath.startsWith("http") ? imagePath : `${API_BASE_URL}/api/v1/files/${imagePath}`) + (imageCacheBust ? `?${imageCacheBust}` : "")
     : undefined;
   // Thumbnail for faster preview loading (600px wide, quality 75)
   const contentThumbUrl = contentImageUrl
