@@ -105,7 +105,27 @@ export default function ContentDetailPage() {
       await api.post(`/api/v1/content/${content.id}/regenerate-image`, {
         prompt: imagePrompt || undefined,
       });
-      toast.success("Image regeneration started — refresh in a moment to see the result");
+      toast.success("Image regeneration started — this may take a minute...");
+
+      // Poll for completion: check calendar item status until it leaves "working"
+      const calItemId = content.calendar_item_id;
+      if (calItemId) {
+        const maxAttempts = 40; // ~2 minutes
+        for (let i = 0; i < maxAttempts; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const calItem = await api.get<CalendarItem>(`/api/v1/calendar/${calItemId}`);
+            if (calItem.status !== "working") {
+              // Reload content to get the new image
+              const updated = await api.get<Content>(`/api/v1/content/${content.id}`);
+              setContent(updated);
+              setCalendarItem(calItem);
+              toast.success("Image regenerated successfully");
+              break;
+            }
+          } catch { /* keep polling */ }
+        }
+      }
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "Failed to regenerate image";
       toast.error(detail);

@@ -105,9 +105,25 @@ _consumer: NATSConsumer | None = None
 
 
 async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
-    """Regenerate the image for an existing content piece."""
+    """Regenerate the image for an existing content piece.
+
+    Full pipeline: generate new base image → apply branding (logo + text overlay)
+    → generate mockups → update content record and calendar item status.
+    """
+    import base64 as _b64
+    import json as _json
+
+    import httpx as _httpx
+
     from shared.llm import generate_image
-    from shared.tools.storage import async_upload_file, async_ensure_bucket
+    from shared.tools.storage import async_upload_file, async_ensure_bucket, async_download_file
+    from shared.image_processing import (
+        overlay_logo_and_text,
+        generate_mockup,
+        render_logo_png,
+        analyze_logo_region_brightness,
+        select_logo_variant,
+    )
 
     content_id = payload.get("content_id", "")
     brand_id = payload.get("brand_id", "")
@@ -116,77 +132,247 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
 
     logger.info("Regenerating image for content %s (brand %s)", content_id, brand_id)
 
-    # Get the content record for context
-    content_rows = await execute_query(
-        "SELECT headline, caption, generation_metadata FROM content WHERE id = :id",
-        {"id": content_id},
+    # ── Set calendar item status to "working" ──────────────────────────
+    await execute_update(
+        "UPDATE calendar_items SET status = 'working' WHERE id = :id",
+        {"id": calendar_item_id},
     )
-    if not content_rows:
-        logger.error("Content %s not found for image regeneration", content_id)
-        return
 
-    content = content_rows[0]
-    headline = content.get("headline", "")
-    caption = content.get("caption", "")
+    try:
+        # Get the content record for context
+        content_rows = await execute_query(
+            "SELECT headline, caption, generation_metadata FROM content WHERE id = :id",
+            {"id": content_id},
+        )
+        if not content_rows:
+            logger.error("Content %s not found for image regeneration", content_id)
+            return
 
-    # Build image prompt
-    if custom_prompt:
-        from shared.sanitize import sanitize_for_prompt
+        content_row = content_rows[0]
+        headline = content_row.get("headline", "")
+        caption = content_row.get("caption", "")
+        gen_meta = content_row.get("generation_metadata") or {}
+        if isinstance(gen_meta, str):
+            try:
+                gen_meta = _json.loads(gen_meta)
+            except Exception:
+                gen_meta = {}
+        hook = gen_meta.get("hook", headline)
 
-        image_prompt = sanitize_for_prompt(custom_prompt, max_length=500)
-    else:
-        image_prompt = (
-            f"Create a professional social media lifestyle image. "
-            f"Theme: {headline}. "
-            f"Context: {caption[:200]}. "
-            f"Clean, modern aesthetic. Golden hour lighting. No text or logos in the image."
+        # Get brand data for branding overlay
+        brand_rows = await execute_query(
+            "SELECT name, slug, website_url, brand_guidelines FROM brands WHERE id = :id",
+            {"id": brand_id},
+        )
+        brand = brand_rows[0] if brand_rows else {}
+        brand_name = brand.get("name", "")
+        website = brand.get("website_url", "")
+
+        # Parse brand guidelines
+        brand_guidelines = brand.get("brand_guidelines") or {}
+        if isinstance(brand_guidelines, str):
+            try:
+                brand_guidelines = _json.loads(brand_guidelines)
+            except (ValueError, TypeError):
+                brand_guidelines = {}
+
+        # ── 1. Generate new base image ─────────────────────────────────
+        if custom_prompt:
+            from shared.sanitize import sanitize_for_prompt
+            image_prompt = sanitize_for_prompt(custom_prompt, max_length=500)
+        else:
+            image_prompt = (
+                f"Create a professional social media lifestyle image. "
+                f"Theme: {headline}. "
+                f"Context: {caption[:200]}. "
+                f"Clean, modern aesthetic. Golden hour lighting. No text or logos in the image."
+            )
+
+        image_url = await generate_image(image_prompt)
+        logger.info("Image generated for content %s: %s chars", content_id, len(image_url))
+
+        await async_ensure_bucket("content-images")
+
+        if image_url.startswith("data:"):
+            _, b64_part = image_url.split(",", 1)
+            image_data = _b64.b64decode(b64_part)
+        else:
+            async with _httpx.AsyncClient(timeout=60) as client:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                image_data = resp.content
+
+        raw_obj = f"{brand_id}/{calendar_item_id}/background.png"
+        await async_upload_file("content-images", raw_obj, image_data, "image/png")
+        raw_url = f"content-images/{raw_obj}"
+
+        # ── 2. Apply branding (logo + text overlay) ────────────────────
+        branded_url = raw_url  # fallback if branding fails
+
+        logos_cfg = brand_guidelines.get("logos", {})
+        from shared.config import settings as _settings
+        api_base = getattr(_settings, "BACKEND_URL", "") or "http://backend:8000"
+
+        available_logos: dict[str, str] = {}
+        for label, info in logos_cfg.items():
+            if isinstance(info, dict):
+                url = info.get("url", "")
+                if url and url.startswith("/"):
+                    url = f"{api_base}{url}"
+                if url:
+                    available_logos[label] = url
+
+        if available_logos:
+            try:
+                # Analyze brightness to pick best logo variant
+                from PIL import Image as _PILImage
+                from io import BytesIO as _BytesIO
+                _tmp = _PILImage.open(_BytesIO(image_data))
+                approx_w = int(_tmp.width * 0.18)
+                approx_h = int(approx_w * 0.5)
+                _tmp.close()
+
+                brightness, variance = analyze_logo_region_brightness(
+                    image_data, approx_w, approx_h
+                )
+                chosen_label = select_logo_variant(
+                    brightness, variance, list(available_logos.keys())
+                )
+
+                # Download and convert logo
+                logo_png = None
+                for try_label in [chosen_label] + [l for l in available_logos if l != chosen_label]:
+                    try:
+                        logo_url = available_logos[try_label]
+                        async with _httpx.AsyncClient(timeout=30) as client:
+                            resp = await client.get(logo_url)
+                            resp.raise_for_status()
+                            logo_raw = resp.content
+                        is_svg = logo_raw[:5] == b"<?xml" or logo_raw[:4] == b"<svg" or b"<svg" in logo_raw[:500]
+                        logo_png = render_logo_png(logo_raw) if is_svg else logo_raw
+                        if logo_png:
+                            break
+                    except Exception:
+                        continue
+
+                if logo_png:
+                    text_line1 = hook or headline
+                    text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
+                    branded_bytes = overlay_logo_and_text(
+                        image_data, logo_png,
+                        text_line1=text_line1, text_line2=text_line2,
+                    )
+                    branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
+                    await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")
+                    branded_url = f"content-images/{branded_obj}"
+                    logger.info("Branding applied for content %s", content_id)
+            except Exception as exc:
+                logger.warning("Branding overlay failed during regeneration: %s", exc)
+
+        # ── 3. Generate mockups ────────────────────────────────────────
+        # Derive brand handle
+        channels_cfg = brand_guidelines.get("channels", {})
+        social_links = brand_guidelines.get("social_links", {})
+        brand_handle = ""
+        ig_link = social_links.get("instagram", "")
+        if ig_link:
+            brand_handle = ig_link.rstrip("/").rsplit("/", 1)[-1]
+        if not brand_handle:
+            ig_channel = channels_cfg.get("instagram", {})
+            if isinstance(ig_channel, dict):
+                ig_handle = ig_channel.get("handle", "")
+                if ig_handle:
+                    brand_handle = ig_handle.lstrip("@")
+        if not brand_handle:
+            brand_handle = brand.get("slug", brand_name.lower().replace(" ", ""))
+
+        # Load avatar logo
+        avatar_logo_data = None
+        for avatar_label in ["watermark", "icon", "secondary", "primary"]:
+            logo_info = logos_cfg.get(avatar_label)
+            if isinstance(logo_info, dict) and logo_info.get("url"):
+                try:
+                    _logo_url = logo_info["url"]
+                    if _logo_url.startswith("/"):
+                        _logo_url = f"{api_base}{_logo_url}"
+                    async with _httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.get(_logo_url)
+                        resp.raise_for_status()
+                        _raw = resp.content
+                    is_svg = _raw[:5] == b"<?xml" or _raw[:4] == b"<svg" or b"<svg" in _raw[:500]
+                    avatar_logo_data = render_logo_png(_raw) if is_svg else _raw
+                    if avatar_logo_data:
+                        break
+                except Exception:
+                    pass
+            avatar_logo_data = None
+
+        # Read branded image bytes for mockups
+        if branded_url.startswith("content-images/"):
+            mockup_image_data = await async_download_file(
+                "content-images", branded_url.replace("content-images/", "")
+            )
+        else:
+            mockup_image_data = image_data
+
+        mockup_platforms = ["instagram", "facebook", "linkedin", "x"]
+        enabled = [ch for ch, cfg in channels_cfg.items()
+                   if isinstance(cfg, dict) and cfg.get("enabled") and ch in mockup_platforms]
+        if not enabled:
+            enabled = mockup_platforms
+
+        mockup_urls = {}
+        brand_initial = brand_name[0].upper() if brand_name else "H"
+        for platform in enabled:
+            try:
+                mockup_bytes = generate_mockup(
+                    mockup_image_data, caption, platform,
+                    username=brand_handle, display_name=brand_name,
+                    avatar_initial=brand_initial, avatar_logo_data=avatar_logo_data,
+                )
+                obj_name = f"{brand_id}/{calendar_item_id}/mockup_{platform}.png"
+                await async_upload_file("content-images", obj_name, mockup_bytes, "image/png")
+                mockup_urls[platform] = f"content-images/{obj_name}"
+            except Exception as exc:
+                logger.warning("Mockup generation failed for %s: %s", platform, exc)
+
+        # ── 4. Update content metadata ─────────────────────────────────
+        existing_metadata = content_row.get("generation_metadata") or {}
+        if isinstance(existing_metadata, str):
+            try:
+                existing_metadata = _json.loads(existing_metadata)
+            except Exception:
+                existing_metadata = {}
+
+        existing_metadata["raw_image"] = raw_url
+        existing_metadata["generated_image_url"] = raw_url
+        existing_metadata["branded_image"] = branded_url
+        if mockup_urls:
+            existing_metadata["mockup_urls"] = mockup_urls
+
+        await execute_update(
+            "UPDATE content SET generation_metadata = :metadata WHERE id = :id",
+            {"id": content_id, "metadata": _json.dumps(existing_metadata, default=str)},
         )
 
-    # Generate image
-    image_url = await generate_image(image_prompt)
-    logger.info("Image generated for content %s: %s chars", content_id, len(image_url))
+        # ── 5. Set calendar item status back to "in_review" ────────────
+        await execute_update(
+            "UPDATE calendar_items SET status = 'in_review' WHERE id = :id",
+            {"id": calendar_item_id},
+        )
 
-    # Upload to MinIO
-    import base64 as _b64
-    import httpx as _httpx
+        logger.info(
+            "Image regeneration complete for content %s — branded at %s",
+            content_id, branded_url,
+        )
 
-    await async_ensure_bucket("content-images")
-
-    if image_url.startswith("data:"):
-        _, b64_part = image_url.split(",", 1)
-        image_data = _b64.b64decode(b64_part)
-    else:
-        async with _httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(image_url)
-            resp.raise_for_status()
-            image_data = resp.content
-
-    object_name = f"{brand_id}/{calendar_item_id}/background.png"
-    await async_upload_file("content-images", object_name, image_data, "image/png")
-    stored_url = f"content-images/{object_name}"
-
-    # Update content record with the new image
-    import json as _json
-
-    existing_metadata = content.get("generation_metadata") or {}
-    if isinstance(existing_metadata, str):
-        try:
-            existing_metadata = _json.loads(existing_metadata)
-        except Exception:
-            existing_metadata = {}
-    existing_metadata["raw_image"] = stored_url
-    existing_metadata["generated_image_url"] = stored_url
-
-    await execute_update(
-        "UPDATE content SET generation_metadata = :metadata WHERE id = :id",
-        {"id": content_id, "metadata": _json.dumps(existing_metadata, default=str)},
-    )
-
-    logger.info(
-        "Image regeneration complete for content %s — stored at %s",
-        content_id,
-        stored_url,
-    )
+    except Exception as exc:
+        logger.exception("Image regeneration failed for content %s: %s", content_id, exc)
+        # Restore calendar item to in_review so it's not stuck in working
+        await execute_update(
+            "UPDATE calendar_items SET status = 'in_review' WHERE id = :id",
+            {"id": calendar_item_id},
+        )
 
 
 def _resolve_graph(subject: str):
