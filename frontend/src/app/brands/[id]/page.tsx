@@ -158,6 +158,7 @@ export default function BrandDetailPage() {
 
   // Agent Pipeline state
   const [pipelineRuns, setPipelineRuns] = useState<AgentRun[]>([]);
+  const [contentStats, setContentStats] = useState<{ generated: number; failed: number; in_progress: number; total: number }>({ generated: 0, failed: 0, in_progress: 0, total: 0 });
   const [loadingPipeline, setLoadingPipeline] = useState(false);
   const [togglingFactory, setTogglingFactory] = useState(false);
   const [generatingContent, setGeneratingContent] = useState(false);
@@ -200,7 +201,9 @@ export default function BrandDetailPage() {
       .then((data) => { setProducts(data); setProductsLoaded(true); })
       .catch(() => { setProductsLoaded(true); });
     // Fetch pipeline runs for Overview tab (latest per agent_type — not drowned by content runs)
-    api.get<AgentRun[]>("/api/v1/agents/runs/latest-by-type", { brand_id: brandId }, { signal }).then(setPipelineRuns).catch(() => {});
+    api.get<{ runs: AgentRun[]; content_stats: { generated: number; failed: number; in_progress: number; total: number } }>("/api/v1/agents/runs/latest-by-type", { brand_id: brandId }, { signal })
+      .then((data) => { setPipelineRuns(data.runs); setContentStats(data.content_stats); })
+      .catch(() => {});
     // Fetch competitors for onboarding progress calculation (from DB, same source as BrandOnboarding)
     api.get<CompetitorData[]>(`/api/v1/brands/${brandId}/competitors`, {}, { signal })
       .then(data => { setCompetitors(Array.isArray(data) ? data : []); setCompetitorsLoaded(true); })
@@ -241,11 +244,12 @@ export default function BrandDetailPage() {
       isFetchingRunsRef.current = true;
       Promise.all([
         api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }),
-        api.get<AgentRun[]>("/api/v1/agents/runs/latest-by-type", { brand_id: brandId }),
+        api.get<{ runs: AgentRun[]; content_stats: { generated: number; failed: number; in_progress: number; total: number } }>("/api/v1/agents/runs/latest-by-type", { brand_id: brandId }),
       ])
-        .then(([runs, latestByType]) => {
+        .then(([runs, latestData]) => {
           setResearch(runs);
-          setPipelineRuns(latestByType);
+          setPipelineRuns(latestData.runs);
+          setContentStats(latestData.content_stats);
         })
         .catch(() => {})
         .finally(() => { isFetchingRunsRef.current = false; });
@@ -264,13 +268,14 @@ export default function BrandDetailPage() {
       isFetchingActivationRef.current = true;
       try {
         // Fetch brand status, recent runs, and latest-per-type in parallel
-        const [updatedBrand, runs, latestByType] = await Promise.all([
+        const [updatedBrand, runs, latestData] = await Promise.all([
           api.get<Brand>(`/api/v1/brands/${brandId}`),
           api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }),
-          api.get<AgentRun[]>("/api/v1/agents/runs/latest-by-type", { brand_id: brandId }),
+          api.get<{ runs: AgentRun[]; content_stats: { generated: number; failed: number; in_progress: number; total: number } }>("/api/v1/agents/runs/latest-by-type", { brand_id: brandId }),
         ]);
 
-        setPipelineRuns(latestByType);
+        setPipelineRuns(latestData.runs);
+        setContentStats(latestData.content_stats);
         setResearch(runs);
 
         // Brand finished activating
@@ -319,8 +324,9 @@ export default function BrandDetailPage() {
   const fetchPipelineRuns = useCallback(async () => {
     setLoadingPipeline(true);
     try {
-      const runs = await api.get<AgentRun[]>(`/api/v1/agents/runs/latest-by-type`, { brand_id: brandId });
-      setPipelineRuns(runs);
+      const data = await api.get<{ runs: AgentRun[]; content_stats: { generated: number; failed: number; in_progress: number; total: number } }>(`/api/v1/agents/runs/latest-by-type`, { brand_id: brandId });
+      setPipelineRuns(data.runs);
+      setContentStats(data.content_stats);
     } catch {
       // Pipeline data is optional
     } finally {
@@ -848,6 +854,7 @@ export default function BrandDetailPage() {
             onGenerateContent={handleGenerateContent}
             generatingContent={generatingContent}
             contentItemsQueued={contentItemsQueued}
+            contentStats={contentStats}
             onFetchPipelineRuns={fetchPipelineRuns}
             onSetActiveTab={setActiveTab}
             onFetchIntelligence={fetchIntelligence}

@@ -18,7 +18,8 @@ async def latest_runs_by_type(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return the single most recent run per agent_type for a brand.
+    """Return the single most recent run per agent_type for a brand,
+    plus content generation stats (calendar items in 7-day window).
 
     Used by the pipeline display so context generation stages are never
     hidden by a large number of content runs.
@@ -37,7 +38,24 @@ async def latest_runs_by_type(
         {"bid": str(brand_id)},
     )
     rows = result.fetchall()
-    return [
+
+    # Count calendar items in 7-day window by status bucket
+    stats_result = await db.execute(
+        text(
+            "SELECT "
+            "  COUNT(*) FILTER (WHERE status NOT IN ('planned', 'queued', 'failed', 'working')) AS generated, "
+            "  COUNT(*) FILTER (WHERE status = 'failed') AS failed, "
+            "  COUNT(*) FILTER (WHERE status IN ('queued', 'working')) AS in_progress, "
+            "  COUNT(*) AS total "
+            "FROM calendar_items "
+            "WHERE brand_id = :bid "
+            "  AND scheduled_at BETWEEN NOW() AND NOW() + INTERVAL '7 days'"
+        ),
+        {"bid": str(brand_id)},
+    )
+    stats_row = stats_result.fetchone()
+
+    runs = [
         {
             "id": str(r.id),
             "agent_type": r.agent_type,
@@ -56,6 +74,16 @@ async def latest_runs_by_type(
         }
         for r in rows
     ]
+
+    return {
+        "runs": runs,
+        "content_stats": {
+            "generated": stats_row.generated if stats_row else 0,
+            "failed": stats_row.failed if stats_row else 0,
+            "in_progress": stats_row.in_progress if stats_row else 0,
+            "total": stats_row.total if stats_row else 0,
+        },
+    }
 
 
 @router.get("/runs/active")

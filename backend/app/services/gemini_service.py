@@ -51,9 +51,11 @@ async def search_product_images(
     Returns list of dicts with: url, content_type, size_bytes, image_data (bytes).
     These are REAL photos from the web, never AI-generated.
     """
+    import asyncio
+    from duckduckgo_search import DDGS
+
     query = f"{product_name} product official photo"
     if product_description:
-        # Add key terms from description for better results
         query = f"{product_name} {product_description[:50]} product photo"
 
     headers = {
@@ -62,75 +64,26 @@ async def search_product_images(
 
     image_urls: list[str] = []
 
-    # Strategy 1: DuckDuckGo image API
+    # Use duckduckgo-search library (handles token rotation and anti-bot)
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            resp = await client.get(
-                "https://duckduckgo.com/",
-                params={"q": query, "iax": "images", "ia": "images"},
-                headers=headers,
-            )
-            # Try multiple vqd patterns (DuckDuckGo changes these)
-            vqd = None
-            for pattern in [r'vqd=([^&"\']+)', r'vqd%3D([^&"\']+)', r'"vqd":"([^"]+)"']:
-                m = re.search(pattern, resp.text)
-                if m:
-                    vqd = m.group(1)
-                    break
-            if vqd:
-                img_resp = await client.get(
-                    "https://duckduckgo.com/i.js",
-                    params={
-                        "l": "us-en",
-                        "o": "json",
-                        "q": query,
-                        "vqd": vqd,
-                        "f": ",size:Medium,",
-                    },
-                    headers=headers,
-                )
-                if img_resp.status_code == 200:
-                    data = img_resp.json()
-                    for result in data.get("results", [])[:20]:
-                        img_url = result.get("image", "")
-                        if img_url and img_url.startswith("http"):
-                            image_urls.append(img_url)
-            else:
-                logger.info("DuckDuckGo vqd token not found for '%s'", product_name)
+        ddg_results = await asyncio.to_thread(
+            lambda: list(DDGS().images(query, max_results=max_results * 5))
+        )
+        for r in ddg_results:
+            img_url = r.get("image", "")
+            if img_url and img_url.startswith("http"):
+                image_urls.append(img_url)
+        logger.info(
+            "DuckDuckGo image search found %d URLs for '%s'",
+            len(image_urls),
+            product_name,
+        )
     except Exception as e:
         logger.warning("DuckDuckGo image search failed for '%s': %s", product_name, e)
 
-    # Strategy 2: DuckDuckGo HTML fallback
     if not image_urls:
-        try:
-            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-                resp = await client.post(
-                    "https://html.duckduckgo.com/html/",
-                    data={"q": f"{product_name} product image"},
-                    headers=headers,
-                )
-                for url in re.findall(r'href="(https?://[^"]+)"', resp.text):
-                    if any(
-                        ext in url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]
-                    ):
-                        if "duckduckgo" not in url:
-                            image_urls.append(url)
-        except Exception as e:
-            logger.warning(
-                "DuckDuckGo HTML fallback failed for '%s': %s", product_name, e
-            )
-
-    # Strategy 3: Direct manufacturer website guess
-    if not image_urls:
-        # Try common product image hosting patterns
-        brand_slug = product_name.split()[0].lower() if product_name else ""
-        if brand_slug:
-            guess_urls = [
-                f"https://www.{brand_slug}.com/images/{product_name.replace(' ', '-').lower()}.jpg",
-            ]
-            image_urls.extend(guess_urls)
-
-    logger.info("Found %d candidate image URLs for '%s'", len(image_urls), product_name)
+        logger.info("No image URLs found for '%s'", product_name)
+        return []
 
     # Download and validate images (with SSRF protection)
     from app.utils.url_validator import validate_url

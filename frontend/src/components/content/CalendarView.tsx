@@ -65,13 +65,12 @@ interface CalendarViewProps {
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-// Ordered: Queued -> Working -> In Review -> Reworking -> Approved -> Scheduled -> Published -> Failed
+// Ordered: Queued -> Working -> In Review -> Reworking -> Scheduled -> Published -> Failed
 const STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }> = {
   queued:      { bg: "bg-slate-200 dark:bg-slate-700",   text: "text-slate-800 dark:text-slate-200", label: "Queued" },
   working:     { bg: "bg-indigo-200 dark:bg-indigo-800", text: "text-indigo-900 dark:text-indigo-100", label: "Working" },
   in_review:   { bg: "bg-amber-200 dark:bg-amber-800",   text: "text-amber-900 dark:text-amber-100", label: "In Review" },
   reworking:   { bg: "bg-orange-200 dark:bg-orange-800",  text: "text-orange-900 dark:text-orange-100", label: "Reworking" },
-  approved:    { bg: "bg-cyan-200 dark:bg-cyan-800",      text: "text-cyan-900 dark:text-cyan-100",   label: "Approved" },
   scheduled:   { bg: "bg-blue-200 dark:bg-blue-800",     text: "text-blue-900 dark:text-blue-100",   label: "Scheduled" },
   published:   { bg: "bg-green-200 dark:bg-green-800",    text: "text-green-900 dark:text-green-100", label: "Published" },
   failed:      { bg: "bg-red-200 dark:bg-red-800",        text: "text-red-900 dark:text-red-100",     label: "Failed" },

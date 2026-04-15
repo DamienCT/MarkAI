@@ -371,7 +371,7 @@ async def generate_content(
         {
             "brand_id": str(brand_id),
             "calendar_item_id": first_id,
-            "trigger": "content_generation",
+            "trigger": "manual",
             "remaining_queue": remaining,
         },
     )

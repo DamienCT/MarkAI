@@ -47,6 +47,7 @@ export interface OverviewTabProps {
   onGenerateContent: () => Promise<void>;
   generatingContent: boolean;
   contentItemsQueued: number;
+  contentStats: { generated: number; failed: number; in_progress: number; total: number };
   onFetchPipelineRuns: () => Promise<void>;
   onSetActiveTab: (tab: string) => void;
   onFetchIntelligence: () => void;
@@ -70,6 +71,7 @@ export function OverviewTab({
   onGenerateContent,
   generatingContent,
   contentItemsQueued,
+  contentStats,
   onFetchPipelineRuns,
   onSetActiveTab,
   onFetchIntelligence,
@@ -304,12 +306,11 @@ export function OverviewTab({
               }
             }
 
-            // Content generation runs (there may be many per-item)
-            const contentRuns = pipelineRuns.filter(r => r.agent_type === "content");
-            const contentCompleted = contentRuns.filter(r => r.status === "completed").length;
-            const contentRunning = contentRuns.find(r => r.status === "running");
-            const contentFailed = contentRuns.filter(r => r.status === "failed").length;
-            const contentTotal = contentRuns.length;
+            // Content generation stats from calendar items in 7-day window
+            const contentCompleted = contentStats.generated;
+            const contentRunning = contentStats.in_progress > 0;
+            const contentFailed = contentStats.failed;
+            const contentTotal = contentStats.total;
             const allReportsDone = REPORT_STAGES.every(s => {
               const r = latestByType[s.key] || (("altKey" in s && s.altKey) ? latestByType[s.altKey] : undefined);
               return r?.status === "completed";
@@ -432,7 +433,9 @@ export function OverviewTab({
                           ) : (
                             <p className="text-sm">
                               <span className="font-medium">{contentCompleted}</span>
-                              <span className="text-muted-foreground"> content item{contentCompleted !== 1 ? "s" : ""} generated</span>
+                              <span className="text-muted-foreground">
+                                {contentTotal > 0 ? ` of ${contentTotal}` : ""} content item{contentCompleted !== 1 ? "s" : ""} generated
+                              </span>
                               {contentFailed > 0 && (
                                 <span className="text-red-500 ml-1">({contentFailed} failed)</span>
                               )}
