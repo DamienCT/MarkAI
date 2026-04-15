@@ -28,6 +28,8 @@ services:
       - "traefik.http.routers.markai-api.entrypoints=websecure"
       - "traefik.http.routers.markai-api.tls.certresolver=mytlschallenge"
       - "traefik.http.services.markai-api.loadbalancer.server.port=8000"
+      - "traefik.http.middlewares.markai-compress.compress=true"
+      - "traefik.http.routers.markai-api.middlewares=markai-compress"
     networks:
       - markai-net
       - n8n_default
@@ -46,6 +48,7 @@ services:
       - "traefik.http.routers.markai-frontend.entrypoints=websecure"
       - "traefik.http.routers.markai-frontend.tls.certresolver=mytlschallenge"
       - "traefik.http.services.markai-frontend.loadbalancer.server.port=3000"
+      - "traefik.http.routers.markai-frontend.middlewares=markai-compress"
     networks:
       - markai-net
       - n8n_default
