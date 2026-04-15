@@ -26,6 +26,8 @@ from shared.image_processing import (
     render_logo_png,
     overlay_logo_and_text,
     generate_mockup,
+    analyze_logo_region_brightness,
+    select_logo_variant,
 )
 
 from pydantic import BaseModel, field_validator
@@ -268,7 +270,9 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
                 "content": (
                     "You are an expert social media copywriter. "
                     "Write a scroll-stopping hook (opening line) for a social media post. "
-                    "The hook must be under 15 words, emotionally compelling, and aligned with the brand voice. "
+                    "The hook MUST be under 8 words and under 50 characters. "
+                    "This text will be overlaid on an image, so brevity is critical. "
+                    "Write a complete, punchy short sentence — never leave it unfinished or truncated. "
                     "Return ONLY the hook text, nothing else."
                 ),
             },
@@ -927,12 +931,42 @@ async def _replace_product_in_generated_image(
     return image_data
 
 
+async def _download_logo_bytes(url: str) -> bytes | None:
+    """Download logo bytes from a MinIO path or HTTP URL."""
+    import httpx
+
+    try:
+        if url.startswith("content-images/") or url.startswith("brand-assets/"):
+            bucket, _, obj = url.partition("/")
+            return await async_download_file(bucket, obj)
+        else:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.content
+    except Exception:
+        logger.warning("Failed to download logo from %s", url)
+        return None
+
+
+def _bytes_to_logo_png(raw: bytes) -> bytes | None:
+    """Convert raw logo bytes (SVG or raster) to PNG."""
+    is_svg = (
+        raw[:5] == b"<?xml"
+        or raw[:4] == b"<svg"
+        or b"<svg" in raw[:500]
+    )
+    if is_svg:
+        return render_logo_png(raw)
+    return raw
+
+
 async def apply_branding(state: ContentState) -> dict[str, Any]:
     """Apply logo overlay and text to the generated image.
 
-    Fetches the brand's SVG logo, renders it to transparent PNG,
-    then composites it onto the best monotone region of the image.
-    Also adds a tagline text bar at the bottom-left.
+    Analyzes the image brightness at the logo placement region and selects
+    the most appropriate logo variant (primary, dark_variant, secondary,
+    watermark) for optimal contrast and visibility.
     """
     await update_agent_run_step(state.get("run_id", ""), "apply_branding", _STEP_INDEX["apply_branding"])
     generated_image_url = state.get("generated_image")
@@ -941,7 +975,35 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
 
     brand = state.get("brand", {})
     item = state.get("calendar_item", {})
-    logo_url = brand.get("logo_url")
+
+    # Collect all available logo variants from brand_guidelines
+    brand_guidelines = brand.get("brand_guidelines", {})
+    logos_cfg = brand_guidelines.get("logos", {})
+
+    # Resolve each logo variant URL (same logic as build_brand_intelligence for primary)
+    from shared.config import settings
+    api_base = getattr(settings, "BACKEND_URL", "") or "http://backend:8000"
+
+    available_logos: dict[str, str] = {}
+    for label, info in logos_cfg.items():
+        if isinstance(info, dict):
+            url = info.get("url", "")
+            if url and url.startswith("/"):
+                url = f"{api_base}{url}"
+            if url:
+                available_logos[label] = url
+
+    # Fallback: if no logos in guidelines, use brand.logo_url as primary
+    if not available_logos:
+        fallback_url = brand.get("logo_url", "")
+        if fallback_url:
+            if fallback_url.startswith("/"):
+                fallback_url = f"{api_base}{fallback_url}"
+            available_logos["primary"] = fallback_url
+
+    if not available_logos:
+        logger.info("No logo available — skipping branding overlay")
+        return {}
 
     # Get the generated image bytes
     import base64 as _b64
@@ -964,48 +1026,56 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         # If we have a real product image, replace the generic product via Gemini first
         image_data = await _replace_product_in_generated_image(state, image_data)
 
-        # Get or render logo PNG
-        logo_png = state.get("logo_png_data")
-        if not logo_png and logo_url:
-            try:
-                # Download logo bytes first
-                if logo_url.startswith("content-images/") or logo_url.startswith(
-                    "brand-assets/"
-                ):
-                    bucket, _, obj = logo_url.partition("/")
-                    logo_raw = await async_download_file(bucket, obj)
-                else:
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        resp = await client.get(logo_url)
-                        resp.raise_for_status()
-                        logo_raw = resp.content
+        # Analyze image brightness at the logo placement region to pick the best variant
+        # Use approximate logo dimensions for the analysis (18% of image width)
+        from PIL import Image as _PILImage
+        from io import BytesIO as _BytesIO
+        _tmp_img = _PILImage.open(_BytesIO(image_data))
+        approx_logo_w = int(_tmp_img.width * 0.18)
+        approx_logo_h = int(approx_logo_w * 0.5)  # typical logo aspect ratio
+        _tmp_img.close()
 
-                # Detect SVG by content (not URL extension — API URLs don't have .svg)
-                is_svg = (
-                    logo_raw[:5] == b"<?xml"
-                    or logo_raw[:4] == b"<svg"
-                    or b"<svg" in logo_raw[:500]
-                )
+        brightness, variance = analyze_logo_region_brightness(
+            image_data, approx_logo_w, approx_logo_h
+        )
 
-                if is_svg:
-                    logo_png = render_logo_png(logo_raw)
-                else:
-                    logo_png = logo_raw
-            except Exception:
-                logger.warning(
-                    "Failed to fetch logo from %s — skipping branding", logo_url
-                )
-                logo_png = None
+        chosen_label = select_logo_variant(
+            brightness, variance, list(available_logos.keys())
+        )
+        chosen_url = available_logos[chosen_label]
+        logger.info(
+            "Logo variant selected: %s (brightness=%.0f, variance=%.0f, available=%s)",
+            chosen_label, brightness, variance, list(available_logos.keys()),
+        )
+
+        # Download and convert the chosen logo
+        logo_png = None
+        logo_raw = await _download_logo_bytes(chosen_url)
+        if logo_raw:
+            logo_png = _bytes_to_logo_png(logo_raw)
+
+        # Fallback: try other variants if chosen one failed
+        if not logo_png:
+            for fallback_label, fallback_url in available_logos.items():
+                if fallback_label == chosen_label:
+                    continue
+                logo_raw = await _download_logo_bytes(fallback_url)
+                if logo_raw:
+                    logo_png = _bytes_to_logo_png(logo_raw)
+                    if logo_png:
+                        logger.info("Fell back to %s logo variant", fallback_label)
+                        chosen_label = fallback_label
+                        break
 
         if not logo_png:
-            logger.info("No logo available — skipping branding overlay")
+            logger.info("No logo could be loaded — skipping branding overlay")
             return {}
 
         # Build text overlay lines
         brand_name = brand.get("name", "")
         theme = item.get("theme", "")
         website = brand.get("website_url", "")
-        text_line1 = state.get("hook", theme)[:50]
+        text_line1 = state.get("hook", theme)
         text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
 
         # Apply overlay
@@ -1027,6 +1097,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         return {
             "branded_image": f"content-images/{branded_obj}",
             "logo_png_data": logo_png,
+            "logo_variant_used": chosen_label,
         }
 
     except Exception as exc:
@@ -1081,11 +1152,19 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
         else:
             brand_guidelines_parsed = brand_guidelines
         social_links = brand_guidelines_parsed.get("social_links", {})
-        # Try to extract a handle from Instagram link, else use brand slug
+        channels_cfg_bg = brand_guidelines_parsed.get("channels", {})
+        # Try to extract a handle from Instagram link, channels config, or brand slug
         brand_handle = ""
         ig_link = social_links.get("instagram", "")
         if ig_link:
             brand_handle = ig_link.rstrip("/").rsplit("/", 1)[-1]
+        if not brand_handle:
+            # Check channels.instagram.handle (e.g. "@healthspan.mu")
+            ig_channel = channels_cfg_bg.get("instagram", {})
+            if isinstance(ig_channel, dict):
+                ig_handle = ig_channel.get("handle", "")
+                if ig_handle:
+                    brand_handle = ig_handle.lstrip("@")
         if not brand_handle:
             brand_handle = brand.get("slug", brand_name.lower().replace(" ", ""))
         brand_id = state["brand_id"]
@@ -1094,6 +1173,29 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
         mockup_urls = {}
         await async_ensure_bucket("content-images")
         brand_initial = brand_name[0].upper() if brand_name else "H"
+
+        # Load watermark logo for mockup avatars
+        avatar_logo_data = None
+        logos_cfg = brand_guidelines_parsed.get("logos", {})
+        from shared.config import settings as _settings
+        _api_base = getattr(_settings, "BACKEND_URL", "") or "http://backend:8000"
+        # Prefer watermark for avatar, fall back to icon/secondary/primary
+        for avatar_label in ["watermark", "icon", "secondary", "primary"]:
+            logo_info = logos_cfg.get(avatar_label)
+            if isinstance(logo_info, dict) and logo_info.get("url"):
+                try:
+                    _logo_url = logo_info["url"]
+                    if _logo_url.startswith("/"):
+                        _logo_url = f"{_api_base}{_logo_url}"
+                    avatar_logo_data = await _download_logo_bytes(_logo_url)
+                    if avatar_logo_data:
+                        # Convert SVG to PNG if needed
+                        avatar_logo_data = _bytes_to_logo_png(avatar_logo_data) or avatar_logo_data
+                        logger.info("Using %s logo as mockup avatar", avatar_label)
+                        break
+                except Exception:
+                    logger.warning("Failed to load %s logo for avatar", avatar_label)
+            avatar_logo_data = None
 
         # Only generate mockups for enabled channels
         brand_guidelines = brand.get("brand_guidelines") or {}
@@ -1123,6 +1225,7 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
                     username=brand_handle,
                     display_name=brand_name,
                     avatar_initial=brand_initial,
+                    avatar_logo_data=avatar_logo_data,
                 )
                 obj_name = f"{brand_id}/{item_id}/mockup_{platform}.png"
                 await async_upload_file(

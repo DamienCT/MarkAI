@@ -111,7 +111,8 @@ def find_best_logo_position(
     Scans candidate corner positions and picks the one with lowest pixel
     variance — sky, solid surfaces, shadows, etc.
 
-    NEVER returns bottom-left — that region is reserved for text overlay.
+    NEVER returns bottom-left or bottom-right — the bottom region is reserved
+    for the text overlay bar which can span a significant width.
     """
     img = Image.open(BytesIO(image_data)).convert("RGB")
     arr = np.array(img, dtype=np.float32)
@@ -120,7 +121,6 @@ def find_best_logo_position(
     candidates = {
         "top-right": (w - logo_w - margin, margin),
         "top-left": (margin, margin),
-        "bottom-right": (w - logo_w - margin, h - logo_h - margin),
     }
 
     best_pos = (w - logo_w - margin, margin)  # default: top-right
@@ -137,6 +137,85 @@ def find_best_logo_position(
 
     logger.info("Logo placement selected (variance=%.0f)", best_var)
     return best_pos
+
+
+def analyze_logo_region_brightness(
+    image_data: bytes,
+    logo_w: int,
+    logo_h: int,
+    margin: int = 40,
+) -> tuple[float, float]:
+    """Analyze the brightness and variance of the region where the logo will be placed.
+
+    Returns (mean_brightness, variance) where brightness is 0-255.
+    - mean_brightness < 100  → dark region  → use light/white logo
+    - mean_brightness > 160  → light region → use dark/primary logo
+    - high variance (>2000)  → busy region  → use watermark
+    """
+    img = Image.open(BytesIO(image_data)).convert("RGB")
+    arr = np.array(img, dtype=np.float32)
+    w, h = img.size
+
+    # Use the same placement logic to find where the logo will go
+    lx, ly = find_best_logo_position(image_data, logo_w, logo_h, margin)
+
+    # Clamp to image bounds
+    lx = max(0, min(lx, w - logo_w))
+    ly = max(0, min(ly, h - logo_h))
+
+    region = arr[ly : ly + logo_h, lx : lx + logo_w]
+    if region.size == 0:
+        return 128.0, 0.0
+
+    # Convert to grayscale luminance
+    gray = 0.299 * region[:, :, 0] + 0.587 * region[:, :, 1] + 0.114 * region[:, :, 2]
+    mean_brightness = float(np.mean(gray))
+    variance = float(np.var(gray))
+
+    logger.info(
+        "Logo region analysis: brightness=%.0f, variance=%.0f",
+        mean_brightness,
+        variance,
+    )
+    return mean_brightness, variance
+
+
+def select_logo_variant(
+    brightness: float,
+    variance: float,
+    available_labels: list[str],
+) -> str:
+    """Select the best logo variant based on image brightness at the placement region.
+
+    Priority logic:
+    - High variance (busy background) → watermark if available
+    - Dark background (brightness < 100) → dark_variant (white-on-dark) > secondary > primary
+    - Light background (brightness > 160) → primary > dark_variant
+    - Mid-tone → primary (default)
+    """
+    labels = set(available_labels)
+
+    # Busy/high-contrast background → prefer watermark for subtlety
+    if variance > 2000 and "watermark" in labels:
+        return "watermark"
+
+    # Dark background → need a light-colored logo
+    if brightness < 100:
+        # dark_variant is typically white/light logo for dark backgrounds
+        for pref in ["dark_variant", "secondary", "primary"]:
+            if pref in labels:
+                return pref
+
+    # Light background → need a dark-colored logo
+    if brightness > 160:
+        for pref in ["primary", "secondary", "dark_variant"]:
+            if pref in labels:
+                return pref
+
+    # Mid-tone fallback
+    if "primary" in labels:
+        return "primary"
+    return available_labels[0] if available_labels else "primary"
 
 
 # ── Logo + text overlay ──────────────────────────────────────────
@@ -190,6 +269,30 @@ def overlay_logo_and_text(
     font_large = _load_font(int(base.width * 0.040), "regular")
     font_small = _load_font(int(base.width * 0.026), "light")
     margin = int(base.width * 0.04)
+    pad = 16
+    max_text_w = base.width - 2 * margin - 2 * pad  # available width inside the bar
+
+    # Truncate text to fit within image width
+    def _fit_text(text: str, font) -> str:
+        if not text:
+            return text
+        w = draw.textbbox((0, 0), text, font=font)[2]
+        if w <= max_text_w:
+            return text
+        # Binary search for the longest prefix that fits with ellipsis
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            candidate = text[:mid].rstrip() + "\u2026"
+            if draw.textbbox((0, 0), candidate, font=font)[2] <= max_text_w:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo].rstrip() + "\u2026" if lo < len(text) else text
+
+    text_line1 = _fit_text(text_line1, font_large)
+    if text_line2:
+        text_line2 = _fit_text(text_line2, font_small)
 
     bbox1 = draw.textbbox((0, 0), text_line1, font=font_large)
     text_w1, text_h1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
@@ -201,7 +304,6 @@ def overlay_logo_and_text(
     total_w = max(text_w1, text_w2)
     total_h = text_h1 + (text_h2 + 8 if text_line2 else 0)
 
-    pad = 16
     bar_x1 = margin - pad
     bar_y1 = base.height - total_h - margin - pad * 2
     bar_x2 = margin + total_w + pad * 2
@@ -264,11 +366,25 @@ def _draw_avatar(
     r: int = 22,
     initial: str = "H",
     color: tuple[int, int, int] = (79, 220, 239),
+    logo_image: Image.Image | None = None,
+    canvas: Image.Image | None = None,
 ):
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
-    draw.text(
-        (cx - 8, cy - 11), initial, font=_load_font(18, "bold"), fill=(255, 255, 255)
-    )
+    if logo_image is not None and canvas is not None:
+        # Use the actual logo as a circular avatar
+        size = r * 2
+        avatar = logo_image.convert("RGBA").resize((size, size), Image.LANCZOS)
+        # Create circular mask
+        mask = Image.new("L", (size, size), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.ellipse([0, 0, size - 1, size - 1], fill=255)
+        # Draw a white circle background first (for transparency)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 255, 255))
+        canvas.paste(avatar, (cx - r, cy - r), mask)
+    else:
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+        draw.text(
+            (cx - 8, cy - 11), initial, font=_load_font(18, "bold"), fill=(255, 255, 255)
+        )
 
 
 def generate_mockup(
@@ -279,13 +395,23 @@ def generate_mockup(
     display_name: str = "",
     avatar_initial: str | None = None,
     avatar_color: tuple[int, int, int] = (79, 220, 239),
+    avatar_logo_data: bytes | None = None,
 ) -> bytes:
     """Generate a realistic mobile feed mockup for a given platform.
 
     Returns PNG bytes of the mockup image (780x1688 — 2x iPhone resolution).
     ``avatar_initial`` defaults to the first character of *display_name*.
+    ``avatar_logo_data`` — if provided, uses this image as the profile avatar
+    instead of a colored circle with an initial letter.
     """
     initial = avatar_initial or (display_name[0].upper() if display_name else "H")
+    avatar_logo = None
+    if avatar_logo_data:
+        try:
+            avatar_logo = Image.open(BytesIO(avatar_logo_data)).convert("RGBA")
+        except Exception:
+            logger.warning("Failed to load avatar logo image — using initial fallback")
+
     W, H = 780, 1688
     img = Image.new("RGB", (W, H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -302,6 +428,7 @@ def generate_mockup(
             H,
             initial=initial,
             avatar_color=avatar_color,
+            avatar_logo=avatar_logo,
         )
     elif platform == "facebook":
         img = _mockup_facebook(
@@ -314,6 +441,7 @@ def generate_mockup(
             H,
             initial=initial,
             avatar_color=avatar_color,
+            avatar_logo=avatar_logo,
         )
     elif platform == "linkedin":
         img = _mockup_linkedin(
@@ -326,6 +454,7 @@ def generate_mockup(
             H,
             initial=initial,
             avatar_color=avatar_color,
+            avatar_logo=avatar_logo,
         )
     elif platform == "x":
         img = _mockup_x(
@@ -339,6 +468,7 @@ def generate_mockup(
             H,
             initial=initial,
             avatar_color=avatar_color,
+            avatar_logo=avatar_logo,
         )
 
     buf = BytesIO()
@@ -356,6 +486,7 @@ def _mockup_instagram(
     H,
     initial="H",
     avatar_color=(79, 220, 239),
+    avatar_logo=None,
 ):
     y = 0
     _draw_status_bar(draw, W, y)
@@ -384,7 +515,7 @@ def _mockup_instagram(
     y += 1
 
     # Post header
-    _draw_avatar(draw, 34, y + 28, initial=initial, color=avatar_color)
+    _draw_avatar(draw, 34, y + 28, initial=initial, color=avatar_color, logo_image=avatar_logo, canvas=img)
     draw.text((60, y + 20), username, font=_load_font(15, "bold"), fill=(0, 0, 0))
     y += 56
 
@@ -448,6 +579,7 @@ def _mockup_facebook(
     H,
     initial="H",
     avatar_color=(79, 220, 239),
+    avatar_logo=None,
 ):
     img = Image.new("RGB", (W, H), (240, 242, 245))
     draw = ImageDraw.Draw(img)
@@ -482,7 +614,7 @@ def _mockup_facebook(
 
     # Post card
     draw.rectangle([0, y, W, H - 56], fill=(255, 255, 255))
-    _draw_avatar(draw, 38, y + 30, initial=initial, color=avatar_color)
+    _draw_avatar(draw, 38, y + 30, initial=initial, color=avatar_color, logo_image=avatar_logo, canvas=img)
     draw.text((68, y + 14), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
     draw.text(
         (68, y + 34), "2h \u00b7 \U0001f310", font=_load_font(13), fill=(100, 100, 100)
@@ -549,6 +681,7 @@ def _mockup_linkedin(
     H,
     initial="H",
     avatar_color=(79, 220, 239),
+    avatar_logo=None,
 ):
     img = Image.new("RGB", (W, H), (240, 240, 240))
     draw = ImageDraw.Draw(img)
@@ -569,7 +702,7 @@ def _mockup_linkedin(
 
     # Post card
     draw.rectangle([0, y, W, H - 56], fill=(255, 255, 255))
-    _draw_avatar(draw, 40, y + 34, 24, initial=initial, color=avatar_color)
+    _draw_avatar(draw, 40, y + 34, 24, initial=initial, color=avatar_color, logo_image=avatar_logo, canvas=img)
     draw.text((72, y + 14), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
     draw.text(
         (72, y + 34),
@@ -639,6 +772,7 @@ def _mockup_x(
     H,
     initial="H",
     avatar_color=(79, 220, 239),
+    avatar_logo=None,
 ):
     y = 0
     _draw_status_bar(draw, W, 0)
@@ -669,7 +803,7 @@ def _mockup_x(
     # Tweet
     ax = 38
     ay = y + 38
-    _draw_avatar(draw, ax, ay, initial=initial, color=avatar_color)
+    _draw_avatar(draw, ax, ay, initial=initial, color=avatar_color, logo_image=avatar_logo, canvas=img)
     name_x = ax + 34
     draw.text(
         (name_x, y + 12), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0)
