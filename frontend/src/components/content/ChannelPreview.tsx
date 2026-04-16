@@ -14,12 +14,22 @@ interface PreviewProps {
   caption: string;
   hashtags: string[];
   imageUrl?: string;
+  avatarUrl?: string;
   cta?: string;
   compact?: boolean;
 }
 
-function AvatarCircle({ name, size = "h-9 w-9" }: { name: string; size?: string }) {
+function AvatarCircle({ name, size = "h-9 w-9", avatarUrl }: { name: string; size?: string; avatarUrl?: string }) {
   const initial = name.charAt(0).toUpperCase();
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={name}
+        className={`${size} rounded-full object-cover shrink-0 bg-white`}
+      />
+    );
+  }
   return (
     <div className={`${size} rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-white font-bold text-sm shrink-0`}>
       {initial}
@@ -48,12 +58,12 @@ function HashtagsDisplay({ hashtags }: { hashtags: string[] }) {
   );
 }
 
-export function InstagramPreview({ brandName, brandHandle, caption, hashtags, imageUrl, compact }: PreviewProps) {
+export function InstagramPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2.5 px-3 py-2.5">
-        <AvatarCircle name={brandName} />
+        <AvatarCircle name={brandName} avatarUrl={avatarUrl} />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate">{brandHandle}</p>
           <p className="text-[10px] text-muted-foreground">Sponsored</p>
@@ -90,12 +100,12 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
   );
 }
 
-export function FacebookPreview({ brandName, brandHandle, caption, hashtags, imageUrl, compact }: PreviewProps) {
+export function FacebookPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2.5 px-3 py-3">
-        <AvatarCircle name={brandName} />
+        <AvatarCircle name={brandName} avatarUrl={avatarUrl} />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate">{brandName}</p>
           <p className="text-[10px] text-muted-foreground flex items-center gap-1">
@@ -139,12 +149,12 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
   );
 }
 
-export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, imageUrl, compact }: PreviewProps) {
+export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2.5 px-3 py-3">
-        <AvatarCircle name={brandName} />
+        <AvatarCircle name={brandName} avatarUrl={avatarUrl} />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate">{brandName}</p>
           <p className="text-[10px] text-muted-foreground">Company &middot; Just now</p>
@@ -189,12 +199,12 @@ export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, ima
   );
 }
 
-export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, compact }: PreviewProps) {
+export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact }: PreviewProps) {
   const handle = brandHandle.startsWith("@") ? brandHandle : `@${brandHandle}`;
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       <div className="flex gap-2.5 px-3 py-3">
-        <AvatarCircle name={brandName} />
+        <AvatarCircle name={brandName} avatarUrl={avatarUrl} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1">
             <span className="text-sm font-bold truncate">{brandName}</span>

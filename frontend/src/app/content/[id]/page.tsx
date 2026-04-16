@@ -14,7 +14,7 @@ import { ApprovalHistory } from "@/components/approval/ApprovalHistory";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { api, API_BASE_URL } from "@/lib/api";
+import { api, API_BASE_URL, fileUrl } from "@/lib/api";
 import type { Content, Approval, CalendarItem, Brand } from "@/types";
 
 function safeHashtags(raw: unknown): string[] {
@@ -246,6 +246,16 @@ export default function ContentDetailPage() {
     if (brand?.slug) return brand.slug;
     return brandName.toLowerCase().replace(/\s+/g, "");
   })();
+  // Resolve avatar: prefer watermark/icon logo (compact), fall back to logo_url
+  const brandAvatarUrl = (() => {
+    const logos = (brand?.brand_guidelines as Record<string, unknown>)?.logos as Record<string, Record<string, string>> | undefined;
+    for (const variant of ["watermark", "icon", "secondary", "primary"]) {
+      const url = logos?.[variant]?.url;
+      if (url) return fileUrl(url);
+    }
+    if (brand?.logo_url) return fileUrl(brand.logo_url);
+    return undefined;
+  })();
   const caption = content.caption || content.body_text || "";
   const hashtags = safeHashtags(content.hashtags);
   const hasPendingApproval = approvals.some(a => a.status === "pending");
@@ -306,6 +316,7 @@ export default function ContentDetailPage() {
                 channel={channel}
                 brandName={brandName}
                 brandHandle={brandHandle}
+                avatarUrl={brandAvatarUrl}
                 caption={caption}
                 hashtags={hashtags}
                 imageUrl={contentThumbUrl || contentImageUrl}
