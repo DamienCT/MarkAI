@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -13,16 +13,21 @@ from app.services.publish_service import dispatch_to_n8n
 
 logger = logging.getLogger(__name__)
 
+# Content overdue by more than this is moved to "failed" instead of published.
+STALE_THRESHOLD = timedelta(days=1)
+
 
 async def check_due_content() -> None:
     """
     Every N minutes: query PostgreSQL for calendar items with status='scheduled'
-    and scheduled_at <= now. For each, dispatch the current content to the n8n
-    publish webhook for the correct platform.
+    and scheduled_at <= now. Items overdue by more than STALE_THRESHOLD are marked
+    failed (stale content shouldn't be posted). The rest are dispatched to n8n.
     """
     logger.info("Checking for due content to publish")
 
     async with async_session_factory() as db:
+        now = datetime.now(timezone.utc)
+
         result = await db.execute(
             select(CalendarItem)
             .where(CalendarItem.status == "scheduled")
@@ -41,7 +46,23 @@ async def check_due_content() -> None:
 
         logger.info("Found %d calendar items due for publishing", len(due_items))
 
-        for calendar_item in due_items:
+        # Expire stale items (overdue by more than 1 day)
+        stale_cutoff = now - STALE_THRESHOLD
+        fresh_items = []
+        for item in due_items:
+            if item.scheduled_at and item.scheduled_at < stale_cutoff:
+                item.status = "failed"
+                logger.warning(
+                    "Calendar item %s expired — scheduled_at %s is over %s overdue",
+                    item.id, item.scheduled_at, STALE_THRESHOLD,
+                )
+            else:
+                fresh_items.append(item)
+
+        if fresh_items != due_items:
+            await db.commit()
+
+        for calendar_item in fresh_items:
             # Get the current content version for this calendar item
             content_result = await db.execute(
                 select(Content)
