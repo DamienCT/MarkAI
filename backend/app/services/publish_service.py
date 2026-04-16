@@ -153,7 +153,12 @@ async def dispatch_to_n8n(
 
     # Get image URL from image_urls or media_assets
     image_urls = content.image_urls or {}
-    image_url = image_urls.get("primary") or content.video_url
+    image_url = (
+        image_urls.get("primary")
+        or image_urls.get("hero")
+        or image_urls.get("mockup")
+        or content.video_url
+    )
 
     payload = {
         "content_id": str(content.id),
@@ -164,6 +169,8 @@ async def dispatch_to_n8n(
         "hashtags": content.hashtags or [],
         "cta_text": content.cta_text,
         "cta_url": content.cta_url,
+        "brand_name": brand.name,
+        "calendar_item_id": str(calendar_item.id),
         **get_platform_credentials(brand, channel),
     }
 
