@@ -67,6 +67,7 @@ class Settings(BaseSettings):
 
     # --- Frontend ---
     FRONTEND_URL: str = ""
+    PUBLIC_API_URL: str = ""  # external URL for the backend API (e.g. https://api.markai...)
 
     # --- n8n ---
     N8N_BASE_URL: str = "http://n8n:5678"
