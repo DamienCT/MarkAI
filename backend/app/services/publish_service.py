@@ -151,14 +151,20 @@ async def dispatch_to_n8n(
     channel_data = platform_meta.get(channel, {})
     caption = channel_data.get("caption", content.caption or content.body_text or "")
 
-    # Get image URL from image_urls or media_assets
-    image_urls = content.image_urls or {}
-    image_url = (
-        image_urls.get("primary")
-        or image_urls.get("hero")
-        or image_urls.get("mockup")
-        or content.video_url
+    # Get image URL — stored in generation_metadata by the content pipeline.
+    # Prefer branded (has logo + text overlay) → raw background → legacy key.
+    gen_meta = content.generation_metadata or {}
+    minio_path = (
+        gen_meta.get("branded_image")
+        or gen_meta.get("raw_image")
+        or gen_meta.get("generated_image_url")
     )
+    # Convert MinIO internal path to public API URL
+    api_base = settings.PUBLIC_API_URL or settings.FRONTEND_URL
+    if minio_path and api_base:
+        image_url = f"{api_base}/api/v1/files/{minio_path}"
+    else:
+        image_url = content.video_url or None
 
     payload = {
         "content_id": str(content.id),
