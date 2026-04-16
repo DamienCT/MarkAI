@@ -35,8 +35,8 @@ const CHANNEL_PREFIX: Record<string, string> = {
 function formatItemTime(item: CalendarItem): string {
   if (!item.scheduled_at) return "";
   const d = new Date(item.scheduled_at);
-  const h = d.getUTCHours();
-  const m = d.getUTCMinutes();
+  const h = d.getHours();
+  const m = d.getMinutes();
   if (h === 0 && m === 0) return "";
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
