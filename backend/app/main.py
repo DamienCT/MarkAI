@@ -60,7 +60,10 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("MARKAI backend starting up (env=%s)", settings.MARKAI_ENV)
 
-    # Setup APScheduler
+    # Setup APScheduler — must happen in async context so the scheduler
+    # binds to uvicorn's event loop (not a detached one).
+    import asyncio
+    scheduler._eventloop = asyncio.get_running_loop()
     setup_scheduler()
 
     # Connect to NATS JetStream

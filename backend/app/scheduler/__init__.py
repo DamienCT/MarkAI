@@ -29,7 +29,13 @@ async def get_app_setting(key: str, default=None):
 
 
 def setup_scheduler() -> None:
-    """Register all scheduled jobs. Called on FastAPI startup."""
+    """Register all scheduled jobs and start the scheduler.
+
+    MUST be called from an async context (e.g. FastAPI lifespan) so that
+    AsyncIOScheduler.start() binds to the running event loop.
+    """
+    from datetime import datetime, timedelta, timezone
+
     from app.scheduler.morning_jobs import run_morning_jobs
     from app.scheduler.publish_checker import check_due_content
     from app.scheduler.engagement_puller import pull_all_engagement
@@ -47,12 +53,15 @@ def setup_scheduler() -> None:
         replace_existing=True,
     )
 
-    # Every N minutes — check for content due to publish
+    # Every N minutes — check for content due to publish.
+    # Fire 30s after startup so overdue content is caught immediately,
+    # then repeat on the regular interval.
     scheduler.add_job(
         check_due_content,
         IntervalTrigger(minutes=settings.PUBLISH_CHECK_INTERVAL_MINUTES),
         id="publish_checker",
         name="Check due content for publishing",
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
         replace_existing=True,
     )
 
@@ -85,4 +94,7 @@ def setup_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Start the scheduler on the current (running) event loop.
+    # This MUST happen inside an async context so get_event_loop()
+    # returns the uvicorn loop, not a new detached one.
     scheduler.start()
