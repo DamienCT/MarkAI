@@ -332,6 +332,16 @@ def overlay_logo_and_text(
 # ── Social platform mockups ──────────────────────────────────────
 
 
+def _center_crop_square(img: Image.Image, target_size: int) -> Image.Image:
+    """Center-crop an image to square, then resize. Avoids stretching non-square inputs."""
+    w, h = img.size
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    img = img.crop((left, top, left + side, top + side))
+    return img.resize((target_size, target_size), Image.LANCZOS)
+
+
 def _wrap_text(text: str, font, max_width: int, draw: ImageDraw.Draw) -> list[str]:
     words = text.split()
     lines, current = [], ""
@@ -520,7 +530,7 @@ def _mockup_instagram(
     y += 56
 
     # Post image
-    post_img = post_img.resize((W, W), Image.LANCZOS)
+    post_img = _center_crop_square(post_img, W)
     img.paste(post_img, (0, y))
     y += W
 
@@ -629,7 +639,7 @@ def _mockup_facebook(
     y += 8
 
     # Image
-    post_img = post_img.resize((W, W), Image.LANCZOS)
+    post_img = _center_crop_square(post_img, W)
     img.paste(post_img, (0, y))
     y += W
 
@@ -721,7 +731,7 @@ def _mockup_linkedin(
         y += 20
     y += 8
 
-    post_img = post_img.resize((W, W), Image.LANCZOS)
+    post_img = _center_crop_square(post_img, W)
     img.paste(post_img, (0, y))
     y += W
 
@@ -824,7 +834,7 @@ def _mockup_x(
 
     # Image with rounded corners
     img_w = W - 80
-    post_img = post_img.resize((img_w, img_w), Image.LANCZOS)
+    post_img = _center_crop_square(post_img, img_w)
     mask = Image.new("L", (img_w, img_w), 0)
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, img_w, img_w], radius=16, fill=255)
     rounded = Image.new("RGB", (img_w, img_w), (255, 255, 255))

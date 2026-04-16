@@ -905,6 +905,8 @@ async def _replace_product_in_generated_image(
 
         product_name = state.get("calendar_item", {}).get("product_name", "product")
 
+        input_size = marketing_img.size  # preserve original dimensions (e.g. 1024x1024)
+
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash-image",
             contents=[
@@ -918,10 +920,22 @@ async def _replace_product_in_generated_image(
 
         for part in response.candidates[0].content.parts:
             if part.inline_data is not None:
+                result_data = part.inline_data.data
+                # Gemini may return a different size — normalize back to input dims
+                result_img = PILImage.open(BytesIO(result_data))
+                if result_img.size != input_size:
+                    logger.info(
+                        "Gemini returned %s, normalizing to %s",
+                        result_img.size, input_size,
+                    )
+                    result_img = result_img.resize(input_size, PILImage.LANCZOS)
+                    buf = BytesIO()
+                    result_img.save(buf, format="PNG", quality=95)
+                    result_data = buf.getvalue()
                 logger.info(
                     "Gemini product replacement successful for %s", product_name
                 )
-                return part.inline_data.data
+                return result_data
 
     except Exception as exc:
         logger.warning(
@@ -1142,6 +1156,13 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
         caption = state.get("caption", "")
         brand = state.get("brand", {})
         brand_name = brand.get("name", "Brand")
+        logger.info(
+            "Mockup brand state: name=%r, slug=%r, has_guidelines=%s, keys=%s",
+            brand_name,
+            brand.get("slug"),
+            bool(brand.get("brand_guidelines")),
+            list(brand.keys())[:10],
+        )
         # Derive a username/handle from brand guidelines or slug
         brand_guidelines = brand.get("brand_guidelines") or {}
         if isinstance(brand_guidelines, str):
@@ -1167,6 +1188,7 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
                     brand_handle = ig_handle.lstrip("@")
         if not brand_handle:
             brand_handle = brand.get("slug", brand_name.lower().replace(" ", ""))
+        logger.info("Mockup brand_handle resolved to %r", brand_handle)
         brand_id = state["brand_id"]
         item_id = state["calendar_item_id"]
 

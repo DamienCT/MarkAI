@@ -15,7 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { api, API_BASE_URL } from "@/lib/api";
-import type { Content, Approval, CalendarItem } from "@/types";
+import type { Content, Approval, CalendarItem, Brand } from "@/types";
 
 function safeHashtags(raw: unknown): string[] {
   if (!raw) return [];
@@ -34,6 +34,7 @@ export default function ContentDetailPage() {
 
   const [content, setContent] = useState<Content | null>(null);
   const [calendarItem, setCalendarItem] = useState<CalendarItem | null>(null);
+  const [brand, setBrand] = useState<Brand | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [loading, setLoading] = useState(true);
   const [approvalComments, setApprovalComments] = useState("");
@@ -69,6 +70,13 @@ export default function ContentDetailPage() {
                 setScheduleDate(d.toLocaleDateString("en-CA")); // YYYY-MM-DD format
                 setScheduleTime(d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })); // HH:MM format
               }
+            } catch { /* optional */ }
+          }
+          // Fetch brand for name/handle
+          if (contentData.brand_id) {
+            try {
+              const brandData = await api.get<Brand>(`/api/v1/brands/${contentData.brand_id}`);
+              setBrand(brandData);
             } catch { /* optional */ }
           }
           // Fetch approvals
@@ -229,8 +237,15 @@ export default function ContentDetailPage() {
   }
 
   const channel = calendarItem?.channel || content.platform || "instagram";
-  const brandName = content.brand_name || "Brand";
-  const brandHandle = brandName.toLowerCase().replace(/\s+/g, "");
+  const brandName = brand?.name || "Brand";
+  // Derive handle: channels.instagram.handle → brand slug → name-based fallback
+  const brandHandle = (() => {
+    const channels = (brand?.brand_guidelines as Record<string, unknown>)?.channels as Record<string, Record<string, string>> | undefined;
+    const igHandle = channels?.instagram?.handle;
+    if (igHandle) return igHandle.replace(/^@/, "");
+    if (brand?.slug) return brand.slug;
+    return brandName.toLowerCase().replace(/\s+/g, "");
+  })();
   const caption = content.caption || content.body_text || "";
   const hashtags = safeHashtags(content.hashtags);
   const hasPendingApproval = approvals.some(a => a.status === "pending");
