@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import { formatDate } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
 import { STATUS_COLORS, CHANNEL_COLORS, CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
 import { WorkingStageTracker } from "@/components/content/WorkingStageTracker";
 import type { CalendarItem, Brand } from "@/types";
@@ -159,7 +159,7 @@ export default function StagePage() {
                   )}
                 </div>
                 {item.scheduled_at && (
-                  <p className="text-[10px] text-muted-foreground mt-2">{formatDate(item.scheduled_at)}</p>
+                  <p className="text-[10px] text-muted-foreground mt-2">{formatDateTime(item.scheduled_at)}</p>
                 )}
                 {item.brand_name && (
                   <p className="text-[10px] text-muted-foreground mt-1">{item.brand_name}</p>

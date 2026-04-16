@@ -194,6 +194,28 @@ export default function ContentDetailPage() {
     }
   }, [calendarItem, scheduleDate, scheduleTime]);
 
+  const handleUpdateSchedule = useCallback(async () => {
+    if (!calendarItem?.id || !scheduleDate) {
+      toast.error("Please select a date");
+      return;
+    }
+    setScheduling(true);
+    try {
+      const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
+      await api.patch(`/api/v1/calendar/${calendarItem.id}`, {
+        scheduled_at: scheduledAt,
+      });
+      toast.success("Schedule updated");
+      const updated = await api.get<CalendarItem>(`/api/v1/calendar/${calendarItem.id}`);
+      setCalendarItem(updated);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to update schedule";
+      toast.error(detail);
+    } finally {
+      setScheduling(false);
+    }
+  }, [calendarItem, scheduleDate, scheduleTime]);
+
   const handleDiscard = useCallback(async () => {
     if (!calendarItem?.id) {
       toast.error("No calendar item to discard");
@@ -360,13 +382,45 @@ export default function ContentDetailPage() {
                 </Card>
               )}
 
-              {/* Scheduled info — shown when content is auto-scheduled after approval */}
-              {calendarItem && calendarItem.status === "scheduled" && calendarItem.scheduled_at && (
+              {/* Schedule editor — editable for in_review, reworking, and scheduled */}
+              {calendarItem && ["in_review", "reworking", "scheduled"].includes(calendarItem.status) && (
                 <Card className="border-blue-500/30 bg-blue-500/5">
-                  <CardContent className="py-3">
-                    <p className="text-sm text-blue-600 dark:text-blue-400 font-medium">
-                      Scheduled for publishing on {new Date(calendarItem.scheduled_at).toLocaleDateString()} at {new Date(calendarItem.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </p>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-1.5">
+                      <CalendarClock className="h-4 w-4 text-blue-500" />
+                      Scheduled Date & Time
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">Date</label>
+                        <input
+                          type="date"
+                          value={scheduleDate}
+                          onChange={(e) => setScheduleDate(e.target.value)}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">Time</label>
+                        <input
+                          type="time"
+                          value={scheduleTime}
+                          onChange={(e) => setScheduleTime(e.target.value)}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={scheduling || !scheduleDate}
+                      onClick={handleUpdateSchedule}
+                      className="w-full"
+                    >
+                      {scheduling ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Saving...</> : "Update Schedule"}
+                    </Button>
                   </CardContent>
                 </Card>
               )}
