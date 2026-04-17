@@ -104,6 +104,89 @@ SUBSCRIPTIONS = [
 _consumer: NATSConsumer | None = None
 
 
+async def _replace_product_in_image(
+    image_data: bytes, product_image_url: str, product_name: str
+) -> bytes:
+    """Use Gemini to swap a generic placeholder with the real product photo.
+
+    Mirrors agents.workflows.content.nodes._replace_product_in_generated_image
+    so regeneration preserves the same product across runs.
+    """
+    import httpx as _httpx
+
+    try:
+        # Resolve product image URL → bytes (http URL, /api path, or MinIO key)
+        if product_image_url.startswith(("http://", "https://")):
+            async with _httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(product_image_url)
+                resp.raise_for_status()
+                product_image_data = resp.content
+        elif product_image_url.startswith("/"):
+            from shared.config import settings as _cfg
+            backend_url = getattr(_cfg, "BACKEND_URL", "http://backend:8000")
+            async with _httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{backend_url}{product_image_url}")
+                resp.raise_for_status()
+                product_image_data = resp.content
+        else:
+            from shared.config import settings as _storage_cfg
+            from shared.tools.storage import async_download_file as _adl
+            default_bucket = getattr(_storage_cfg, "MINIO_BUCKET", "markai-assets")
+            try:
+                product_image_data = await _adl(default_bucket, product_image_url)
+            except Exception:
+                backend_url = getattr(_storage_cfg, "BACKEND_URL", "http://backend:8000")
+                async with _httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(
+                        f"{backend_url}/api/v1/files/{product_image_url}"
+                    )
+                    resp.raise_for_status()
+                    product_image_data = resp.content
+
+        from shared.config import settings as _settings
+        if not getattr(_settings, "GEMINI_API_KEY", ""):
+            logger.warning("GEMINI_API_KEY not set — skipping product replacement on regen")
+            return image_data
+
+        from google import genai
+        from google.genai import types as gtypes
+        from PIL import Image as PILImage
+        from io import BytesIO
+
+        gemini_client = genai.Client(api_key=_settings.GEMINI_API_KEY)
+        marketing_img = PILImage.open(BytesIO(image_data))
+        product_img = PILImage.open(BytesIO(product_image_data))
+        input_size = marketing_img.size
+
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=[
+                f"Replace the generic product in Image 1 with the real product from Image 2 "
+                f"('{product_name or 'product'}'). Keep everything else exactly the same. "
+                f"Match lighting and perspective.",
+                marketing_img,
+                product_img,
+            ],
+            config=gtypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+        )
+
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                result_data = part.inline_data.data
+                result_img = PILImage.open(BytesIO(result_data))
+                if result_img.size != input_size:
+                    result_img = result_img.resize(input_size, PILImage.LANCZOS)
+                    buf = BytesIO()
+                    result_img.save(buf, format="PNG", quality=95)
+                    result_data = buf.getvalue()
+                logger.info("Gemini product replacement successful (regen) for %s", product_name)
+                return result_data
+    except Exception as exc:
+        logger.warning("Gemini product replacement failed on regen: %s — using base image", exc)
+
+    return image_data
+
+
 async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
     """Regenerate the image for an existing content piece.
 
@@ -176,16 +259,100 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
             except (ValueError, TypeError):
                 brand_guidelines = {}
 
+        # ── 0. Source product image (preserve product context across regen) ──
+        # Look up the calendar item to find associated product, then fetch its
+        # gallery image. If found, the new background is generated with a generic
+        # product placeholder and Gemini swaps the real product back in.
+        product_image_url: str | None = None
+        product_name = ""
+        cal_rows = await execute_query(
+            "SELECT product_ids, product_sku, product_name, title FROM calendar_items WHERE id = :id",
+            {"id": calendar_item_id},
+        )
+        if cal_rows:
+            cal_row = cal_rows[0]
+            product_ids = cal_row.get("product_ids") or []
+            product_name = cal_row.get("product_name") or cal_row.get("title", "")
+            product_sku = cal_row.get("product_sku")
+
+            product_rows = []
+            if product_ids:
+                pid = product_ids[0] if isinstance(product_ids, list) else product_ids
+                product_rows = await execute_query(
+                    "SELECT id, name, image_urls, primary_image_url FROM products "
+                    "WHERE id = :pid AND is_active = true LIMIT 1",
+                    {"pid": str(pid)},
+                )
+            elif product_sku or product_name:
+                product_rows = await execute_query(
+                    "SELECT id, name, image_urls, primary_image_url FROM products "
+                    "WHERE brand_id = :brand_id AND is_active = true AND ("
+                    "  bc_item_no = :sku OR LOWER(name) LIKE LOWER(:name_pattern)"
+                    ") LIMIT 1",
+                    {
+                        "brand_id": brand_id,
+                        "sku": product_sku or "",
+                        "name_pattern": f"%{product_name[:30]}%" if product_name else "%",
+                    },
+                )
+
+            if product_rows:
+                product = product_rows[0]
+                if not product_name:
+                    product_name = product.get("name", "")
+                gallery = product.get("image_urls")
+                primary = product.get("primary_image_url")
+                if not primary and isinstance(gallery, list) and gallery:
+                    first = gallery[0]
+                    if isinstance(first, dict):
+                        primary = first.get("url")
+                    elif isinstance(first, str):
+                        primary = first
+                if primary:
+                    product_image_url = primary
+                    logger.info(
+                        "Regen: using gallery image for product '%s'", product_name
+                    )
+
         # ── 1. Generate new base image ─────────────────────────────────
+        from shared.sanitize import sanitize_for_prompt
+
+        composition_rules = (
+            "IMPORTANT COMPOSITION: The top-right area of the image must be open sky, "
+            "soft blurred background, or a monotone surface — reserved for a logo overlay. "
+            "The bottom-left area should have darker or open space for text overlay. "
+        )
+        no_text_rule = (
+            "CRITICAL: ABSOLUTELY NO TEXT, WORDS, LETTERS, NUMBERS, LOGOS, WATERMARKS, "
+            "LABELS, SIGNS, or TYPOGRAPHY of any kind. This is a photograph, not a graphic."
+        )
+
         if custom_prompt:
-            from shared.sanitize import sanitize_for_prompt
-            image_prompt = sanitize_for_prompt(custom_prompt, max_length=500)
+            base_prompt = sanitize_for_prompt(custom_prompt, max_length=500)
+        else:
+            base_prompt = (
+                f"Create a professional social media lifestyle image. "
+                f"Theme: {sanitize_for_prompt(headline)}. "
+                f"Context: {sanitize_for_prompt(caption[:200])}. "
+                f"Clean modern aesthetic. Golden hour lighting."
+            )
+
+        if product_image_url:
+            # Scene with generic product placeholder — Gemini will replace it later
+            image_prompt = (
+                f"{base_prompt} "
+                f"Include a simple generic unlabeled product container "
+                f"(plain matte box or pouch with NO writing on it) placed naturally in the scene. "
+                f"The product container must be completely blank — it will be digitally replaced. "
+                f"{composition_rules}"
+                f"{no_text_rule}"
+            )
         else:
             image_prompt = (
-                f"Create a professional social media lifestyle image. "
-                f"Theme: {headline}. "
-                f"Context: {caption[:200]}. "
-                f"Clean, modern aesthetic. Golden hour lighting. No text or logos in the image."
+                f"{base_prompt} "
+                f"{composition_rules}"
+                f"{no_text_rule} "
+                f"Do NOT include any products. Focus on the lifestyle and mood."
             )
 
         image_url = await generate_image(image_prompt)
@@ -201,6 +368,12 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 resp = await client.get(image_url)
                 resp.raise_for_status()
                 image_data = resp.content
+
+        # ── 1b. Replace generic placeholder with real product via Gemini ──
+        if product_image_url:
+            image_data = await _replace_product_in_image(
+                image_data, product_image_url, product_name
+            )
 
         raw_obj = f"{brand_id}/{calendar_item_id}/background.png"
         await async_upload_file("content-images", raw_obj, image_data, "image/png")
