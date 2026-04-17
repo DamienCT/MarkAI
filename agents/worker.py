@@ -266,14 +266,13 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         product_image_url: str | None = None
         product_name = ""
         cal_rows = await execute_query(
-            "SELECT product_ids, product_sku, product_name, title FROM calendar_items WHERE id = :id",
+            "SELECT product_ids, title FROM calendar_items WHERE id = :id",
             {"id": calendar_item_id},
         )
         if cal_rows:
             cal_row = cal_rows[0]
             product_ids = cal_row.get("product_ids") or []
-            product_name = cal_row.get("product_name") or cal_row.get("title", "")
-            product_sku = cal_row.get("product_sku")
+            product_name = cal_row.get("title", "")
 
             product_rows = []
             if product_ids:
@@ -282,18 +281,6 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     "SELECT id, name, image_urls, primary_image_url FROM products "
                     "WHERE id = :pid AND is_active = true LIMIT 1",
                     {"pid": str(pid)},
-                )
-            elif product_sku or product_name:
-                product_rows = await execute_query(
-                    "SELECT id, name, image_urls, primary_image_url FROM products "
-                    "WHERE brand_id = :brand_id AND is_active = true AND ("
-                    "  bc_item_no = :sku OR LOWER(name) LIKE LOWER(:name_pattern)"
-                    ") LIMIT 1",
-                    {
-                        "brand_id": brand_id,
-                        "sku": product_sku or "",
-                        "name_pattern": f"%{product_name[:30]}%" if product_name else "%",
-                    },
                 )
 
             if product_rows:
