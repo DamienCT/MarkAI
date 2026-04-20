@@ -14,27 +14,38 @@ export default function ContentCalendarPage() {
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [brandFilter, setBrandFilter] = useState<string | null>(null);
+  // Gate fetches until we've read localStorage, else the first render would
+  // race a null-brandFilter (all brands) fetch against the hydrated one.
+  const [hydrated, setHydrated] = useState(false);
 
-  const fetchCalendar = useCallback(async (brandId?: string | null) => {
-    setLoading(true);
-    try {
-      const params: Record<string, string> = {};
-      if (brandId) params.brand_id = brandId;
-      const data = await api.get<CalendarItem[]>("/api/v1/calendar", params);
-      setItems(Array.isArray(data) ? data : []);
-    } catch {
-      setItems([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const fetchCalendar = useCallback(
+    async (brandId: string | null, signal?: AbortSignal) => {
+      setLoading(true);
+      try {
+        const params: Record<string, string> = {};
+        if (brandId) params.brand_id = brandId;
+        const data = await api.get<CalendarItem[]>("/api/v1/calendar", params, { signal });
+        setItems(Array.isArray(data) ? data : []);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setItems([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
-    fetchCalendar(brandFilter);
-  }, [fetchCalendar, brandFilter]);
+    if (!hydrated) return;
+    const controller = new AbortController();
+    fetchCalendar(brandFilter, controller.signal);
+    return () => controller.abort();
+  }, [fetchCalendar, brandFilter, hydrated]);
 
   useEffect(() => {
     setBrandFilter(getStoredBrandId());
+    setHydrated(true);
     const handler = (e: Event) => {
       const brandId = (e as CustomEvent).detail?.brandId;
       setBrandFilter(brandId || null);
