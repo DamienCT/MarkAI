@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { CalendarView } from "@/components/content/CalendarView";
 import { api } from "@/lib/api";
+import { getStoredBrandId } from "@/lib/brand-selection";
 import type { CalendarItem } from "@/types";
 
 export default function ContentCalendarPage() {
@@ -33,6 +34,7 @@ export default function ContentCalendarPage() {
   }, [fetchCalendar, brandFilter]);
 
   useEffect(() => {
+    setBrandFilter(getStoredBrandId());
     const handler = (e: Event) => {
       const brandId = (e as CustomEvent).detail?.brandId;
       setBrandFilter(brandId || null);

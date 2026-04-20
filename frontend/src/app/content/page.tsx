@@ -25,6 +25,7 @@ import {
 import { KanbanBoard } from "@/components/content/KanbanBoard";
 import { ContentCard } from "@/components/content/ContentCard";
 import { api } from "@/lib/api";
+import { getStoredBrandId } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
 import type { CalendarItem, Brand, Channel } from "@/types";
 import { ALL_CHANNELS, CHANNEL_DISPLAY_NAMES } from "@/types";
@@ -90,7 +91,7 @@ export default function ContentStudioPage() {
   }, []);
 
   useEffect(() => {
-    fetchItems();
+    fetchItems(getStoredBrandId());
     // Fetch brands for the dialog
     api.get<Brand[]>("/api/v1/brands").then((d) => setBrands(Array.isArray(d) ? d : [])).catch(() => {
       toast.error("Failed to load brands");
@@ -209,7 +210,7 @@ export default function ContentStudioPage() {
       );
       setDialogOpen(false);
       resetForm();
-      fetchItems();
+      fetchItems(getStoredBrandId());
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "Failed to create content";
       toast.error(detail);

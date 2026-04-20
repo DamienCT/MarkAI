@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { getStoredBrandValue } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
 import { formatRelativeTime } from "@/lib/utils";
 import {
@@ -324,6 +325,7 @@ export default function IntelligencePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setSelectedBrand(getStoredBrandValue());
     api.get<BrandOption[]>("/api/v1/brands").then(setBrands).catch(() => {});
 
     const handler = (e: Event) => {

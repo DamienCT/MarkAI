@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ChannelPreview } from "@/components/content/ChannelPreview";
 import { ApprovalActions } from "@/components/approval/ApprovalActions";
 import { api } from "@/lib/api";
+import { getStoredBrandValue } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
 import { formatRelativeTime, statusColor } from "@/lib/utils";
 import type { Approval, Brand } from "@/types";
@@ -32,6 +33,7 @@ export default function ApprovalsPage() {
   const [channelFilter, setChannelFilter] = useState<string>("all");
 
   useEffect(() => {
+    setBrandFilter(getStoredBrandValue());
     fetchApprovals();
     api.get<Brand[]>("/api/v1/brands").then(setBrands).catch(() => {});
 

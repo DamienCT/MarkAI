@@ -15,6 +15,7 @@ import {
 import { EngagementChart } from "@/components/analytics/EngagementChart";
 import { PostingHeatmap } from "@/components/analytics/PostingHeatmap";
 import { api } from "@/lib/api";
+import { getStoredBrandValue } from "@/lib/brand-selection";
 import type { Brand } from "@/types";
 
 interface AnalyticsSummary {
@@ -121,6 +122,7 @@ export default function AnalyticsPage() {
   }, [fetchAnalytics]);
 
   useEffect(() => {
+    setSelectedBrandId(getStoredBrandValue());
     const handler = (e: Event) => {
       const brandId = (e as CustomEvent).detail?.brandId;
       setSelectedBrandId(brandId || "all");

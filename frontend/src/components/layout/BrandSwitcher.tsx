@@ -10,12 +10,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { getStoredBrandValue, setStoredBrandValue } from "@/lib/brand-selection";
 import type { Brand } from "@/types";
 
 export function BrandSwitcher() {
   const [brands, setBrands] = useState<Brand[]>([]);
   const [selectedBrand, setSelectedBrand] = useState<string>("all");
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Hydrate after mount to avoid SSR/client mismatch — localStorage is client-only.
+    setSelectedBrand(getStoredBrandValue());
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -35,6 +41,7 @@ export function BrandSwitcher() {
 
   const handleChange = (value: string) => {
     setSelectedBrand(value);
+    setStoredBrandValue(value);
     if (typeof window !== "undefined") {
       window.dispatchEvent(
         new CustomEvent("brand-changed", { detail: { brandId: value === "all" ? null : value } })
