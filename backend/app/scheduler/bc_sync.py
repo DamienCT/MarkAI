@@ -7,7 +7,7 @@ from app.models.base import async_session_factory
 from app.models.brand import Brand
 from app.services import fabric_service
 from app.services.notification_service import notify_failure
-from app.services.product_service import upsert_from_bc
+from app.services.product_service import prune_brand_products_not_in, upsert_from_bc
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,7 @@ async def _sync_bc_products_impl() -> None:
                 )
 
             # ── Upsert each stock item ──
+            synced_item_nos: set[str] = set()
             for item in stock_items:
                 item_no = item.get("itemNo")
                 if not item_no:
@@ -163,7 +164,28 @@ async def _sync_bc_products_impl() -> None:
 
                 try:
                     await upsert_from_bc(db, item_no, product_data)
+                    synced_item_nos.add(item_no)
                 except Exception as e:
                     logger.warning("Failed to upsert product %s: %s", item_no, e)
+
+            # When the brand has any sync filter, drop products that no longer
+            # match it so the table mirrors the saved selection.
+            if sync_vendor_nos or sync_categories:
+                try:
+                    pruned = await prune_brand_products_not_in(
+                        db, brand.id, synced_item_nos
+                    )
+                    if pruned:
+                        logger.info(
+                            "Pruned %d filtered-out products for brand %s",
+                            pruned,
+                            brand.name,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to prune filtered-out products for brand %s: %s",
+                        brand.name,
+                        e,
+                    )
 
         logger.info("Business Central product sync completed")

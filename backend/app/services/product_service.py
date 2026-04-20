@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product import Product
@@ -104,6 +104,27 @@ async def upsert_from_bc(
         await db.commit()
         await db.refresh(product)
     return product
+
+
+async def prune_brand_products_not_in(
+    db: AsyncSession,
+    brand_id: uuid.UUID,
+    keep_bc_item_nos: set[str],
+) -> int:
+    """Delete products for a brand whose bc_item_no is not in *keep_bc_item_nos*.
+
+    Used after a filtered BC sync so the table reflects only the selected
+    vendors/categories — without this, previous unfiltered syncs leave
+    orphaned products behind. Returns the number of rows deleted.
+    """
+    stmt = delete(Product).where(Product.brand_id == brand_id)
+    if keep_bc_item_nos:
+        stmt = stmt.where(Product.bc_item_no.notin_(keep_bc_item_nos))
+    # Also restrict deletion to BC-sourced products (have a bc_item_no)
+    stmt = stmt.where(Product.bc_item_no.is_not(None))
+    result = await db.execute(stmt)
+    await db.commit()
+    return result.rowcount or 0
 
 
 async def batch_upsert_from_bc(

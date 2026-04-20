@@ -130,6 +130,7 @@ async def sync_brand_products(
         logger.warning("Failed to fetch vendors for brand %s: %s", brand.name, e)
 
     synced = 0
+    synced_item_nos: set[str] = set()
     for row in stock_rows:
         item_no = row.get("itemNo")
         if not item_no:
@@ -157,9 +158,21 @@ async def sync_brand_products(
         }
 
         await upsert_from_bc(db, item_no, product_data)
+        synced_item_nos.add(item_no)
         synced += 1
 
-    return {"message": f"Synced {synced} products for brand {brand.name}"}
+    # When the brand has any sync filter, prune products that fall outside it
+    # so previously-synced items from now-excluded vendors/categories disappear.
+    pruned = 0
+    if vendor_nos or categories:
+        pruned = await product_service.prune_brand_products_not_in(
+            db, brand.id, synced_item_nos
+        )
+
+    msg = f"Synced {synced} products for brand {brand.name}"
+    if pruned:
+        msg += f" (removed {pruned} no longer matching the filter)"
+    return {"message": msg}
 
 
 @router.get("/")
