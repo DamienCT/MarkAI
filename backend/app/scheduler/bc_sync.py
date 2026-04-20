@@ -108,18 +108,34 @@ async def _sync_bc_products_impl() -> None:
                     expiry_date_map.setdefault(ino, exp_row.get("expirationDate"))
                     lot_no_map.setdefault(ino, exp_row.get("lotNo", ""))
 
+            # ── Fetch vendors once to resolve vendorNo → vendor name ──
+            vendor_map: dict[str, str] = {}
+            try:
+                vendors = await fabric_service.get_vendors(brand.bc_company)
+                vendor_map = {
+                    v.get("no", ""): v.get("name", "")
+                    for v in vendors
+                    if v.get("no")
+                }
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch vendors for brand %s: %s", brand.name, e
+                )
+
             # ── Upsert each stock item ──
             for item in stock_items:
                 item_no = item.get("itemNo")
                 if not item_no:
                     continue
 
+                vendor_no = item.get("vendorNo", "")
                 product_data = {
                     "brand_id": brand.id,
                     "name": item.get("description", ""),
                     "description": item.get("description2", ""),
                     "category": item.get("itemCategoryCode", ""),
-                    "vendor_no": item.get("vendorNo", ""),
+                    "vendor_no": vendor_no,
+                    "vendor_name": vendor_map.get(vendor_no, ""),
                     "unit_price": item.get("unitPrice"),
                     "bc_company": brand.bc_company,
                     "bc_location": item.get("locationCode", ""),

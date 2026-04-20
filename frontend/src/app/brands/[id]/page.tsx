@@ -138,7 +138,8 @@ export default function BrandDetailPage() {
     stockLevel: string;
     newOnly: boolean;
     expiringOnly: boolean;
-  }>({ category: "", stockLevel: "all", newOnly: false, expiringOnly: false });
+    vendors: string[];
+  }>({ category: "", stockLevel: "all", newOnly: false, expiringOnly: false, vendors: [] });
   const [togglingProduct, setTogglingProduct] = useState<string | null>(null);
   const [expandedProductId, setExpandedProductId] = useState<string | null>(null);
   const [fetchingImages, setFetchingImages] = useState<string | null>(null);
@@ -596,6 +597,10 @@ export default function BrandDetailPage() {
     if (productFilter.category) {
       filtered = filtered.filter((p) => p.category === productFilter.category);
     }
+    if (productFilter.vendors.length > 0) {
+      const vendorSet = new Set(productFilter.vendors);
+      filtered = filtered.filter((p) => p.vendor_name && vendorSet.has(p.vendor_name));
+    }
     if (productFilter.stockLevel === "in-stock") {
       filtered = filtered.filter((p) => (p.remaining_qty ?? 0) > 10);
     } else if (productFilter.stockLevel === "low") {
@@ -628,6 +633,7 @@ export default function BrandDetailPage() {
   }, [getFilteredProducts, fetchProducts]);
 
   const productCategories = [...new Set(products.map((p) => p.category).filter(Boolean))] as string[];
+  const productVendors = [...new Set(products.map((p) => p.vendor_name).filter(Boolean))].sort() as string[];
 
   // Image gallery handlers
   const openGallery = useCallback(async (product: Product) => {
@@ -914,6 +920,7 @@ export default function BrandDetailPage() {
             galleryLoading={galleryLoading}
             selectedProductIds={selectedProductIds}
             productCategories={productCategories}
+            productVendors={productVendors}
             onSetActiveTab={setActiveTab}
             onSyncProducts={handleSyncProducts}
             onSetProductFilter={setProductFilter}

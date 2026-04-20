@@ -52,18 +52,29 @@ async def sync_brand_products(
 
     stock_rows = await fabric_service.get_active_stock(brand.bc_company, locations)
 
+    # Fetch vendors once to resolve vendorNo → vendor name.
+    # The BC stock query only returns vendorNo; vendor_name lives on the vendor table.
+    vendor_map: dict[str, str] = {}
+    try:
+        vendors = await fabric_service.get_vendors(brand.bc_company)
+        vendor_map = {v.get("no", ""): v.get("name", "") for v in vendors if v.get("no")}
+    except Exception as e:
+        logger.warning("Failed to fetch vendors for brand %s: %s", brand.name, e)
+
     synced = 0
     for row in stock_rows:
         item_no = row.get("itemNo")
         if not item_no:
             continue
 
+        vendor_no = row.get("vendorNo", "")
         product_data = {
             "brand_id": brand.id,
             "name": row.get("description", ""),
             "description": row.get("description2", ""),
             "category": row.get("itemCategoryCode", ""),
-            "vendor_no": row.get("vendorNo", ""),
+            "vendor_no": vendor_no,
+            "vendor_name": vendor_map.get(vendor_no, ""),
             "unit_price": row.get("unitPrice"),
             "bc_company": brand.bc_company,
             "bc_location": row.get("locationCode", ""),

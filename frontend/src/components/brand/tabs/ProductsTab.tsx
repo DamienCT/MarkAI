@@ -3,7 +3,7 @@
 import React from "react";
 import {
   ShoppingBag, RefreshCw, Loader2, Search, Upload, ImageIcon,
-  CheckCircle2, Trash2,
+  CheckCircle2, Trash2, ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,6 +12,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { formatRelativeTime } from "@/lib/utils";
 import { fileUrl } from "@/lib/api";
 import type { Brand, Product } from "@/types";
@@ -26,6 +30,7 @@ export interface ProductsTabProps {
     stockLevel: string;
     newOnly: boolean;
     expiringOnly: boolean;
+    vendors: string[];
   };
   togglingProduct: string | null;
   expandedProductId: string | null;
@@ -35,6 +40,7 @@ export interface ProductsTabProps {
   galleryLoading: boolean;
   selectedProductIds: Set<string>;
   productCategories: string[];
+  productVendors: string[];
   onSetActiveTab: (tab: string) => void;
   onSyncProducts: () => Promise<void>;
   onSetProductFilter: (updater: (prev: ProductsTabProps["productFilter"]) => ProductsTabProps["productFilter"]) => void;
@@ -68,6 +74,7 @@ export function ProductsTab({
   galleryLoading,
   selectedProductIds,
   productCategories,
+  productVendors,
   onSetActiveTab,
   onSyncProducts,
   onSetProductFilter,
@@ -149,6 +156,67 @@ export function ProductsTab({
                   <option key={cat} value={cat}>{cat}</option>
                 ))}
               </select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Vendor</Label>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-56 justify-between font-normal"
+                    disabled={productVendors.length === 0}
+                  >
+                    <span className="truncate">
+                      {productFilter.vendors.length === 0
+                        ? "All Vendors"
+                        : productFilter.vendors.length === 1
+                        ? productFilter.vendors[0]
+                        : `${productFilter.vendors.length} selected`}
+                    </span>
+                    <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-64 max-h-80 overflow-y-auto">
+                  <DropdownMenuLabel className="flex items-center justify-between">
+                    <span>Vendors</span>
+                    {productFilter.vendors.length > 0 && (
+                      <button
+                        type="button"
+                        className="text-xs font-normal text-muted-foreground hover:text-foreground"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          onSetProductFilter((prev) => ({ ...prev, vendors: [] }));
+                        }}
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {productVendors.length === 0 ? (
+                    <DropdownMenuItem disabled>No vendors</DropdownMenuItem>
+                  ) : (
+                    productVendors.map((vendor) => (
+                      <DropdownMenuCheckboxItem
+                        key={vendor}
+                        checked={productFilter.vendors.includes(vendor)}
+                        onSelect={(e) => e.preventDefault()}
+                        onCheckedChange={(checked) =>
+                          onSetProductFilter((prev) => ({
+                            ...prev,
+                            vendors: checked
+                              ? [...prev.vendors, vendor]
+                              : prev.vendors.filter((v) => v !== vendor),
+                          }))
+                        }
+                      >
+                        {vendor}
+                      </DropdownMenuCheckboxItem>
+                    ))
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Stock Level</Label>
