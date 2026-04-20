@@ -1,15 +1,23 @@
+import os as _os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.auth.models import User
 from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
+from app.models.calendar_item import CalendarItem
 from app.schemas.content import ContentCreate, ContentResponse, ContentUpdate
-from app.services import content_service
+from app.services import content_service, minio_service
 from app.services.content_service import InvalidStatusTransition
+
+_limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter()
 
@@ -118,6 +126,95 @@ async def regenerate_image(
     )
 
     return {"status": "queued", "message": "Image regeneration started"}
+
+
+# Statuses where the image is effectively locked — the content either went out
+# the door or errored out terminally. Uploading over it would rewrite history.
+_IMAGE_LOCKED_STATUSES = frozenset({"published", "failed"})
+
+
+@router.post("/{content_id}/upload-image", response_model=ContentResponse)
+@_limiter.limit("20/minute")
+async def upload_content_image(
+    request: Request,
+    content_id: uuid.UUID,
+    file: UploadFile,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Replace the AI-generated image with a user-uploaded one.
+
+    Blocked once the linked calendar item is published or failed — those are
+    terminal states where the image is treated as the canonical delivered asset.
+    """
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    content = await content_service.get_content(db, content_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    # Status lives on CalendarItem; block edits on terminal statuses.
+    cal_result = await db.execute(
+        select(CalendarItem).where(CalendarItem.id == content.calendar_item_id)
+    )
+    cal_item = cal_result.scalar_one_or_none()
+    if cal_item is None:
+        raise HTTPException(status_code=404, detail="Calendar item not found")
+    if cal_item.status in _IMAGE_LOCKED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot edit image for content in '{cal_item.status}' state",
+        )
+
+    # Validate content type — images only (SVG excluded to prevent stored XSS)
+    _allowed_types = {"image/png", "image/jpeg", "image/webp"}
+    if not file.content_type or file.content_type not in _allowed_types:
+        raise HTTPException(
+            status_code=400, detail="Only PNG, JPEG, and WebP images are allowed"
+        )
+
+    file_data = await file.read()
+
+    # Validate file size — max 5 MB
+    if len(file_data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size must be under 5MB")
+
+    # Validate magic bytes match declared content type
+    _magic_ok = False
+    if file_data[:4] == b"\x89PNG" and file.content_type == "image/png":
+        _magic_ok = True
+    elif file_data[:3] == b"\xff\xd8\xff" and file.content_type == "image/jpeg":
+        _magic_ok = True
+    elif (
+        file_data[:4] == b"RIFF"
+        and file_data[8:12] == b"WEBP"
+        and file.content_type == "image/webp"
+    ):
+        _magic_ok = True
+    if not _magic_ok:
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not match declared content type",
+        )
+
+    safe_filename = f"{uuid.uuid4().hex}{_os.path.splitext(file.filename or '.jpg')[1]}"
+    object_name = f"contents/{content_id}/{safe_filename}"
+    content_type = file.content_type or "image/jpeg"
+
+    await minio_service.upload_file(object_name, file_data, content_type)
+
+    # Render priority is branded_image → raw_image → generated_image_url, so
+    # writing to branded_image guarantees the upload wins regardless of what
+    # prior AI runs left in the other slots.
+    metadata = dict(content.generation_metadata) if content.generation_metadata else {}
+    metadata["branded_image"] = object_name
+    metadata["user_uploaded_image"] = object_name
+    content.generation_metadata = metadata
+    flag_modified(content, "generation_metadata")
+    await db.commit()
+    await db.refresh(content)
+    return content
 
 
 @router.post("/{content_id}/transition", response_model=ContentResponse)

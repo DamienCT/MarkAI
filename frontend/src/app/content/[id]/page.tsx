@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, CalendarClock } from "lucide-react";
+import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, CalendarClock, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -41,6 +41,8 @@ export default function ContentDetailPage() {
   const [submittingApproval, setSubmittingApproval] = useState(false);
   const [imagePrompt, setImagePrompt] = useState("");
   const [regeneratingImage, setRegeneratingImage] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const imageUploadInputRef = useRef<HTMLInputElement>(null);
   const [imageCacheBust, setImageCacheBust] = useState("");
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduleTime, setScheduleTime] = useState("09:00");
@@ -143,6 +145,32 @@ export default function ContentDetailPage() {
       setRegeneratingImage(false);
     }
   }, [content, imagePrompt]);
+
+  const handleUploadImage = useCallback(async (file: File) => {
+    if (!content) return;
+    const allowed = ["image/png", "image/jpeg", "image/webp"];
+    if (!allowed.includes(file.type)) {
+      toast.error("Only PNG, JPEG, or WebP images are allowed");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("File size must be under 5MB");
+      return;
+    }
+    setUploadingImage(true);
+    try {
+      const updated = await api.uploadFile<Content>(`/api/v1/content/${content.id}/upload-image`, file);
+      setContent(updated);
+      setImageCacheBust(`_cb=${Date.now()}`);
+      toast.success("Image uploaded");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to upload image";
+      toast.error(detail);
+    } finally {
+      setUploadingImage(false);
+      if (imageUploadInputRef.current) imageUploadInputRef.current.value = "";
+    }
+  }, [content]);
 
   const handleApproval = useCallback(async (action: "approved" | "rejected") => {
     const pendingApproval = approvals.find(a => a.status === "pending");
@@ -439,36 +467,72 @@ export default function ContentDetailPage() {
               )}
 
               {/* Image regeneration */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Image</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {content.generation_metadata?.raw_image || content.generation_metadata?.generated_image_url ? (
-                    <p className="text-xs text-green-600">Image generated</p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">No image generated yet</p>
-                  )}
-                  <div className="space-y-2">
-                    <Textarea
-                      placeholder="Custom image prompt (optional — leave blank to auto-generate from content)..."
-                      value={imagePrompt}
-                      onChange={(e) => setImagePrompt(e.target.value)}
-                      rows={2}
-                      className="text-xs"
-                    />
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={regeneratingImage}
-                      onClick={handleRegenerateImage}
-                      className="w-full"
-                    >
-                      {regeneratingImage ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Generating...</> : "Regenerate Image"}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+              {(() => {
+                const imageLocked = !!calendarItem && ["published", "failed"].includes(calendarItem.status);
+                return (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base">Image</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {content.generation_metadata?.user_uploaded_image ? (
+                        <p className="text-xs text-green-600">Custom image uploaded</p>
+                      ) : content.generation_metadata?.raw_image || content.generation_metadata?.generated_image_url ? (
+                        <p className="text-xs text-green-600">Image generated</p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">No image generated yet</p>
+                      )}
+                      {imageLocked ? (
+                        <p className="text-xs text-muted-foreground">
+                          Image editing is disabled for {calendarItem?.status} content.
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          <Textarea
+                            placeholder="Custom image prompt (optional — leave blank to auto-generate from content)..."
+                            value={imagePrompt}
+                            onChange={(e) => setImagePrompt(e.target.value)}
+                            rows={2}
+                            className="text-xs"
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={regeneratingImage || uploadingImage}
+                            onClick={handleRegenerateImage}
+                            className="w-full"
+                          >
+                            {regeneratingImage ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Generating...</> : "Regenerate Image"}
+                          </Button>
+                          <input
+                            ref={imageUploadInputRef}
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) handleUploadImage(f);
+                            }}
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={regeneratingImage || uploadingImage}
+                            onClick={() => imageUploadInputRef.current?.click()}
+                            className="w-full"
+                          >
+                            {uploadingImage ? (
+                              <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Uploading...</>
+                            ) : (
+                              <><Upload className="mr-1.5 h-3 w-3" /> Upload Custom Image</>
+                            )}
+                          </Button>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })()}
 
               {/* Content details */}
               <Card>
