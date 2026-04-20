@@ -104,6 +104,42 @@ SUBSCRIPTIONS = [
 _consumer: NATSConsumer | None = None
 
 
+async def _release_stuck_calendar_item(
+    agent_type: str, payload: dict[str, Any], reason: str
+) -> None:
+    """Move a calendar_item out of 'working' when its content workflow fails.
+
+    Without this, an item set to 'working' by content/nodes.py stays stuck
+    forever if the graph dies (timeout, exception, internal failure) and
+    blocks the UI from showing it correctly.
+    """
+    if agent_type != "content":
+        return
+    calendar_item_id = payload.get("calendar_item_id")
+    if not calendar_item_id:
+        return
+    try:
+        await execute_update(
+            "UPDATE calendar_items "
+            "SET status = 'failed', "
+            "    generation_metadata = COALESCE(generation_metadata, '{}'::jsonb) "
+            "        || jsonb_build_object('last_error', :reason) "
+            "WHERE id = :id AND status = 'working'",
+            {"id": calendar_item_id, "reason": reason},
+        )
+        logger.info(
+            "Released stuck calendar_item %s (status=working → failed): %s",
+            calendar_item_id,
+            reason,
+        )
+    except Exception as rel_exc:
+        logger.warning(
+            "Failed to release stuck calendar_item %s: %s",
+            calendar_item_id,
+            rel_exc,
+        )
+
+
 async def _replace_product_in_image(
     image_data: bytes, product_image_url: str, product_name: str
 ) -> bytes:
@@ -839,6 +875,11 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 agent_type,
                 brand_id,
             )
+            await _release_stuck_calendar_item(
+                agent_type,
+                payload,
+                (safe_result or {}).get("error", "workflow reported failed"),
+            )
             return
 
         # Track chain depth (used by sequential chaining and pipeline chaining)
@@ -1080,6 +1121,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 status="failed",
                 error_message=f"Timed out after {WORKFLOW_TIMEOUT}s",
             )
+        await _release_stuck_calendar_item(agent_type, payload, "timeout")
         await msg.nak(delay=60)
 
     except GraphInterrupt as gi:
@@ -1100,6 +1142,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         logger.exception("Workflow %s failed for brand %s", agent_type, brand_id)
         if run_id:
             await complete_agent_run(run_id, status="failed", error_message=str(exc))
+        await _release_stuck_calendar_item(agent_type, payload, str(exc)[:200])
         await msg.ack()  # Don't retry indefinitely on code errors
 
 

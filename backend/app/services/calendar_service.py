@@ -26,12 +26,16 @@ async def list_calendar_items(
     skip: int = 0,
     limit: int = 1000,
 ) -> Sequence[CalendarItem]:
+    # Order by updated_at DESC so the 1000-item cap returns the most recently
+    # active items (recently published, in-flight workflows, just-queued) instead
+    # of the oldest 1000 items by scheduled_at — which can hide all current work
+    # for brands with large historical backlogs.
     stmt = (
         select(CalendarItem)
         .options(selectinload(CalendarItem.brand))
         .offset(skip)
         .limit(limit)
-        .order_by(CalendarItem.scheduled_at.asc())
+        .order_by(CalendarItem.updated_at.desc())
     )
     if brand_id is not None:
         stmt = stmt.where(CalendarItem.brand_id == brand_id)

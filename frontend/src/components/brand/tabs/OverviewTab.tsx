@@ -406,6 +406,10 @@ export function OverviewTab({
                   </div>
                   {(() => {
                     const isGenerating = !!contentRunning || (contentItemsQueued > 0 && contentCompleted < contentItemsQueued);
+                    // Denominator: prefer the just-queued count (fresh from Generate Content),
+                    // otherwise derive from DB-backed stats so reloads don't show "X of 0".
+                    const statsTotal = contentCompleted + contentStats.in_progress + contentFailed;
+                    const totalItems = contentItemsQueued > 0 ? contentItemsQueued : statsTotal;
                     return (
                       <div className="flex items-center gap-3">
                         <div className={`flex items-center justify-center h-10 w-10 rounded-full border-2 transition-colors ${
@@ -423,7 +427,7 @@ export function OverviewTab({
                                 <span>Generating content...</span>
                               </p>
                               <p className="text-xs text-muted-foreground mt-0.5">
-                                {contentCompleted} of {contentItemsQueued} items completed{contentFailed > 0 ? ` · ${contentFailed} failed` : ""}
+                                {contentCompleted} of {totalItems} items completed{contentFailed > 0 ? ` · ${contentFailed} failed` : ""}
                               </p>
                             </div>
                           ) : contentTotal === 0 && contentItemsQueued === 0 ? (
