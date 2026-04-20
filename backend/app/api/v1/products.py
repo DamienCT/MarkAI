@@ -35,7 +35,7 @@ async def get_sync_options(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return the vendors and item categories available for a brand's BC company."""
+    """Return BC vendors + item categories plus the brand's saved sync filters."""
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -63,7 +63,12 @@ async def get_sync_options(
         for c in categories_raw
         if c.get("code")
     ]
-    return {"vendors": vendors, "categories": categories}
+    return {
+        "vendors": vendors,
+        "categories": categories,
+        "selected_vendor_nos": list(brand.bc_sync_vendor_nos or []),
+        "selected_categories": list(brand.bc_sync_categories or []),
+    }
 
 
 @router.post("/sync/{brand_id}", status_code=status.HTTP_202_ACCEPTED)
@@ -99,6 +104,14 @@ async def sync_brand_products(
 
     vendor_nos = filters.vendor_nos if filters else None
     categories = filters.categories if filters else None
+
+    # Persist the chosen filters on the brand so scheduled syncs use them too.
+    brand.bc_sync_vendor_nos = list(vendor_nos or [])
+    brand.bc_sync_categories = list(categories or [])
+    flag_modified(brand, "bc_sync_vendor_nos")
+    flag_modified(brand, "bc_sync_categories")
+    await db.commit()
+    await db.refresh(brand)
 
     stock_rows = await fabric_service.get_active_stock(
         brand.bc_company,

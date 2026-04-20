@@ -54,11 +54,35 @@ def _setup_telemetry(app: FastAPI) -> None:
     FastAPIInstrumentor.instrument_app(app)
 
 
+async def _ensure_brand_sync_filter_columns() -> None:
+    """Idempotently add bc_sync_vendor_nos / bc_sync_categories columns to brands.
+
+    Used because this project doesn't currently ship Alembic migrations; new
+    JSONB columns need to appear on existing databases without manual DDL.
+    """
+    from sqlalchemy import text
+    from app.models.base import engine
+
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "ALTER TABLE brands ADD COLUMN IF NOT EXISTS bc_sync_vendor_nos JSONB DEFAULT '[]'::jsonb NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE brands ADD COLUMN IF NOT EXISTS bc_sync_categories JSONB DEFAULT '[]'::jsonb NOT NULL"
+        ))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     # Startup
     logger.info("MARKAI backend starting up (env=%s)", settings.MARKAI_ENV)
+
+    # Ensure schema additions exist (no-op when columns already present)
+    try:
+        await _ensure_brand_sync_filter_columns()
+    except Exception as e:
+        logger.error("Failed to ensure brand sync filter columns: %s", e)
 
     # Setup APScheduler — must happen in async context so the scheduler
     # binds to uvicorn's event loop (not a detached one).

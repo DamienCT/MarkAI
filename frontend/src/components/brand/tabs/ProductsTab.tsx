@@ -25,6 +25,8 @@ type SyncOption = { value: string; label: string };
 type SyncOptionsResponse = {
   vendors: { no: string; name: string }[];
   categories: { code: string; description: string }[];
+  selected_vendor_nos?: string[];
+  selected_categories?: string[];
 };
 
 const PAGE_SIZE = 50;
@@ -145,6 +147,10 @@ export function ProductsTab({
           label: c.description ? `${c.code} — ${c.description}` : c.code,
         }))
       );
+      // Pre-select the brand's previously saved filters so the user can see
+      // and adjust them rather than starting from a blank list every time.
+      setSelectedVendors(new Set(data.selected_vendor_nos || []));
+      setSelectedCategories(new Set(data.selected_categories || []));
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "Failed to load sync options";
       toast.error(detail);

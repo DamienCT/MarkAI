@@ -73,6 +73,9 @@ class Brand(Base):
     is_bc_linked: Mapped[bool] = mapped_column(Boolean, default=False)
     bc_company: Mapped[str | None] = mapped_column(String(255), nullable=True)
     bc_locations: Mapped[list] = mapped_column(JSONB, default=list)
+    # Filters applied to BC sync (manual + scheduled). Empty list = no filter.
+    bc_sync_vendor_nos: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    bc_sync_categories: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )

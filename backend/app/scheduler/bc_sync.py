@@ -52,9 +52,17 @@ async def _sync_bc_products_impl() -> None:
                 continue
 
             # ── Fetch active stock (company + locations, blocked=0, qty>0) ──
+            # Apply persisted vendor/category filters when present so the
+            # scheduler doesn't re-add products the user explicitly excluded
+            # via the Sync Products dialog. Empty list = no filter.
+            sync_vendor_nos = list(brand.bc_sync_vendor_nos or []) or None
+            sync_categories = list(brand.bc_sync_categories or []) or None
             try:
                 stock_items = await fabric_service.get_active_stock(
-                    brand.bc_company, locations
+                    brand.bc_company,
+                    locations,
+                    vendor_nos=sync_vendor_nos,
+                    categories=sync_categories,
                 )
             except Exception as e:
                 logger.error(

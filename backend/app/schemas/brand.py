@@ -22,6 +22,8 @@ class BrandBase(BaseModel):
     is_bc_linked: bool = False
     bc_company: str | None = None
     bc_locations: list[str] = []
+    bc_sync_vendor_nos: list[str] = []
+    bc_sync_categories: list[str] = []
 
 
 class BrandCreate(BrandBase):
@@ -44,6 +46,8 @@ class BrandUpdate(BaseModel):
     is_bc_linked: bool | None = None
     bc_company: str | None = None
     bc_locations: list[str] | None = None
+    bc_sync_vendor_nos: list[str] | None = None
+    bc_sync_categories: list[str] | None = None
 
 
 class ChannelConfigUpdate(BaseModel):
