@@ -181,15 +181,32 @@ async def get_items(
     return await execute_sql(query, tuple(params))
 
 
-async def get_active_stock(company: str, locations: list[str]) -> list[dict[str, Any]]:
+async def get_active_stock(
+    company: str,
+    locations: list[str],
+    vendor_nos: list[str] | None = None,
+    categories: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """
     Get items with remaining stock > 0 at the specified locations,
-    excluding blocked items.
+    excluding blocked items. Optionally filtered by vendorNo and/or
+    itemCategoryCode (None or empty = no filter on that dimension).
     """
     items_table = _safe_table_name(settings.BC_TABLE_ITEMS)
     ledger_table = _safe_table_name(settings.BC_TABLE_ITEM_LEDGER_ENTRIES)
 
     loc_placeholders = ",".join(["?"] * len(locations))
+
+    extra_where = ""
+    extra_params: list[str] = []
+    if vendor_nos:
+        vendor_placeholders = ",".join(["?"] * len(vendor_nos))
+        extra_where += f" AND i.vendorNo IN ({vendor_placeholders})"
+        extra_params.extend(vendor_nos)
+    if categories:
+        cat_placeholders = ",".join(["?"] * len(categories))
+        extra_where += f" AND i.itemCategoryCode IN ({cat_placeholders})"
+        extra_params.extend(categories)
 
     query = f"""
         SELECT
@@ -209,7 +226,7 @@ async def get_active_stock(company: str, locations: list[str]) -> list[dict[str,
             ON ile.itemNo = i.no AND ile.Company = i.Company
         WHERE ile.Company = ?
             AND ile.locationCode IN ({loc_placeholders})
-            AND i.blocked = 0
+            AND i.blocked = 0{extra_where}
         GROUP BY
             ile.itemNo, ile.locationCode,
             i.description, i.description2, i.vendorNo,
@@ -218,7 +235,7 @@ async def get_active_stock(company: str, locations: list[str]) -> list[dict[str,
         HAVING SUM(ile.remainingQuantity) > 0
         ORDER BY ile.itemNo
     """
-    params = (company, *locations)
+    params = (company, *locations, *extra_params)
     return await execute_sql(query, params)
 
 

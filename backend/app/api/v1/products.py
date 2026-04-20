@@ -24,13 +24,60 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/sync/{brand_id}", status_code=status.HTTP_202_ACCEPTED)
-async def sync_brand_products(
+class SyncFiltersRequest(BaseModel):
+    vendor_nos: list[str] | None = None
+    categories: list[str] | None = None
+
+
+@router.get("/sync/{brand_id}/options")
+async def get_sync_options(
     brand_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Sync products for a specific brand using its BC company + locations."""
+    """Return the vendors and item categories available for a brand's BC company."""
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    brand = await get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    if not brand.bc_company:
+        raise HTTPException(
+            status_code=400, detail="Brand is not linked to a BC company"
+        )
+
+    vendors_raw = await fabric_service.get_vendors(brand.bc_company)
+    categories_raw = await fabric_service.get_item_categories(brand.bc_company)
+
+    vendors = [
+        {"no": v.get("no", ""), "name": v.get("name", "") or v.get("no", "")}
+        for v in vendors_raw
+        if v.get("no")
+    ]
+    categories = [
+        {
+            "code": c.get("code", ""),
+            "description": c.get("description", "") or c.get("code", ""),
+        }
+        for c in categories_raw
+        if c.get("code")
+    ]
+    return {"vendors": vendors, "categories": categories}
+
+
+@router.post("/sync/{brand_id}", status_code=status.HTTP_202_ACCEPTED)
+async def sync_brand_products(
+    brand_id: uuid.UUID,
+    filters: SyncFiltersRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sync products for a specific brand using its BC company + locations.
+
+    Optional body filters narrow the BC fetch to specific vendors and/or
+    item categories. None or empty list = no filter on that dimension.
+    """
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -50,7 +97,15 @@ async def sync_brand_products(
             detail="Brand has no BC stock locations configured",
         )
 
-    stock_rows = await fabric_service.get_active_stock(brand.bc_company, locations)
+    vendor_nos = filters.vendor_nos if filters else None
+    categories = filters.categories if filters else None
+
+    stock_rows = await fabric_service.get_active_stock(
+        brand.bc_company,
+        locations,
+        vendor_nos=vendor_nos,
+        categories=categories,
+    )
 
     # Fetch vendors once to resolve vendorNo → vendor name.
     # The BC stock query only returns vendorNo; vendor_name lives on the vendor table.
@@ -105,7 +160,7 @@ async def list_products(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    limit = min(limit, 200)
+    limit = min(limit, 10000)
     products = await product_service.list_products(
         db,
         brand_id=brand_id,

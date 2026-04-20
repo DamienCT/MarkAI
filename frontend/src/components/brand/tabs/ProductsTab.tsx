@@ -1,9 +1,10 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   ShoppingBag, RefreshCw, Loader2, Search, Upload, ImageIcon,
-  CheckCircle2, Trash2, ChevronDown,
+  CheckCircle2, Trash2, ChevronDown, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,8 +18,16 @@ import {
   DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { formatRelativeTime } from "@/lib/utils";
-import { fileUrl } from "@/lib/api";
+import { api, fileUrl } from "@/lib/api";
 import type { Brand, Product } from "@/types";
+
+type SyncOption = { value: string; label: string };
+type SyncOptionsResponse = {
+  vendors: { no: string; name: string }[];
+  categories: { code: string; description: string }[];
+};
+
+const PAGE_SIZE = 50;
 
 export interface ProductsTabProps {
   brand: Brand;
@@ -42,7 +51,7 @@ export interface ProductsTabProps {
   productCategories: string[];
   productVendors: string[];
   onSetActiveTab: (tab: string) => void;
-  onSyncProducts: () => Promise<void>;
+  onSyncProducts: (vendorNos?: string[] | null, categories?: string[] | null) => Promise<void>;
   onSetProductFilter: (updater: (prev: ProductsTabProps["productFilter"]) => ProductsTabProps["productFilter"]) => void;
   onToggleProductActive: (productId: string, isActive: boolean) => Promise<void>;
   onBulkProductActive: (isActive: boolean) => Promise<void>;
@@ -93,6 +102,127 @@ export function ProductsTab({
   onSearchWebImages,
   getFilteredProducts,
 }: ProductsTabProps) {
+  // Pagination state — applied after filtering
+  const [page, setPage] = useState(1);
+  const filteredProducts = getFilteredProducts();
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
+  // Reset to page 1 when filters / dataset reduce the list below current page
+  useEffect(() => {
+    if (page > totalPages) setPage(1);
+  }, [page, totalPages]);
+  const pagedProducts = useMemo(
+    () => filteredProducts.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [filteredProducts, page]
+  );
+
+  // Sync dialog state
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+  const [syncOptionsLoading, setSyncOptionsLoading] = useState(false);
+  const [vendorOptions, setVendorOptions] = useState<SyncOption[]>([]);
+  const [categoryOptions, setCategoryOptions] = useState<SyncOption[]>([]);
+  const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  const [vendorSearch, setVendorSearch] = useState("");
+  const [categorySearch, setCategorySearch] = useState("");
+
+  const openSyncDialog = async () => {
+    setSyncDialogOpen(true);
+    setSelectedVendors(new Set());
+    setSelectedCategories(new Set());
+    setVendorSearch("");
+    setCategorySearch("");
+    setSyncOptionsLoading(true);
+    try {
+      const data = await api.get<SyncOptionsResponse>(
+        `/api/v1/products/sync/${brand.id}/options`
+      );
+      setVendorOptions(
+        (data.vendors || []).map((v) => ({ value: v.no, label: v.name || v.no }))
+      );
+      setCategoryOptions(
+        (data.categories || []).map((c) => ({
+          value: c.code,
+          label: c.description ? `${c.code} — ${c.description}` : c.code,
+        }))
+      );
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to load sync options";
+      toast.error(detail);
+      setSyncDialogOpen(false);
+    } finally {
+      setSyncOptionsLoading(false);
+    }
+  };
+
+  const filteredVendorOptions = useMemo(() => {
+    const q = vendorSearch.trim().toLowerCase();
+    if (!q) return vendorOptions;
+    return vendorOptions.filter(
+      (o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q)
+    );
+  }, [vendorOptions, vendorSearch]);
+
+  const filteredCategoryOptions = useMemo(() => {
+    const q = categorySearch.trim().toLowerCase();
+    if (!q) return categoryOptions;
+    return categoryOptions.filter(
+      (o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q)
+    );
+  }, [categoryOptions, categorySearch]);
+
+  const allVendorsSelected =
+    filteredVendorOptions.length > 0 &&
+    filteredVendorOptions.every((o) => selectedVendors.has(o.value));
+  const allCategoriesSelected =
+    filteredCategoryOptions.length > 0 &&
+    filteredCategoryOptions.every((o) => selectedCategories.has(o.value));
+
+  const toggleVendor = (value: string) => {
+    setSelectedVendors((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value); else next.add(value);
+      return next;
+    });
+  };
+  const toggleCategory = (value: string) => {
+    setSelectedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value); else next.add(value);
+      return next;
+    });
+  };
+
+  const toggleAllVendors = () => {
+    setSelectedVendors((prev) => {
+      const next = new Set(prev);
+      if (allVendorsSelected) {
+        filteredVendorOptions.forEach((o) => next.delete(o.value));
+      } else {
+        filteredVendorOptions.forEach((o) => next.add(o.value));
+      }
+      return next;
+    });
+  };
+  const toggleAllCategories = () => {
+    setSelectedCategories((prev) => {
+      const next = new Set(prev);
+      if (allCategoriesSelected) {
+        filteredCategoryOptions.forEach((o) => next.delete(o.value));
+      } else {
+        filteredCategoryOptions.forEach((o) => next.add(o.value));
+      }
+      return next;
+    });
+  };
+
+  const handleConfirmSync = async () => {
+    setSyncDialogOpen(false);
+    await onSyncProducts(
+      selectedVendors.size > 0 ? Array.from(selectedVendors) : null,
+      selectedCategories.size > 0 ? Array.from(selectedCategories) : null,
+    );
+  };
+
   if (!brand?.bc_company) {
     return (
       <div className="mt-6 space-y-6">
@@ -129,7 +259,7 @@ export function ProductsTab({
         <Button
           size="sm"
           disabled={syncingProducts}
-          onClick={onSyncProducts}
+          onClick={openSyncDialog}
         >
           {syncingProducts ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -293,10 +423,10 @@ export function ProductsTab({
                   <tr className="border-b bg-muted/50">
                     <th className="px-2 py-3 text-center w-8">
                       <input type="checkbox" className="rounded-sm border-muted-foreground/40"
-                        checked={selectedProductIds.size > 0 && selectedProductIds.size === getFilteredProducts().length}
+                        checked={selectedProductIds.size > 0 && selectedProductIds.size === filteredProducts.length}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            onSetSelectedProductIds(new Set(getFilteredProducts().map((p) => p.id)));
+                            onSetSelectedProductIds(new Set(filteredProducts.map((p) => p.id)));
                           } else {
                             onSetSelectedProductIds(new Set());
                           }
@@ -312,7 +442,7 @@ export function ProductsTab({
                   </tr>
                 </thead>
                 <tbody>
-                  {getFilteredProducts().length === 0 ? (
+                  {filteredProducts.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
                         {products.length === 0
@@ -321,7 +451,7 @@ export function ProductsTab({
                       </td>
                     </tr>
                   ) : (
-                    getFilteredProducts().map((product) => (
+                    pagedProducts.map((product) => (
                       <React.Fragment key={product.id}>
                         <tr className="border-b hover:bg-muted/30">
                           <td className="px-2 py-3 text-center w-8" onClick={(e) => e.stopPropagation()}>
@@ -475,9 +605,161 @@ export function ProductsTab({
                 </tbody>
               </table>
             </div>
+            {filteredProducts.length > PAGE_SIZE && (
+              <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
+                <span className="text-muted-foreground">
+                  Showing {(page - 1) * PAGE_SIZE + 1}–
+                  {Math.min(page * PAGE_SIZE, filteredProducts.length)} of {filteredProducts.length}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="px-2">Page {page} / {totalPages}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
+
+      {/* Sync Filter Dialog */}
+      <Dialog open={syncDialogOpen} onOpenChange={(open) => { if (!open) setSyncDialogOpen(false); }}>
+        <DialogContent className="max-w-3xl">
+          <DialogTitle className="flex items-center gap-2">
+            <RefreshCw className="h-5 w-5" />
+            Sync Products from Business Central
+          </DialogTitle>
+          <DialogDescription>
+            Select vendors and categories to sync. Leave a list empty to include all of that type.
+          </DialogDescription>
+
+          {syncOptionsLoading ? (
+            <div className="space-y-2 py-6">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-40 w-full" />
+              <Skeleton className="h-40 w-full" />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Vendors */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">
+                    Vendors ({selectedVendors.size}/{vendorOptions.length})
+                  </Label>
+                  <button
+                    type="button"
+                    className="text-xs text-primary hover:underline"
+                    onClick={toggleAllVendors}
+                  >
+                    {allVendorsSelected ? "Clear All" : "Select All"}
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={vendorSearch}
+                  onChange={(e) => setVendorSearch(e.target.value)}
+                  placeholder="Search vendors..."
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                />
+                <div className="h-72 overflow-y-auto rounded-md border bg-background p-2">
+                  {filteredVendorOptions.length === 0 ? (
+                    <p className="text-xs text-muted-foreground p-2">No vendors</p>
+                  ) : (
+                    filteredVendorOptions.map((opt) => (
+                      <label
+                        key={opt.value}
+                        className="flex items-start gap-2 px-2 py-1.5 text-sm hover:bg-muted/50 rounded-sm cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 rounded-sm"
+                          checked={selectedVendors.has(opt.value)}
+                          onChange={() => toggleVendor(opt.value)}
+                        />
+                        <span className="flex-1 truncate" title={opt.label}>{opt.label}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Categories */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">
+                    Categories ({selectedCategories.size}/{categoryOptions.length})
+                  </Label>
+                  <button
+                    type="button"
+                    className="text-xs text-primary hover:underline"
+                    onClick={toggleAllCategories}
+                  >
+                    {allCategoriesSelected ? "Clear All" : "Select All"}
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={categorySearch}
+                  onChange={(e) => setCategorySearch(e.target.value)}
+                  placeholder="Search categories..."
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                />
+                <div className="h-72 overflow-y-auto rounded-md border bg-background p-2">
+                  {filteredCategoryOptions.length === 0 ? (
+                    <p className="text-xs text-muted-foreground p-2">No categories</p>
+                  ) : (
+                    filteredCategoryOptions.map((opt) => (
+                      <label
+                        key={opt.value}
+                        className="flex items-start gap-2 px-2 py-1.5 text-sm hover:bg-muted/50 rounded-sm cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 rounded-sm"
+                          checked={selectedCategories.has(opt.value)}
+                          onChange={() => toggleCategory(opt.value)}
+                        />
+                        <span className="flex-1 truncate" title={opt.label}>{opt.label}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setSyncDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={syncOptionsLoading}
+              onClick={handleConfirmSync}
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              {selectedVendors.size === 0 && selectedCategories.size === 0
+                ? "Sync All"
+                : "Sync Selected"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Product Image Gallery Dialog */}
       <Dialog open={!!galleryProduct} onOpenChange={(open) => { if (!open) onSetGalleryProduct(null); }}>

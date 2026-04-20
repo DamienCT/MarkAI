@@ -198,7 +198,7 @@ export default function BrandDetailPage() {
     }
     fetchData();
     // Also fetch products for onboarding progress calculation
-    api.get<Product[]>("/api/v1/products", { brand_id: brandId }, { signal })
+    api.get<Product[]>("/api/v1/products", { brand_id: brandId, limit: 10000 }, { signal })
       .then((data) => { setProducts(data); setProductsLoaded(true); })
       .catch(() => { setProductsLoaded(true); });
     // Fetch pipeline runs for Overview tab (latest per agent_type — not drowned by content runs)
@@ -556,7 +556,7 @@ export default function BrandDetailPage() {
     if (!brandId) return;
     setLoadingProducts(true);
     try {
-      const data = await api.get<Product[]>(`/api/v1/products`, { brand_id: brandId });
+      const data = await api.get<Product[]>(`/api/v1/products`, { brand_id: brandId, limit: 10000 });
       setProducts(data);
     } catch {
       // Products data is optional
@@ -565,10 +565,20 @@ export default function BrandDetailPage() {
     }
   }, [brandId]);
 
-  const handleSyncProducts = useCallback(async () => {
+  const handleSyncProducts = useCallback(async (
+    vendorNos?: string[] | null,
+    categories?: string[] | null,
+  ) => {
     setSyncingProducts(true);
     try {
-      const result = await api.post<{ message: string }>(`/api/v1/products/sync/${brandId}`);
+      const body = {
+        vendor_nos: vendorNos && vendorNos.length > 0 ? vendorNos : null,
+        categories: categories && categories.length > 0 ? categories : null,
+      };
+      const result = await api.post<{ message: string }>(
+        `/api/v1/products/sync/${brandId}`,
+        body,
+      );
       toast.success(result.message || "Products synced successfully");
       await fetchProducts();
     } catch (err: unknown) {
