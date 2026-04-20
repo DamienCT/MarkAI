@@ -25,7 +25,7 @@ router = APIRouter()
 KNOWN_BUCKETS = {"content-images", "brand-assets", "markai-assets", "products"}
 
 # Path prefixes that live inside the default bucket (not separate buckets)
-_DEFAULT_BUCKET_PREFIXES = {"products", "brands", "screenshots"}
+_DEFAULT_BUCKET_PREFIXES = {"products", "brands", "screenshots", "contents"}
 
 # Image extensions that support resizing
 _RESIZABLE_EXTS = {"png", "jpg", "jpeg", "webp"}
