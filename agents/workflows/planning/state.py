@@ -18,6 +18,7 @@ class PlanningState(TypedDict, total=False):
 
     # Loaded data
     strategy: dict[str, Any]
+    events: list[dict[str, Any]]  # Significant dates (holidays, awareness weeks, etc.) over next 12 months
     existing_items: list[dict[str, Any]]  # Recent calendar items for deduplication
 
     # Generated

@@ -14,6 +14,7 @@ from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
     get_brand,
     get_brand_config,
+    get_events_for_research,
     get_latest_strategy,
     get_products,
     get_recent_calendar_items,
@@ -105,6 +106,22 @@ class CalendarItemValidator(BaseModel):
     model_config = {"extra": "allow"}
 
 
+def _format_events_for_prompt(events: list[dict[str, Any]]) -> str:
+    """Render the events list as a compact markdown bullet list for LLM prompts."""
+    if not events:
+        return "(no significant events registered — use only universally-known dates)"
+    lines = []
+    for ev in events:
+        start = ev.get("start", "")
+        end = ev.get("end")
+        title = ev.get("title", "")
+        category = ev.get("category") or "event"
+        scope = ev.get("scope", "global")
+        date_str = f"{start} → {end}" if end else start
+        lines.append(f"- {date_str}: {title} ({category}, {scope})")
+    return "\n".join(lines)
+
+
 async def load_strategy(state: PlanningState) -> dict[str, Any]:
     """Load the latest approved strategy and enabled channels from the database."""
     brand_id = state["brand_id"]
@@ -150,10 +167,20 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
         )
         existing_items = []
 
+    # Load significant events (global + brand-scoped) so downstream nodes can
+    # anchor the strategy document and calendar items to real dates.
+    try:
+        events = await get_events_for_research(brand_id, months_ahead=12)
+    except Exception as exc:
+        logger.warning("Failed to load events for brand %s: %s", brand_id, exc)
+        events = []
+    logger.info("Loaded %d events for planning brand %s", len(events), brand_id)
+
     return {
         "strategy": strategy_data,
         "enabled_channels": enabled_channels,
         "existing_items": existing_items,
+        "events": events,
     }
 
 
@@ -177,6 +204,8 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     strategy = state.get("strategy", {})
     scope_weeks = state.get("scope_weeks", 4)
     enabled_channels = state.get("enabled_channels", ["instagram"])
+    events = state.get("events", [])
+    events_block = _format_events_for_prompt(events)
     start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime(
         "%Y-%m-%d"
@@ -226,6 +255,8 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
             "role": "user",
             "content": (
                 f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}\n\n"
+                f"Significant Events Calendar (anchor campaigns to these dates where relevant):\n"
+                f"{events_block}\n\n"
                 f"Available Products:\n{product_summary}"
             ),
         },
@@ -262,6 +293,13 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
                 "- Content pillar rotation schedule\n"
                 "- Content mix ratios per platform\n"
                 "- Strategic rationale for content sequencing\n\n"
+                "EVENTS CALENDAR INTEGRATION (CRITICAL):\n"
+                "- The user message includes a 'Significant Events Calendar' — these are the ONLY event dates you may cite.\n"
+                "- You MUST reference EVERY event from that list by name and date in the appropriate monthly section.\n"
+                "- Each event must appear in the 'Key Dates' column of the yearly overview table.\n"
+                "- Date-range events (e.g. 2026-05-11 → 2026-05-27) are multi-day campaigns; plan a sustained content arc across the range.\n"
+                "- Do NOT invent or cite events that are not in that list.\n"
+                "- If the list is empty, say so in the executive summary rather than inventing dates.\n\n"
                 "CHANNEL CADENCE SECTION (REQUIRED — include a section titled '## Channel Posting Cadence' with this exact format):\n"
                 "For EACH enabled channel, include:\n"
                 "### [Channel Name]\n"
@@ -282,7 +320,9 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
                 f"Audiences: {sanitize_json_for_prompt(strategy.get('audiences', []), max_length=3000)}\n"
                 f"Cadence: {sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=3000)}\n"
                 f"Themes: {sanitize_json_for_prompt(strategy.get('themes', []), max_length=3000)}\n"
-                f"Enabled Channels: {channels_str}\n"
+                f"Enabled Channels: {channels_str}\n\n"
+                f"Significant Events Calendar (the ONLY dates you may cite — include EVERY one):\n"
+                f"{events_block}\n\n"
                 f"Generate a full 12-month content calendar strategy document."
             ),
         },
@@ -321,6 +361,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     strategy_document = state.get("strategy_document", "")
     enabled_channels = state.get("enabled_channels", ["instagram"])
     existing_items = state.get("existing_items", [])
+    events = state.get("events", [])
 
     # Always start from January 1 of current year — the Content Strategy
     # covers the full year with events tied to specific dates.
@@ -562,6 +603,22 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         batch_month_name = current_dt.strftime("%B")
         month_strategy = _extract_month_strategy(batch_month_name)
 
+        # Filter events that overlap this week-batch so the LLM schedules
+        # on the exact event date rather than scattering across the month.
+        week_events: list[dict[str, Any]] = []
+        for ev in events:
+            ev_start = ev.get("start")
+            if not ev_start:
+                continue
+            ev_end = ev.get("end") or ev_start
+            if ev_end >= batch_start_str and ev_start <= batch_end_str:
+                week_events.append(ev)
+        week_events_block = (
+            _format_events_for_prompt(week_events)
+            if week_events
+            else "(no significant events this week — schedule regular content only)"
+        )
+
         # Generate for EACH channel separately
         for channel in enabled_channels:
             batch_num += 1
@@ -617,6 +674,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                     "content": (
                         f"{dedup}"
                         f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=2000)}\n\n"
+                        f"SIGNIFICANT EVENTS THIS WEEK (schedule on the event date, do NOT invent others):\n"
+                        f"{week_events_block}\n\n"
                         f"STRATEGY FOR {batch_month_name.upper()} ({channel.upper()}):\n"
                         f"{sanitize_for_prompt(month_strategy, max_length=5000)}\n\n"
                         f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=1500)}"
