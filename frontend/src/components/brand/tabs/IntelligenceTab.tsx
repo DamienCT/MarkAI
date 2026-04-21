@@ -1,16 +1,18 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   Search, Target, FileText, Calendar, Zap, Eye,
-  RotateCcw, Loader2,
+  RotateCcw, Loader2, AlertTriangle,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelativeTime } from "@/lib/utils";
+import { api } from "@/lib/api";
 
 interface ResearchReport {
   id: string;
@@ -36,6 +38,7 @@ export interface IntelligenceTabProps {
   loadingIntel: boolean;
   triggeringWorkflow: string | null;
   onTriggerWorkflow: (workflowType: string) => Promise<void>;
+  brandId?: string;
 }
 
 export function IntelligenceTab({
@@ -44,8 +47,52 @@ export function IntelligenceTab({
   loadingIntel,
   triggeringWorkflow,
   onTriggerWorkflow,
+  brandId,
 }: IntelligenceTabProps) {
   const router = useRouter();
+  const [eventsUpdatedAt, setEventsUpdatedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchUpdatedAt() {
+      try {
+        const params = brandId ? { brand_id: brandId } : undefined;
+        const resp = await api.get<{ updated_at: string | null }>(
+          "/api/v1/events/updated-at",
+          params
+        );
+        if (!cancelled) setEventsUpdatedAt(resp.updated_at);
+      } catch {
+        // non-fatal
+      }
+    }
+    fetchUpdatedAt();
+    return () => {
+      cancelled = true;
+    };
+  }, [brandId, research]);
+
+  const latestResearchRun = (() => {
+    let latest: ResearchReport | undefined;
+    for (const run of research) {
+      if (run.agent_type !== "research") continue;
+      if (run.status !== "completed") continue;
+      if (!run.completed_at) continue;
+      if (
+        !latest ||
+        !latest.completed_at ||
+        new Date(run.completed_at) > new Date(latest.completed_at)
+      ) {
+        latest = run;
+      }
+    }
+    return latest;
+  })();
+
+  const eventsStale =
+    eventsUpdatedAt !== null &&
+    latestResearchRun?.completed_at != null &&
+    new Date(eventsUpdatedAt) > new Date(latestResearchRun.completed_at);
 
   return (
     <div className="mt-6 space-y-6">
@@ -53,6 +100,26 @@ export function IntelligenceTab({
         <h2 className="text-lg font-semibold">Brand Intelligence</h2>
         <p className="text-sm text-muted-foreground">AI-generated documents and insights for this brand</p>
       </div>
+
+      {eventsStale && (
+        <div className="flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex-1">
+            <p className="font-medium">
+              Events updated since last research run
+            </p>
+            <p className="text-xs opacity-90">
+              Rerun research to refresh the date-aware context used by strategy and calendar generation.
+            </p>
+          </div>
+          <Link
+            href="/events"
+            className="text-xs font-medium underline underline-offset-2 shrink-0"
+          >
+            Review events
+          </Link>
+        </div>
+      )}
 
       {loadingIntel ? (
         <div className="space-y-4">

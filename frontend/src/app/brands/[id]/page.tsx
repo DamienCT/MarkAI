@@ -912,6 +912,7 @@ export default function BrandDetailPage() {
             loadingIntel={loadingIntel}
             triggeringWorkflow={triggeringWorkflow}
             onTriggerWorkflow={handleTriggerWorkflow}
+            brandId={brandId}
           />
         </TabsContent>
 

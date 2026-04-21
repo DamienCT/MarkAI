@@ -72,6 +72,40 @@ async def _ensure_brand_sync_filter_columns() -> None:
         ))
 
 
+async def _ensure_events_table() -> None:
+    """Idempotently create the events table for the significant-days calendar.
+
+    Same lifespan-migration pattern as brand sync filter columns — no Alembic
+    in this repo, so schema additions ship via CREATE TABLE IF NOT EXISTS.
+    """
+    from sqlalchemy import text
+    from app.models.base import engine
+
+    ddl = """
+    CREATE TABLE IF NOT EXISTS events (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        brand_id UUID REFERENCES brands(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        start_date DATE NOT NULL,
+        end_date DATE,
+        is_annual BOOLEAN NOT NULL DEFAULT TRUE,
+        category VARCHAR(64),
+        source VARCHAR(32) NOT NULL DEFAULT 'manual',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ix_events_brand_id ON events(brand_id);
+    CREATE INDEX IF NOT EXISTS ix_events_start_date ON events(start_date);
+    """
+    async with engine.begin() as conn:
+        # gen_random_uuid() needs pgcrypto; most Postgres installs have it,
+        # but create the extension idempotently to be safe.
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+        for stmt in [s.strip() for s in ddl.split(";") if s.strip()]:
+            await conn.execute(text(stmt))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
@@ -83,6 +117,11 @@ async def lifespan(app: FastAPI):
         await _ensure_brand_sync_filter_columns()
     except Exception as e:
         logger.error("Failed to ensure brand sync filter columns: %s", e)
+
+    try:
+        await _ensure_events_table()
+    except Exception as e:
+        logger.error("Failed to ensure events table: %s", e)
 
     # Setup APScheduler — must happen in async context so the scheduler
     # binds to uvicorn's event loop (not a detached one).

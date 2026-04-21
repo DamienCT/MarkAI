@@ -10,6 +10,7 @@ from app.models.engagement import EngagementMetric
 from app.models.adaptation import Adaptation
 from app.models.competitor import Competitor
 from app.models.product import Product
+from app.models.event import Event
 from app.models.ai_model import AIModelCategory, AIModel, AIModelSelection
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "Adaptation",
     "Competitor",
     "Product",
+    "Event",
     "AIModelCategory",
     "AIModel",
     "AIModelSelection",

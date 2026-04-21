@@ -692,6 +692,74 @@ def _parse_payload(raw: Any) -> dict[str, Any]:
     return {}
 
 
+async def get_events_for_research(
+    brand_id: str, months_ahead: int = 12
+) -> list[dict[str, Any]]:
+    """Return significant events applicable to a brand over the next N months.
+
+    Unions global events (brand_id IS NULL) with brand-scoped ones. Annual
+    events are projected to their current or next occurrence so the list is
+    always forward-looking from today. Kept here (not imported from backend)
+    because the agents worker runs in its own container with no backend
+    Python package available.
+    """
+    from datetime import date, timedelta
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT title, description, start_date, end_date, is_annual, "
+                "category, brand_id FROM events "
+                "WHERE brand_id = :bid OR brand_id IS NULL"
+            ),
+            {"bid": brand_id},
+        )
+        rows = [dict(r) for r in result.mappings().all()]
+
+    today = date.today()
+    horizon = today + timedelta(days=months_ahead * 31)
+
+    def _project_annual(start: date) -> date:
+        try:
+            this_year = start.replace(year=today.year)
+        except ValueError:
+            this_year = start.replace(year=today.year, day=28)
+        if this_year >= today:
+            return this_year
+        try:
+            return start.replace(year=today.year + 1)
+        except ValueError:
+            return start.replace(year=today.year + 1, day=28)
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        start = row["start_date"]
+        if not start:
+            continue
+        occ_start = _project_annual(start) if row["is_annual"] else start
+        if row["end_date"]:
+            duration = (row["end_date"] - start).days
+            occ_end = occ_start + timedelta(days=duration)
+        else:
+            occ_end = occ_start
+        if occ_end < today or occ_start > horizon:
+            continue
+        out.append(
+            {
+                "title": row["title"],
+                "description": row.get("description") or "",
+                "start": occ_start.isoformat(),
+                "end": occ_end.isoformat() if occ_end != occ_start else None,
+                "category": row.get("category"),
+                "annual": bool(row["is_annual"]),
+                "scope": "global" if row["brand_id"] is None else "brand",
+            }
+        )
+
+    out.sort(key=lambda e: e["start"])
+    return out
+
+
 async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
     """Build consolidated context package for all AI workflows.
 
@@ -784,6 +852,14 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
     # 7. Recent calendar items (last 90 days)
     recent_posts = await get_recent_calendar_items(brand_id, days=90, limit=50)
 
+    # 7b. Significant events for the next 12 months — lets content generation
+    # anchor captions/hashtags to upcoming dates (Mother's Day, Health Week, etc.)
+    try:
+        events = await get_events_for_research(brand_id, months_ahead=12)
+    except Exception as exc:
+        logger.warning("Failed to load events for brand %s: %s", brand_id, exc)
+        events = []
+
     # 8. Top performing content (last 90 days)
     async with async_session_factory() as session:
         top_result = await session.execute(
@@ -813,4 +889,5 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
         },
         "recent_posts": recent_posts,
         "top_performing": top_performing,
+        "events": events,
     }

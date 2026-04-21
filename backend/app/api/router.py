@@ -9,6 +9,7 @@ from app.api.v1 import (
     campaigns,
     content,
     dashboard,
+    events,
     files,
     intelligence,
     learning,
@@ -47,6 +48,7 @@ api_router.include_router(
 api_router.include_router(learning.router, prefix="/learning", tags=["learning"])
 api_router.include_router(files.router, prefix="/files", tags=["files"])
 api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
+api_router.include_router(events.router, prefix="/events", tags=["events"])
 
 # Alias: frontend calls /api/v1/audit directly — redirects to system/audit-log
 from fastapi import Depends  # noqa: E402

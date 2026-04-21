@@ -10,13 +10,35 @@ from shared.llm import chat_completion, get_embedding, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.browser import crawl_site
 from shared.tools.social import get_social_profiles, get_engagement_data
-from shared.tools.database import get_brand, get_brand_config, store_competitors
+from shared.tools.database import (
+    get_brand,
+    get_brand_config,
+    get_events_for_research,
+    store_competitors,
+)
 from shared.tools.vector import async_create_collection, async_upsert_vectors
 from shared.tools.web_search import web_search
 
 from workflows.research.state import ResearchState
 
 logger = logging.getLogger(__name__)
+
+
+async def load_events(state: ResearchState) -> dict[str, Any]:
+    """Load significant-days/events calendar (global + brand) for the next 12 months.
+
+    Soft-fails: the rest of the research pipeline must continue even if the
+    events table is missing or the query errors.
+    """
+    try:
+        events = await get_events_for_research(state["brand_id"], months_ahead=12)
+        logger.info(
+            "Loaded %d events for brand %s", len(events), state["brand_id"]
+        )
+        return {"events": events}
+    except Exception as exc:
+        logger.warning("load_events failed (non-fatal): %s", exc)
+        return {"events": []}
 
 
 async def crawl_website(state: ResearchState) -> dict[str, Any]:
@@ -364,14 +386,15 @@ async def identify_gaps(state: ResearchState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a strategic marketing analyst. Based on the brand's website, social media analysis, and competitor analysis, identify gaps and opportunities. Return a JSON array where each gap has: title (short descriptive title), category (one of: content, positioning, digital, audience, product, channel), description (what the gap is), opportunity (how to exploit it), priority (high/medium/low), estimated_impact (expected business impact if addressed), implementation_effort (low/medium/high), recommended_timeline (when to implement, e.g. 'Q2 2026'), target_audience (which persona(s) this gap affects most), success_metrics (array of 2-3 measurable KPIs to track).",
+                "content": "You are a strategic marketing analyst. Based on the brand's website, social media analysis, competitor analysis, and the events calendar, identify gaps and opportunities. When relevant, tie gaps and recommended_timeline to specific upcoming events (e.g. Mother's Day, awareness weeks, local holidays) from the events calendar. Return a JSON array where each gap has: title (short descriptive title), category (one of: content, positioning, digital, audience, product, channel), description (what the gap is), opportunity (how to exploit it), priority (high/medium/low), estimated_impact (expected business impact if addressed), implementation_effort (low/medium/high), recommended_timeline (when to implement, referencing specific event dates where relevant, e.g. 'Week of 2026-05-11 — Mother's Day'), target_audience (which persona(s) this gap affects most), success_metrics (array of 2-3 measurable KPIs to track).",
             },
             {
                 "role": "user",
                 "content": (
                     f"Website data summary: {sanitize_json_for_prompt(state.get('website_data', [])[:3], max_length=3000)}\n\n"
                     f"Social analysis: {sanitize_json_for_prompt(state.get('social_analysis', {}), max_length=3000)}\n\n"
-                    f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=3000)}"
+                    f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=3000)}\n\n"
+                    f"Events calendar (next 12 months):\n{sanitize_json_for_prompt(state.get('events', []), max_length=2000)}"
                 ),
             },
         ]
@@ -412,14 +435,15 @@ async def build_personas(state: ResearchState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a marketing strategist. Build 3-5 detailed audience personas based on the research data. Create personas that reflect the brand's target market. Each persona should have: name (a memorable name and archetype, e.g. 'Sarah, the Wellness Enthusiast'), demographics (object with age range, gender, location, income level, education, occupation), psychographics (values, lifestyle, interests, media habits), pain_points (array of 3+ specific pain points related to the brand's industry), content_preferences (object with: formats — preferred content formats like Reels/Carousels/Stories/Static/Articles; topics — 5+ specific topic interests; tone — preferred communication tone), platforms (array of social platforms they use, ordered by preference), buying_triggers (array of 3+ triggers that drive purchase decisions), best_engagement_times (specific times when this persona is most active), content_avoidance (array of what turns this persona off, e.g. 'hard sells', 'medical jargon'). Return a JSON array.",
+                "content": "You are a marketing strategist. Build 3-5 detailed audience personas based on the research data and the events calendar. Create personas that reflect the brand's target market. Use the events calendar to inform each persona's seasonal buying triggers and content preferences (e.g. which holidays/awareness periods drive engagement). Each persona should have: name (a memorable name and archetype, e.g. 'Sarah, the Wellness Enthusiast'), demographics (object with age range, gender, location, income level, education, occupation), psychographics (values, lifestyle, interests, media habits), pain_points (array of 3+ specific pain points related to the brand's industry), content_preferences (object with: formats — preferred content formats like Reels/Carousels/Stories/Static/Articles; topics — 5+ specific topic interests; tone — preferred communication tone; seasonal_moments — which calendar events most resonate with this persona), platforms (array of social platforms they use, ordered by preference), buying_triggers (array of 3+ triggers that drive purchase decisions, including relevant calendar events), best_engagement_times (specific times when this persona is most active), content_avoidance (array of what turns this persona off, e.g. 'hard sells', 'medical jargon'). Return a JSON array.",
             },
             {
                 "role": "user",
                 "content": (
                     f"Social analysis: {sanitize_json_for_prompt(state.get('social_analysis', {}), max_length=3000)}\n\n"
                     f"Gaps identified: {sanitize_json_for_prompt(state.get('gaps', []), max_length=2000)}\n\n"
-                    f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=2000)}"
+                    f"Competitor analysis: {sanitize_json_for_prompt(state.get('competitor_analysis', []), max_length=2000)}\n\n"
+                    f"Events calendar (next 12 months):\n{sanitize_json_for_prompt(state.get('events', []), max_length=2000)}"
                 ),
             },
         ]
@@ -474,6 +498,7 @@ async def store_results(state: ResearchState) -> dict[str, Any]:
         "competitor_analysis": state.get("competitor_analysis", []),
         "gaps": state.get("gaps", []),
         "personas": state.get("personas", []),
+        "events": state.get("events", []),
     }
 
     # Store competitors discovered during research

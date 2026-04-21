@@ -422,6 +422,42 @@ export interface AIModelSelection {
   priority: number;
 }
 
+export type EventSource = "manual" | "ai_detected";
+
+export interface Event {
+  id: string;
+  brand_id: string | null;
+  title: string;
+  description: string | null;
+  start_date: string;
+  end_date: string | null;
+  is_annual: boolean;
+  category: string | null;
+  source: EventSource;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventCreate {
+  brand_id?: string | null;
+  title: string;
+  description?: string | null;
+  start_date: string;
+  end_date?: string | null;
+  is_annual?: boolean;
+  category?: string | null;
+}
+
+export interface EventUpdate {
+  brand_id?: string | null;
+  title?: string;
+  description?: string | null;
+  start_date?: string;
+  end_date?: string | null;
+  is_annual?: boolean;
+  category?: string | null;
+}
+
 export interface AuditLogEntry {
   id: string;
   user_id?: string;
