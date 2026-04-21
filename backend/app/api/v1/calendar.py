@@ -16,7 +16,7 @@ from app.schemas.calendar_item import (
     CalendarItemResponse,
     CalendarItemUpdate,
 )
-from app.services import calendar_service
+from app.services import calendar_service, nats_service
 
 
 class CalendarReorderItem(BaseModel):
@@ -115,7 +115,22 @@ async def create_calendar_item(
 ):
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    return await calendar_service.create_calendar_item(db, data)
+    item = await calendar_service.create_calendar_item(db, data)
+
+    # If the user created the item already queued, kick off content generation
+    # immediately instead of waiting for the next morning_jobs cycle.
+    if item.status == "queued":
+        await nats_service.publish(
+            "content.generate",
+            {
+                "brand_id": str(item.brand_id),
+                "calendar_item_id": str(item.id),
+                "triggered_by": f"user:{current_user.id}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    return item
 
 
 @router.put("/{item_id}", response_model=CalendarItemResponse)
