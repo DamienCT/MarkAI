@@ -462,7 +462,9 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
                     "You are a social media strategist. "
                     "Generate relevant hashtags for this post. "
                     "Mix broad, niche, and branded hashtags. "
-                    "Return ONLY a JSON array of strings (no # prefix)."
+                    'Return JSON: {"hashtags": ["tag1", "tag2", ...]}. '
+                    "Each tag is a single word, alphanumeric only, no '#' prefix, "
+                    "no spaces, no punctuation."
                 ),
             },
             {
@@ -484,12 +486,43 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
             max_tokens=512,
             response_format={"type": "json_object"},
         )
-        hashtags = parse_llm_json(result, fallback=None)
-        if isinstance(hashtags, dict):
-            hashtags = next((v for v in hashtags.values() if isinstance(v, list)), None)
-        if hashtags is None:
-            hashtags = [tag.strip().strip("#") for tag in result.split() if tag.strip()]
-        return {"hashtags": hashtags}
+        parsed = parse_llm_json(result, fallback=None)
+        hashtags: list[str] | None = None
+        if isinstance(parsed, dict):
+            # Skip 'error' / 'message' keys; pick the first list-of-strings value.
+            for key, value in parsed.items():
+                if key.lower() in {"error", "message", "detail"}:
+                    continue
+                if isinstance(value, list):
+                    hashtags = value
+                    break
+        elif isinstance(parsed, list):
+            hashtags = parsed
+
+        # Sanitize: must be a non-empty alphanumeric token (a-z, 0-9, underscore).
+        # Drops JSON syntax fragments, quoted strings, error messages, etc.
+        def _clean_tag(tag: object) -> str | None:
+            if not isinstance(tag, str):
+                return None
+            cleaned = tag.strip().lstrip("#").strip()
+            cleaned = re.sub(r"[^A-Za-z0-9_]", "", cleaned)
+            if not cleaned or len(cleaned) > 50:
+                return None
+            return cleaned
+
+        cleaned_tags: list[str] = []
+        seen: set[str] = set()
+        for tag in hashtags or []:
+            c = _clean_tag(tag)
+            if c and c.lower() not in seen:
+                cleaned_tags.append(c)
+                seen.add(c.lower())
+
+        # Always ensure the branded hashtag is present.
+        if brand_slug and brand_slug.lower() not in seen:
+            cleaned_tags.insert(0, brand_slug)
+
+        return {"hashtags": cleaned_tags}
     except Exception as exc:
         logger.error("generate_hashtags failed: %s", exc)
         return {
@@ -703,8 +736,17 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"The product container must be completely blank — it will be digitally replaced later."
         )
 
+    # Choose aspect ratio per platform so the preview/post doesn't crop.
+    channel_lower = (item.get("channel", "") or "").lower()
+    if channel_lower in {"facebook", "linkedin", "youtube"}:
+        image_size = "1792x1024"  # landscape
+    elif channel_lower in {"tiktok"}:
+        image_size = "1024x1792"  # portrait
+    else:
+        image_size = "1024x1024"  # square (instagram, x, default)
+
     try:
-        image_url = await generate_image(prompt_text)
+        image_url = await generate_image(prompt_text, size=image_size)
         return {"generated_image": image_url}
     except Exception:
         logger.exception("Background image generation failed")

@@ -301,14 +301,16 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # product placeholder and Gemini swaps the real product back in.
         product_image_url: str | None = None
         product_name = ""
+        cal_channel = ""
         cal_rows = await execute_query(
-            "SELECT product_ids, title FROM calendar_items WHERE id = :id",
+            "SELECT product_ids, title, channel FROM calendar_items WHERE id = :id",
             {"id": calendar_item_id},
         )
         if cal_rows:
             cal_row = cal_rows[0]
             product_ids = cal_row.get("product_ids") or []
             product_name = cal_row.get("title", "")
+            cal_channel = (cal_row.get("channel", "") or "").lower()
 
             product_rows = []
             if product_ids:
@@ -378,8 +380,19 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 f"Do NOT include any products. Focus on the lifestyle and mood."
             )
 
-        image_url = await generate_image(image_prompt)
-        logger.info("Image generated for content %s: %s chars", content_id, len(image_url))
+        # Match aspect ratio to the channel so the post/preview doesn't crop.
+        if cal_channel in {"facebook", "linkedin", "youtube"}:
+            image_size = "1792x1024"
+        elif cal_channel in {"tiktok"}:
+            image_size = "1024x1792"
+        else:
+            image_size = "1024x1024"
+
+        image_url = await generate_image(image_prompt, size=image_size)
+        logger.info(
+            "Image generated for content %s (channel=%s, size=%s): %s chars",
+            content_id, cal_channel or "default", image_size, len(image_url),
+        )
 
         await async_ensure_bucket("content-images")
 
