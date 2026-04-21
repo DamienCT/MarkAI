@@ -196,6 +196,7 @@ export default function ContentStudioPage() {
         api.post<CalendarItem>("/api/v1/calendar", {
           brand_id: formBrandId,
           channel,
+          item_type: "post",
           title: formTitle.trim(),
           description: formDescription.trim() || null,
           scheduled_at: formScheduledAt || null,
