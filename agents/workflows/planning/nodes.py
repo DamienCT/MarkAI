@@ -12,6 +12,7 @@ from pydantic import BaseModel, field_validator
 from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
+    delete_planned_calendar_items,
     get_brand,
     get_brand_config,
     get_events_for_research,
@@ -875,6 +876,28 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     if skipped:
         logger.warning(
             "Skipped %d invalid calendar items for brand %s", skipped, brand_id
+        )
+
+    # Purge stale 'planned' items from prior planning runs within the same
+    # window so reruns don't stack duplicates on top. Non-'planned' rows are
+    # preserved — once an item moves into generation or publishing the user
+    # has effectively taken ownership.
+    planning_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    try:
+        deleted = await delete_planned_calendar_items(
+            brand_id, planning_start, max_date
+        )
+        if deleted:
+            logger.info(
+                "Purged %d stale planned calendar items for brand %s before insert",
+                deleted,
+                brand_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to purge stale planned items for brand %s (continuing): %s",
+            brand_id,
+            exc,
         )
 
     ids = await store_calendar_items(

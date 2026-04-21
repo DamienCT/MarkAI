@@ -391,6 +391,31 @@ def _sanitize_pg_text(value: Any) -> Any:
     return value
 
 
+async def delete_planned_calendar_items(
+    brand_id: str,
+    start: datetime,
+    end: datetime,
+) -> int:
+    """Delete calendar_items in status='planned' for the given brand and window.
+
+    Called by planning before inserting a fresh batch so repeat runs don't
+    stack duplicate slots on top of each other. Only 'planned' items are
+    removed — anything the user has moved forward (queued/working/in_review/
+    approved/scheduled/publishing/published/failed/reworking) is preserved.
+    """
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "DELETE FROM calendar_items "
+                "WHERE brand_id = :brand_id AND status = 'planned' "
+                "AND scheduled_at >= :start AND scheduled_at <= :end"
+            ),
+            {"brand_id": brand_id, "start": start, "end": end},
+        )
+        await session.commit()
+        return result.rowcount or 0
+
+
 async def store_calendar_items(
     items: list[dict[str, Any]],
     max_date: datetime | None = None,
