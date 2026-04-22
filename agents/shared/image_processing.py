@@ -187,11 +187,13 @@ def select_logo_variant(
 ) -> str:
     """Select the best logo variant based on image brightness at the placement region.
 
+    Label keys match the UI (frontend LogosTab): primary, icon, watermark, dark, light.
+
     Priority logic:
     - High variance (busy background) → watermark if available
-    - Dark background (brightness < 100) → dark_variant (white-on-dark) > secondary > primary
-    - Light background (brightness > 160) → primary > dark_variant
-    - Mid-tone → primary (default)
+    - Dark background (brightness < 100) → dark (white-on-dark) > light > primary
+    - Light background (brightness > 160) → light > primary > dark
+    - Mid-tone → primary
     """
     labels = set(available_labels)
 
@@ -201,21 +203,38 @@ def select_logo_variant(
 
     # Dark background → need a light-colored logo
     if brightness < 100:
-        # dark_variant is typically white/light logo for dark backgrounds
-        for pref in ["dark_variant", "secondary", "primary"]:
+        for pref in ["dark", "light", "primary", "icon"]:
             if pref in labels:
                 return pref
 
     # Light background → need a dark-colored logo
     if brightness > 160:
-        for pref in ["primary", "secondary", "dark_variant"]:
+        for pref in ["light", "primary", "dark", "icon"]:
             if pref in labels:
                 return pref
 
     # Mid-tone fallback
-    if "primary" in labels:
-        return "primary"
+    for pref in ["primary", "light", "dark", "icon"]:
+        if pref in labels:
+            return pref
     return available_labels[0] if available_labels else "primary"
+
+
+# Logos with a wordmark (text alongside the symbol) need more width to be
+# legible; icon-only marks (favicon/watermark) become visually heavy at the
+# same width and should be scaled down.
+_LOGO_SCALE_BY_VARIANT = {
+    "primary": 0.18,
+    "light": 0.18,
+    "dark": 0.18,
+    "icon": 0.10,
+    "watermark": 0.10,
+}
+
+
+def scale_for_logo_variant(variant: str) -> float:
+    """Return the recommended logo_scale for a given variant label."""
+    return _LOGO_SCALE_BY_VARIANT.get(variant, 0.18)
 
 
 # ── Logo + text overlay ──────────────────────────────────────────

@@ -242,6 +242,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         render_logo_png,
         analyze_logo_region_brightness,
         select_logo_variant,
+        scale_for_logo_variant,
     )
 
     content_id = payload.get("content_id", "")
@@ -470,6 +471,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     branded_bytes = overlay_logo_and_text(
                         image_data, logo_png,
                         text_line1=text_line1, text_line2=text_line2,
+                        logo_scale=scale_for_logo_variant(chosen_label),
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
                     await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")

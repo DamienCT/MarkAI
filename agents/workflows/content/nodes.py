@@ -25,6 +25,7 @@ from shared.tools.storage import (
 from shared.image_processing import (
     render_logo_png,
     overlay_logo_and_text,
+    scale_for_logo_variant,
     generate_mockup,
     analyze_logo_region_brightness,
     select_logo_variant,
@@ -1134,12 +1135,14 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         text_line1 = state.get("hook", theme)
         text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
 
-        # Apply overlay
+        # Apply overlay — scale depends on the chosen variant (icon-only logos
+        # need a smaller scale than wordmarks).
         branded_bytes = overlay_logo_and_text(
             image_data,
             logo_png,
             text_line1=text_line1,
             text_line2=text_line2,
+            logo_scale=scale_for_logo_variant(chosen_label),
         )
 
         # Upload branded image to MinIO
