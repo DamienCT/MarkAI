@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     AZURE_AD_CLIENT_ID: str = ""
     AZURE_AD_CLIENT_SECRET: str = ""
     ADMIN_SECURITY_GROUP_ID: str = ""
+    MARKETING_SECURITY_GROUP_ID: str = ""
 
     # --- PostgreSQL ---
     POSTGRES_HOST: str = "postgres"

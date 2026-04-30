@@ -40,7 +40,9 @@ async def get_current_user(
     - JWT must be valid (issued by our Entra ID tenant)
     - If the user's groups claim contains ADMIN_SECURITY_GROUP_ID,
       auto-provision as admin with is_active=True
-    - Otherwise, check DB is_active flag; new users without the security
+    - Else if it contains MARKETING_SECURITY_GROUP_ID, auto-provision
+      as manager with is_active=True
+    - Otherwise, check DB is_active flag; new users without any security
       group are provisioned as viewer with is_active=False (pending approval)
     """
     token = credentials.credentials
@@ -61,33 +63,52 @@ async def get_current_user(
             detail="Token missing user identifier",
         )
 
-    # Check if user belongs to the admin security group
+    # Check security group membership.
     # First try JWT groups claim (fast, if app registration emits group claims)
     groups = extract_groups(claims)
-    in_security_group = (
+    in_admin_group = (
         bool(settings.ADMIN_SECURITY_GROUP_ID)
         and settings.ADMIN_SECURITY_GROUP_ID in groups
     )
+    in_marketing_group = (
+        bool(settings.MARKETING_SECURITY_GROUP_ID)
+        and settings.MARKETING_SECURITY_GROUP_ID in groups
+    )
     # Fallback: check via Graph API (works even without group claims in token)
-    if not in_security_group and settings.ADMIN_SECURITY_GROUP_ID:
+    if not in_admin_group and settings.ADMIN_SECURITY_GROUP_ID:
         try:
-            in_security_group = await check_user_in_security_group(
+            in_admin_group = await check_user_in_security_group(
                 entra_id, settings.ADMIN_SECURITY_GROUP_ID
             )
         except Exception as exc:
-            logger.warning("Graph API group check failed: %s", exc)
+            logger.warning("Graph API admin group check failed: %s", exc)
+    if not in_marketing_group and settings.MARKETING_SECURITY_GROUP_ID:
+        try:
+            in_marketing_group = await check_user_in_security_group(
+                entra_id, settings.MARKETING_SECURITY_GROUP_ID
+            )
+        except Exception as exc:
+            logger.warning("Graph API marketing group check failed: %s", exc)
+
+    # Admin takes precedence over marketing
+    if in_admin_group:
+        provisioned_role: str | None = "admin"
+    elif in_marketing_group:
+        provisioned_role = "manager"
+    else:
+        provisioned_role = None
 
     result = await db.execute(select(User).where(User.entra_id == entra_id))
     user = result.scalar_one_or_none()
 
     if user is None:
-        if in_security_group:
-            # Auto-provision security group members as active admins
+        if provisioned_role is not None:
+            # Auto-provision security group members as active users
             user = User(
                 entra_id=entra_id,
                 email=claims.get("preferred_username", claims.get("email", "")),
                 display_name=claims.get("name", "Unknown"),
-                role="admin",
+                role=provisioned_role,
                 is_active=True,
             )
         else:
@@ -103,12 +124,26 @@ async def get_current_user(
         await db.commit()
         await db.refresh(user)
     else:
-        # Existing user: if they are in the security group, ensure active + admin
-        if in_security_group and (not user.is_active or user.role != "admin"):
+        # Existing user: keep their group-derived access in sync.
+        # Admin group always upgrades to admin. Marketing group only ensures
+        # active access — it never downgrades a higher role (admin/manager).
+        if in_admin_group and (not user.is_active or user.role != "admin"):
             user.is_active = True
             user.role = "admin"
             await db.commit()
             await db.refresh(user)
+        elif in_marketing_group:
+            # Activate and upgrade lower roles to manager. Never downgrade admin.
+            needs_update = False
+            if not user.is_active:
+                user.is_active = True
+                needs_update = True
+            if user.role in ("viewer", "editor"):
+                user.role = "manager"
+                needs_update = True
+            if needs_update:
+                await db.commit()
+                await db.refresh(user)
 
     if not user.is_active:
         raise HTTPException(
