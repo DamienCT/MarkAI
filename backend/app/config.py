@@ -84,8 +84,8 @@ class Settings(BaseSettings):
 
     # --- Social Platform API Keys ---
     # Meta (Instagram + Facebook)
-    META_ACCESS_TOKEN: str = ""
-    META_PAGE_ID: str = ""
+    META_ACCESS_TOKEN: str = "EAANgo8DT8sMBRRHjIv8mwZAj76ZBzZBLaiUPbZCU6eQFZAcZCXupsjc9FV81QVRxkomQ4heFdj3Hjqc8GzXuLZCKbBO41ttft547YwMK7rjZAY4C0sRynC17fNc8ySq8NP3hMCvAqWi8KDZAZAI8MsJZC14WKZCZCwC9XEju8Tga37GRe3Nld0lLq2CokTjfvNVZBRjMtj0UoTapIx2ZCcXBDJYpxxBhkcAolB49kBYMOpyDguiY6kZD"
+    META_PAGE_ID: str = "105594072041737"
     META_INSTAGRAM_ACCOUNT_ID: str = ""
     # LinkedIn
     LINKEDIN_ACCESS_TOKEN: str = ""
