@@ -4,6 +4,10 @@
 > MarkAI to the production VPS is in this document. No additional credentials
 > or configuration required — the `.env` file is already on the server.
 
+<!-- The redeploy script now pulls from the `ado` remote (Azure DevOps),
+     not `origin` (GitHub mirror). VPS auths via /root/.git-credentials-ado. -->
+
+
 ---
 
 ## Server Details
