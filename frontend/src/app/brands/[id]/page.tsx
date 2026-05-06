@@ -48,6 +48,7 @@ const CHANNEL_ICON_STYLED: Record<string, { icon: React.ReactNode; color: string
 const CHANNEL_CONFIG_FIELDS: Record<Channel, { key: string; label: string; placeholder: string }[]> = {
   instagram: [
     { key: "handle", label: "Handle", placeholder: "@yourbrand" },
+    { key: "account_id", label: "Business Account ID", placeholder: "ex: 17841405822304914" },
     { key: "access_token", label: "Access Token", placeholder: "Meta access token" },
   ],
   facebook: [
