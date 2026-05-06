@@ -7,7 +7,7 @@ set -euo pipefail
 cd /var/www/markai
 
 echo "=== Step 1: Pull latest code ==="
-git pull origin main
+git pull ado main
 
 echo "=== Step 2: Generate and add missing env vars ==="
 ENV_FILE=".env"
