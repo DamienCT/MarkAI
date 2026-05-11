@@ -374,15 +374,28 @@ async def generate_image(
                 "Generating image with model=%s via direct OpenAI API", attempt_model
             )
             client = get_http_client()
+            # Build request body with model-specific quality / style params.
+            # gpt-image-* and dall-e-3 have different parameter shapes — sending
+            # the wrong one causes 400. quality="high" / "hd" significantly
+            # improves photorealism vs the lower defaults.
+            body: dict = {
+                "model": attempt_model,
+                "prompt": prompt,
+                "size": size,
+                "n": n,
+            }
+            if "gpt-image" in attempt_model:
+                # gpt-image-1, gpt-image-1.5, gpt-image-1-mini all accept these
+                body["quality"] = "high"
+                body["background"] = "opaque"
+            elif attempt_model == "dall-e-3":
+                # DALL-E 3 uses different vocabulary
+                body["quality"] = "hd"
+                body["style"] = "natural"  # less stylized than "vivid"
             resp = await client.post(
                 "https://api.openai.com/v1/images/generations",
                 headers={"Authorization": f"Bearer {openai_key}"},
-                json={
-                    "model": attempt_model,
-                    "prompt": prompt,
-                    "size": size,
-                    "n": n,
-                },
+                json=body,
                 timeout=180,
             )
             resp.raise_for_status()

@@ -705,80 +705,98 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     )
 
     # Realism directives — anchor the model to real commercial photography
-    # rather than the default "AI stock photo" aesthetic.
+    # rather than the default "AI stock photo / illustration" aesthetic.
     realism_directive = (
-        "Photorealistic image. "
-        "Natural skin texture. "
-        "Realistic imperfections. "
-        "Authentic lighting. "
-        "Real-world materials. "
-        "Natural reflections. "
-        "No CGI look. "
-        "No 3D render style. "
-        "No illustration. "
-        "No artificial smoothness. "
-        "Realistic depth of field. "
+        "Photorealistic raw photograph captured on a physical camera. "
+        "Natural skin texture with visible pores and fine lines. "
+        "Realistic imperfections — slight asymmetry, natural blemishes, weathered details. "
+        "Authentic lighting with real shadows and accurate color temperature. "
+        "Real-world materials — visible fabric weave, wood grain, surface wear. "
+        "Natural reflections, true-to-life depth of field. "
+        "This is a real photograph, indistinguishable from National Geographic, "
+        "Magnum Photos, or documentary photojournalism. "
     )
 
-    # Camera metadata anchors the model to real DSLR photography
+    # Camera metadata anchors the model to real DSLR photography. EXIF data
+    # acts as a hint to the model that this is photographic, not illustrative.
     camera_directive = (
-        "Shot on Sony A7R IV. "
-        "85mm lens. "
-        "f/1.8 aperture. "
-        "RAW photography. "
-        "Natural depth of field. "
-        "Professional commercial photography. "
+        "Shot on Sony A7R IV with 85mm f/1.8 prime lens. "
+        "ISO 200, 1/250s, manual focus, RAW format, 50 megapixels. "
+        "Kodak Portra 400 film grain emulation with subtle chromatic aberration "
+        "on high-contrast edges. "
+        "Photographic style references: Annie Leibovitz portrait lighting, "
+        "Steve McCurry documentary realism, Joel Meyerowitz street photography. "
     )
 
-    # Negative prompting — block typical AI-image artefacts
+    # Aggressive negative prompting — explicitly block stylized/cartoon/illustration
+    # aesthetics that gpt-image and similar models tend toward by default.
     negative_directive = (
-        "STRICT NEGATIVES: "
-        "No text. No words. No letters. No numbers. "
-        "No logos. No watermarks. No labels. No signs. No typography of any kind. "
-        "No distorted anatomy. No extra fingers. No blurry faces. "
-        "No plastic skin. No oversaturated colors. "
-        "No cartoon style. No fake CGI appearance. "
-        "Not digital art. Not illustration. Not painterly. "
+        "STRICT STYLE EXCLUSIONS — the image must NOT be: "
+        "anime, manga, Japanese animation, cartoon, comic book, graphic novel. "
+        "NOT Disney style, NOT Pixar style, NOT DreamWorks, NOT Studio Ghibli, "
+        "NOT animated film aesthetic. "
+        "NOT 3D rendering, NOT Unreal Engine, NOT Blender render, NOT CGI. "
+        "NOT vector illustration, NOT flat design, NOT material design. "
+        "NOT digital painting, NOT concept art, NOT matte painting. "
+        "NOT children's book illustration, NOT storybook style. "
+        "NOT cel-shaded, NOT video game render, NOT character render. "
+        "NOT AI-generated illustration aesthetic, NOT stylized rendering. "
+        "STRICT CONTENT EXCLUSIONS: "
+        "NO text, NO words, NO letters, NO numbers, NO typography. "
+        "NO logos, NO watermarks, NO labels, NO signs, NO captions. "
+        "NO floating icons, NO UI elements, NO app interface overlays. "
+        "NO HUD chrome, NO health indicators, NO status badges, NO info bubbles. "
+        "NO graphic shapes or symbols overlaid on the scene. "
+        "STRICT VISUAL EXCLUSIONS: "
+        "NO distorted anatomy, NO extra fingers, NO blurry faces. "
+        "NO plastic skin, NO airbrushed skin, NO uniform skin. "
+        "NO oversaturated colors, NO HDR look, NO heavy lens flare. "
+        "NO dreamy soft filter, NO bloom effect, NO over-stylized lighting. "
     )
 
     if is_lifestyle_only or not has_product_image:
         # Pure lifestyle — no product in the image
         prompt_text = (
-            f"Ultra realistic commercial lifestyle photography for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
+            f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "
+            f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. "
             f"Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
-            f"Natural human environment. Natural commercial photography. "
+            f"Natural human environment, ordinary real-world setting. "
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"
             f"{seasonal_directive}"
             f"{camera_directive}"
             f"{realism_directive}"
-            f"Realistic shadows. Authentic textures. Subtle cinematic depth of field. "
+            f"Real shadows. Authentic textures. Natural depth of field. "
             f"{composition_rules}"
             f"{negative_directive}"
-            f"This is a real photograph, not a graphic design. "
+            f"The image MUST look like a documentary photograph captured with a "
+            f"real DSLR camera, NOT an artwork, NOT a rendering, NOT an illustration. "
             f"Do NOT include any products. Focus on the lifestyle and mood."
         )
     else:
         # Scene with generic product placeholder — will be replaced by Gemini later
         prompt_text = (
-            f"Ultra realistic commercial lifestyle photography for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
+            f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "
+            f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. "
             f"Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
-            f"Natural human environment. Natural commercial photography. "
-            f"Include a realistic unlabeled neutral product container with authentic material textures "
-            f"(matte plastic or paperboard, slight wear, natural shadows, NO writing on it) "
-            f"placed naturally in the scene. "
+            f"Natural human environment, ordinary real-world setting. "
+            f"Include a realistic unlabeled neutral product container with authentic "
+            f"material textures (matte plastic or paperboard, slight wear, natural "
+            f"shadows, NO writing on it) placed naturally in the scene. "
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"
             f"{seasonal_directive}"
             f"{camera_directive}"
             f"{realism_directive}"
-            f"Realistic shadows. Authentic textures. Subtle cinematic depth of field. "
+            f"Real shadows. Authentic textures. Natural depth of field. "
             f"{composition_rules}"
             f"{negative_directive}"
+            f"The image MUST look like a documentary photograph captured with a "
+            f"real DSLR camera, NOT an artwork, NOT a rendering, NOT an illustration. "
             f"The product container must be completely blank — it will be digitally replaced later."
         )
 
