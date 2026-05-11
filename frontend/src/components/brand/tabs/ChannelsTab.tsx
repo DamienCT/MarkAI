@@ -1,8 +1,8 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import {
-  CheckCircle2, AlertTriangle, Settings2, Save,
+  CheckCircle2, AlertTriangle, Settings2, Save, Eye, EyeOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +10,62 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Channel } from "@/types";
+
+const SENSITIVE_FIELD_KEYS = new Set([
+  "access_token",
+  "api_key",
+  "refresh_token",
+  "webhook_url",
+]);
+
+interface ChannelFieldInputProps {
+  field: { key: string; label: string; placeholder: string };
+  value: string | undefined;
+  onChange: (value: string) => void;
+}
+
+function ChannelFieldInput({ field, value, onChange }: ChannelFieldInputProps) {
+  const [revealed, setRevealed] = useState(false);
+  const isSensitive = SENSITIVE_FIELD_KEYS.has(field.key);
+
+  if (!isSensitive) {
+    return (
+      <div className="space-y-1">
+        <Label className="text-xs">{field.label}</Label>
+        <Input
+          className="h-8 text-sm"
+          placeholder={field.placeholder}
+          value={value || ""}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs">{field.label}</Label>
+      <div className="relative">
+        <Input
+          type={revealed ? "text" : "password"}
+          className="h-8 text-sm pr-9"
+          placeholder={field.placeholder}
+          value={value || ""}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button
+          type="button"
+          onClick={() => setRevealed(!revealed)}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          tabIndex={-1}
+          aria-label={revealed ? "Hide token" : "Show token"}
+        >
+          {revealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 interface ChannelConfig {
   enabled: boolean;
@@ -100,15 +156,12 @@ export function ChannelsTab({
                   {isExpanded && (
                     <div className="space-y-2 pt-2 border-t">
                       {fields.map((field) => (
-                        <div key={field.key} className="space-y-1">
-                          <Label className="text-xs">{field.label}</Label>
-                          <Input
-                            className="h-8 text-sm"
-                            placeholder={field.placeholder}
-                            value={(cfg as Record<string, unknown>)[field.key] as string || ""}
-                            onChange={(e) => onUpdateChannelField(ch, field.key, e.target.value)}
-                          />
-                        </div>
+                        <ChannelFieldInput
+                          key={field.key}
+                          field={field}
+                          value={(cfg as Record<string, unknown>)[field.key] as string}
+                          onChange={(value) => onUpdateChannelField(ch, field.key, value)}
+                        />
                       ))}
                     </div>
                   )}

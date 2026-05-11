@@ -77,6 +77,20 @@ def _strip_sensitive_guidelines(brand):
     return brand_copy
 
 
+def _maybe_strip_sensitive_guidelines(brand, user_role: str):
+    """Strip sensitive fields unless the user is manager+ (who can edit them anyway).
+
+    Manager+ has PUT /brands/{id}/channels write access. Returning unstripped data
+    lets the UI keep the saved token in the form (with masked display + eye-toggle),
+    so the user can review or replace it without the round-trip wiping the stored
+    value. Viewer and editor cannot edit channels, so they still receive stripped
+    data to enforce least-privilege.
+    """
+    if role_has_access(user_role, "manager"):
+        return brand
+    return _strip_sensitive_guidelines(brand)
+
+
 @router.get("/bc-companies")
 async def list_bc_companies(
     current_user: User = Depends(get_current_user),
@@ -120,7 +134,7 @@ async def get_brand(
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
-    return _strip_sensitive_guidelines(brand)
+    return _maybe_strip_sensitive_guidelines(brand, current_user.role)
 
 
 @router.post("/", response_model=BrandResponse, status_code=status.HTTP_201_CREATED)

@@ -54,6 +54,8 @@
 ### SEC-004: Access Tokens Exposed in Frontend API Responses
 **PASS** — `backend/app/api/v1/brands.py` lines 22-46: `_SENSITIVE_GUIDELINE_KEYS` set strips `access_token`, `api_key`, `refresh_token`, etc. from brand_guidelines before serialization.
 
+**Refinement (2026-05-11):** `_maybe_strip_sensitive_guidelines` was introduced for the single-brand GET endpoint (`GET /brands/{id}`). It bypasses the strip for users whose role is **manager or higher**, since those roles already have `PUT /brands/{id}/channels` write access (role check at `brands.py:424`). Returning the stored tokens to manager+ enables the frontend channel form to keep the saved value masked (`type=password` + eye-toggle), preventing accidental token wipe on round-trip save. **Viewer and editor still receive stripped data** — they cannot edit channels and thus have no need to see the credentials. The list endpoint `GET /brands/` continues to strip universally regardless of role. Least-privilege preserved.
+
 ### SEC-005: SQL Injection Risk via Generic execute_query/execute_update
 **FAIL** — `agents/shared/tools/database.py` lines 524-527: `execute_query()` and `execute_update()` still accept arbitrary raw SQL strings with only `text()` wrapping. No allowlist or restriction to parameterized queries only.
 

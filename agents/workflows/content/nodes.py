@@ -704,36 +704,81 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         "Do NOT place busy details or high-contrast elements in these corners. "
     )
 
+    # Realism directives — anchor the model to real commercial photography
+    # rather than the default "AI stock photo" aesthetic.
+    realism_directive = (
+        "Photorealistic image. "
+        "Natural skin texture. "
+        "Realistic imperfections. "
+        "Authentic lighting. "
+        "Real-world materials. "
+        "Natural reflections. "
+        "No CGI look. "
+        "No 3D render style. "
+        "No illustration. "
+        "No artificial smoothness. "
+        "Realistic depth of field. "
+    )
+
+    # Camera metadata anchors the model to real DSLR photography
+    camera_directive = (
+        "Shot on Sony A7R IV. "
+        "85mm lens. "
+        "f/1.8 aperture. "
+        "RAW photography. "
+        "Natural depth of field. "
+        "Professional commercial photography. "
+    )
+
+    # Negative prompting — block typical AI-image artefacts
+    negative_directive = (
+        "STRICT NEGATIVES: "
+        "No text. No words. No letters. No numbers. "
+        "No logos. No watermarks. No labels. No signs. No typography of any kind. "
+        "No distorted anatomy. No extra fingers. No blurry faces. "
+        "No plastic skin. No oversaturated colors. "
+        "No cartoon style. No fake CGI appearance. "
+        "Not digital art. Not illustration. Not painterly. "
+    )
+
     if is_lifestyle_only or not has_product_image:
         # Pure lifestyle — no product in the image
         prompt_text = (
-            f"Create a clean, professional social media lifestyle image for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
-            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
+            f"Ultra realistic commercial lifestyle photography for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
+            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. "
+            f"Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
+            f"Natural human environment. Natural commercial photography. "
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"
             f"{seasonal_directive}"
-            f"Golden hour or warm natural lighting. Editorial quality, shot on 50mm lens. "
+            f"{camera_directive}"
+            f"{realism_directive}"
+            f"Realistic shadows. Authentic textures. Subtle cinematic depth of field. "
             f"{composition_rules}"
-            f"CRITICAL: The image must contain ABSOLUTELY NO TEXT, NO WORDS, NO LETTERS, "
-            f"NO NUMBERS, NO LOGOS, NO WATERMARKS, NO LABELS, NO SIGNS, NO TYPOGRAPHY of any kind. "
-            f"This is a photograph, not a graphic design. "
+            f"{negative_directive}"
+            f"This is a real photograph, not a graphic design. "
             f"Do NOT include any products. Focus on the lifestyle and mood."
         )
     else:
         # Scene with generic product placeholder — will be replaced by Gemini later
         prompt_text = (
-            f"Create a professional social media product lifestyle photo for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
-            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
-            f"Include a simple generic unlabeled product container (a plain matte box or pouch with NO writing on it) placed naturally in the scene. "
+            f"Ultra realistic commercial lifestyle photography for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
+            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. "
+            f"Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
+            f"Natural human environment. Natural commercial photography. "
+            f"Include a realistic unlabeled neutral product container with authentic material textures "
+            f"(matte plastic or paperboard, slight wear, natural shadows, NO writing on it) "
+            f"placed naturally in the scene. "
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"
             f"{seasonal_directive}"
-            f"Golden hour or warm natural lighting. Editorial quality, shot on 50mm lens. "
+            f"{camera_directive}"
+            f"{realism_directive}"
+            f"Realistic shadows. Authentic textures. Subtle cinematic depth of field. "
             f"{composition_rules}"
-            f"CRITICAL: The image must contain ABSOLUTELY NO TEXT, NO WORDS, NO LETTERS, "
-            f"NO NUMBERS, NO LOGOS, NO WATERMARKS, NO LABELS, NO SIGNS, NO TYPOGRAPHY of any kind. "
+            f"{negative_directive}"
             f"The product container must be completely blank — it will be digitally replaced later."
         )
 
