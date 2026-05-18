@@ -188,18 +188,24 @@ async def _replace_product_in_image(
         from google.genai import types as gtypes
         from PIL import Image as PILImage
         from io import BytesIO
+        from shared.image_processing import (
+            resize_preserve_aspect,
+            aspect_hint_for_size,
+        )
 
         gemini_client = genai.Client(api_key=_settings.GEMINI_API_KEY)
         marketing_img = PILImage.open(BytesIO(image_data))
         product_img = PILImage.open(BytesIO(product_image_data))
         input_size = marketing_img.size
+        aspect_hint = aspect_hint_for_size(input_size)
 
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash-image",
             contents=[
                 f"Replace the generic product in Image 1 with the real product from Image 2 "
                 f"('{product_name or 'product'}'). Keep everything else exactly the same. "
-                f"Match lighting and perspective.",
+                f"Match lighting and perspective. "
+                f"{aspect_hint}",
                 marketing_img,
                 product_img,
             ],
@@ -211,7 +217,11 @@ async def _replace_product_in_image(
                 result_data = part.inline_data.data
                 result_img = PILImage.open(BytesIO(result_data))
                 if result_img.size != input_size:
-                    result_img = result_img.resize(input_size, PILImage.LANCZOS)
+                    logger.info(
+                        "Gemini returned %s, aspect-preserving resize to %s (regen)",
+                        result_img.size, input_size,
+                    )
+                    result_img = resize_preserve_aspect(result_img, input_size)
                     buf = BytesIO()
                     result_img.save(buf, format="PNG", quality=95)
                     result_data = buf.getvalue()

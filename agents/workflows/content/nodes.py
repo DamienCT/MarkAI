@@ -30,6 +30,8 @@ from shared.image_processing import (
     generate_mockup,
     analyze_logo_region_brightness,
     select_logo_variant,
+    resize_preserve_aspect,
+    aspect_hint_for_size,
 )
 
 from pydantic import BaseModel, field_validator
@@ -1110,12 +1112,14 @@ async def _replace_product_in_generated_image(
         product_name = state.get("calendar_item", {}).get("product_name", "product")
 
         input_size = marketing_img.size  # preserve original dimensions (e.g. 1024x1024)
+        aspect_hint = aspect_hint_for_size(input_size)
 
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash-image",
             contents=[
                 f"Replace the generic product in Image 1 with the real product from Image 2 ('{product_name}'). "
-                f"Keep everything else exactly the same. Match lighting and perspective.",
+                f"Keep everything else exactly the same. Match lighting and perspective. "
+                f"{aspect_hint}",
                 marketing_img,
                 product_img,
             ],
@@ -1125,14 +1129,16 @@ async def _replace_product_in_generated_image(
         for part in response.candidates[0].content.parts:
             if part.inline_data is not None:
                 result_data = part.inline_data.data
-                # Gemini may return a different size — normalize back to input dims
+                # Gemini ignores aspect hints fairly often. When it returns a
+                # mismatched size we center-crop to the target aspect instead
+                # of stretching, which would otherwise distort the product.
                 result_img = PILImage.open(BytesIO(result_data))
                 if result_img.size != input_size:
                     logger.info(
-                        "Gemini returned %s, normalizing to %s",
+                        "Gemini returned %s, aspect-preserving resize to %s",
                         result_img.size, input_size,
                     )
-                    result_img = result_img.resize(input_size, PILImage.LANCZOS)
+                    result_img = resize_preserve_aspect(result_img, input_size)
                     buf = BytesIO()
                     result_img.save(buf, format="PNG", quality=95)
                     result_data = buf.getvalue()

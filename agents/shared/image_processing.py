@@ -361,6 +361,69 @@ def _center_crop_square(img: Image.Image, target_size: int) -> Image.Image:
     return img.resize((target_size, target_size), Image.LANCZOS)
 
 
+def resize_preserve_aspect(
+    img: Image.Image, target_size: tuple[int, int]
+) -> Image.Image:
+    """Resize *img* to *target_size* without stretching.
+
+    If the source aspect ratio differs from the target, the source is
+    center-cropped to the target aspect first, then resized. Avoids the
+    horizontal/vertical squish that ``img.resize(target_size)`` produces
+    when aspects don't match (e.g. Gemini returning portrait when the
+    pipeline expected landscape).
+    """
+    target_w, target_h = target_size
+    if target_w <= 0 or target_h <= 0:
+        return img
+
+    src_w, src_h = img.size
+    if src_w <= 0 or src_h <= 0:
+        return img
+
+    target_aspect = target_w / target_h
+    src_aspect = src_w / src_h
+
+    # Tolerance: aspects within 1% are treated as equal — direct resize.
+    if abs(src_aspect - target_aspect) <= max(target_aspect, src_aspect) * 0.01:
+        return img.resize(target_size, Image.LANCZOS)
+
+    if src_aspect > target_aspect:
+        # Source too wide: crop sides
+        new_w = int(round(src_h * target_aspect))
+        left = (src_w - new_w) // 2
+        img = img.crop((left, 0, left + new_w, src_h))
+    else:
+        # Source too tall: crop top/bottom
+        new_h = int(round(src_w / target_aspect))
+        top = (src_h - new_h) // 2
+        img = img.crop((0, top, src_w, top + new_h))
+
+    return img.resize(target_size, Image.LANCZOS)
+
+
+def aspect_hint_for_size(target_size: tuple[int, int]) -> str:
+    """Return a short natural-language aspect-ratio hint for image-gen prompts.
+
+    Used to nudge Gemini (and similar) into returning a result that already
+    matches the pipeline canvas, so the post-resize step does less cropping.
+    """
+    w, h = target_size
+    if w <= 0 or h <= 0:
+        return ""
+    aspect = w / h
+    if abs(aspect - 1.0) < 0.05:
+        return "Output a square 1:1 aspect ratio image."
+    if aspect > 1.0:
+        return (
+            f"Output a landscape image with a {w}:{h} aspect ratio "
+            f"(roughly 16:9, wider than tall)."
+        )
+    return (
+        f"Output a portrait image with a {w}:{h} aspect ratio "
+        f"(roughly 9:16, taller than wide)."
+    )
+
+
 def _wrap_text(text: str, font, max_width: int, draw: ImageDraw.Draw) -> list[str]:
     words = text.split()
     lines, current = [], ""
