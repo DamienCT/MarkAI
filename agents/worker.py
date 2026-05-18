@@ -354,7 +354,34 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         )
 
         if custom_prompt:
-            base_prompt = sanitize_for_prompt(custom_prompt, max_length=500)
+            # Short user briefs (< SHORT_BRIEF_WORD_LIMIT words) get expanded by
+            # the art-director LLM. Long briefs are kept as-is — the user knows
+            # what they want.
+            from shared.prompt_enhancer import (
+                enhance_image_prompt as enhance_image_prompt_fn,
+                is_short_brief,
+            )
+
+            if is_short_brief(custom_prompt):
+                enhanced = await enhance_image_prompt_fn(
+                    brief=custom_prompt,
+                    brand_name=brand_name,
+                    product_name=product_name,
+                    channel=cal_channel,
+                    has_product_image=bool(product_image_url),
+                    is_lifestyle_only=not product_image_url,
+                )
+                if enhanced:
+                    base_prompt = sanitize_for_prompt(enhanced, max_length=4000)
+                    logger.info(
+                        "Regen: enhanced custom prompt (%d → %d words)",
+                        len(custom_prompt.split()),
+                        len(enhanced.split()),
+                    )
+                else:
+                    base_prompt = sanitize_for_prompt(custom_prompt, max_length=500)
+            else:
+                base_prompt = sanitize_for_prompt(custom_prompt, max_length=4000)
         else:
             base_prompt = (
                 f"Create a professional social media lifestyle image. "

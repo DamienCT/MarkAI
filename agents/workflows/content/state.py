@@ -37,6 +37,7 @@ class ContentState(TypedDict, total=False):
     product_id: str | None
     needs_manual_image: bool
     is_lifestyle_only: bool
+    enhanced_image_prompt: str | None
     generated_image: str | None
 
     # Branded image (with logo + text overlay)

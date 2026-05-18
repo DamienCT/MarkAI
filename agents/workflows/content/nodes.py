@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from shared.llm import chat_completion, generate_image, parse_llm_json
+from shared.prompt_enhancer import enhance_image_prompt as enhance_image_prompt_fn
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
     build_brand_intelligence,
@@ -44,6 +45,7 @@ CONTENT_PIPELINE_STEPS = [
     "generate_caption",
     "generate_hashtags",
     "source_product_image",
+    "enhance_image_prompt",
     "generate_background",
     "apply_branding",
     "adapt_platforms",
@@ -627,8 +629,82 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     }
 
 
+async def enhance_image_prompt(state: ContentState) -> dict[str, Any]:
+    """Expand a short user brief into an expert photographic prompt.
+
+    Runs the brief from ``calendar_item.content_brief`` (fallback: ``description``)
+    through an LLM art-director step. Long/expert briefs are passed through
+    untouched. On failure we return no enhanced prompt and ``generate_background``
+    falls back to its existing template.
+    """
+    await update_agent_run_step(
+        state.get("run_id", ""), "enhance_image_prompt", _STEP_INDEX["enhance_image_prompt"]
+    )
+
+    item = state.get("calendar_item", {})
+    brief = item.get("content_brief") or item.get("description") or ""
+    if not brief or not brief.strip():
+        return {"enhanced_image_prompt": None}
+
+    brand = state.get("brand", {})
+    product = state.get("product", {})
+    relevant_audience = state.get("relevant_audience", {})
+    is_lifestyle_only = state.get("is_lifestyle_only", True)
+    has_product_image = state.get("product_image") is not None
+
+    # Parse brand colors and visual style (same pattern as generate_background)
+    color_palette = brand.get("color_palette") or {}
+    if isinstance(color_palette, str):
+        try:
+            color_palette = json.loads(color_palette)
+        except (json.JSONDecodeError, TypeError):
+            color_palette = {}
+
+    brand_guidelines = brand.get("brand_guidelines", {})
+    if isinstance(brand_guidelines, str):
+        try:
+            brand_guidelines = json.loads(brand_guidelines)
+        except (json.JSONDecodeError, TypeError):
+            brand_guidelines = {}
+
+    legacy_colors = brand_guidelines.get("colors", {})
+    colors = {**legacy_colors, **color_palette} if color_palette else legacy_colors
+    visual_style = brand_guidelines.get(
+        "visual_style", "modern, clean, tropical warmth"
+    )
+
+    audience_content_prefs = relevant_audience.get("content_preferences", {})
+    audience_tone = (
+        audience_content_prefs.get("tone", "aspirational")
+        if isinstance(audience_content_prefs, dict)
+        else "aspirational"
+    )
+
+    enhanced = await enhance_image_prompt_fn(
+        brief=brief,
+        brand_name=brand.get("name", ""),
+        product_name=product.get("name", ""),
+        product_description=product.get("description", ""),
+        channel=item.get("channel", ""),
+        theme=item.get("theme", ""),
+        audience=relevant_audience.get("name", ""),
+        audience_tone=str(audience_tone),
+        brand_colors=colors,
+        visual_style=str(visual_style),
+        has_product_image=has_product_image,
+        is_lifestyle_only=is_lifestyle_only,
+    )
+
+    return {"enhanced_image_prompt": enhanced}
+
+
 async def generate_background(state: ContentState) -> dict[str, Any]:
     """Generate a background/lifestyle image via AI.
+
+    If ``enhanced_image_prompt`` is present in state (produced by the upstream
+    enhancer node), use it as the creative core of the prompt and wrap it with
+    the standard composition / realism / negative directives. Otherwise fall
+    back to the previous template-only behaviour.
 
     If is_lifestyle_only (no product gallery images), generate a pure lifestyle shot.
     If product image is available, generate a scene with a generic product placeholder
@@ -641,6 +717,7 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     has_product_image = state.get("product_image") is not None
     relevant_audience = state.get("relevant_audience", {})
     month_context = state.get("month_context", "")
+    enhanced_prompt = state.get("enhanced_image_prompt")
 
     # Extract brand colors from the dedicated color_palette field (preferred)
     # with fallback to brand_guidelines.colors for backwards compat
@@ -754,7 +831,28 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         "NO dreamy soft filter, NO bloom effect, NO over-stylized lighting. "
     )
 
-    if is_lifestyle_only or not has_product_image:
+    if enhanced_prompt:
+        # The art-director LLM has produced a self-contained scene description.
+        # We still append the realism/camera/negative guards so the image model
+        # stays on commercial-photography rails regardless of how the LLM phrased
+        # the scene.
+        logger.info(
+            "Using enhanced image prompt (%d words) as creative core",
+            len(enhanced_prompt.split()),
+        )
+        prompt_text = (
+            f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "
+            f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post.\n\n"
+            f"SCENE:\n{sanitize_for_prompt(enhanced_prompt, max_length=4000)}\n\n"
+            f"{camera_directive}"
+            f"{realism_directive}"
+            f"Real shadows. Authentic textures. Natural depth of field. "
+            f"{composition_rules}"
+            f"{negative_directive}"
+            f"The image MUST look like a documentary photograph captured with a "
+            f"real DSLR camera, NOT an artwork, NOT a rendering, NOT an illustration."
+        )
+    elif is_lifestyle_only or not has_product_image:
         # Pure lifestyle — no product in the image
         prompt_text = (
             f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "

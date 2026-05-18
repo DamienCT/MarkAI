@@ -15,6 +15,7 @@ from workflows.content.nodes import (
     generate_caption,
     generate_hashtags,
     source_product_image_node,
+    enhance_image_prompt,
     generate_background,
     adapt_platforms,
     apply_branding,
@@ -31,6 +32,7 @@ CONTENT_PIPELINE_STEPS = [
     "generate_caption",
     "generate_hashtags",
     "source_product_image",
+    "enhance_image_prompt",
     "generate_background",
     "apply_branding",
     "adapt_platforms",
@@ -92,6 +94,7 @@ _nodes = [
     ("generate_caption", generate_caption),
     ("generate_hashtags", generate_hashtags),
     ("source_product_image", source_product_image_node),
+    ("enhance_image_prompt", enhance_image_prompt),
     ("generate_background", generate_background),
     ("apply_branding", apply_branding),
     ("adapt_platforms", adapt_platforms),
@@ -119,6 +122,11 @@ builder.add_conditional_edges(
 )
 builder.add_conditional_edges(
     "source_product_image",
+    _check_failed,
+    {"end": END, "continue": "enhance_image_prompt"},
+)
+builder.add_conditional_edges(
+    "enhance_image_prompt",
     _check_failed,
     {"end": END, "continue": "generate_background"},
 )
