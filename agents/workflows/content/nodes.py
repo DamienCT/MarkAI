@@ -269,38 +269,52 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
             content_prefs.get("tone", "") if isinstance(content_prefs, dict) else ""
         )
 
+        brief_text = sanitize_for_prompt(
+            item.get("content_brief", item.get("description", ""))
+        )
+
         prompt = [
             {
                 "role": "system",
                 "content": (
-                    "You are an expert social media copywriter. "
-                    "Write a scroll-stopping hook (opening line) for a social media post. "
-                    "The hook MUST be under 8 words and under 50 characters. "
-                    "This text will be overlaid on an image, so brevity is critical. "
-                    "Write a complete, punchy short sentence — never leave it unfinished or truncated. "
-                    "Return ONLY the hook text, nothing else."
+                    "You write short, scroll-stopping hooks for social posts. "
+                    "Output a single line under 8 words and 50 characters.\n\n"
+                    "PRIMARY RULE: The user BRIEF tells you what this post is "
+                    "ABOUT. Stay on that topic. The brand voice tells you HOW "
+                    "to sound, not WHAT to talk about. If the brief and brand "
+                    "positioning disagree on topic, the brief wins.\n\n"
+                    "Sound like a real person wrote it. Specifically:\n"
+                    "- No em dashes between clauses\n"
+                    "- No 'it's not just X, it's Y' framing\n"
+                    "- No tricolons (three parallel adjectives)\n"
+                    "- Avoid these words: elevate, unlock, discover, harness, "
+                    "leverage, transform, navigate, delve, dive, embark, "
+                    "journey, curated, bespoke, seamless, holistic, "
+                    "game-changer, in today's world\n"
+                    "- Concrete and specific, not vague-aspirational\n"
+                    "Return ONLY the hook text. No quotes, no labels."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"BRAND: {sanitize_for_prompt(brand.get('name', ''))}\n"
-                    f"BRAND VOICE: {sanitize_for_prompt(str(positioning.get('brand_voice', '')))}\n"
-                    f"BRAND ARCHETYPE: {sanitize_for_prompt(str(positioning.get('brand_archetype', '')))}\n\n"
+                    f"WHAT TO WRITE ABOUT (primary intent — never override):\n"
+                    f"{brief_text or '(no brief provided — use theme as fallback)'}\n\n"
                     f"THIS POST:\n"
                     f"  Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
-                    f"  Content type: {sanitize_for_prompt(item.get('content_type', item.get('item_type', '')))}\n"
                     f"  Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
                     f"  Sub-theme: {sanitize_for_prompt(item.get('weekly_sub_theme', ''))}\n"
-                    f"  Brief: {sanitize_for_prompt(item.get('content_brief', item.get('description', '')))}\n"
                     f"  Pillar: {sanitize_for_prompt(relevant_pillar.get('name', ''))}\n\n"
-                    f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}\n"
-                    f"  Pain points: {sanitize_for_prompt(pain_points)}\n"
-                    f"  Tone preference: {sanitize_for_prompt(tone_pref)}\n\n"
-                    f"PRODUCT (if applicable): {sanitize_for_prompt(product.get('name', 'N/A'))} — "
-                    f"{sanitize_for_prompt(product.get('description', ''))}\n\n"
-                    f"RECENTLY POSTED HOOKS (do NOT repeat similar openings):\n{recent_hooks}\n\n"
-                    f"TOP PERFORMING HOOKS (learn from these):\n{top_hooks}"
+                    f"BRAND TONE REFERENCE (voice only, NOT topic):\n"
+                    f"  Brand: {sanitize_for_prompt(brand.get('name', ''))}\n"
+                    f"  Voice: {sanitize_for_prompt(str(positioning.get('brand_voice', '')))}\n"
+                    f"  Audience: {sanitize_for_prompt(relevant_audience.get('name', ''))} — "
+                    f"{sanitize_for_prompt(tone_pref)}\n"
+                    f"  Audience cares about: {sanitize_for_prompt(pain_points)}\n\n"
+                    f"PRODUCT (mention only if the brief is product-related): "
+                    f"{sanitize_for_prompt(product.get('name', 'N/A'))}\n\n"
+                    f"DO NOT REUSE these recent openings:\n{recent_hooks}\n\n"
+                    f"For style cues, hooks that performed well historically:\n{top_hooks}"
                 ),
             },
         ]
@@ -379,45 +393,81 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         # Brand URL for CTA
         brand_url = brand.get("website_url", "")
 
+        brief_text = sanitize_for_prompt(
+            item.get("content_brief", item.get("description", ""))
+        )
+
         prompt = [
             {
                 "role": "system",
                 "content": (
-                    "You are an expert social media copywriter. "
-                    "Write a compelling caption for a social media post. "
-                    "Start with the provided hook. Keep it engaging, on-brand, and appropriate for the platform. "
-                    "AIM FOR MEDIUM LENGTH: 3-5 short paragraphs. Include a strong opening hook, "
-                    "1-2 paragraphs of substance (product benefits, lifestyle value, or educational insight), "
-                    "and a clear CTA with the brand URL. Do NOT be overly long or overly terse. "
-                    "Return ONLY the caption text."
+                    "You write social captions that sound like a real person "
+                    "wrote them, not an AI optimizing for engagement.\n\n"
+                    "PRIMARY RULE: The user BRIEF is the topic of this post. "
+                    "Write about that topic. Use the brand voice only for TONE "
+                    "(formality, warmth, register). Never let brand positioning "
+                    "override what the user asked for. If the brief says "
+                    "'educational post about eating healthy', write about "
+                    "healthy eating — even if the brand is positioned for "
+                    "something else commercially.\n\n"
+                    "LENGTH: 3-5 short paragraphs. Start with the provided "
+                    "hook. End with a specific CTA that points to the brand URL.\n\n"
+                    "WRITE LIKE A HUMAN, NOT AN AI:\n"
+                    "- Vary sentence length. Short. Then medium. Occasionally a "
+                    "  longer one if the thought needs it.\n"
+                    "- No em dashes between clauses. Use periods, commas, or "
+                    "  restructure the sentence.\n"
+                    "- No 'It's not just X, it's Y' or 'Whether you're...' templates.\n"
+                    "- No tricolons (three parallel adjectives in a row).\n"
+                    "- Avoid these words entirely: elevate, unlock, discover, "
+                    "  harness, leverage, transform, navigate, delve, dive, "
+                    "  embark, journey, curated, bespoke, seamless, holistic, "
+                    "  unprecedented, game-changer, paradigm, ecosystem, "
+                    "  in today's world.\n"
+                    "- Don't open with 'Welcome to...' or 'In a world where...'.\n"
+                    "- Specifics beat abstractions. Name actual things, places, "
+                    "  numbers, behaviours. Avoid vague 'experience' / 'journey' talk.\n"
+                    "- Skip clean bullet lists unless the brief genuinely needs steps.\n"
+                    "- Read it back: would a friend write this in a message, or "
+                    "  does it sound like a brand template? If the second, rewrite.\n\n"
+                    "Return ONLY the caption text. No section labels, no quotes."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"BRAND: {sanitize_for_prompt(brand.get('name', ''))}\n"
-                    f"BRAND URL: {sanitize_for_prompt(brand_url)}\n\n"
-                    f"FULL BRAND POSITIONING:\n{positioning_text}\n\n"
-                    f"CONTENT PILLAR: {sanitize_for_prompt(relevant_pillar.get('name', ''))}\n"
-                    f"  Description: {sanitize_for_prompt(pillar_desc)}\n\n"
-                    f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}\n"
-                    f"  Pain points: {sanitize_for_prompt(pain_points)}\n"
-                    f"  Content preferences: {sanitize_for_prompt(audience_prefs)}\n\n"
+                    f"WHAT TO WRITE ABOUT (primary intent — never override):\n"
+                    f"{brief_text or '(no brief — fall back to theme below)'}\n\n"
+                    f"HOOK (start the caption with this line):\n"
+                    f"{sanitize_for_prompt(state.get('hook', ''))}\n\n"
+                    f"PLATFORM: {sanitize_for_prompt(item.get('channel', ''))}\n"
+                    f"THEME: {sanitize_for_prompt(item.get('theme', ''))}\n"
+                    f"SUB-THEME: {sanitize_for_prompt(item.get('weekly_sub_theme', ''))}\n\n"
+                    f"BRAND TONE REFERENCE (voice/style only, NOT topic):\n"
+                    f"  Name: {sanitize_for_prompt(brand.get('name', ''))}\n"
+                    f"  URL (for CTA): {sanitize_for_prompt(brand_url)}\n"
+                    f"  Positioning summary: {positioning_text}\n\n"
+                    f"AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}\n"
+                    f"  Cares about: {sanitize_for_prompt(pain_points)}\n"
+                    f"  Prefers: {sanitize_for_prompt(audience_prefs)}\n\n"
+                    f"PILLAR (optional context): "
+                    f"{sanitize_for_prompt(relevant_pillar.get('name', ''))} — "
+                    f"{sanitize_for_prompt(pillar_desc)}\n\n"
                     f"{product_section}"
-                    f"THIS POST:\n"
-                    f"  Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
-                    f"  Platform: {sanitize_for_prompt(item.get('channel', ''))}\n"
-                    f"  Theme: {sanitize_for_prompt(item.get('theme', ''))}\n"
-                    f"  Sub-theme: {sanitize_for_prompt(item.get('weekly_sub_theme', ''))}\n"
-                    f"  Brief: {sanitize_for_prompt(item.get('content_brief', item.get('description', '')))}\n\n"
-                    f"STRATEGY GUIDANCE FOR THIS MONTH:\n{sanitize_for_prompt(month_context[:5000])}\n\n"
-                    f"RECENTLY POSTED CAPTIONS (do NOT repeat similar themes or angles):\n{recent_captions}\n\n"
-                    f"TOP PERFORMING CAPTIONS (learn from these):\n{top_captions}\n\n"
-                    f"CTA GUIDANCE: Include a call-to-action with brand URL: {sanitize_for_prompt(brand_url)}"
+                    f"MONTHLY STRATEGY (background only — do not let it "
+                    f"override the brief):\n"
+                    f"{sanitize_for_prompt(month_context[:3000])}\n\n"
+                    f"DO NOT REUSE angles from these recent captions:\n"
+                    f"{recent_captions}\n\n"
+                    f"For style cues only, posts that performed well:\n"
+                    f"{top_captions}\n\n"
+                    f"CTA: end with a natural-sounding call-to-action that "
+                    f"includes the URL {sanitize_for_prompt(brand_url)}. "
+                    f"Make it match the brief's topic, not a generic brand pitch."
                 ),
             },
         ]
-        caption = await chat_completion(prompt, temperature=0.7, max_tokens=2048)
+        caption = await chat_completion(prompt, temperature=0.8, max_tokens=2048)
         return {"caption": caption.strip()}
     except Exception as exc:
         logger.error("generate_caption failed: %s", exc)
@@ -460,28 +510,40 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
                 if p.get("title")
             )
 
+        brief_text = sanitize_for_prompt(
+            item.get("content_brief", item.get("description", ""))
+        )
+
         prompt = [
             {
                 "role": "system",
                 "content": (
-                    "You are a social media strategist. "
-                    "Generate relevant hashtags for this post. "
-                    "Mix broad, niche, and branded hashtags. "
+                    "You generate hashtags for social posts.\n\n"
+                    "PRIMARY RULE: Match the user BRIEF first. The brief tells "
+                    "you the actual topic of this post. Pick hashtags that fit "
+                    "that topic — not generic brand-positioning tags. If the "
+                    "brief is about healthy eating, use food/wellness tags. If "
+                    "it's a promo, use deals/savings tags. If it's a product "
+                    "story, use category tags for that product.\n\n"
+                    "Mix broad, niche, and branded hashtags.\n"
                     'Return JSON: {"hashtags": ["tag1", "tag2", ...]}. '
-                    "Each tag is a single word, alphanumeric only, no '#' prefix, "
-                    "no spaces, no punctuation."
+                    "Each tag is a single word, alphanumeric only, no '#' "
+                    "prefix, no spaces, no punctuation."
                 ),
             },
             {
                 "role": "user",
                 "content": (
+                    f"BRIEF (drive hashtag topic from this):\n"
+                    f"{brief_text or '(no brief — fall back to caption + theme)'}\n\n"
                     f"BRAND: {sanitize_for_prompt(brand_name)}\n"
                     f"PLATFORM: {sanitize_for_prompt(channel)}\n"
                     f"PLATFORM HASHTAG LIMIT: {platform_limit}\n\n"
-                    f"FULL CAPTION:\n{sanitize_for_prompt(state.get('caption', ''))}\n\n"
+                    f"FULL CAPTION (for context):\n"
+                    f"{sanitize_for_prompt(state.get('caption', ''))}\n\n"
                     f"THEME: {sanitize_for_prompt(item.get('theme', ''))}\n\n"
                     f"{top_hashtags_info}\n\n"
-                    f"ALWAYS INCLUDE branded hashtag: {brand_slug}"
+                    f"ALWAYS INCLUDE the branded hashtag: {brand_slug}"
                 ),
             },
         ]

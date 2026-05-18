@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 logger = logging.getLogger(__name__)
 
@@ -284,12 +284,18 @@ def overlay_logo_and_text(
         lx, ly = find_best_logo_position(image_data, logo_w, logo_h)
         overlay.paste(logo, (lx, ly), logo)
 
-    # --- Text overlay ---
+    # --- Text overlay (frosted glass card) ---
+    # The card is a blurred crop of the underlying photo + a semi-transparent
+    # tint (dark on bright backgrounds, light on dark backgrounds) so it stays
+    # legible across very different scenes without us having to hand-tune
+    # opacity per image.
     font_large = _load_font(int(base.width * 0.040), "regular")
     font_small = _load_font(int(base.width * 0.026), "light")
     margin = int(base.width * 0.04)
-    pad = 16
-    max_text_w = base.width - 2 * margin - 2 * pad  # available width inside the bar
+    pad_x = max(20, int(base.width * 0.020))
+    pad_y = max(14, int(base.width * 0.014))
+    radius = max(16, int(base.width * 0.014))
+    max_text_w = base.width - 2 * margin - 2 * pad_x
 
     # Truncate text to fit within image width
     def _fit_text(text: str, font) -> str:
@@ -298,7 +304,6 @@ def overlay_logo_and_text(
         w = draw.textbbox((0, 0), text, font=font)[2]
         if w <= max_text_w:
             return text
-        # Binary search for the longest prefix that fits with ellipsis
         lo, hi = 0, len(text)
         while lo < hi:
             mid = (lo + hi + 1) // 2
@@ -315,32 +320,87 @@ def overlay_logo_and_text(
 
     bbox1 = draw.textbbox((0, 0), text_line1, font=font_large)
     text_w1, text_h1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
+    line_gap = max(6, int(base.width * 0.006))
     text_w2, text_h2 = 0, 0
     if text_line2:
         bbox2 = draw.textbbox((0, 0), text_line2, font=font_small)
         text_w2, text_h2 = bbox2[2] - bbox2[0], bbox2[3] - bbox2[1]
 
     total_w = max(text_w1, text_w2)
-    total_h = text_h1 + (text_h2 + 8 if text_line2 else 0)
+    total_h = text_h1 + (text_h2 + line_gap if text_line2 else 0)
 
-    bar_x1 = margin - pad
-    bar_y1 = base.height - total_h - margin - pad * 2
-    bar_x2 = margin + total_w + pad * 2
-    bar_y2 = bar_y1 + total_h + pad * 2
+    card_x1 = margin
+    card_y2 = base.height - margin
+    card_y1 = card_y2 - total_h - 2 * pad_y
+    card_x2 = card_x1 + total_w + 2 * pad_x
+    # Clamp to image bounds defensively
+    card_x2 = min(card_x2, base.width - margin)
+    card_y1 = max(card_y1, 0)
+    card_w = card_x2 - card_x1
+    card_h = card_y2 - card_y1
 
+    # Crop a slightly larger region so the Gaussian blur has clean edges,
+    # then crop back to the card dimensions after blurring.
+    blur_pad = max(8, int(base.width * 0.012))
+    src_left = max(0, card_x1 - blur_pad)
+    src_top = max(0, card_y1 - blur_pad)
+    src_right = min(base.width, card_x2 + blur_pad)
+    src_bottom = min(base.height, card_y2 + blur_pad)
+    under = base.crop((src_left, src_top, src_right, src_bottom))
+    blur_radius = max(12, int(base.width * 0.020))
+    blurred = under.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+    # Average luminance of the blurred backdrop drives tint direction.
+    sample = blurred.convert("L").resize((32, 32), Image.LANCZOS)
+    avg_lum = float(np.array(sample).mean())
+    bright_bg = avg_lum > 128
+
+    if bright_bg:
+        tint_rgba = (10, 12, 16, 130)         # dark tint over bright photos
+        text_color_main = (255, 255, 255, 245)
+        text_color_sub = (255, 255, 255, 215)
+        border_rgba = (255, 255, 255, 90)
+    else:
+        tint_rgba = (245, 245, 248, 140)      # light tint over dark photos
+        text_color_main = (18, 20, 24, 250)
+        text_color_sub = (40, 44, 50, 220)
+        border_rgba = (255, 255, 255, 130)
+
+    tint_layer = Image.new("RGBA", blurred.size, tint_rgba)
+    frosted_full = Image.alpha_composite(blurred.convert("RGBA"), tint_layer)
+
+    # Slice the frosted region back down to the card rect (we cropped extra
+    # for the blur \u2014 that extra is discarded here).
+    inner_left = card_x1 - src_left
+    inner_top = card_y1 - src_top
+    frosted_card = frosted_full.crop(
+        (inner_left, inner_top, inner_left + card_w, inner_top + card_h)
+    )
+
+    # Rounded-rectangle mask gives the card its soft corners.
+    card_mask = Image.new("L", (card_w, card_h), 0)
+    ImageDraw.Draw(card_mask).rounded_rectangle(
+        (0, 0, card_w, card_h), radius=radius, fill=255
+    )
+
+    # Paste the frosted card directly into the base image (under the
+    # logo + text overlay we composite at the very end).
+    base.paste(frosted_card, (card_x1, card_y1), card_mask)
+
+    # 1px hairline border drawn on the overlay layer for a clean edge.
     draw.rounded_rectangle(
-        [bar_x1, bar_y1, bar_x2, bar_y2], radius=12, fill=(0, 0, 0, 140)
+        (card_x1, card_y1, card_x2 - 1, card_y2 - 1),
+        radius=radius,
+        outline=border_rgba,
+        width=1,
     )
 
-    ty = bar_y1 + pad
-    draw.text(
-        (margin + pad, ty), text_line1, font=font_large, fill=(255, 255, 255, 240)
-    )
+    text_x = card_x1 + pad_x
+    text_y = card_y1 + pad_y
+    draw.text((text_x, text_y), text_line1, font=font_large, fill=text_color_main)
     if text_line2:
-        ty += text_h1 + 8
-        draw.text(
-            (margin + pad, ty), text_line2, font=font_small, fill=(255, 255, 255, 200)
-        )
+        text_y += text_h1 + line_gap
+        draw.text((text_x, text_y), text_line2, font=font_small, fill=text_color_sub)
 
     result = Image.alpha_composite(base, overlay)
     buf = BytesIO()
