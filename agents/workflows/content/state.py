@@ -24,6 +24,7 @@ class ContentState(TypedDict, total=False):
     recent_posts: list[dict[str, Any]]
     top_performing: list[dict[str, Any]]
     product: dict[str, Any]
+    sub_brand: str
 
     # Generated content
     hook: str

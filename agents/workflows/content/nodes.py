@@ -127,6 +127,63 @@ def _find_product(products: list[dict], calendar_item: dict) -> dict:
     return {}
 
 
+def _resolve_sub_brand(product: dict, brand: dict) -> str:
+    """Resolve the speaking sub-brand for a post.
+
+    For distributor brands (Fancy Finds → Giovanni Rana / Segafredo / …) the
+    product's vendor_name is the sub-brand that should hold the consumer voice.
+    For single-identity brands the vendor_name typically matches the brand
+    itself, in which case we just return brand.name.
+
+    Returns brand.name as a safe default whenever no usable vendor_name exists.
+    """
+    brand_name = (brand.get("name") or "").strip()
+    if not product:
+        return brand_name
+    vendor = (product.get("vendor_name") or "").strip()
+    if vendor and vendor.lower() not in brand_name.lower():
+        return vendor
+    return brand_name
+
+
+# Channels that take the B2B voice. Everything else is consumer-facing.
+_B2B_CHANNELS = frozenset({"linkedin"})
+
+
+def _voice_mode_for_channel(channel: str) -> str:
+    return "b2b" if (channel or "").lower() in _B2B_CHANNELS else "b2c"
+
+
+def _build_voice_block(voice_mode: str, sub_brand: str, brand_name: str) -> str:
+    """Per-channel voice directive injected at the top of caption/hook prompts.
+
+    B2C posts speak AS the featured sub-brand (e.g. Giovanni Rana when Fancy
+    Finds posts a Rana product on Instagram) — distributor language is banned.
+    B2B posts speak AS the brand itself (e.g. Fancy Finds on LinkedIn) with
+    the sub-brand cited as proof of catalogue quality, not as the narrator.
+    """
+    speaker = sub_brand or brand_name
+    if voice_mode == "b2c":
+        return (
+            f"VOICE — write in first person AS '{speaker}'. The narrator IS "
+            f"this brand speaking directly to the home consumer. Warm, "
+            f"sensory, gourmand, accessible. NEVER mention the distributor, "
+            f"supply chain, stock levels, margins, or any B2B language. "
+            f"Forbidden phrases: 'good supplier', 'in stock', 'great margins', "
+            f"'we distribute', 'reliable partner', 'wholesale', 'available "
+            f"through'. Sell a moment, not a SKU."
+        )
+    return (
+        f"VOICE — write in first person AS '{brand_name}' (the B2B "
+        f"distributor / supply partner). Professional, factual, focused on "
+        f"supply reliability, traceability, and quality consistency. The "
+        f"featured sub-brand ('{sub_brand}') is referenced as proof of "
+        f"catalogue quality, not as the narrating voice. B2B vocabulary "
+        f"('reliable supply', 'HORECA', 'cold chain', 'catalogue', 'SKU') is "
+        f"welcome here."
+    )
+
+
 async def load_context(state: ContentState) -> dict[str, Any]:
     """Load full brand intelligence, calendar item, and all enriched context."""
     await update_agent_run_step(state.get("run_id", ""), "load_context", _STEP_INDEX["load_context"])
@@ -214,6 +271,10 @@ async def load_context(state: ContentState) -> dict[str, Any]:
         calendar_item,
     )
 
+    # Resolve the speaking sub-brand (e.g. "Giovanni Rana" for a Fancy Finds
+    # Rana post; brand.name for single-identity brands).
+    sub_brand = _resolve_sub_brand(product, intel.get("brand", {}))
+
     return {
         "brand": intel["brand"],
         "calendar_item": calendar_item,
@@ -225,6 +286,7 @@ async def load_context(state: ContentState) -> dict[str, Any]:
         "recent_posts": intel.get("recent_posts", []),
         "top_performing": intel.get("top_performing", []),
         "product": product,
+        "sub_brand": sub_brand,
     }
 
 
@@ -240,6 +302,11 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
         product = state.get("product", {})
         recent_posts = state.get("recent_posts", [])
         top_performing = state.get("top_performing", [])
+
+        channel = (item.get("channel", "") or "").lower()
+        voice_mode = _voice_mode_for_channel(channel)
+        sub_brand = state.get("sub_brand") or brand.get("name", "")
+        voice_block = _build_voice_block(voice_mode, sub_brand, brand.get("name", ""))
 
         # Build recent hooks to avoid
         recent_hooks = (
@@ -277,6 +344,7 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
+                    f"{voice_block}\n\n"
                     "You write short, scroll-stopping hooks for social posts. "
                     "Output a single line under 8 words and 50 characters.\n\n"
                     "PRIMARY RULE: The user BRIEF tells you what this post is "
@@ -342,6 +410,11 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         recent_posts = state.get("recent_posts", [])
         top_performing = state.get("top_performing", [])
 
+        channel = (item.get("channel", "") or "").lower()
+        voice_mode = _voice_mode_for_channel(channel)
+        sub_brand = state.get("sub_brand") or brand.get("name", "")
+        voice_block = _build_voice_block(voice_mode, sub_brand, brand.get("name", ""))
+
         # Full positioning context (no truncation)
         positioning_text = sanitize_json_for_prompt(positioning)
 
@@ -401,6 +474,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
+                    f"{voice_block}\n\n"
                     "You write social captions that sound like a real person "
                     "wrote them, not an AI optimizing for engagement.\n\n"
                     "PRIMARY RULE: The user BRIEF is the topic of this post. "

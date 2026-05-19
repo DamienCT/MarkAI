@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 
 from sqlalchemy import select
 
@@ -12,6 +13,37 @@ from app.services.product_service import prune_brand_products_not_in, upsert_fro
 logger = logging.getLogger(__name__)
 
 _sync_lock = asyncio.Lock()
+
+# Vendor-name canonicalisation: BC stores legal entities like
+# "GIOVANNI RANA SRL ITALIA" but marketing needs "Giovanni Rana". Strip
+# legal suffixes and trailing country qualifiers so downstream code can
+# read product.vendor_name directly as the speaking sub-brand.
+_LEGAL_SUFFIX_RE = re.compile(
+    r"\s+(SRL|SPA|S\.P\.A\.|S\.R\.L\.|LTD|LIMITED|GMBH|SARL|SA|S\.A\.|"
+    r"INC|LLC|CO\.?|COMPANY|GROUP|HOLDING|HOLDINGS)\b.*",
+    re.IGNORECASE,
+)
+_TRAILING_GEO_RE = re.compile(
+    r"\s+(ITALIA|ITALY|FRANCE|GERMANY|DEUTSCHLAND|UK|U\.K\.|USA|U\.S\.A\.|"
+    r"SPAIN|ESPANA|ESPAÑA|PORTUGAL|BELGIUM|NETHERLANDS|EUROPE)\b.*",
+    re.IGNORECASE,
+)
+
+
+def _canonicalize_vendor_name(raw: str) -> str:
+    """Return a marketing-friendly canonical name for a BC vendor entry.
+
+    Removes legal-form suffixes (SRL, SPA, LTD, …) and trailing country
+    qualifiers, collapses whitespace, and title-cases the result. Returns
+    the original string unchanged when nothing matches so we never lose
+    data — only ever simplify it.
+    """
+    if not raw:
+        return raw
+    cleaned = _LEGAL_SUFFIX_RE.sub("", raw.strip())
+    cleaned = _TRAILING_GEO_RE.sub("", cleaned)
+    cleaned = " ".join(cleaned.split())
+    return cleaned.title() if cleaned else raw
 
 
 async def sync_bc_products() -> None:
@@ -121,7 +153,7 @@ async def _sync_bc_products_impl() -> None:
             try:
                 vendors = await fabric_service.get_vendors(brand.bc_company)
                 vendor_map = {
-                    v.get("no", ""): v.get("name", "")
+                    v.get("no", ""): _canonicalize_vendor_name(v.get("name", ""))
                     for v in vendors
                     if v.get("no")
                 }

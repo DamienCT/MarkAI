@@ -10,6 +10,7 @@ from app.auth.models import User
 from app.auth.permissions import role_has_access
 from app.config import settings
 from app.deps import get_current_user, get_db
+from app.scheduler.bc_sync import _canonicalize_vendor_name
 from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
 from app.services import fabric_service, minio_service, product_service
 from app.services.brand_service import get_brand
@@ -51,7 +52,10 @@ async def get_sync_options(
     categories_raw = await fabric_service.get_item_categories(brand.bc_company)
 
     vendors = [
-        {"no": v.get("no", ""), "name": v.get("name", "") or v.get("no", "")}
+        {
+            "no": v.get("no", ""),
+            "name": _canonicalize_vendor_name(v.get("name", "")) or v.get("no", ""),
+        }
         for v in vendors_raw
         if v.get("no")
     ]
@@ -125,7 +129,11 @@ async def sync_brand_products(
     vendor_map: dict[str, str] = {}
     try:
         vendors = await fabric_service.get_vendors(brand.bc_company)
-        vendor_map = {v.get("no", ""): v.get("name", "") for v in vendors if v.get("no")}
+        vendor_map = {
+            v.get("no", ""): _canonicalize_vendor_name(v.get("name", ""))
+            for v in vendors
+            if v.get("no")
+        }
     except Exception as e:
         logger.warning("Failed to fetch vendors for brand %s: %s", brand.name, e)
 
@@ -347,13 +355,124 @@ class FetchImagesResponse(BaseModel):
     images: list[dict]
 
 
+async def _fetch_one_product_image_via_worker(
+    product,
+) -> dict | None:
+    """Ask the browser worker for one validated image, then download the bytes.
+
+    Returns ``{"url", "content_type", "size_bytes", "image_data"}`` on success
+    or ``None`` if no image could be found and downloaded. Keeps the
+    browser-worker call and the byte download in one place so both the
+    single-product and batch endpoints share the same recipe.
+    """
+    import httpx
+
+    vendor_name = (product.vendor_name or "").strip()
+
+    image_url: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(
+                f"{settings.BROWSER_WORKER_URL}/capture/product-image",
+                json={
+                    "vendor_name": vendor_name,
+                    "product_name": product.name,
+                },
+                headers={
+                    "X-API-Key": getattr(settings, "BROWSER_WORKER_API_KEY", "")
+                    or "internal"
+                },
+            )
+            resp.raise_for_status()
+            image_url = (resp.json() or {}).get("image_url")
+    except Exception as exc:
+        logger.warning(
+            "Browser worker image search failed for '%s': %s", product.name, exc
+        )
+        return None
+
+    if not image_url:
+        return None
+
+    # The worker already validated the URL is reachable + a real image, but it
+    # only returned the URL — we still need the bytes to upload to MinIO.
+    try:
+        async with httpx.AsyncClient(
+            timeout=30, follow_redirects=True
+        ) as client:
+            resp = await client.get(
+                image_url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/130.0.0.0 Safari/537.36"
+                    )
+                },
+            )
+        if resp.status_code != 200 or len(resp.content) <= 5000:
+            return None
+        ct = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+        return {
+            "url": image_url,
+            "content_type": ct,
+            "size_bytes": len(resp.content),
+            "image_data": resp.content,
+        }
+    except Exception as exc:
+        logger.warning("Failed to download image from %s: %s", image_url, exc)
+        return None
+
+
+async def _save_image_to_gallery(
+    db: AsyncSession, product, img: dict
+) -> dict:
+    """Upload one downloaded image to MinIO and append it to the gallery."""
+    gallery = (
+        list(product.image_urls) if isinstance(product.image_urls, list) else []
+    )
+    if isinstance(product.image_urls, dict):
+        gallery = list(product.image_urls.values()) if product.image_urls else []
+
+    ext = (
+        "jpg"
+        if "jpeg" in img["content_type"]
+        else img["content_type"].split("/")[-1]
+    )
+    object_name = (
+        f"products/{product.id}/gallery/web_{len(gallery) + 1}.{ext}"
+    )
+
+    await minio_service.ensure_bucket()
+    await minio_service.upload_file(
+        object_name, img["image_data"], img["content_type"]
+    )
+
+    entry = {
+        "url": object_name,
+        "object_name": object_name,
+        "source": "web_search",
+        "source_url": img["url"],
+        "size_bytes": img["size_bytes"],
+    }
+    gallery.append(entry)
+
+    product.image_urls = gallery
+    flag_modified(product, "image_urls")
+    if not product.primary_image_url:
+        product.primary_image_url = object_name
+    await db.commit()
+    await db.refresh(product)
+    return entry
+
+
 @router.post("/{product_id}/fetch-images")
 async def fetch_product_images(
     product_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Search the web for real product images and save them to the product's image gallery."""
+    """Search the web for a real product image and save it to the product gallery."""
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -361,109 +480,18 @@ async def fetch_product_images(
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Use the browser worker (Playwright) for reliable image search
-    import httpx
+    img = await _fetch_one_product_image_via_worker(product)
+    if not img:
+        return {"product_id": str(product_id), "images_found": 0, "images": []}
 
-    vendor_name = ""
-    if product.attributes and isinstance(product.attributes, dict):
-        vendor_name = product.attributes.get("vendor_name", "")
-
-    image_url = None
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{settings.BROWSER_WORKER_URL}/capture/product-image",
-                json={
-                    "vendor_name": vendor_name,
-                    "product_name": product.name,
-                },
-                headers={"X-API-Key": getattr(settings, "BROWSER_WORKER_API_KEY", "") or "internal"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            image_url = data.get("image_url")
-    except Exception as e:
-        logger.warning("Browser worker image search failed for '%s': %s", product.name, e)
-
-    if not image_url:
-        # Fallback: try the DuckDuckGo scraper
-        from app.services.gemini_service import search_product_images
-
-        results = await search_product_images(
-            product_name=product.name,
-            product_description=product.description or "",
-            max_results=3,
-        )
-        if not results:
-            return {"product_id": str(product_id), "images_found": 0, "images": []}
-    else:
-        # Download the image from the URL the browser worker found
-        results = []
-        try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                resp = await client.get(image_url, headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                })
-                ct = resp.headers.get("content-type", "image/jpeg").split(";")[0]
-                if resp.status_code == 200 and len(resp.content) > 5000:
-                    results.append({
-                        "url": image_url,
-                        "content_type": ct,
-                        "size_bytes": len(resp.content),
-                        "image_data": resp.content,
-                    })
-        except Exception as e:
-            logger.warning("Failed to download image from %s: %s", image_url, e)
-        if not results:
-            return {"product_id": str(product_id), "images_found": 0, "images": []}
-
-    # Save images to MinIO and build gallery entries
-    gallery = list(product.image_urls) if isinstance(product.image_urls, list) else []
-    if isinstance(product.image_urls, dict):
-        gallery = list(product.image_urls.values()) if product.image_urls else []
-
-    new_images = []
-    for i, img in enumerate(results):
-        ext = (
-            "jpg"
-            if "jpeg" in img["content_type"]
-            else img["content_type"].split("/")[-1]
-        )
-        object_name = f"products/{product_id}/gallery/web_{len(gallery) + i + 1}.{ext}"
-
-        await minio_service.ensure_bucket()
-        await minio_service.upload_file(
-            object_name, img["image_data"], img["content_type"]
-        )
-
-        entry = {
-            "url": object_name,
-            "object_name": object_name,
-            "source": "web_search",
-            "source_url": img["url"],
-            "size_bytes": img["size_bytes"],
-        }
-        gallery.append(entry)
-        new_images.append(entry)
-
-    # Update product
-    product.image_urls = gallery
-    flag_modified(product, "image_urls")
-    if not product.primary_image_url and gallery:
-        product.primary_image_url = gallery[0]["object_name"]
-    await db.commit()
-    await db.refresh(product)
-
+    entry = await _save_image_to_gallery(db, product, img)
     logger.info(
-        "Fetched %d web images for product %s (%s)",
-        len(new_images),
-        product_id,
-        product.name,
+        "Fetched 1 web image for product %s (%s)", product_id, product.name
     )
     return {
         "product_id": str(product_id),
-        "images_found": len(new_images),
-        "images": new_images,
+        "images_found": 1,
+        "images": [entry],
     }
 
 
@@ -473,15 +501,13 @@ async def batch_fetch_product_images(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Fetch images for multiple products at once."""
+    """Fetch images for multiple products at once via the browser worker."""
     if len(req.product_ids) > 20:
         raise HTTPException(
             status_code=400, detail="Maximum 20 product IDs per batch request"
         )
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-
-    from app.services.gemini_service import search_product_images
 
     results = []
     for pid in req.product_ids:
@@ -496,46 +522,13 @@ async def batch_fetch_product_images(
             )
             continue
 
-        images = await search_product_images(
-            product_name=product.name,
-            product_description=product.description or "",
-            max_results=3,
-        )
+        img = await _fetch_one_product_image_via_worker(product)
+        if not img:
+            results.append({"product_id": str(pid), "images_found": 0})
+            continue
 
-        gallery = (
-            list(product.image_urls) if isinstance(product.image_urls, list) else []
-        )
-
-        saved = 0
-        for i, img in enumerate(images):
-            ext = (
-                "jpg"
-                if "jpeg" in img["content_type"]
-                else img["content_type"].split("/")[-1]
-            )
-            object_name = f"products/{pid}/gallery/web_{len(gallery) + i + 1}.{ext}"
-            await minio_service.ensure_bucket()
-            await minio_service.upload_file(
-                object_name, img["image_data"], img["content_type"]
-            )
-            gallery.append(
-                {
-                    "url": object_name,
-                    "object_name": object_name,
-                    "source": "web_search",
-                    "source_url": img["url"],
-                    "size_bytes": img["size_bytes"],
-                }
-            )
-            saved += 1
-
-        product.image_urls = gallery
-        flag_modified(product, "image_urls")
-        if not product.primary_image_url and gallery:
-            product.primary_image_url = gallery[0]["url"]
-        await db.commit()
-
-        results.append({"product_id": str(pid), "images_found": saved})
+        await _save_image_to_gallery(db, product, img)
+        results.append({"product_id": str(pid), "images_found": 1})
 
     return {"results": results, "total_processed": len(results)}
 

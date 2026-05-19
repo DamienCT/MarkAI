@@ -86,11 +86,13 @@ class Brand(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # Relationships
-    products = relationship("Product", back_populates="brand")
-    campaigns = relationship("Campaign", back_populates="brand")
-    calendar_items = relationship("CalendarItem", back_populates="brand")
-    competitors = relationship("Competitor", back_populates="brand")
-    agent_runs = relationship("AgentRun", back_populates="brand")
-    content_items = relationship("Content", back_populates="brand", foreign_keys="[Content.brand_id]")
-    engagement_metrics = relationship("EngagementMetric", back_populates="brand", foreign_keys="[EngagementMetric.brand_id]")
+    # Relationships — passive_deletes=True defers cascading to Postgres
+    # (every child FK is declared ON DELETE CASCADE), avoiding async lazy-load
+    # during session.delete() that would raise MissingGreenlet.
+    products = relationship("Product", back_populates="brand", cascade="all, delete", passive_deletes=True)
+    campaigns = relationship("Campaign", back_populates="brand", cascade="all, delete", passive_deletes=True)
+    calendar_items = relationship("CalendarItem", back_populates="brand", cascade="all, delete", passive_deletes=True)
+    competitors = relationship("Competitor", back_populates="brand", cascade="all, delete", passive_deletes=True)
+    agent_runs = relationship("AgentRun", back_populates="brand", cascade="all, delete", passive_deletes=True)
+    content_items = relationship("Content", back_populates="brand", foreign_keys="[Content.brand_id]", cascade="all, delete", passive_deletes=True)
+    engagement_metrics = relationship("EngagementMetric", back_populates="brand", foreign_keys="[EngagementMetric.brand_id]", cascade="all, delete", passive_deletes=True)
