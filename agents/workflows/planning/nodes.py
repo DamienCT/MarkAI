@@ -364,11 +364,14 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     existing_items = state.get("existing_items", [])
     events = state.get("events", [])
 
-    # Always start from January 1 of current year — the Content Strategy
-    # covers the full year with events tied to specific dates.
+    # Calendar items are scoped to the next `scope_weeks` weeks (default 2)
+    # so a planning run finishes in ~2 min rather than ~36 min. The strategy
+    # document the LLM still references can describe a full year — we just
+    # don't materialise calendar_items beyond the configured horizon.
     now = datetime.now(timezone.utc)
-    start_date_dt = datetime(now.year, 1, 1, tzinfo=timezone.utc)
-    end_date_dt = datetime(now.year, 12, 31, tzinfo=timezone.utc)
+    scope_weeks = max(1, int(state.get("scope_weeks", 2) or 2))
+    start_date_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date_dt = start_date_dt + timedelta(weeks=scope_weeks)
 
     # Build cadence string from strategy so the LLM respects weekly post counts.
     # Try structured cadence data first, then fall back to extracting from strategy document.
@@ -821,9 +824,16 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     items = state.get("calendar_items", [])
     strategy_document = state.get("strategy_document", "")
     enabled_channels = state.get("enabled_channels", [])
-    # Store all calendar items through end of year (strategy covers full year)
+    # Store calendar items only up to the planning horizon (scope_weeks),
+    # mirroring what generate_calendar_items emitted above. Items beyond the
+    # horizon get skipped by store_calendar_items via max_date.
     now = datetime.now(timezone.utc)
-    max_date = datetime(now.year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+    scope_weeks = max(1, int(state.get("scope_weeks", 2) or 2))
+    max_date = (
+        now.replace(hour=0, minute=0, second=0, microsecond=0)
+        + timedelta(weeks=scope_weeks, days=1)  # +1 day cushion for end-of-window items
+        - timedelta(seconds=1)
+    )
 
     db_items = []
     skipped = 0

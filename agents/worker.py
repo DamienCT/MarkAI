@@ -704,6 +704,19 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         and _consumer is not None
     ):
         try:
+            # Planning agent inserts items in status='planned' (commit 854a0a7
+            # split the lifecycle: planning → 'planned', user/system explicitly
+            # transitions to 'queued' before the content factory picks them up).
+            # In the activation chain there is no human in the loop, so we
+            # transition every 'planned' item for this brand to 'queued' here
+            # — otherwise the next query finds zero queued items and the
+            # `else` branch re-triggers planning, creating an infinite loop.
+            await execute_update(
+                "UPDATE calendar_items "
+                "SET status = 'queued' "
+                "WHERE brand_id = :brand_id AND status = 'planned'",
+                {"brand_id": brand_id},
+            )
             queued_items = await execute_query(
                 "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'queued' ORDER BY scheduled_at ASC LIMIT 100",
                 {"brand_id": brand_id},

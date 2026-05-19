@@ -288,12 +288,16 @@ async def activate_content_factory(
     # Trigger the research pipeline (worker chains: research → strategy → planning → content)
     from app.services import nats_service
 
+    # 2-week horizon by default: fast turnaround for reviewing/approving
+    # the generated calendar before committing token budget to a longer
+    # window. The strategy document the planning agent emits still covers
+    # the year, only the concrete calendar_items are scoped to scope_weeks.
     await nats_service.publish(
         "research.trigger",
         {
             "brand_id": str(brand_id),
             "trigger": "activation",
-            "scope_weeks": 12,
+            "scope_weeks": 2,
         },
     )
 
