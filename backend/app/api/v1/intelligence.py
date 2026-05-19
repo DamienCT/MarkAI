@@ -485,6 +485,29 @@ async def trigger_strategy(
     return {"message": "Strategy workflow triggered", "brand_id": str(trigger.brand_id)}
 
 
+@router.post("/trigger/planning")
+async def trigger_planning(
+    trigger: WorkflowTrigger,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Trigger the planning workflow (marketing plan + content calendar) via NATS."""
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    await nats_service.publish(
+        "planning.trigger",
+        {
+            "brand_id": str(trigger.brand_id),
+            "triggered_by": str(current_user.id),
+            "params": trigger.params,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    return {"message": "Planning workflow triggered", "brand_id": str(trigger.brand_id)}
+
+
 @router.post("/trigger/content")
 async def trigger_content_generation(
     trigger: WorkflowTrigger,
