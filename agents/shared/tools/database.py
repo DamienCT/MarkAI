@@ -391,6 +391,21 @@ def _sanitize_pg_text(value: Any) -> Any:
     return value
 
 
+def _cap_pg_varchar(value: Any, max_len: int) -> Any:
+    """Sanitize then truncate to *max_len* chars to fit a VARCHAR(n) column.
+
+    The strategy LLM has been returning descriptive pillar/theme/audience
+    sentences (110-130 chars) instead of short labels, which crashed the
+    planning insert with StringDataRightTruncationError and rolled back the
+    whole run. Capping at the column width keeps the run alive even when the
+    upstream prompt drifts toward prose.
+    """
+    sanitized = _sanitize_pg_text(value)
+    if isinstance(sanitized, str):
+        return sanitized[:max_len]
+    return sanitized
+
+
 async def delete_planned_calendar_items(
     brand_id: str,
     start: datetime,
@@ -526,7 +541,7 @@ async def store_calendar_items(
                     "id": item_id,
                     "brand_id": item.get("brand_id"),
                     "campaign_id": item.get("campaign_id"),
-                    "title": _sanitize_pg_text(item.get("title", ""))[:500],
+                    "title": _cap_pg_varchar(item.get("title", ""), 500),
                     "description": _sanitize_pg_text(item.get("description", "")),
                     "item_type": item_type,
                     "channel": channel,
@@ -534,13 +549,13 @@ async def store_calendar_items(
                     "product_ids": [item["product_id"]]
                     if item.get("product_id")
                     else None,
-                    "pillar": _sanitize_pg_text(item.get("pillar")),
-                    "theme": _sanitize_pg_text(item.get("theme")),
-                    "target_audience": _sanitize_pg_text(item.get("target_audience")),
-                    "weekly_sub_theme": _sanitize_pg_text(item.get("weekly_sub_theme")),
+                    "pillar": _cap_pg_varchar(item.get("pillar"), 100),
+                    "theme": _cap_pg_varchar(item.get("theme"), 255),
+                    "target_audience": _cap_pg_varchar(item.get("target_audience"), 255),
+                    "weekly_sub_theme": _cap_pg_varchar(item.get("weekly_sub_theme"), 255),
                     "content_brief": _sanitize_pg_text(item.get("content_brief")),
                     "visual_direction": _sanitize_pg_text(item.get("visual_direction")),
-                    "cta_type": _sanitize_pg_text(item.get("cta_type")),
+                    "cta_type": _cap_pg_varchar(item.get("cta_type"), 50),
                 },
             )
             ids.append((item_id, scheduled_at_val))
