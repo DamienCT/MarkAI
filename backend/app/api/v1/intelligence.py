@@ -143,7 +143,7 @@ async def list_intelligence_reports(
     # Map agent_runs to the report format the frontend expects
     reports = []
     for r in runs:
-        output = r.output_payload or {}
+        output = r.output_payload if isinstance(r.output_payload, dict) else {}
         # Build a title from agent type
         title = f"{r.agent_type.replace('_', ' ').title()} Report"
         # Extract summary depending on report type
@@ -204,7 +204,11 @@ async def list_intelligence_reports(
 
         # Extract insights from gaps
         gaps = output.get("gaps", [])
-        insights = [g.get("description", "") for g in gaps[:5]] if gaps else []
+        insights = (
+            [g.get("description", "") for g in gaps[:5] if isinstance(g, dict)]
+            if isinstance(gaps, list)
+            else []
+        )
 
         reports.append(
             {
