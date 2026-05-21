@@ -26,6 +26,7 @@ async def list_approvals(
     limit = min(limit, 200)
     from sqlalchemy import select, func
     from app.models.approval import Approval
+    from app.models.content import Content
 
     # Accept both "status" and "status_filter" query params
     effective_status = status or status_filter
@@ -42,7 +43,7 @@ async def list_approvals(
     stmt = (
         select(Approval)
         .options(
-            selectinload(Approval.content),
+            selectinload(Approval.content).selectinload(Content.brand),
             selectinload(Approval.calendar_item),
         )
         .order_by(Approval.created_at.desc())
@@ -76,6 +77,8 @@ async def list_approvals(
                 hashtags = []
             d["content"] = {
                 "id": str(item.content.id),
+                "brand_id": str(item.content.brand_id),
+                "brand_name": item.content.brand.name if item.content.brand else None,
                 "headline": item.content.headline,
                 "caption": item.content.caption,
                 "hashtags": hashtags or [],
