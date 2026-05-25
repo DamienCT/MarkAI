@@ -130,10 +130,10 @@ def _find_product(products: list[dict], calendar_item: dict) -> dict:
 def _resolve_sub_brand(product: dict, brand: dict) -> str:
     """Resolve the speaking sub-brand for a post.
 
-    For distributor brands (Fancy Finds → Giovanni Rana / Segafredo / …) the
-    product's vendor_name is the sub-brand that should hold the consumer voice.
-    For single-identity brands the vendor_name typically matches the brand
-    itself, in which case we just return brand.name.
+    For distributor brands (one parent brand selling products under multiple
+    sub-brands), the product's vendor_name is the sub-brand that should hold
+    the consumer voice. For single-identity brands the vendor_name typically
+    matches the brand itself, in which case we just return brand.name.
 
     Returns brand.name as a safe default whenever no usable vendor_name exists.
     """
@@ -157,10 +157,10 @@ def _voice_mode_for_channel(channel: str) -> str:
 def _build_voice_block(voice_mode: str, sub_brand: str, brand_name: str) -> str:
     """Per-channel voice directive injected at the top of caption/hook prompts.
 
-    B2C posts speak AS the featured sub-brand (e.g. Giovanni Rana when Fancy
-    Finds posts a Rana product on Instagram) — distributor language is banned.
-    B2B posts speak AS the brand itself (e.g. Fancy Finds on LinkedIn) with
-    the sub-brand cited as proof of catalogue quality, not as the narrator.
+    B2C posts speak AS the featured sub-brand (the product's vendor); any
+    distributor language is banned. B2B posts speak AS the parent brand
+    itself, with the sub-brand cited as proof of catalogue quality, not as
+    the narrator.
     """
     speaker = sub_brand or brand_name
     if voice_mode == "b2c":
@@ -184,6 +184,128 @@ def _build_voice_block(voice_mode: str, sub_brand: str, brand_name: str) -> str:
     )
 
 
+# Default per-channel caption settings used when neither the channel
+# override nor the brand-level guidelines specify a value. Tuned for
+# scroll-stopping length per platform; brands can override any field via
+# brand_guidelines.channels.<channel>.caption.<field>.
+_DEFAULT_CHANNEL_CAPTION: dict[str, dict[str, Any]] = {
+    "instagram":    {"max_words": 60,  "hashtags_min": 5, "hashtags_max": 10, "emoji": "moderate"},
+    "facebook":     {"max_words": 90,  "hashtags_min": 3, "hashtags_max": 5,  "emoji": "minimal"},
+    "linkedin":     {"max_words": 120, "hashtags_min": 3, "hashtags_max": 3,  "emoji": "none"},
+    "tiktok":       {"max_words": 30,  "hashtags_min": 3, "hashtags_max": 5,  "emoji": "heavy"},
+    "x":            {"max_words": 35,  "hashtags_min": 2, "hashtags_max": 3,  "emoji": "minimal"},
+    "website_blog": {"max_words": 800, "hashtags_min": 0, "hashtags_max": 0,  "emoji": "none"},
+    "teams":        {"max_words": 80,  "hashtags_min": 0, "hashtags_max": 0,  "emoji": "none"},
+}
+
+
+def _coerce_guidelines(brand: dict) -> dict:
+    """brand_guidelines may arrive as JSON string; normalize to dict."""
+    guidelines = brand.get("brand_guidelines") or {}
+    if isinstance(guidelines, str):
+        try:
+            guidelines = json.loads(guidelines)
+        except (json.JSONDecodeError, TypeError):
+            guidelines = {}
+    return guidelines if isinstance(guidelines, dict) else {}
+
+
+def _effective_caption_settings(brand: dict, channel: str) -> dict[str, Any]:
+    """Resolve effective caption settings via layered read.
+
+    Layering order, per field:
+      1. brand_guidelines.channels.<channel>.caption.<field>   (per-channel override)
+      2. brand_guidelines.<field> / brand.<field>              (brand global)
+      3. _DEFAULT_CHANNEL_CAPTION[<channel>].<field>           (system default)
+    """
+    channel = (channel or "").lower()
+    guidelines = _coerce_guidelines(brand)
+    channels_cfg = guidelines.get("channels") or {}
+    channel_cfg = channels_cfg.get(channel) if isinstance(channels_cfg, dict) else {}
+    channel_caption = (channel_cfg or {}).get("caption") or {}
+    defaults = _DEFAULT_CHANNEL_CAPTION.get(channel) or _DEFAULT_CHANNEL_CAPTION["instagram"]
+
+    hashtags_count = channel_caption.get("hashtags_count")
+    if isinstance(hashtags_count, list) and len(hashtags_count) == 2:
+        ht_min, ht_max = hashtags_count
+    else:
+        ht_min, ht_max = defaults["hashtags_min"], defaults["hashtags_max"]
+
+    return {
+        "max_words":          channel_caption.get("max_words") or defaults["max_words"],
+        "hook_format":        channel_caption.get("hook_format") or "",
+        "tone":               channel_caption.get("tone_override") or brand.get("tone_of_voice") or "",
+        "style":              channel_caption.get("style_override") or guidelines.get("voice_style") or "",
+        "emoji":              channel_caption.get("emoji_override") or guidelines.get("emoji_usage") or defaults["emoji"],
+        "hashtags_min":       ht_min,
+        "hashtags_max":       ht_max,
+        "hashtag_strategy":   guidelines.get("hashtag_strategy") or "",
+        "must_name_product":  bool(channel_caption.get("must_name_product", False)),
+        "structure_template": channel_caption.get("structure_template") or "",
+        "caption_brief":      channel_caption.get("caption_brief") or "",
+        "dos":                guidelines.get("dos") or [],
+        "donts":              guidelines.get("donts") or [],
+    }
+
+
+def _build_brand_bible_block(brand: dict, settings: dict) -> str:
+    """Render brand description + voice rules as a verbatim prompt block.
+
+    Lifted from brand fields the user fills via the UI; emitted only if
+    populated, so brands with empty profiles fall back to existing prompt
+    behavior.
+    """
+    parts = []
+    description = (brand.get("description") or "").strip()
+    if description:
+        parts.append(
+            "BRAND BIBLE (verbatim, non-negotiable):\n"
+            f"{sanitize_for_prompt(description, max_length=4000)}"
+        )
+    if settings.get("tone"):
+        parts.append(f"TONE: {sanitize_for_prompt(settings['tone'])}")
+    if settings.get("style"):
+        parts.append(f"STYLE: {sanitize_for_prompt(settings['style'])}")
+    if settings.get("emoji"):
+        parts.append(f"EMOJI USAGE: {sanitize_for_prompt(settings['emoji'])}")
+    if settings.get("hashtag_strategy"):
+        parts.append(
+            f"HASHTAG STRATEGY: {sanitize_for_prompt(settings['hashtag_strategy'])}"
+        )
+    dos = [d for d in (settings.get("dos") or []) if d]
+    if dos:
+        dos_lines = "\n".join(f"  - {sanitize_for_prompt(str(d))}" for d in dos)
+        parts.append(f"MUST FOLLOW:\n{dos_lines}")
+    donts = [d for d in (settings.get("donts") or []) if d]
+    if donts:
+        donts_lines = "\n".join(f"  - {sanitize_for_prompt(str(d))}" for d in donts)
+        parts.append(f"MUST NEVER DO:\n{donts_lines}")
+    if settings.get("caption_brief"):
+        parts.append(
+            "CHANNEL OVERRIDE BRIEF (this channel only, overrides global tone):\n"
+            f"{sanitize_for_prompt(settings['caption_brief'], max_length=2000)}"
+        )
+    return "\n\n".join(parts)
+
+
+def _build_channel_constraints_block(settings: dict, channel: str) -> str:
+    """Channel-specific hard constraints for the LLM."""
+    lines = [
+        f"CHANNEL: {channel or 'instagram'}",
+        f"MAX WORDS: {settings['max_words']} (HARD LIMIT — never exceed)",
+        f"HASHTAGS: between {settings['hashtags_min']} and {settings['hashtags_max']}",
+    ]
+    if settings.get("hook_format"):
+        lines.append(f"HOOK FORMAT: {sanitize_for_prompt(settings['hook_format'])}")
+    if settings.get("structure_template"):
+        lines.append(
+            f"STRUCTURE TEMPLATE: {sanitize_for_prompt(settings['structure_template'])}"
+        )
+    if settings.get("must_name_product"):
+        lines.append("MUST mention the product name explicitly in the caption.")
+    return "\n".join(lines)
+
+
 async def load_context(state: ContentState) -> dict[str, Any]:
     """Load full brand intelligence, calendar item, and all enriched context."""
     await update_agent_run_step(state.get("run_id", ""), "load_context", _STEP_INDEX["load_context"])
@@ -202,6 +324,20 @@ async def load_context(state: ContentState) -> dict[str, Any]:
     if not calendar_item:
         return {
             "errors": [*(state.get("errors") or []), "Calendar item not found"],
+            "status": "failed",
+        }
+
+    brief = (
+        calendar_item.get("content_brief")
+        or calendar_item.get("description")
+        or ""
+    ).strip()
+    if not brief:
+        return {
+            "errors": [
+                *(state.get("errors") or []),
+                "Empty brief — refusing to hallucinate content",
+            ],
             "status": "failed",
         }
 
@@ -271,8 +407,8 @@ async def load_context(state: ContentState) -> dict[str, Any]:
         calendar_item,
     )
 
-    # Resolve the speaking sub-brand (e.g. "Giovanni Rana" for a Fancy Finds
-    # Rana post; brand.name for single-identity brands).
+    # Resolve the speaking sub-brand from product.vendor_name; falls back
+    # to brand.name for single-identity brands.
     sub_brand = _resolve_sub_brand(product, intel.get("brand", {}))
 
     return {
@@ -308,6 +444,15 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
         sub_brand = state.get("sub_brand") or brand.get("name", "")
         voice_block = _build_voice_block(voice_mode, sub_brand, brand.get("name", ""))
 
+        # Layered caption settings + verbatim brand bible from the brand record
+        settings = _effective_caption_settings(brand, channel)
+        brand_bible_block = _build_brand_bible_block(brand, settings)
+        hook_format_directive = (
+            f"HOOK FORMAT: {sanitize_for_prompt(settings['hook_format'])}\n\n"
+            if settings.get("hook_format")
+            else ""
+        )
+
         # Build recent hooks to avoid
         recent_hooks = (
             "\n".join(
@@ -337,14 +482,17 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
         )
 
         brief_text = sanitize_for_prompt(
-            item.get("content_brief", item.get("description", ""))
+            item.get("content_brief") or item.get("description") or ""
         )
 
+        bible_section = f"{brand_bible_block}\n\n" if brand_bible_block else ""
         prompt = [
             {
                 "role": "system",
                 "content": (
                     f"{voice_block}\n\n"
+                    f"{bible_section}"
+                    f"{hook_format_directive}"
                     "You write short, scroll-stopping hooks for social posts. "
                     "Output a single line under 8 words and 50 characters.\n\n"
                     "PRIMARY RULE: The user BRIEF tells you what this post is "
@@ -415,6 +563,12 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         sub_brand = state.get("sub_brand") or brand.get("name", "")
         voice_block = _build_voice_block(voice_mode, sub_brand, brand.get("name", ""))
 
+        # Layered caption settings: per-channel override > brand global > defaults
+        settings = _effective_caption_settings(brand, channel)
+        brand_bible_block = _build_brand_bible_block(brand, settings)
+        channel_constraints_block = _build_channel_constraints_block(settings, channel)
+        max_words = settings["max_words"]
+
         # Full positioning context (no truncation)
         positioning_text = sanitize_json_for_prompt(positioning)
 
@@ -467,14 +621,17 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         brand_url = brand.get("website_url", "")
 
         brief_text = sanitize_for_prompt(
-            item.get("content_brief", item.get("description", ""))
+            item.get("content_brief") or item.get("description") or ""
         )
 
+        bible_section = f"{brand_bible_block}\n\n" if brand_bible_block else ""
         prompt = [
             {
                 "role": "system",
                 "content": (
                     f"{voice_block}\n\n"
+                    f"{bible_section}"
+                    f"{channel_constraints_block}\n\n"
                     "You write social captions that sound like a real person "
                     "wrote them, not an AI optimizing for engagement.\n\n"
                     "PRIMARY RULE: The user BRIEF is the topic of this post. "
@@ -482,10 +639,13 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     "(formality, warmth, register). Never let brand positioning "
                     "override what the user asked for. If the brief says "
                     "'educational post about eating healthy', write about "
-                    "healthy eating — even if the brand is positioned for "
+                    "healthy eating, even if the brand is positioned for "
                     "something else commercially.\n\n"
-                    "LENGTH: 3-5 short paragraphs. Start with the provided "
-                    "hook. End with a specific CTA that points to the brand URL.\n\n"
+                    f"LENGTH: Stay strictly under {max_words} words (HARD LIMIT). "
+                    "Start with the provided hook. End with a specific CTA "
+                    "that points to the brand URL. If your draft exceeds "
+                    f"{max_words} words, rewrite tighter before returning. "
+                    "Do not submit an over-length caption.\n\n"
                     "WRITE LIKE A HUMAN, NOT AN AI:\n"
                     "- Vary sentence length. Short. Then medium. Occasionally a "
                     "  longer one if the thought needs it.\n"
@@ -585,7 +745,7 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
             )
 
         brief_text = sanitize_for_prompt(
-            item.get("content_brief", item.get("description", ""))
+            item.get("content_brief") or item.get("description") or ""
         )
 
         prompt = [
@@ -1064,17 +1224,142 @@ ALL_CHANNELS = [
     "teams",
 ]
 
-# Platform-specific constraints used in the adaptation prompt
-PLATFORM_SPECS = {
-    "instagram": "Square/portrait image, 2200 char caption max, up to 30 hashtags.",
-    "facebook": "Landscape image, longer text allowed, 3-5 hashtags.",
-    "linkedin": "Professional tone, article-style, up to 3 hashtags.",
-    "youtube": "Title (100 chars max), description (5000 chars max), tags list, thumbnail prompt.",
-    "tiktok": "Short punchy caption, trending hashtags, vertical video brief.",
-    "x": "280 chars max per tweet, 2-3 hashtags, thread format for longer content.",
+# Base platform-format hints. The numeric constraints (max_words,
+# hashtag counts) are appended dynamically per-brand by
+# _platform_spec_for(), pulling from brand_guidelines first and falling
+# back to _DEFAULT_CHANNEL_CAPTION.
+_PLATFORM_FORMAT_HINTS = {
+    "instagram":    "Square/portrait image, up to 30 hashtags supported.",
+    "facebook":     "Landscape image, longer text supported.",
+    "linkedin":     "Professional tone, article-style.",
+    "youtube":      "Title (100 chars max), description (5000 chars max), tags list, thumbnail prompt.",
+    "tiktok":       "Short punchy caption, trending hashtags, vertical video brief.",
+    "x":            "280 chars max per tweet, thread format for longer content.",
     "website_blog": "Full markdown article with H1/H2/H3 headings, meta description, SEO keywords. NOT auto-published.",
-    "teams": "Internal announcement format, plain text, concise.",
+    "teams":        "Internal announcement format, plain text, concise.",
 }
+
+
+def _count_words(text: str) -> int:
+    return sum(1 for w in (text or "").split() if w.strip())
+
+
+def _trim_to_word_limit(text: str, max_words: int) -> str:
+    """Trim text to fit max_words, preferring a clean sentence boundary."""
+    words = (text or "").split()
+    if len(words) <= max_words:
+        return text
+    truncated = " ".join(words[:max_words])
+    # Prefer ending on a sentence boundary in the back half of the trim
+    last_stop = max(
+        truncated.rfind("."),
+        truncated.rfind("!"),
+        truncated.rfind("?"),
+    )
+    if last_stop > len(truncated) * 0.6:
+        return truncated[: last_stop + 1]
+    return truncated.rstrip(",;: ") + "..."
+
+
+async def _shorten_caption_with_llm(
+    caption: str, max_words: int, brand: dict, channel: str
+) -> str:
+    """Ask the LLM to compress a caption to <= max_words. One-shot retry."""
+    settings = _effective_caption_settings(brand, channel)
+    bible = _build_brand_bible_block(brand, settings)
+    bible_section = f"{bible}\n\n" if bible else ""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"{bible_section}"
+                "You compress social captions while preserving meaning, voice, "
+                "and the call to action. Output ONLY the rewritten caption text."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Rewrite this {channel or 'social'} caption to be under "
+                f"{max_words} words while keeping the same topic, voice, hook, "
+                f"and CTA. Trim filler, merge sentences, drop adjectives. "
+                f"NEVER exceed {max_words} words.\n\n"
+                f"Original:\n{sanitize_for_prompt(caption, max_length=4000)}"
+            ),
+        },
+    ]
+    try:
+        result = await chat_completion(messages, temperature=0.4, max_tokens=1024)
+        return str(result or "").strip().strip('"').strip("`")
+    except Exception as exc:
+        logger.warning(
+            "shorten-caption retry failed for %s (%s) — falling back to trim",
+            channel, exc,
+        )
+        return caption
+
+
+async def _enforce_caption_word_limits(
+    adaptations: dict, brand: dict
+) -> dict:
+    """Per-channel: count words, retry-once via LLM if over, trim as fallback.
+
+    Implements the spec: keep <= max, LLM-retry if > max, hard-trim if still
+    over after retry. Logs at each step so over-length issues are visible.
+    """
+    if not isinstance(adaptations, dict):
+        return adaptations
+    for channel, payload in list(adaptations.items()):
+        if not isinstance(payload, dict):
+            continue
+        caption = payload.get("caption")
+        if not isinstance(caption, str) or not caption.strip():
+            continue
+        settings = _effective_caption_settings(brand, channel)
+        max_words = settings["max_words"]
+        word_count = _count_words(caption)
+        if word_count <= max_words:
+            continue
+        logger.info(
+            "adapt_platforms: %s caption is %d words (limit %d), retrying via LLM",
+            channel, word_count, max_words,
+        )
+        shortened = await _shorten_caption_with_llm(
+            caption, max_words, brand, channel
+        )
+        new_count = _count_words(shortened)
+        if shortened and new_count <= max_words:
+            payload["caption"] = shortened
+            continue
+        # LLM still over budget (or returned junk) — hard trim
+        trimmed = _trim_to_word_limit(
+            shortened if shortened else caption, max_words
+        )
+        logger.warning(
+            "adapt_platforms: %s caption still over after retry (%d), trimmed to %d",
+            channel, new_count, _count_words(trimmed),
+        )
+        payload["caption"] = trimmed
+    return adaptations
+
+
+def _platform_spec_for(channel: str, brand: dict) -> str:
+    """Per-channel spec line: format hint + per-brand max_words and hashtag count."""
+    channel = (channel or "").lower()
+    settings = _effective_caption_settings(brand, channel)
+    base = _PLATFORM_FORMAT_HINTS.get(channel, "Standard caption with hashtags.")
+    pieces = [
+        base,
+        f"MAX {settings['max_words']} WORDS (hard limit, never exceed).",
+        f"Hashtags: {settings['hashtags_min']}-{settings['hashtags_max']}.",
+    ]
+    if settings.get("emoji"):
+        pieces.append(f"Emoji usage: {settings['emoji']}.")
+    if settings.get("hook_format"):
+        pieces.append(f"Hook format: {settings['hook_format']}.")
+    if settings.get("must_name_product"):
+        pieces.append("MUST mention product name.")
+    return " ".join(pieces)
 
 
 async def adapt_platforms(state: ContentState) -> dict[str, Any]:
@@ -1098,12 +1383,18 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
     ]
     channels_to_adapt = enabled if enabled else ["instagram"]
 
-    # Build per-platform spec block only for enabled channels
+    # Build per-platform spec block only for enabled channels.
+    # Specs now include the per-brand max_words / hashtag count from the
+    # brand's Voice Profile (channel override or global), so the LLM gets
+    # explicit numeric limits per platform instead of vague guidance.
     spec_lines = "\n".join(
-        f"- {name}: {spec}"
-        for name, spec in PLATFORM_SPECS.items()
-        if name in channels_to_adapt
+        f"- {ch}: {_platform_spec_for(ch, brand)}" for ch in channels_to_adapt
     )
+
+    # Also assemble a brand bible section so the adaptation respects the
+    # same dos/donts as the original draft.
+    primary_settings = _effective_caption_settings(brand, source_platform or "")
+    bible_block_for_adapt = _build_brand_bible_block(brand, primary_settings)
 
     # Enriched context for platform adaptation
     positioning = state.get("positioning", {})
@@ -1119,15 +1410,22 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
         ", ".join(key_messages) if isinstance(key_messages, list) else str(key_messages)
     )
 
+    bible_section_for_adapt = (
+        f"{bible_block_for_adapt}\n\n" if bible_block_for_adapt else ""
+    )
     prompt = [
         {
             "role": "system",
             "content": (
                 "You are a social media and content marketing expert. "
-                "Adapt the following content "
-                "for each platform below, respecting each platform's constraints and best practices.\n\n"
-                "Platform specifications:\n"
+                "Adapt the following content for each platform below, "
+                "respecting each platform's constraints AND the brand voice rules.\n\n"
+                f"{bible_section_for_adapt}"
+                "Platform specifications (HARD LIMITS, never exceed):\n"
                 f"{spec_lines}\n\n"
+                "WORD COUNT IS A HARD LIMIT. For each platform, count words "
+                "in your draft caption. If it exceeds the MAX, rewrite tighter "
+                "until it fits. Do not return an over-length caption.\n\n"
                 "Return JSON with platform names as keys. Each platform object must contain:\n"
                 "  caption (string), hashtags (array of strings without # prefix), cta (string), "
                 "  optimal_time (string), format_notes (string).\n"
@@ -1171,6 +1469,9 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
             only_val = next(iter(adaptations.values()))
             if isinstance(only_val, dict):
                 adaptations = only_val
+
+        # Enforce per-channel max_words: LLM retry first, hard-trim fallback.
+        adaptations = await _enforce_caption_word_limits(adaptations, brand)
 
         # Extract CTA from the primary platform adaptation
         primary = adaptations.get(source_platform, {})

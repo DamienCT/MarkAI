@@ -13,7 +13,21 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { ColorPalette, type ColorPaletteValue } from "@/components/brand/ColorPalette";
+import { CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
 import type { Brand } from "@/types";
+
+type ChannelCaptionSettings = {
+  max_words?: number;
+  hook_format?: string;
+  tone_override?: string;
+  emoji_override?: string;
+  hashtags_count?: [number, number];
+  must_name_product?: boolean;
+  structure_template?: string;
+  caption_brief?: string;
+};
+
+type ChannelCaptionsMap = Record<string, ChannelCaptionSettings>;
 
 interface BrandFormProps {
   brand?: Brand;
@@ -56,6 +70,170 @@ function AiWandButton({
     </Button>
   );
 }
+
+function ChannelCaptionEditor({
+  channel,
+  label,
+  value,
+  onChange,
+}: {
+  channel: string;
+  label: string;
+  value: ChannelCaptionSettings;
+  onChange: (next: ChannelCaptionSettings) => void;
+}) {
+  const set = <K extends keyof ChannelCaptionSettings>(
+    key: K,
+    v: ChannelCaptionSettings[K] | undefined
+  ) => {
+    const next: ChannelCaptionSettings = { ...value };
+    if (v === undefined || v === "" || (typeof v === "number" && Number.isNaN(v))) {
+      delete next[key];
+    } else {
+      next[key] = v;
+    }
+    onChange(next);
+  };
+
+  const hMin = value.hashtags_count?.[0];
+  const hMax = value.hashtags_count?.[1];
+  const setHashtags = (idx: 0 | 1, n: number | undefined) => {
+    const min = idx === 0 ? n : hMin;
+    const max = idx === 1 ? n : hMax;
+    if (min === undefined && max === undefined) {
+      set("hashtags_count", undefined);
+    } else {
+      set("hashtags_count", [min ?? 0, max ?? 0]);
+    }
+  };
+
+  return (
+    <details className="rounded-md border p-3 group">
+      <summary className="cursor-pointer text-sm font-medium select-none flex items-center justify-between">
+        <span>{label}</span>
+        <span className="text-xs text-muted-foreground">
+          {Object.keys(value).length > 0 ? "configured" : "inherit global"}
+        </span>
+      </summary>
+      <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="space-y-1">
+          <Label htmlFor={`${channel}-max-words`} className="text-xs">Max words</Label>
+          <Input
+            id={`${channel}-max-words`}
+            type="number"
+            min={10}
+            max={2000}
+            value={value.max_words ?? ""}
+            onChange={(e) =>
+              set("max_words", e.target.value ? Number(e.target.value) : undefined)
+            }
+            placeholder="inherit"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`${channel}-hook-format`} className="text-xs">Hook format</Label>
+          <Input
+            id={`${channel}-hook-format`}
+            value={value.hook_format ?? ""}
+            onChange={(e) => set("hook_format", e.target.value || undefined)}
+            placeholder="e.g. 3-word punch"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`${channel}-tone-override`} className="text-xs">Tone override</Label>
+          <Input
+            id={`${channel}-tone-override`}
+            value={value.tone_override ?? ""}
+            onChange={(e) => set("tone_override", e.target.value || undefined)}
+            placeholder="e.g. warm, sensory, gourmand"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`${channel}-emoji-override`} className="text-xs">Emoji override</Label>
+          <Select
+            value={value.emoji_override ?? "__inherit__"}
+            onValueChange={(v) =>
+              set("emoji_override", v === "__inherit__" ? undefined : v)
+            }
+          >
+            <SelectTrigger id={`${channel}-emoji-override`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__inherit__">Inherit global</SelectItem>
+              <SelectItem value="none">None</SelectItem>
+              <SelectItem value="minimal">Minimal</SelectItem>
+              <SelectItem value="moderate">Moderate</SelectItem>
+              <SelectItem value="heavy">Heavy</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Hashtags min</Label>
+          <Input
+            type="number"
+            min={0}
+            max={30}
+            value={hMin ?? ""}
+            onChange={(e) =>
+              setHashtags(0, e.target.value ? Number(e.target.value) : undefined)
+            }
+            placeholder="inherit"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Hashtags max</Label>
+          <Input
+            type="number"
+            min={0}
+            max={30}
+            value={hMax ?? ""}
+            onChange={(e) =>
+              setHashtags(1, e.target.value ? Number(e.target.value) : undefined)
+            }
+            placeholder="inherit"
+          />
+        </div>
+        <div className="space-y-1 md:col-span-2">
+          <Label htmlFor={`${channel}-structure`} className="text-xs">Structure template</Label>
+          <Input
+            id={`${channel}-structure`}
+            value={value.structure_template ?? ""}
+            onChange={(e) => set("structure_template", e.target.value || undefined)}
+            placeholder="e.g. hook | tension | sensory line | CTA"
+          />
+        </div>
+        <div className="space-y-1 md:col-span-2">
+          <Label htmlFor={`${channel}-brief`} className="text-xs">
+            Caption brief override (full freedom)
+          </Label>
+          <Textarea
+            id={`${channel}-brief`}
+            rows={3}
+            value={value.caption_brief ?? ""}
+            onChange={(e) => set("caption_brief", e.target.value || undefined)}
+            placeholder="Free-form: anything written here is injected verbatim for this channel only."
+          />
+        </div>
+        <div className="flex items-center gap-2 md:col-span-2">
+          <input
+            id={`${channel}-must-name-product`}
+            type="checkbox"
+            className="h-4 w-4"
+            checked={!!value.must_name_product}
+            onChange={(e) =>
+              set("must_name_product", e.target.checked || undefined)
+            }
+          />
+          <Label htmlFor={`${channel}-must-name-product`} className="text-xs">
+            Must mention the product name
+          </Label>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 
 function AiRewriteButton({
   onClick,
@@ -101,6 +279,24 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
   const [hashtagStrategy, setHashtagStrategy] = useState((guidelines.hashtag_strategy as string) || "");
   const [dos, setDos] = useState(((guidelines.dos as string[]) || []).join("\n"));
   const [donts, setDonts] = useState(((guidelines.donts as string[]) || []).join("\n"));
+
+  // Per-channel caption overrides — layered read at agent side:
+  // channel.caption.<field> > brand global > system defaults. Empty fields
+  // mean "inherit". We seed from existing brand_guidelines.channels.<ch>.caption.
+  const [channelCaptions, setChannelCaptions] = useState<ChannelCaptionsMap>(() => {
+    const channelsCfg =
+      (guidelines.channels as Record<string, Record<string, unknown>>) || {};
+    const out: ChannelCaptionsMap = {};
+    Object.keys(CHANNEL_DISPLAY_NAMES).forEach((ch) => {
+      const cfg = channelsCfg[ch];
+      const caption =
+        cfg && typeof cfg === "object"
+          ? ((cfg as Record<string, unknown>).caption as ChannelCaptionSettings | undefined)
+          : undefined;
+      out[ch] = caption || {};
+    });
+    return out;
+  });
 
   const [targetAudience, setTargetAudience] = useState(
     typeof brand?.target_audience === "object" && brand?.target_audience
@@ -320,6 +516,35 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
       dos: dos ? dos.split("\n").filter(Boolean) : [],
       donts: donts ? donts.split("\n").filter(Boolean) : [],
     };
+
+    // Merge per-channel caption overrides into brand_guidelines.channels.<ch>.caption.
+    // Preserve any other per-channel config (enabled flag, handle, access_token, etc.)
+    // already stored by the Channels tab.
+    const existingChannels =
+      (existingGuidelines.channels as Record<string, Record<string, unknown>>) || {};
+    const mergedChannels: Record<string, Record<string, unknown>> = {
+      ...existingChannels,
+    };
+    Object.entries(channelCaptions).forEach(([ch, caption]) => {
+      const cleaned = Object.fromEntries(
+        Object.entries(caption).filter(
+          ([, v]) =>
+            v !== undefined &&
+            v !== "" &&
+            v !== null &&
+            !(Array.isArray(v) && v.length === 0)
+        )
+      );
+      const prior = mergedChannels[ch] || {};
+      if (Object.keys(cleaned).length > 0) {
+        mergedChannels[ch] = { ...prior, caption: cleaned };
+      } else if ("caption" in prior) {
+        const updated: Record<string, unknown> = { ...prior };
+        delete updated.caption;
+        mergedChannels[ch] = updated;
+      }
+    });
+    newGuidelines.channels = mergedChannels;
 
     // Store additional websites in brand_guidelines
     const filteredWebsites = additionalWebsites.filter((u) => u.trim());
@@ -588,6 +813,33 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
                 rows={5}
                 placeholder={"No controversial topics\nNo competitor mentions\nAvoid jargon"}
               />
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-3">
+            <div>
+              <Label className="text-sm">Per-channel overrides</Label>
+              <p className="text-xs text-muted-foreground mt-1">
+                Optional. Each channel can override the global voice settings
+                above. Empty fields inherit the global value. Length defaults
+                are tuned per platform (Instagram 60, Facebook 90, LinkedIn 120,
+                TikTok 30, X 35) — override only when you want a different limit.
+              </p>
+            </div>
+            <div className="space-y-2">
+              {Object.entries(CHANNEL_DISPLAY_NAMES).map(([ch, label]) => (
+                <ChannelCaptionEditor
+                  key={ch}
+                  channel={ch}
+                  label={label}
+                  value={channelCaptions[ch] || {}}
+                  onChange={(next) =>
+                    setChannelCaptions((prev) => ({ ...prev, [ch]: next }))
+                  }
+                />
+              ))}
             </div>
           </div>
         </TabsContent>
