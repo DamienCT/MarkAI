@@ -528,11 +528,7 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
     Object.entries(channelCaptions).forEach(([ch, caption]) => {
       const cleaned = Object.fromEntries(
         Object.entries(caption).filter(
-          ([, v]) =>
-            v !== undefined &&
-            v !== "" &&
-            v !== null &&
-            !(Array.isArray(v) && v.length === 0)
+          ([, v]) => v !== undefined && v !== "" && v !== null
         )
       );
       const prior = mergedChannels[ch] || {};
