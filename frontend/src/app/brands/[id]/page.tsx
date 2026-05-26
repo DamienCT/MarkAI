@@ -520,6 +520,49 @@ export default function BrandDetailPage() {
     }
   }, [brandId, fetchIntelligence]);
 
+  // First-time context-approval gate state
+  const [approvingDoc, setApprovingDoc] = useState<string | null>(null);
+
+  const handleApproveDoc = useCallback(async (docType: string) => {
+    setApprovingDoc(docType);
+    try {
+      const updated = await api.post<Brand>(
+        `/api/v1/brands/${brandId}/context-approvals/${docType}`,
+        { action: "approve" }
+      );
+      setBrand(updated);
+      const guidelines = (updated.brand_guidelines as Record<string, unknown> | undefined) || {};
+      if (guidelines.first_approval_completed === true) {
+        toast.success("All reports approved. You can now generate content.");
+      } else {
+        toast.success(`${docType.charAt(0).toUpperCase() + docType.slice(1)} approved`);
+      }
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to approve report";
+      toast.error(detail);
+    } finally {
+      setApprovingDoc(null);
+    }
+  }, [brandId]);
+
+  const handleReworkDoc = useCallback(async (docType: string, workflowType: string) => {
+    // Rework = reset that doc to "pending" first, then re-trigger the
+    // existing regenerate workflow so the user has to re-approve the
+    // regenerated document. If reset fails we surface the error but still
+    // attempt the regenerate so the user isn't stuck.
+    try {
+      const updated = await api.post<Brand>(
+        `/api/v1/brands/${brandId}/context-approvals/${docType}`,
+        { action: "reset" }
+      );
+      setBrand(updated);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to reset approval";
+      toast.error(detail);
+    }
+    await handleTriggerWorkflow(workflowType);
+  }, [brandId, handleTriggerWorkflow]);
+
   // Auto-open onboarding dialog when brand is in onboarding status
   useEffect(() => {
     if (brand && brand.status === 'onboarding') {
@@ -907,14 +950,26 @@ export default function BrandDetailPage() {
         </TabsContent>
 
         <TabsContent value="intelligence">
-          <IntelligenceTab
-            research={research}
-            competitors={competitors}
-            loadingIntel={loadingIntel}
-            triggeringWorkflow={triggeringWorkflow}
-            onTriggerWorkflow={handleTriggerWorkflow}
-            brandId={brandId}
-          />
+          {(() => {
+            const guidelines = (brand.brand_guidelines as Record<string, unknown> | undefined) || {};
+            const approvals = guidelines.context_approvals as Record<string, string> | undefined;
+            const firstDone = guidelines.first_approval_completed === true;
+            return (
+              <IntelligenceTab
+                research={research}
+                competitors={competitors}
+                loadingIntel={loadingIntel}
+                triggeringWorkflow={triggeringWorkflow}
+                onTriggerWorkflow={handleTriggerWorkflow}
+                brandId={brandId}
+                contextApprovals={approvals}
+                gateActive={!!approvals && !firstDone}
+                approvingDoc={approvingDoc}
+                onApproveDoc={handleApproveDoc}
+                onReworkDoc={handleReworkDoc}
+              />
+            );
+          })()}
         </TabsContent>
 
         <TabsContent value="products">

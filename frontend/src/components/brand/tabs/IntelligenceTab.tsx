@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import {
   Search, Target, FileText, Calendar, Zap, Eye,
-  RotateCcw, Loader2, AlertTriangle,
+  RotateCcw, Loader2, AlertTriangle, Check,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -13,6 +13,15 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api";
+
+// Doc-card cardKey → context_approvals key in brand.brand_guidelines.
+// content_calendar maps to "calendar" because that's how the backend stores it.
+const APPROVAL_KEY_BY_AGENT_TYPE: Record<string, string> = {
+  research: "research",
+  strategy: "strategy",
+  planning: "planning",
+  content_calendar: "calendar",
+};
 
 interface ResearchReport {
   id: string;
@@ -39,6 +48,18 @@ export interface IntelligenceTabProps {
   triggeringWorkflow: string | null;
   onTriggerWorkflow: (workflowType: string) => Promise<void>;
   brandId?: string;
+  /**
+   * First-time approval gate state. When `gateActive` is true (i.e.
+   * context_approvals exist on the brand and first_approval_completed is
+   * false), each doc card shows Approve / Rework instead of the regular
+   * Regenerate button until all four are approved. Once the gate closes
+   * the buttons disappear permanently for this brand.
+   */
+  contextApprovals?: Record<string, string>;
+  gateActive?: boolean;
+  approvingDoc?: string | null;
+  onApproveDoc?: (docType: string) => Promise<void>;
+  onReworkDoc?: (docType: string, workflowType: string) => Promise<void>;
 }
 
 export function IntelligenceTab({
@@ -48,6 +69,11 @@ export function IntelligenceTab({
   triggeringWorkflow,
   onTriggerWorkflow,
   brandId,
+  contextApprovals,
+  gateActive,
+  approvingDoc,
+  onApproveDoc,
+  onReworkDoc,
 }: IntelligenceTabProps) {
   const router = useRouter();
   const [eventsUpdatedAt, setEventsUpdatedAt] = useState<string | null>(null);
@@ -202,32 +228,77 @@ export function IntelligenceTab({
                     </div>
                   </CardHeader>
                   <CardContent className="pt-0">
-                    {hasOutput ? (
-                      <div className="flex items-center justify-between">
-                        <Button
-                          variant="default"
-                          size="sm"
-                          onClick={() => router.push(`/intelligence/report/${run.id}`)}
-                        >
-                          <Eye className="mr-1.5 h-3.5 w-3.5" />
-                          View Full Report
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={isDisabled}
-                          onClick={() => onTriggerWorkflow(doc.triggerKey)}
-                          title={earlierRunning ? "Waiting for earlier pipeline stage" : undefined}
-                        >
-                          {triggeringWorkflow === doc.triggerKey ? (
-                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    {hasOutput ? (() => {
+                      const approvalKey = APPROVAL_KEY_BY_AGENT_TYPE[doc.agent_type];
+                      const docApproved = !!(approvalKey && contextApprovals?.[approvalKey] === "approved");
+                      const showApprovalUI = !!gateActive && !!approvalKey && !!onApproveDoc && !!onReworkDoc;
+                      const isApprovingThis = approvingDoc === approvalKey;
+                      return (
+                        <div className="flex items-center justify-between">
+                          <Button
+                            variant="default"
+                            size="sm"
+                            onClick={() => router.push(`/intelligence/report/${run.id}`)}
+                          >
+                            <Eye className="mr-1.5 h-3.5 w-3.5" />
+                            View Full Report
+                          </Button>
+                          {showApprovalUI ? (
+                            <div className="flex items-center gap-2">
+                              {docApproved ? (
+                                <Badge className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300">
+                                  <Check className="mr-1 h-3 w-3" /> Approved
+                                </Badge>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-700 dark:hover:bg-emerald-600"
+                                  disabled={isApprovingThis || isDisabled}
+                                  onClick={() => approvalKey && onApproveDoc(approvalKey)}
+                                >
+                                  {isApprovingThis ? (
+                                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <Check className="mr-1 h-3 w-3" />
+                                  )}
+                                  Approve
+                                </Button>
+                              )}
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="border-orange-400 text-orange-700 hover:bg-orange-50 dark:border-orange-700 dark:text-orange-300 dark:hover:bg-orange-950"
+                                disabled={isDisabled}
+                                onClick={() => approvalKey && onReworkDoc(approvalKey, doc.triggerKey)}
+                                title={earlierRunning ? "Waiting for earlier pipeline stage" : undefined}
+                              >
+                                {triggeringWorkflow === doc.triggerKey ? (
+                                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                ) : (
+                                  <RotateCcw className="mr-1 h-3 w-3" />
+                                )}
+                                {earlierRunning ? "Waiting..." : "Rework"}
+                              </Button>
+                            </div>
                           ) : (
-                            <RotateCcw className="mr-1 h-3 w-3" />
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={isDisabled}
+                              onClick={() => onTriggerWorkflow(doc.triggerKey)}
+                              title={earlierRunning ? "Waiting for earlier pipeline stage" : undefined}
+                            >
+                              {triggeringWorkflow === doc.triggerKey ? (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              ) : (
+                                <RotateCcw className="mr-1 h-3 w-3" />
+                              )}
+                              {earlierRunning ? "Waiting..." : "Regenerate"}
+                            </Button>
                           )}
-                          {earlierRunning ? "Waiting..." : "Regenerate"}
-                        </Button>
-                      </div>
-                    ) : isRunning ? (
+                        </div>
+                      );
+                    })() : isRunning ? (
                       <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
                         <Loader2 className="h-4 w-4 animate-spin" />
                         <span>Generating — this may take a minute...</span>

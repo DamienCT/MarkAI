@@ -1,7 +1,9 @@
 import re
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +30,11 @@ from slowapi.util import get_remote_address
 _limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter()
+
+# Context-approvals gate: doc types that must be approved before content
+# generation can run the first time on a brand. Each is a key under
+# brand.brand_guidelines.context_approvals.
+_CONTEXT_DOC_TYPES = ("research", "strategy", "planning", "calendar")
 
 # Sensitive keys that must never leak to the frontend via brand_guidelines JSONB
 _SENSITIVE_GUIDELINE_KEYS = {
@@ -283,6 +290,21 @@ async def activate_content_factory(
     brand.status = "activating"
     brand.is_active = True
     brand.activation_started_at = datetime.now(timezone.utc)
+
+    # First-time activation gate: if this brand has never passed the
+    # context-approval gate, initialise per-doc approval state so the
+    # frontend renders Approve/Rework buttons once context generation
+    # completes. Brands that already passed (first_approval_completed=true)
+    # keep that flag set — the gate disappears for the rest of their life.
+    guidelines = dict(brand.brand_guidelines or {})
+    if not guidelines.get("first_approval_completed"):
+        guidelines["context_approvals"] = {doc: "pending" for doc in _CONTEXT_DOC_TYPES}
+        guidelines["first_approval_completed"] = False
+        from sqlalchemy.orm.attributes import flag_modified
+
+        brand.brand_guidelines = guidelines
+        flag_modified(brand, "brand_guidelines")
+
     await db.commit()
 
     # Trigger the research pipeline (worker chains: research → strategy → planning → content)
@@ -323,6 +345,24 @@ async def generate_content(
     brand = await brand_service.get_brand(db, brand_id)
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
+
+    # First-time approval gate: block content generation until all 4 context
+    # documents are approved. Brands that have already passed this gate
+    # (first_approval_completed=true) or that pre-date the feature
+    # (context_approvals field absent) bypass the check.
+    guidelines = brand.brand_guidelines or {}
+    approvals = guidelines.get("context_approvals")
+    if isinstance(approvals, dict) and not guidelines.get("first_approval_completed"):
+        unapproved = [d for d in _CONTEXT_DOC_TYPES if approvals.get(d) != "approved"]
+        if unapproved:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You must review and approve all 4 context reports "
+                    "before generating content. Missing: "
+                    f"{', '.join(unapproved)}"
+                ),
+            )
 
     # Verify context generation completed
     ctx_check = await db.execute(
@@ -400,6 +440,81 @@ async def generate_content(
         "brand_id": str(brand_id),
         "message": f"Content generation started for {len(item_ids)} items ({now.strftime('%b %d')} – {horizon.strftime('%b %d')}).",
     }
+
+
+class ContextApprovalAction(BaseModel):
+    """Request body for the context-approval endpoint."""
+
+    action: Literal["approve", "reset"]
+
+
+@router.post("/{brand_id}/context-approvals/{doc_type}", response_model=BrandResponse)
+async def update_context_approval(
+    brand_id: uuid.UUID,
+    doc_type: str,
+    body: ContextApprovalAction,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Approve or reset (Rework) a single context document.
+
+    Approve flips that doc's status from 'pending' to 'approved' and, when
+    all four documents are approved, sets first_approval_completed=true so
+    the gate disappears permanently for this brand.
+
+    Reset flips it back to 'pending' and is called by the frontend when the
+    user clicks Rework — paired with the existing regenerate trigger so the
+    user has to re-approve the regenerated document.
+
+    Once first_approval_completed is true, the endpoint refuses further
+    changes: the buttons no longer exist in the UI and the gate is closed
+    for life on this brand.
+    """
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    if doc_type not in _CONTEXT_DOC_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown doc_type '{doc_type}'. Allowed: {', '.join(_CONTEXT_DOC_TYPES)}",
+        )
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    guidelines = brand.brand_guidelines or {}
+    if guidelines.get("first_approval_completed"):
+        raise HTTPException(
+            status_code=409,
+            detail="Context already approved for this brand. The approval gate is closed.",
+        )
+
+    approvals = dict(guidelines.get("context_approvals") or {})
+    # Lazy-init missing entries so a brand activated before the feature
+    # rollout doesn't error out on the first approve call.
+    for d in _CONTEXT_DOC_TYPES:
+        approvals.setdefault(d, "pending")
+
+    if body.action == "approve":
+        approvals[doc_type] = "approved"
+    else:  # reset
+        approvals[doc_type] = "pending"
+
+    guidelines = dict(guidelines)
+    guidelines["context_approvals"] = approvals
+    if all(approvals.get(d) == "approved" for d in _CONTEXT_DOC_TYPES):
+        guidelines["first_approval_completed"] = True
+    else:
+        guidelines["first_approval_completed"] = False
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    brand.brand_guidelines = guidelines
+    flag_modified(brand, "brand_guidelines")
+    await db.commit()
+    await db.refresh(brand)
+    return brand
 
 
 @router.get("/{brand_id}/channels")

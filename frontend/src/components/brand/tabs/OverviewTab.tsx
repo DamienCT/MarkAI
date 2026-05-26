@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { toast } from "sonner";
 import {
   CheckCircle2, Search, Target, FileText, Zap,
   Loader2, Rocket, Clock, Eye, RefreshCw, ArrowRight,
@@ -138,6 +139,32 @@ export function OverviewTab({
               <CardDescription>Automated research, strategy, planning, and calendar strategy</CardDescription>
             </div>
             <div className="flex items-center gap-3">
+              {/* Quick jump to Intelligence tab once all 4 context reports
+                  are done — replaces the per-stage View Report links. */}
+              {(() => {
+                const REPORT_AGENT_TYPES = ["research", "strategy", "planning", "content_calendar"] as const;
+                const REPORT_ALT: Record<string, string> = { content_calendar: "content_calendar_strategy" };
+                const allDone = REPORT_AGENT_TYPES.every((t) => {
+                  const direct = pipelineRuns.find((r) => r.agent_type === t && r.status === "completed");
+                  if (direct) return true;
+                  const altKey = REPORT_ALT[t];
+                  return !!(altKey && pipelineRuns.find((r) => r.agent_type === altKey && r.status === "completed"));
+                });
+                if (!allDone) return null;
+                return (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      onSetActiveTab("intelligence");
+                      if (research.length === 0) onFetchIntelligence();
+                    }}
+                  >
+                    <Eye className="mr-1.5 h-4 w-4" />
+                    View Report
+                  </Button>
+                );
+              })()}
               {(() => {
                 if (brand.status === 'onboarding') {
                   return (
@@ -358,19 +385,6 @@ export function OverviewTab({
                               {formatRelativeTime(run.completed_at)}
                             </p>
                           )}
-                          {run?.status === "completed" && (
-                            <Button
-                              variant="link"
-                              size="sm"
-                              className="h-auto p-0 text-xs mt-1"
-                              onClick={() => {
-                                onSetActiveTab("intelligence");
-                                if (research.length === 0) onFetchIntelligence();
-                              }}
-                            >
-                              <Eye className="mr-1 h-3 w-3" /> View Report
-                            </Button>
-                          )}
                         </div>
                         {idx < REPORT_STAGES.length - 1 && (
                           <div className="flex items-center pt-5 shrink-0">
@@ -390,19 +404,52 @@ export function OverviewTab({
                 <div className="border-t pt-4">
                   <div className="flex items-center justify-between mb-3">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Content Generation</p>
-                    <Button
-                      size="sm"
-                      className="bg-blue-600 hover:bg-blue-700 text-white dark:bg-blue-700 dark:hover:bg-blue-600"
-                      disabled={!allReportsDone || generatingContent || !!contentRunning}
-                      onClick={onGenerateContent}
-                    >
-                      {generatingContent ? (
-                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                      ) : (
-                        <Zap className="mr-1.5 h-4 w-4" />
-                      )}
-                      Generate Content
-                    </Button>
+                    {(() => {
+                      // First-time approval gate: if context_approvals exist and
+                      // first_approval_completed is false, the button stays clickable
+                      // but the handler shows a toast instead of triggering the API,
+                      // so the user gets feedback ("approve the reports first")
+                      // rather than a silent disabled state.
+                      const guidelines = (brand.brand_guidelines as Record<string, unknown> | undefined) || {};
+                      const approvals = guidelines.context_approvals as Record<string, string> | undefined;
+                      const firstDone = guidelines.first_approval_completed === true;
+                      const gateActive = !!approvals && !firstDone;
+                      const allApproved = approvals
+                        ? ["research", "strategy", "planning", "calendar"].every(
+                            (d) => approvals[d] === "approved"
+                          )
+                        : true;
+                      const blockedByGate = gateActive && !allApproved;
+                      const hardDisabled = !allReportsDone || generatingContent || !!contentRunning;
+                      const visuallyDisabled = hardDisabled || blockedByGate;
+                      return (
+                        <Button
+                          size="sm"
+                          className={`bg-blue-600 hover:bg-blue-700 text-white dark:bg-blue-700 dark:hover:bg-blue-600 ${
+                            visuallyDisabled ? "opacity-50 cursor-not-allowed hover:bg-blue-600 dark:hover:bg-blue-700" : ""
+                          }`}
+                          disabled={hardDisabled}
+                          onClick={() => {
+                            if (blockedByGate) {
+                              toast.error(
+                                "You must review and approve all 4 reports before generating content."
+                              );
+                              onSetActiveTab("intelligence");
+                              if (research.length === 0) onFetchIntelligence();
+                              return;
+                            }
+                            onGenerateContent();
+                          }}
+                        >
+                          {generatingContent ? (
+                            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                          ) : (
+                            <Zap className="mr-1.5 h-4 w-4" />
+                          )}
+                          Generate Content
+                        </Button>
+                      );
+                    })()}
                   </div>
                   {(() => {
                     const isGenerating = !!contentRunning || (contentItemsQueued > 0 && contentCompleted < contentItemsQueued);
