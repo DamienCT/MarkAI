@@ -503,6 +503,8 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
                     "- No em dashes between clauses\n"
                     "- No 'it's not just X, it's Y' framing\n"
                     "- No tricolons (three parallel adjectives)\n"
+                    "- No hashtags (#anything). Hashtags belong to a separate "
+                    "field handled by the publisher.\n"
                     "- Avoid these words: elevate, unlock, discover, harness, "
                     "leverage, transform, navigate, delve, dive, embark, "
                     "journey, curated, bespoke, seamless, holistic, "
@@ -642,10 +644,30 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     "healthy eating, even if the brand is positioned for "
                     "something else commercially.\n\n"
                     f"LENGTH: Stay strictly under {max_words} words (HARD LIMIT). "
-                    "Start with the provided hook. End with a specific CTA "
-                    "that points to the brand URL. If your draft exceeds "
+                    "Start with the provided hook. End with a CTA followed by "
+                    "the brand URL on its own line. If your draft exceeds "
                     f"{max_words} words, rewrite tighter before returning. "
                     "Do not submit an over-length caption.\n\n"
+                    "LAYOUT — give the caption visual breathing room:\n"
+                    "- Open with the hook on its own line.\n"
+                    "- Separate distinct sections with a blank line (\\n\\n).\n"
+                    "- Pick the format that fits the brief: a flowing paragraph "
+                    "  for storytelling, a short list for features or steps, "
+                    "  a Q&A for educational posts. Don't force a list when the "
+                    "  brief doesn't call for one. If you do use a list, the "
+                    "  marker (✓, →, •, or numbered) should fit "
+                    "  the brand voice.\n"
+                    "- End with a short CTA line, then a label line ending with "
+                    "  ':' (e.g. 'Shop now:', 'Try it today:', 'Read more:'), "
+                    "  then the URL on its own line. Never embed a URL inside "
+                    "  a sentence.\n\n"
+                    "ABSOLUTE RULES:\n"
+                    "- NEVER include hashtags (#anything) anywhere inside the "
+                    "  caption body. Hashtags are appended automatically by the "
+                    "  publishing pipeline from a separate field. Writing them "
+                    "  in the caption will produce duplicates in the final post.\n"
+                    "- The URL belongs on its own line, preceded by a short "
+                    "  label line ending with ':'.\n\n"
                     "WRITE LIKE A HUMAN, NOT AN AI:\n"
                     "- Vary sentence length. Short. Then medium. Occasionally a "
                     "  longer one if the thought needs it.\n"
@@ -661,7 +683,6 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     "- Don't open with 'Welcome to...' or 'In a world where...'.\n"
                     "- Specifics beat abstractions. Name actual things, places, "
                     "  numbers, behaviours. Avoid vague 'experience' / 'journey' talk.\n"
-                    "- Skip clean bullet lists unless the brief genuinely needs steps.\n"
                     "- Read it back: would a friend write this in a message, or "
                     "  does it sound like a brand template? If the second, rewrite.\n\n"
                     "Return ONLY the caption text. No section labels, no quotes."
@@ -1244,21 +1265,80 @@ def _count_words(text: str) -> int:
     return sum(1 for w in (text or "").split() if w.strip())
 
 
+_URL_LIKE_RE = re.compile(r"https?://\S+")
+
+
+def _split_url_block(text: str) -> tuple[str, str]:
+    """Split caption into (body, url_block).
+
+    url_block is the trailing label+URL pair if the caption ends with one
+    (a short label line ending with ':' followed by a URL line). Otherwise
+    url_block is empty. Used by _trim_to_word_limit so the CTA's URL block
+    survives a hard trim instead of being chopped off mid-link.
+    """
+    if not text:
+        return text or "", ""
+    lines = text.rstrip().split("\n")
+    # Walk back over trailing blank lines
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if len(lines) < 2:
+        return text, ""
+    last = lines[-1].strip()
+    label = lines[-2].strip()
+    if _URL_LIKE_RE.fullmatch(last) and label.endswith(":") and len(label) <= 40:
+        body_lines = lines[:-2]
+        # Drop trailing blank lines from body so the rebuild keeps spacing tight
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
+        return "\n".join(body_lines), f"{label}\n{last}"
+    return text, ""
+
+
 def _trim_to_word_limit(text: str, max_words: int) -> str:
-    """Trim text to fit max_words, preferring a clean sentence boundary."""
-    words = (text or "").split()
-    if len(words) <= max_words:
+    """Trim text to fit max_words, preserving the trailing URL block when present.
+
+    Trimming strategy:
+      1. Split off the trailing 'label:\\nURL' block if there is one; preserve
+         it verbatim and budget the remaining words for the body.
+      2. Prefer cutting on a `\\n\\n` block boundary inside the budget so we
+         don't slice through a list or a half-sentence.
+      3. Fall back to a sentence boundary in the back half of the cut.
+      4. Last resort: word-boundary cut with ellipsis.
+      5. Re-append the URL block separated by a blank line.
+    """
+    if not text:
+        return text or ""
+    body, url_block = _split_url_block(text)
+    total_words = _count_words(text)
+    if total_words <= max_words:
         return text
-    truncated = " ".join(words[:max_words])
-    # Prefer ending on a sentence boundary in the back half of the trim
-    last_stop = max(
-        truncated.rfind("."),
-        truncated.rfind("!"),
-        truncated.rfind("?"),
-    )
-    if last_stop > len(truncated) * 0.6:
-        return truncated[: last_stop + 1]
-    return truncated.rstrip(",;: ") + "..."
+
+    url_words = _count_words(url_block) if url_block else 0
+    # Reserve 1 word of slack so re-attachment doesn't push us over the limit
+    body_budget = max(1, max_words - url_words - (1 if url_block else 0))
+
+    body_words = body.split()
+    if len(body_words) > body_budget:
+        truncated = " ".join(body_words[:body_budget])
+        # Prefer a block boundary (\n\n) in the back 40% of the truncation
+        cut_floor = int(len(truncated) * 0.6)
+        last_block = truncated.rfind("\n\n")
+        if last_block >= cut_floor:
+            body = truncated[:last_block].rstrip()
+        else:
+            last_stop = max(
+                truncated.rfind("."),
+                truncated.rfind("!"),
+                truncated.rfind("?"),
+            )
+            if last_stop >= cut_floor:
+                body = truncated[: last_stop + 1]
+            else:
+                body = truncated.rstrip(",;: ") + "..."
+    # Body fit within budget — keep as-is
+
+    return f"{body}\n\n{url_block}" if url_block else body
 
 
 async def _shorten_caption_with_llm(
@@ -1274,7 +1354,18 @@ async def _shorten_caption_with_llm(
             "content": (
                 f"{bible_section}"
                 "You compress social captions while preserving meaning, voice, "
-                "and the call to action. Output ONLY the rewritten caption text."
+                "the call to action, AND the visual layout. Output ONLY the "
+                "rewritten caption text.\n\n"
+                "PRESERVE THE STRUCTURE:\n"
+                "- Keep blank lines (\\n\\n) between distinct sections so the "
+                "  caption keeps its visual breathing room.\n"
+                "- Keep the URL on its own line, preceded by its short label "
+                "  line ending with ':'. Never embed a URL inside a sentence.\n"
+                "- If the original uses a list, keep the list (you may drop or "
+                "  shorten individual items). Do not collapse a structured "
+                "  caption into a single paragraph.\n"
+                "- NEVER insert hashtags (#anything) in the rewrite. Hashtags "
+                "  are handled separately by the publishing pipeline."
             ),
         },
         {
@@ -1282,7 +1373,8 @@ async def _shorten_caption_with_llm(
             "content": (
                 f"Rewrite this {channel or 'social'} caption to be under "
                 f"{max_words} words while keeping the same topic, voice, hook, "
-                f"and CTA. Trim filler, merge sentences, drop adjectives. "
+                f"CTA, URL line, and overall multi-block layout. Trim filler, "
+                f"merge sentences, drop adjectives, shorten list items. "
                 f"NEVER exceed {max_words} words.\n\n"
                 f"Original:\n{sanitize_for_prompt(caption, max_length=4000)}"
             ),
@@ -1426,8 +1518,21 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
                 "WORD COUNT IS A HARD LIMIT. For each platform, count words "
                 "in your draft caption. If it exceeds the MAX, rewrite tighter "
                 "until it fits. Do not return an over-length caption.\n\n"
+                "CAPTION LAYOUT — apply to every platform caption:\n"
+                "- Open with the hook on its own line.\n"
+                "- Separate distinct sections with a blank line (\\n\\n) so "
+                "  the caption keeps visual breathing room.\n"
+                "- Pick the format that fits the brief: flowing paragraph, "
+                "  short list, Q&A. Don't force a list when the brief doesn't "
+                "  call for one. List markers (✓, →, •, numbered) "
+                "  should fit the brand voice.\n"
+                "- End each caption with a short CTA line, then a label line "
+                "  ending with ':' (e.g. 'Shop now:'), then the URL on its "
+                "  own line. Never embed a URL inside a sentence.\n"
+                "- NEVER include hashtags (#anything) inside the caption "
+                "  string. Hashtags go in the separate 'hashtags' array.\n\n"
                 "Return JSON with platform names as keys. Each platform object must contain:\n"
-                "  caption (string), hashtags (array of strings without # prefix), cta (string), "
+                "  caption (string with the layout above), hashtags (array of strings without # prefix), cta (string), "
                 "  optimal_time (string), format_notes (string).\n"
                 "For youtube also include: title, description, tags, thumbnail_prompt.\n"
                 "For website_blog also include: markdown_body, meta_description, seo_keywords (array).\n"

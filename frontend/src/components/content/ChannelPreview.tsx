@@ -90,7 +90,7 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
       </div>
       {/* Caption */}
       <div className="px-3 pb-3">
-        <p className={`text-xs ${compact ? "line-clamp-3" : ""}`}>
+        <p className={`text-xs whitespace-pre-wrap ${compact ? "line-clamp-3" : ""}`}>
           <span className="font-semibold mr-1">{brandHandle}</span>
           {caption}
         </p>
@@ -116,7 +116,7 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
       </div>
       {/* Caption */}
       <div className="px-3 pb-2">
-        <p className={`text-sm ${compact ? "line-clamp-3" : ""}`}>{caption}</p>
+        <p className={`text-sm whitespace-pre-wrap ${compact ? "line-clamp-3" : ""}`}>{caption}</p>
         <HashtagsDisplay hashtags={hashtags} />
       </div>
       {/* Image */}
@@ -163,7 +163,7 @@ export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, ima
       </div>
       {/* Caption */}
       <div className="px-3 pb-2">
-        <p className={`text-sm leading-relaxed ${compact ? "line-clamp-4" : ""}`}>{caption}</p>
+        <p className={`text-sm leading-relaxed whitespace-pre-wrap ${compact ? "line-clamp-4" : ""}`}>{caption}</p>
         <HashtagsDisplay hashtags={hashtags} />
       </div>
       {/* Image */}
@@ -211,7 +211,7 @@ export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, 
             <span className="text-xs text-muted-foreground truncate">{handle}</span>
             <span className="text-xs text-muted-foreground">&middot; now</span>
           </div>
-          <p className={`text-sm mt-1 ${compact ? "line-clamp-4" : ""}`}>{caption}</p>
+          <p className={`text-sm mt-1 whitespace-pre-wrap ${compact ? "line-clamp-4" : ""}`}>{caption}</p>
           <HashtagsDisplay hashtags={hashtags} />
           {/* Image */}
           {imageUrl ? (
