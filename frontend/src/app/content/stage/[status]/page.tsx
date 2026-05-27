@@ -2,8 +2,8 @@
 
 import React, { useEffect, useState, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { toast } from "sonner";
+import { ArrowLeft, CheckSquare, Trash2, X, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -39,6 +39,47 @@ export default function StagePage() {
   const [loading, setLoading] = useState(true);
   const [brandFilter, setBrandFilter] = useState<string>("all");
   const [channelFilter, setChannelFilter] = useState<string>("all");
+
+  // Bulk selection + delete (so users don't have to open each card to delete).
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`Delete ${selectedIds.size} item${selectedIds.size !== 1 ? "s" : ""}? This cannot be undone.`)) {
+      return;
+    }
+    setDeleting(true);
+    const ids = Array.from(selectedIds);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((id) => api.delete(`/api/v1/calendar/${id}`))
+      );
+      const failed = results.filter((r) => r.status === "rejected").length;
+      const ok = ids.filter((_, i) => results[i].status === "fulfilled");
+      setItems((prev) => prev.filter((i) => !ok.includes(i.id)));
+      exitSelectMode();
+      if (failed > 0) toast.error(`${failed} item${failed !== 1 ? "s" : ""} could not be deleted`);
+      else toast.success(`Deleted ${ok.length} item${ok.length !== 1 ? "s" : ""}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     async function fetchData() {
@@ -90,28 +131,59 @@ export default function StagePage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Select value={brandFilter} onValueChange={setBrandFilter}>
-            <SelectTrigger className="w-[160px]">
-              <SelectValue placeholder="All Brands" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Brands</SelectItem>
-              {brands.map(b => (
-                <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={channelFilter} onValueChange={setChannelFilter}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue placeholder="All Channels" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Channels</SelectItem>
-              {channels.map(ch => (
-                <SelectItem key={ch} value={ch}>{CHANNEL_DISPLAY[ch] || ch}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {selectMode ? (
+            <>
+              <span className="text-sm text-muted-foreground">
+                {selectedIds.size} selected
+              </span>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={selectedIds.size === 0 || deleting}
+                onClick={handleBulkDelete}
+              >
+                {deleting ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="mr-1.5 h-4 w-4" />
+                )}
+                Delete
+              </Button>
+              <Button variant="ghost" size="sm" onClick={exitSelectMode} disabled={deleting}>
+                <X className="mr-1.5 h-4 w-4" />
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" size="sm" onClick={() => setSelectMode(true)}>
+                <CheckSquare className="mr-1.5 h-4 w-4" />
+                Select
+              </Button>
+              <Select value={brandFilter} onValueChange={setBrandFilter}>
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue placeholder="All Brands" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Brands</SelectItem>
+                  {brands.map(b => (
+                    <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={channelFilter} onValueChange={setChannelFilter}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder="All Channels" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Channels</SelectItem>
+                  {channels.map(ch => (
+                    <SelectItem key={ch} value={ch}>{CHANNEL_DISPLAY[ch] || ch}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          )}
         </div>
       </div>
 
@@ -134,14 +206,37 @@ export default function StagePage() {
             <WorkingStageTracker items={filtered} pollInterval={5000} />
           )}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {filtered.map(item => (
-            <Link key={item.id} href={`/content/${item.id}`}>
-              <Card className="p-4 h-full hover:shadow-md transition-shadow cursor-pointer">
+          {filtered.map(item => {
+            const selected = selectedIds.has(item.id);
+            return (
+            <div
+              key={item.id}
+              onClick={() =>
+                selectMode ? toggleSelect(item.id) : router.push(`/content/${item.id}`)
+              }
+              className="cursor-pointer"
+            >
+              <Card className={`relative p-4 h-full transition-shadow ${
+                selectMode && selected
+                  ? "ring-2 ring-primary shadow-md"
+                  : "hover:shadow-md"
+              }`}>
+                {selectMode && (
+                  <input
+                    type="checkbox"
+                    className="absolute right-3 top-3 h-4 w-4"
+                    checked={selected}
+                    readOnly
+                    aria-label="Select item"
+                  />
+                )}
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <p className="text-sm font-medium line-clamp-2 flex-1">{item.title || "Untitled"}</p>
-                  <Badge variant="outline" className={`text-[10px] shrink-0 ${CHANNEL_COLORS[item.channel] || ""}`}>
-                    {CHANNEL_DISPLAY[item.channel] || item.channel}
-                  </Badge>
+                  <p className={`text-sm font-medium line-clamp-2 flex-1 ${selectMode ? "pr-6" : ""}`}>{item.title || "Untitled"}</p>
+                  {!selectMode && (
+                    <Badge variant="outline" className={`text-[10px] shrink-0 ${CHANNEL_COLORS[item.channel] || ""}`}>
+                      {CHANNEL_DISPLAY[item.channel] || item.channel}
+                    </Badge>
+                  )}
                 </div>
                 {item.description && (
                   <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{item.description}</p>
@@ -165,8 +260,9 @@ export default function StagePage() {
                   <p className="text-[10px] text-muted-foreground mt-1">{item.brand_name}</p>
                 )}
               </Card>
-            </Link>
-          ))}
+            </div>
+            );
+          })}
         </div>
         </div>
       )}

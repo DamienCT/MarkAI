@@ -248,6 +248,27 @@ def _effective_caption_settings(brand: dict, channel: str) -> dict[str, Any]:
     }
 
 
+# A bare emoji level ("moderate") is too vague — the model reads it as
+# "don't overdo it" and emits none. These spell out the expected count and
+# placement so the directive actually lands.
+_EMOJI_DIRECTIVES: dict[str, str] = {
+    "none": "Do not use any emojis at all.",
+    "minimal": "Use emojis very sparingly — at most 1, and only if it genuinely fits. Never in the hook.",
+    "moderate": "Use 2 to 4 relevant emojis, placed naturally in the body (e.g. beside a benefit or just before the CTA). Never in the hook, and never several in a row.",
+    "heavy": "Use emojis freely — 5 or more — for energy and visual rhythm, but keep each one relevant to the words around it. Keep them out of the hook.",
+}
+
+
+def _emoji_directive(emoji_setting: Any) -> str:
+    """Translate an emoji level word into an explicit, actionable instruction.
+
+    Returns "" for unknown/custom values so callers can fall back to passing
+    the raw setting through.
+    """
+    level = str(emoji_setting or "").strip().lower()
+    return _EMOJI_DIRECTIVES.get(level, "")
+
+
 def _build_brand_bible_block(brand: dict, settings: dict) -> str:
     """Render brand description + voice rules as a verbatim prompt block.
 
@@ -267,7 +288,12 @@ def _build_brand_bible_block(brand: dict, settings: dict) -> str:
     if settings.get("style"):
         parts.append(f"STYLE: {sanitize_for_prompt(settings['style'])}")
     if settings.get("emoji"):
-        parts.append(f"EMOJI USAGE: {sanitize_for_prompt(settings['emoji'])}")
+        _emoji_level = str(settings["emoji"]).strip().lower()
+        _emoji_dir = _emoji_directive(_emoji_level)
+        if _emoji_dir:
+            parts.append(f"EMOJI USAGE ({_emoji_level}): {_emoji_dir}")
+        else:
+            parts.append(f"EMOJI USAGE: {sanitize_for_prompt(settings['emoji'])}")
     if settings.get("hashtag_strategy"):
         parts.append(
             f"HASHTAG STRATEGY: {sanitize_for_prompt(settings['hashtag_strategy'])}"
@@ -1446,7 +1472,8 @@ def _platform_spec_for(channel: str, brand: dict) -> str:
         f"Hashtags: {settings['hashtags_min']}-{settings['hashtags_max']}.",
     ]
     if settings.get("emoji"):
-        pieces.append(f"Emoji usage: {settings['emoji']}.")
+        _emoji_dir = _emoji_directive(settings["emoji"])
+        pieces.append(f"Emoji usage: {_emoji_dir or settings['emoji']}")
     if settings.get("hook_format"):
         pieces.append(f"Hook format: {settings['hook_format']}.")
     if settings.get("must_name_product"):

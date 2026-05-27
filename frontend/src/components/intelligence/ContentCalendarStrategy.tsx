@@ -28,13 +28,14 @@ interface MonthSection {
 }
 
 interface ParsedDoc {
-  intro: string;
   months: MonthSection[];
+  bodyMarkdown: string;
 }
 
-/** Split the markdown doc into an intro block + per-month sections.
+/** Split the markdown doc into per-month sections, dropping the intro
+ *  preamble (exec summary, foundations, yearly overview, cadence, etc.).
  *  A heading line (any level) whose text starts with a month name opens a
- *  month section; everything before the first such heading is the intro. */
+ *  month section. */
 function parseStrategyDocument(doc: string): ParsedDoc {
   const lines = doc.split("\n");
   const intro: string[] = [];
@@ -72,7 +73,16 @@ function parseStrategyDocument(doc: string): ParsedDoc {
     }
   }
 
-  return { intro: intro.join("\n").trim(), months: ordered };
+  // The intro (everything before the first month — exec summary, strategic
+  // foundations, yearly overview, cadence, etc.) is intentionally dropped:
+  // we only surface the actionable month-by-month plan. bodyMarkdown is the
+  // months-only reconstruction used by the "full document" view.
+  void intro;
+  const bodyMarkdown = ordered
+    .map((s) => `## ${s.month}\n\n${s.body.trim()}`)
+    .join("\n\n");
+
+  return { months: ordered, bodyMarkdown };
 }
 
 const PROSE_CLASS =
@@ -81,7 +91,7 @@ const PROSE_CLASS =
   "prose-table:text-xs prose-th:bg-muted prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1";
 
 export function ContentCalendarStrategy({ document: doc }: { document: string }) {
-  const { intro, months } = useMemo(() => parseStrategyDocument(doc), [doc]);
+  const { months, bodyMarkdown } = useMemo(() => parseStrategyDocument(doc), [doc]);
   const [showRaw, setShowRaw] = useState(false);
 
   // Fallback: if parsing found no month sections, render the raw markdown so
@@ -135,13 +145,6 @@ export function ContentCalendarStrategy({ document: doc }: { document: string })
           ))}
         </div>
 
-        {/* Intro / executive narrative before the months */}
-        {intro && (
-          <div className={`${PROSE_CLASS} rounded-lg border bg-muted/20 p-4`}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{intro}</ReactMarkdown>
-          </div>
-        )}
-
         {/* Month cards */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {months.map((s, idx) => (
@@ -186,7 +189,7 @@ export function ContentCalendarStrategy({ document: doc }: { document: string })
           </Button>
           {showRaw && (
             <div className={`${PROSE_CLASS} mt-3 rounded-lg border p-4`}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyMarkdown}</ReactMarkdown>
             </div>
           )}
         </div>

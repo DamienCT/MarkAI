@@ -609,6 +609,20 @@ export default function BrandDetailPage() {
     }
   }, [brandId]);
 
+  // Open a specific tab when arrived via ?tab=... — e.g. "Back to Brand" from
+  // a report lands on the Intelligence tab the user came from, not Overview.
+  // Read once on mount via window.location to avoid useSearchParams' Suspense
+  // build constraint.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (!tab) return;
+    setActiveTab(tab);
+    if (tab === "intelligence") fetchIntelligence();
+    if (tab === "products") fetchProducts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSyncProducts = useCallback(async (
     vendorNos?: string[] | null,
     categories?: string[] | null,

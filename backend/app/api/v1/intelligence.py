@@ -1,6 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -280,18 +281,95 @@ async def get_report(
     }
 
 
-class ReportEditBody(BaseModel):
-    """Whitelisted, user-editable fields of a report's output_payload.
+# Content keys the editor may overwrite. The plain-English summary is NOT in
+# this set — it is regenerated server-side from the edited content on every
+# save, so it always reflects the document (it is read-only in the UI).
+_EDITABLE_CONTENT_KEYS = {
+    "gaps",
+    "personas",
+    "competitor_analysis",
+    "recommendations",
+    "notes",
+    "positioning",
+    "content_pillars",
+    "target_audiences",
+    "posting_cadence",
+    "monthly_themes",
+    "campaigns",
+    "calendar_items",
+    "calendar_summary",
+    "strategy_document",
+}
 
-    Only these three are editable (Q5 hybrid): the plain-English summary,
-    the recommendations list, and a free-text notes field. Structured
-    findings (gaps, personas, pillars, etc.) stay read-only — to change them
-    the user reworks/regenerates the report. Any field left None is untouched.
+# Keys passed to the summary regenerator, by agent type — the meat of each doc.
+_SUMMARY_INPUT_KEYS: dict[str, list[str]] = {
+    "research": ["gaps", "personas", "competitor_analysis", "recommendations"],
+    "strategy": ["positioning", "content_pillars", "target_audiences", "monthly_themes"],
+    "planning": ["campaigns", "calendar_summary", "calendar_items"],
+    "content_calendar": ["strategy_document", "monthly_themes"],
+    "content_calendar_strategy": ["strategy_document", "monthly_themes"],
+}
+
+_SUMMARY_TYPE_LABELS = {
+    "research": "market research report",
+    "strategy": "marketing strategy",
+    "planning": "marketing plan",
+    "content_calendar": "content calendar strategy",
+    "content_calendar_strategy": "content calendar strategy",
+}
+
+
+async def _regenerate_plain_summary(agent_type: str, payload: dict) -> str:
+    """Rewrite executive_summary_plain from the (edited) report content.
+
+    Plain English, 3-4 sentences, no jargon — same spirit as the agent-side
+    helper. Returns "" on failure so the caller can fall back to the old value.
+    """
+    import json as _json
+
+    label = _SUMMARY_TYPE_LABELS.get(agent_type, "report")
+    keys = _SUMMARY_INPUT_KEYS.get(agent_type, list(payload.keys()))
+    subset = {k: payload.get(k) for k in keys if payload.get(k) is not None}
+    try:
+        payload_json = _json.dumps(subset, default=str)[:12000]
+    except (TypeError, ValueError):
+        payload_json = str(subset)[:12000]
+
+    system_prompt = (
+        "You write plain-English executive summaries for business documents. "
+        "Your reader is NOT a marketer — assume IT, finance, or operations. "
+        "Rules: 3 to 4 sentences; state what the document covers, the single "
+        "most important point, and the main recommended action; plain words "
+        "only (define any specialized term inline in parentheses); no bullet "
+        "points, no markdown. Return ONLY the summary text."
+    )
+    user_prompt = (
+        f"This is a {label}. Summarize it for a non-marketing reader.\n\n"
+        f"Report content (JSON):\n{payload_json}"
+    )
+    try:
+        text = await _call_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return str(text or "").strip().strip('"')
+    except Exception as exc:  # noqa: BLE001 — summary is best-effort
+        logger.warning("Summary regeneration failed for %s: %s", agent_type, exc)
+        return ""
+
+
+class ReportEditBody(BaseModel):
+    """Edited report content. `content` carries any of the editable content
+    keys (gaps, personas, pillars, calendar items, strategy_document, …).
+
+    The plain-English summary is intentionally NOT accepted here — it is
+    regenerated from the edited content on save so it can never drift.
+    Edits overwrite in place (Q4: no version history).
     """
 
-    executive_summary_plain: str | None = None
-    recommendations: list[str] | None = None
-    notes: str | None = None
+    content: dict[str, Any] = {}
 
 
 @router.patch("/report/{run_id}")
@@ -301,11 +379,9 @@ async def edit_report(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Edit the user-editable fields of a report and overwrite them in place.
+    """Overwrite the editable content of a report and auto-refresh its summary.
 
-    Access is limited to manager+ (same bar as brand creation). Edits
-    overwrite the stored values in agent_runs.output_payload — there is no
-    version history (Q4 overwrite). Returns the updated report payload.
+    Access is limited to manager+ (same bar as brand creation).
     """
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -317,11 +393,17 @@ async def edit_report(
 
     payload = dict(run.output_payload) if isinstance(run.output_payload, dict) else {}
 
-    # Apply only the fields the caller actually sent (exclude_unset keeps
-    # untouched fields out of the patch so we never blank them by accident).
-    patch = body.model_dump(exclude_unset=True)
-    for key, value in patch.items():
-        payload[key] = value
+    # Overwrite only whitelisted content keys — ignore anything else the client
+    # might send (technical/internal keys stay untouched).
+    for key, value in (body.content or {}).items():
+        if key in _EDITABLE_CONTENT_KEYS:
+            payload[key] = value
+
+    # Regenerate the plain-English summary from the edited content (Q3). Keep
+    # the previous summary if regeneration fails so we never blank it.
+    new_summary = await _regenerate_plain_summary(run.agent_type, payload)
+    if new_summary:
+        payload["executive_summary_plain"] = new_summary
 
     run.output_payload = payload
     from sqlalchemy.orm.attributes import flag_modified
@@ -826,3 +908,143 @@ async def rewrite_brand_field(
     except Exception as exc:
         logger.error("AI rewrite failed: %s", exc)
         raise HTTPException(status_code=502, detail="AI rewrite failed")
+
+
+# ── Per-channel caption rules (AI auto-fill) ─────────────────────────
+
+
+class ChannelCaptionGenRequest(BaseModel):
+    brand_id: uuid.UUID
+    channel: str
+
+
+# LinkedIn is the B2B channel; everything else is consumer-facing. Used to
+# steer the generated rules toward the right audience per channel.
+_B2B_CHANNELS = {"linkedin"}
+
+
+@router.post("/generate-channel-caption")
+@_limiter.limit("15/minute")
+async def generate_channel_caption(
+    request: Request,
+    req: ChannelCaptionGenRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AI-generate the caption rules for a single channel from brand context.
+
+    Returns a ChannelCaptionSettings-shaped object the form merges into that
+    channel's rules. B2C channels (Instagram, Facebook, etc.) speak as the
+    product to the consumer; LinkedIn speaks as the B2B distributor.
+    """
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    channel = (req.channel or "").strip().lower()
+    if not channel:
+        raise HTTPException(status_code=400, detail="channel is required")
+
+    brand = await brand_service.get_brand(db, req.brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    guidelines = brand.brand_guidelines or {}
+    ta_desc = (
+        (brand.target_audience or {}).get("description", "Not set")
+        if isinstance(brand.target_audience, dict)
+        else "Not set"
+    )
+    brand_context = (
+        f"Brand Name: {_sanitize(brand.name or '')}\n"
+        f"Description: {_sanitize(brand.description or 'Not set')}\n"
+        f"Tone of Voice: {_sanitize(brand.tone_of_voice or 'Not set')}\n"
+        f"Voice Style: {_sanitize(guidelines.get('voice_style', 'Not set'))}\n"
+        f"Target Audience: {_sanitize(ta_desc)}\n"
+        f"Location: Mauritius, Indian Ocean region (bilingual EN/FR/Creole)\n"
+    )
+
+    is_b2b = channel in _B2B_CHANNELS
+    audience_line = (
+        "This is LinkedIn — a B2B channel. The brand speaks as the distributor/"
+        "supply partner to hotels, restaurants and retailers. Professional, "
+        "factual, no emojis."
+        if is_b2b
+        else "This is a consumer (B2C) channel. The brand speaks in first person "
+        "AS the featured product to a home consumer — warm, sensory, benefit-led."
+    )
+
+    system_prompt = (
+        "You configure per-channel social caption rules for a brand. "
+        f"{audience_line}\n\n"
+        "Return ONLY a JSON object with EXACTLY these keys:\n"
+        '  "tone_override" (string: a few adjectives for this channel),\n'
+        '  "hook_format" (string: how the opening line should look),\n'
+        '  "structure_template" (string: the post shape — describe a flexible '
+        "layout with blank lines between sections; lists optional, URL on its "
+        "own line; never force a rigid template),\n"
+        '  "caption_brief" (string: 1-2 sentences of extra guidance for this channel),\n'
+        '  "emoji_override" (one of: "none", "minimal", "moderate", "heavy"),\n'
+        '  "max_words" (integer),\n'
+        '  "hashtags_min" (integer), "hashtags_max" (integer),\n'
+        '  "must_name_product" (boolean).\n\n'
+        "Never put hashtags inside the caption body. No markdown, no code "
+        "fences — just the raw JSON object."
+    )
+    user_prompt = (
+        f"Channel: {_sanitize(channel)}\n\n"
+        f"Brand context:\n{brand_context}\n\n"
+        "Generate sensible caption rules for THIS channel, consistent with the "
+        "brand voice and tuned to how this platform is actually used."
+    )
+
+    try:
+        import json
+
+        raw = await _call_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            json_mode=True,
+        )
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            cleaned = raw.strip().strip("```json").strip("```").strip()
+            data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="AI returned invalid JSON response")
+    except Exception as exc:
+        logger.error("Channel caption generation failed: %s", exc)
+        raise HTTPException(status_code=502, detail="AI generation failed")
+
+    # Coerce into the ChannelCaptionSettings shape the frontend expects.
+    def _as_int(v: object) -> int | None:
+        try:
+            return int(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    result: dict = {}
+    if isinstance(data.get("tone_override"), str) and data["tone_override"].strip():
+        result["tone_override"] = data["tone_override"].strip()
+    if isinstance(data.get("hook_format"), str) and data["hook_format"].strip():
+        result["hook_format"] = data["hook_format"].strip()
+    if isinstance(data.get("structure_template"), str) and data["structure_template"].strip():
+        result["structure_template"] = data["structure_template"].strip()
+    if isinstance(data.get("caption_brief"), str) and data["caption_brief"].strip():
+        result["caption_brief"] = data["caption_brief"].strip()
+    emoji = str(data.get("emoji_override", "")).strip().lower()
+    if emoji in {"none", "minimal", "moderate", "heavy"}:
+        result["emoji_override"] = emoji
+    mw = _as_int(data.get("max_words"))
+    if mw and mw > 0:
+        result["max_words"] = mw
+    hmin = _as_int(data.get("hashtags_min"))
+    hmax = _as_int(data.get("hashtags_max"))
+    if hmin is not None and hmax is not None:
+        result["hashtags_count"] = [max(0, hmin), max(0, hmax)]
+    if isinstance(data.get("must_name_product"), bool):
+        result["must_name_product"] = data["must_name_product"]
+
+    return {"channel": channel, "caption": result}

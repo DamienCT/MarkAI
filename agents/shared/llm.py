@@ -8,6 +8,7 @@ it correctly without needing hardcoded model_list entries.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -397,6 +398,41 @@ async def get_embedding(
         raise
 
 
+# Sizes each model family actually accepts. Requested sizes are mapped to the
+# nearest one for whichever model is being tried, so a fallback model never
+# receives a size that was chosen for a different model (a common 400 cause).
+_GPT_IMAGE_SIZES = {"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"}
+_DALLE3_SIZES = {"square": "1024x1024", "landscape": "1792x1024", "portrait": "1024x1792"}
+
+# HTTP statuses worth retrying on the SAME model before falling back — these
+# are transient (server/load) rather than a permanent rejection of the request.
+_TRANSIENT_IMAGE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524}
+_IMAGE_SUBATTEMPTS = 3
+
+
+def _aspect_of(size: str) -> str:
+    """Classify a 'WxH' size string as square / landscape / portrait."""
+    try:
+        w, h = (int(x) for x in str(size).lower().split("x"))
+    except (ValueError, AttributeError):
+        return "square"
+    if w > h:
+        return "landscape"
+    if h > w:
+        return "portrait"
+    return "square"
+
+
+def _size_for_model(model: str, requested_size: str) -> str:
+    """Map a requested size to the nearest size the given model supports."""
+    aspect = _aspect_of(requested_size)
+    if "gpt-image" in model:
+        return _GPT_IMAGE_SIZES[aspect]
+    if model == "dall-e-3":
+        return _DALLE3_SIZES[aspect]
+    return requested_size
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -433,58 +469,83 @@ async def generate_image(
 
     last_error: Exception | None = None
     for attempt_model in models_to_try:
-        try:
-            logger.info(
-                "Generating image with model=%s via direct OpenAI API", attempt_model
-            )
-            client = get_http_client()
-            # Build request body with model-specific quality / style params.
-            # gpt-image-* and dall-e-3 have different parameter shapes — sending
-            # the wrong one causes 400. quality="high" / "hd" significantly
-            # improves photorealism vs the lower defaults.
-            body: dict = {
-                "model": attempt_model,
-                "prompt": prompt,
-                "size": size,
-                "n": n,
-            }
-            if "gpt-image" in attempt_model:
-                # gpt-image-1, gpt-image-1.5, gpt-image-1-mini all accept these
-                body["quality"] = "high"
-                body["background"] = "opaque"
-            elif attempt_model == "dall-e-3":
-                # DALL-E 3 uses different vocabulary
-                body["quality"] = "hd"
-                body["style"] = "natural"  # less stylized than "vivid"
-            resp = await client.post(
-                "https://api.openai.com/v1/images/generations",
-                headers={"Authorization": f"Bearer {openai_key}"},
-                json=body,
-                timeout=180,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            result = data["data"][0]
+        # Send each model a size it actually supports (square stays square so
+        # Instagram is never letterboxed into landscape).
+        model_size = _size_for_model(attempt_model, size)
+        # Retry the SAME model on transient errors (e.g. 520) before falling
+        # back — those are flaky, not a permanent rejection.
+        for sub_attempt in range(_IMAGE_SUBATTEMPTS):
+            try:
+                logger.info(
+                    "Generating image with model=%s size=%s via direct OpenAI API (try %d/%d)",
+                    attempt_model, model_size, sub_attempt + 1, _IMAGE_SUBATTEMPTS,
+                )
+                client = get_http_client()
+                # Build request body with model-specific quality / style params.
+                # gpt-image-* and dall-e-3 have different parameter shapes —
+                # sending the wrong one causes 400. quality="high"/"hd"
+                # improves photorealism vs the lower defaults.
+                body: dict = {
+                    "model": attempt_model,
+                    "prompt": prompt,
+                    "size": model_size,
+                    "n": n,
+                }
+                if "gpt-image" in attempt_model:
+                    body["quality"] = "high"
+                    body["background"] = "opaque"
+                elif attempt_model == "dall-e-3":
+                    body["quality"] = "hd"
+                    body["style"] = "natural"  # less stylized than "vivid"
+                resp = await client.post(
+                    "https://api.openai.com/v1/images/generations",
+                    headers={"Authorization": f"Bearer {openai_key}"},
+                    json=body,
+                    timeout=180,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                result = data["data"][0]
 
-            if result.get("url"):
-                return result["url"]
-            elif result.get("b64_json"):
-                return f"data:image/png;base64,{result['b64_json']}"
-            else:
-                raise ValueError("Image generation returned neither url nor b64_json")
-        except httpx.HTTPStatusError as exc:
-            last_error = exc
-            logger.warning(
-                "Image model %s returned %d — trying next model",
-                attempt_model,
-                exc.response.status_code,
-            )
-            continue
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Image model %s failed: %s — trying next model", attempt_model, exc
-            )
-            continue
+                if result.get("url"):
+                    return result["url"]
+                elif result.get("b64_json"):
+                    return f"data:image/png;base64,{result['b64_json']}"
+                else:
+                    raise ValueError("Image generation returned neither url nor b64_json")
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status = exc.response.status_code
+                # Capture the response body — the real 400 reason lives here,
+                # not in the status code alone.
+                try:
+                    body_text = exc.response.text[:500]
+                except Exception:
+                    body_text = "<unreadable>"
+                if status in _TRANSIENT_IMAGE_STATUS and sub_attempt < _IMAGE_SUBATTEMPTS - 1:
+                    logger.warning(
+                        "Image model %s transient %d (try %d/%d) — retrying. Body: %s",
+                        attempt_model, status, sub_attempt + 1, _IMAGE_SUBATTEMPTS, body_text,
+                    )
+                    await asyncio.sleep(2 * (sub_attempt + 1))
+                    continue
+                logger.warning(
+                    "Image model %s returned %d — trying next model. Body: %s",
+                    attempt_model, status, body_text,
+                )
+                break  # permanent error or retries exhausted — next model
+            except Exception as exc:
+                last_error = exc
+                if sub_attempt < _IMAGE_SUBATTEMPTS - 1:
+                    logger.warning(
+                        "Image model %s error (try %d/%d) — retrying: %s",
+                        attempt_model, sub_attempt + 1, _IMAGE_SUBATTEMPTS, exc,
+                    )
+                    await asyncio.sleep(2 * (sub_attempt + 1))
+                    continue
+                logger.warning(
+                    "Image model %s failed: %s — trying next model", attempt_model, exc
+                )
+                break
 
     raise RuntimeError(f"All image models failed. Last error: {last_error}")

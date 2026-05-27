@@ -328,7 +328,19 @@ export default function ContentDetailPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => router.push("/content")}>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              // Return to wherever the user came from (a stage list, the grid,
+              // calendar, approvals…), falling back to Content Studio.
+              if (typeof window !== "undefined" && window.history.length > 1) {
+                router.back();
+              } else {
+                router.push("/content");
+              }
+            }}
+          >
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>

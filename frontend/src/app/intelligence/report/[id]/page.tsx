@@ -17,12 +17,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { SafeValue, formatKeyValue } from "@/components/ui/safe-render";
 import { ContentCalendarStrategy } from "@/components/intelligence/ContentCalendarStrategy";
 import { ReportCharts } from "@/components/intelligence/ReportCharts";
+import { ReportContentEditor, type Json } from "@/components/intelligence/ReportContentEditor";
 import {
   ArrowLeft,
   Clock,
@@ -54,7 +54,6 @@ import {
   Download,
   ChevronDown,
   ChevronUp,
-  FlaskConical,
   StickyNote,
   Loader2,
 } from "lucide-react";
@@ -62,6 +61,23 @@ import {
 // Role hierarchy mirror — edit is allowed for manager+ (same bar as brand
 // creation). Kept local to avoid a redirecting role hook on this view page.
 const ROLE_LEVELS: Record<string, number> = { viewer: 10, editor: 60, manager: 80, admin: 100 };
+
+// Which content keys are editable per report type, and a sensible empty value
+// to seed a key that doesn't exist yet (so the user can add it).
+const EDITABLE_KEYS: Record<string, string[]> = {
+  research: ["gaps", "personas", "competitor_analysis", "recommendations", "notes"],
+  strategy: ["positioning", "content_pillars", "target_audiences", "posting_cadence", "monthly_themes", "recommendations", "notes"],
+  planning: ["campaigns", "calendar_items", "calendar_summary", "recommendations", "notes"],
+  content_calendar: ["strategy_document", "monthly_themes", "recommendations", "notes"],
+  content_calendar_strategy: ["strategy_document", "monthly_themes", "recommendations", "notes"],
+};
+const STRING_KEYS = new Set(["strategy_document", "calendar_summary", "notes"]);
+const OBJECT_KEYS = new Set(["positioning", "posting_cadence"]);
+function defaultForKey(key: string): Json {
+  if (STRING_KEYS.has(key)) return "";
+  if (OBJECT_KEYS.has(key)) return {};
+  return []; // everything else is a list
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -89,7 +105,7 @@ interface ReportData {
 
 interface OutputPayload {
   // Research fields
-  gaps?: MarketGap[];
+  gaps?: (MarketGap | string)[];
   personas?: Persona[];
   competitor_analysis?: CompetitorAnalysis[];
   competitor_urls?: string[];
@@ -270,16 +286,6 @@ function threatLevelColor(level: string | undefined): string {
   }
 }
 
-function formatDuration(ms: number | null): string {
-  if (!ms) return "N/A";
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes}m ${remainingSeconds}s`;
-}
-
 const AGENT_TYPE_DISPLAY_NAMES: Record<string, string> = {
   planning: "Marketing Plan",
   research: "Research",
@@ -312,10 +318,9 @@ export default function ReportPage() {
   const canEdit = (ROLE_LEVELS[userRole ?? "viewer"] ?? 0) >= ROLE_LEVELS.manager;
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [draftSummary, setDraftSummary] = useState("");
-  const [draftNotes, setDraftNotes] = useState("");
-  const [draftRecommendations, setDraftRecommendations] = useState("");
+  const [editDraft, setEditDraft] = useState<{ [k: string]: Json }>({});
   const [showRawData, setShowRawData] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
     async function fetchReport() {
@@ -338,11 +343,13 @@ export default function ReportPage() {
   }, [runId]);
 
   function startEditing() {
-    const out = report?.output_payload || {};
-    setDraftSummary(String(out.executive_summary_plain || ""));
-    setDraftNotes(String(out.notes || ""));
-    const recs = Array.isArray(out.recommendations) ? out.recommendations : [];
-    setDraftRecommendations(recs.join("\n"));
+    const out = (report?.output_payload || {}) as Record<string, unknown>;
+    const keys = EDITABLE_KEYS[report?.agent_type || ""] || ["notes"];
+    const draft: { [k: string]: Json } = {};
+    for (const k of keys) {
+      draft[k] = out[k] !== undefined ? (out[k] as Json) : defaultForKey(k);
+    }
+    setEditDraft(draft);
     setEditing(true);
   }
 
@@ -350,21 +357,14 @@ export default function ReportPage() {
     if (!report) return;
     setSaving(true);
     try {
-      const recommendations = draftRecommendations
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean);
+      // Backend overwrites these content keys and auto-regenerates the summary.
       const updated = await api.patch<{ output_payload: OutputPayload }>(
         `/api/v1/intelligence/report/${runId}`,
-        {
-          executive_summary_plain: draftSummary.trim(),
-          notes: draftNotes.trim(),
-          recommendations,
-        }
+        { content: editDraft }
       );
       setReport({ ...report, output_payload: updated.output_payload });
       setEditing(false);
-      toast.success("Report updated");
+      toast.success("Report updated — summary refreshed");
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "Failed to save changes";
       toast.error(detail);
@@ -373,18 +373,57 @@ export default function ReportPage() {
     }
   }
 
-  // Name the print/PDF output after the report so "Save as PDF" gets a clean
-  // filename instead of the page URL.
-  function downloadPdf() {
-    const prev = document.title;
-    const dn = report ? formatAgentType(report.agent_type) : "Report";
-    const brand = report?.brand_name ? ` - ${report.brand_name}` : "";
-    const date = report?.created_at ? ` - ${report.created_at.slice(0, 10)}` : "";
-    document.title = `MARKAI - ${dn}${brand}${date}`;
-    window.print();
-    setTimeout(() => {
-      document.title = prev;
-    }, 1000);
+  // Direct PDF download (no print dialog). html2pdf renders the whole report
+  // element — not just the visible viewport — so nothing is cut off. The
+  // library is loaded from a CDN on first use to avoid a build-time dependency.
+  async function downloadPdf() {
+    if (!report) return;
+    const el = document.getElementById("report-export-root");
+    if (!el) return;
+    setExportingPdf(true);
+    try {
+      type Html2PdfChain = {
+        set: (opt: Record<string, unknown>) => Html2PdfChain;
+        from: (el: HTMLElement) => Html2PdfChain;
+        save: () => Promise<void>;
+      };
+      const w = window as unknown as { html2pdf?: () => Html2PdfChain };
+      if (typeof w.html2pdf !== "function") {
+        await new Promise<void>((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src =
+            "https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.2/dist/html2pdf.bundle.min.js";
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error("Could not load the PDF library"));
+          document.body.appendChild(s);
+        });
+      }
+      const dn = formatAgentType(report.agent_type);
+      const brand = report.brand_name ? ` - ${report.brand_name}` : "";
+      const date = report.created_at ? ` - ${report.created_at.slice(0, 10)}` : "";
+      const filename = `MARKAI - ${dn}${brand}${date}.pdf`;
+
+      // Hide on-screen controls (buttons/toggles) during capture.
+      document.documentElement.classList.add("pdf-exporting");
+      await w
+        .html2pdf!()
+        .set({
+          margin: [10, 10, 14, 10],
+          filename,
+          image: { type: "jpeg", quality: 0.95 },
+          html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+          pagebreak: { mode: ["css", "legacy"], avoid: ".print-break" },
+        })
+        .from(el)
+        .save();
+    } catch (err: unknown) {
+      const detail = (err as { message?: string })?.message || "PDF export failed";
+      toast.error(detail);
+    } finally {
+      document.documentElement.classList.remove("pdf-exporting");
+      setExportingPdf(false);
+    }
   }
 
   if (loading) {
@@ -423,7 +462,6 @@ export default function ReportPage() {
   const competitorAnalysis = output.competitor_analysis || [];
   const competitorUrls = output.competitor_urls || [];
   const socialAnalysis = output.social_analysis;
-  const socialProfiles = output.social_profiles || [];
   const errors = output.errors || [];
   const recommendations = output.recommendations || [];
 
@@ -451,7 +489,10 @@ export default function ReportPage() {
   const personaCount = personas.length;
   const competitorCount = competitorAnalysis.length;
   const highPriorityGaps = gaps.filter(
-    (g) => g.priority?.toLowerCase() === "high" || g.priority?.toLowerCase() === "critical"
+    (g) =>
+      typeof g === "object" &&
+      (g.priority?.toLowerCase() === "high" ||
+        g.priority?.toLowerCase() === "critical")
   ).length;
 
   const displayName = formatAgentType(report.agent_type);
@@ -468,15 +509,22 @@ export default function ReportPage() {
   return (
     <>
 
-      <div className="space-y-8 max-w-5xl mx-auto pb-12">
+      <div id="report-export-root" className="space-y-8 max-w-5xl mx-auto pb-12">
         {/* ── Top Bar (no-print) ──────────────────────────────────── */}
         <div className="flex items-center justify-between gap-2 no-print" data-no-print>
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => router.push("/intelligence")}
+            onClick={() =>
+              router.push(
+                report.brand_id
+                  ? `/brands/${report.brand_id}?tab=intelligence`
+                  : "/intelligence"
+              )
+            }
           >
-            <ArrowLeft className="mr-2 h-4 w-4" /> Back to Intelligence
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            {report.brand_id ? "Back to Brand" : "Back to Intelligence"}
           </Button>
           <div className="flex items-center gap-2">
             {editing ? (
@@ -496,8 +544,13 @@ export default function ReportPage() {
                     <Pencil className="mr-2 h-4 w-4" /> Edit
                   </Button>
                 )}
-                <Button variant="outline" size="sm" onClick={downloadPdf}>
-                  <Download className="mr-2 h-4 w-4" /> Download PDF
+                <Button variant="outline" size="sm" onClick={downloadPdf} disabled={exportingPdf}>
+                  {exportingPdf ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="mr-2 h-4 w-4" />
+                  )}
+                  {exportingPdf ? "Exporting…" : "Download PDF"}
                 </Button>
               </>
             )}
@@ -539,86 +592,47 @@ export default function ReportPage() {
           </div>
         </div>
 
-        {/* ── TL;DR / Bottom Line (Q1=B) — hidden when absent (Q6=C) ─ */}
-        {(summaryPlain || editing) && (
+        {/* ── Summary (read-only; auto-regenerated on save) ─────────── */}
+        {summaryPlain && (
           <Card className="border-primary/30 bg-primary/5 print-break" id="section-tldr">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <Lightbulb className="h-5 w-5 text-primary" />
-                Bottom Line
+                Summary
               </CardTitle>
-              <CardDescription>
-                Plain-English summary — what this report means and what to do about it.
-              </CardDescription>
             </CardHeader>
             <CardContent>
-              {editing ? (
-                <Textarea
-                  value={draftSummary}
-                  onChange={(e) => setDraftSummary(e.target.value)}
-                  rows={4}
-                  placeholder="A 3-4 sentence plain-English summary for any reader."
-                />
-              ) : (
-                <p className="text-sm leading-relaxed whitespace-pre-line">{summaryPlain}</p>
+              <p className="text-sm leading-relaxed whitespace-pre-line">{summaryPlain}</p>
+              {editing && (
+                <p className="mt-2 text-xs text-muted-foreground italic">
+                  The summary updates automatically when you save your edits.
+                </p>
               )}
             </CardContent>
           </Card>
         )}
 
-        {/* ── Methodology ─────────────────────────────────────────── */}
-        <Card className="print-break" id="section-methodology">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <FlaskConical className="h-5 w-5 text-primary" />
-              How this report was produced
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <div>
-                <p className="text-xs text-muted-foreground">Generated by</p>
-                <p className="text-sm font-medium">MARKAI AI Engine</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Date</p>
-                <p className="text-sm font-medium">{formatDate(report.created_at)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Generation time</p>
-                <p className="text-sm font-medium">{formatDuration(report.duration_ms)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Trigger</p>
-                <p className="text-sm font-medium capitalize">{report.trigger || "manual"}</p>
-              </div>
-              {report.tokens_used != null && (
-                <div>
-                  <p className="text-xs text-muted-foreground">AI tokens used</p>
-                  <p className="text-sm font-medium">{report.tokens_used.toLocaleString()}</p>
-                </div>
-              )}
-              {report.cost_usd != null && report.cost_usd > 0 && (
-                <div>
-                  <p className="text-xs text-muted-foreground">Estimated cost</p>
-                  <p className="text-sm font-medium">${report.cost_usd.toFixed(4)}</p>
-                </div>
-              )}
-              {isResearch && (
-                <div>
-                  <p className="text-xs text-muted-foreground">Sources analyzed</p>
-                  <p className="text-sm font-medium">
-                    {competitorCount} competitor{competitorCount !== 1 ? "s" : ""}
-                  </p>
-                </div>
-              )}
-            </div>
-            <p className="mt-4 text-xs text-muted-foreground italic">
-              This document was generated automatically by an AI system from public and brand-provided data. Figures are AI estimates and should be sense-checked before high-stakes decisions.
-            </p>
-          </CardContent>
-        </Card>
+        {/* ── Edit mode: structured content editor ──────────────────── */}
+        {editing && (
+          <Card id="section-editor">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Pencil className="h-5 w-5 text-primary" />
+                Edit report content
+              </CardTitle>
+              <CardDescription>
+                Edit any field, add or remove items. Save to apply — the summary
+                is rewritten automatically from your changes.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ReportContentEditor data={editDraft} onChange={setEditDraft} />
+            </CardContent>
+          </Card>
+        )}
 
+        {/* Everything below is the read-only view, hidden while editing. */}
+        {!editing && (<>
         <Separator />
 
         {/* ── Executive Summary ────────────────────────────────────── */}
@@ -849,7 +863,21 @@ export default function ReportPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {gaps.map((gap, idx) => (
+                {gaps.map((gap, idx) => {
+                  // The agent sometimes returns gaps as plain strings instead of
+                  // structured objects — render those as a simple line so the
+                  // card is never blank.
+                  if (typeof gap === "string") {
+                    return (
+                      <div
+                        key={idx}
+                        className="rounded-lg border p-4 hover:bg-muted/30 transition-colors"
+                      >
+                        <p className="text-sm">{gap}</p>
+                      </div>
+                    );
+                  }
+                  return (
                   <div
                     key={idx}
                     className="rounded-lg border p-4 space-y-3 hover:bg-muted/30 transition-colors"
@@ -967,7 +995,8 @@ export default function ReportPage() {
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </CardContent>
           </Card>
@@ -1371,109 +1400,10 @@ export default function ReportPage() {
                       )}
                   </div>
                 ))}
-
-                {competitorUrls.length > 0 && (
-                  <div className="space-y-2">
-                    <h4 className="text-sm font-semibold">
-                      Discovered Competitor URLs
-                    </h4>
-                    <div className="space-y-1">
-                      {competitorUrls.map((url, idx) => (
-                        <a
-                          key={idx}
-                          href={url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-2 text-sm text-primary hover:underline"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-                          {url}
-                        </a>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           </CardContent>
         </Card>}
-
-        {/* ── Section 4: Social Media Analysis ────────────────────── */}
-        {isResearch && (socialAnalysis?.analysis ||
-          socialAnalysis?.summary ||
-          socialProfiles.length > 0) && (
-          <Card className="print-break">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Share2 className="h-5 w-5 text-primary" />
-                Social Media Analysis
-              </CardTitle>
-              <CardDescription>
-                Social presence and engagement insights
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {(socialAnalysis?.analysis || socialAnalysis?.summary) && (
-                <div className="prose prose-sm max-w-none dark:prose-invert">
-                  <p className="text-sm leading-relaxed whitespace-pre-line">
-                    {socialAnalysis.analysis || socialAnalysis.summary}
-                  </p>
-                </div>
-              )}
-
-              {socialAnalysis?.platforms &&
-                socialAnalysis.platforms.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {socialAnalysis.platforms.map((p, i) => (
-                      <Badge key={i} variant="secondary">
-                        {p}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-
-              {socialProfiles.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-sm font-semibold">Social Profiles</h4>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {socialProfiles.map((profile, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between rounded-md border p-3"
-                      >
-                        <div>
-                          <p className="text-sm font-medium capitalize">
-                            {profile.platform}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {profile.handle}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {profile.followers != null && (
-                            <span className="text-xs text-muted-foreground">
-                              {profile.followers.toLocaleString()} followers
-                            </span>
-                          )}
-                          {profile.url && (
-                            <a
-                              href={profile.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-primary"
-                            >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
 
         {/* ════════════════════════════════════════════════════════════
             STRATEGY REPORT SECTIONS
@@ -1884,9 +1814,22 @@ export default function ReportPage() {
             <CardContent>
               <div className="space-y-3">
                 {calendarItems.map((item, idx) => {
-                  const title = String(item.title || item.name || `Item ${idx + 1}`);
+                  // Planning items carry the post title under theme/sub-theme,
+                  // not title/name, and the brief under content_brief.
+                  const title = String(
+                    item.title ||
+                    item.name ||
+                    item.weekly_sub_theme ||
+                    item.theme ||
+                    item.campaign_name ||
+                    `Item ${idx + 1}`
+                  );
                   const platform = item.platform ? String(item.platform) : null;
-                  const desc = item.description ? String(item.description) : null;
+                  const desc = item.description
+                    ? String(item.description)
+                    : item.content_brief
+                    ? String(item.content_brief)
+                    : null;
                   const date = item.scheduled_at || item.scheduled_date;
                   const dateStr = date ? String(date) : null;
                   const contentType = item.content_type ? String(item.content_type) : null;
@@ -1987,12 +1930,12 @@ export default function ReportPage() {
         )}
 
         {/* ── Section 5: Errors & Recommendations ─────────────────── */}
-        {(errors.length > 0 || recommendations.length > 0 || editing) && (
+        {(errors.length > 0 || recommendations.length > 0) && (
           <Card className="print-break" id="section-recommendations">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Lightbulb className="h-5 w-5 text-primary" />
-                {errors.length > 0 && (recommendations.length > 0 || editing)
+                {errors.length > 0 && recommendations.length > 0
                   ? "Issues & Recommendations"
                   : errors.length > 0
                   ? "Issues Encountered"
@@ -2019,20 +1962,7 @@ export default function ReportPage() {
                 </div>
               )}
 
-              {editing ? (
-                <div className="space-y-2">
-                  <h4 className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                    Recommendations
-                  </h4>
-                  <Textarea
-                    value={draftRecommendations}
-                    onChange={(e) => setDraftRecommendations(e.target.value)}
-                    rows={5}
-                    placeholder="One recommendation per line."
-                  />
-                  <p className="text-xs text-muted-foreground">One recommendation per line.</p>
-                </div>
-              ) : recommendations.length > 0 ? (
+              {recommendations.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
                     Recommendations
@@ -2051,13 +1981,13 @@ export default function ReportPage() {
                     ))}
                   </ul>
                 </div>
-              ) : null}
+              )}
             </CardContent>
           </Card>
         )}
 
-        {/* ── Notes (free text, editable) ─────────────────────────── */}
-        {(notes || editing) && (
+        {/* ── Notes (free text) ───────────────────────────────────── */}
+        {notes && (
           <Card className="print-break" id="section-notes">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -2067,16 +1997,7 @@ export default function ReportPage() {
               <CardDescription>Internal notes added by your team.</CardDescription>
             </CardHeader>
             <CardContent>
-              {editing ? (
-                <Textarea
-                  value={draftNotes}
-                  onChange={(e) => setDraftNotes(e.target.value)}
-                  rows={4}
-                  placeholder="Add any notes or context for this report."
-                />
-              ) : (
-                <p className="text-sm leading-relaxed whitespace-pre-line">{notes}</p>
-              )}
+              <p className="text-sm leading-relaxed whitespace-pre-line">{notes}</p>
             </CardContent>
           </Card>
         )}
@@ -2112,6 +2033,7 @@ export default function ReportPage() {
             )}
           </div>
         )}
+        </>)}
 
         {/* ── Footer ──────────────────────────────────────────────── */}
         <div className="text-center text-xs text-muted-foreground py-4 border-t">

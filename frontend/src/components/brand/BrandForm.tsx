@@ -76,11 +76,15 @@ function ChannelCaptionEditor({
   label,
   value,
   onChange,
+  onAutoFill,
+  autoFilling,
 }: {
   channel: string;
   label: string;
   value: ChannelCaptionSettings;
   onChange: (next: ChannelCaptionSettings) => void;
+  onAutoFill: () => void;
+  autoFilling: boolean;
 }) {
   const set = <K extends keyof ChannelCaptionSettings>(
     key: K,
@@ -109,10 +113,33 @@ function ChannelCaptionEditor({
 
   return (
     <details className="rounded-md border p-3 group">
-      <summary className="cursor-pointer text-sm font-medium select-none flex items-center justify-between">
+      <summary className="cursor-pointer text-sm font-medium select-none flex items-center justify-between gap-2">
         <span>{label}</span>
-        <span className="text-xs text-muted-foreground">
-          {Object.keys(value).length > 0 ? "configured" : "inherit global"}
+        <span className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            {Object.keys(value).length > 0 ? "customized" : "using global"}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            disabled={autoFilling}
+            onClick={(e) => {
+              // Don't let the click toggle the <details> open/closed.
+              e.preventDefault();
+              e.stopPropagation();
+              onAutoFill();
+            }}
+            title="Generate rules for this channel with AI"
+          >
+            {autoFilling ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Wand2 className="h-3.5 w-3.5" />
+            )}
+            Auto-fill with AI
+          </Button>
         </span>
       </summary>
       <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -140,7 +167,7 @@ function ChannelCaptionEditor({
           />
         </div>
         <div className="space-y-1">
-          <Label htmlFor={`${channel}-tone-override`} className="text-xs">Tone override</Label>
+          <Label htmlFor={`${channel}-tone-override`} className="text-xs">Tone</Label>
           <Input
             id={`${channel}-tone-override`}
             value={value.tone_override ?? ""}
@@ -149,7 +176,7 @@ function ChannelCaptionEditor({
           />
         </div>
         <div className="space-y-1">
-          <Label htmlFor={`${channel}-emoji-override`} className="text-xs">Emoji override</Label>
+          <Label htmlFor={`${channel}-emoji-override`} className="text-xs">Emoji</Label>
           <Select
             value={value.emoji_override ?? "__inherit__"}
             onValueChange={(v) =>
@@ -205,7 +232,7 @@ function ChannelCaptionEditor({
         </div>
         <div className="space-y-1 md:col-span-2">
           <Label htmlFor={`${channel}-brief`} className="text-xs">
-            Caption brief override (full freedom)
+            Extra instructions (this channel only)
           </Label>
           <Textarea
             id={`${channel}-brief`}
@@ -323,6 +350,7 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
   const [generatingField, setGeneratingField] = useState<string | null>(null);
   const [generatingAll, setGeneratingAll] = useState(false);
   const [rewritingField, setRewritingField] = useState<string | null>(null);
+  const [autoFillingChannel, setAutoFillingChannel] = useState<string | null>(null);
 
   const fetchCompanies = useCallback(async () => {
     setLoadingCompanies(true);
@@ -404,6 +432,32 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
       toast.error(detail);
     } finally {
       setGeneratingField(null);
+    }
+  };
+
+  const handleAutoFillChannel = async (ch: string) => {
+    if (!brand?.id) {
+      toast.error("Save the brand first before using AI generation");
+      return;
+    }
+    setAutoFillingChannel(ch);
+    try {
+      const result = await api.post<{ channel: string; caption: ChannelCaptionSettings }>(
+        "/api/v1/intelligence/generate-channel-caption",
+        { brand_id: brand.id, channel: ch }
+      );
+      // Merge AI suggestions over any existing values for this channel.
+      setChannelCaptions((prev) => ({
+        ...prev,
+        [ch]: { ...(prev[ch] || {}), ...(result.caption || {}) },
+      }));
+      const label = CHANNEL_DISPLAY_NAMES[ch as keyof typeof CHANNEL_DISPLAY_NAMES] || ch;
+      toast.success(`AI filled rules for ${label}`);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "AI generation failed";
+      toast.error(detail);
+    } finally {
+      setAutoFillingChannel(null);
     }
   };
 
@@ -816,13 +870,7 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
 
           <div className="space-y-3">
             <div>
-              <Label className="text-sm">Per-channel overrides</Label>
-              <p className="text-xs text-muted-foreground mt-1">
-                Optional. Each channel can override the global voice settings
-                above. Empty fields inherit the global value. Length defaults
-                are tuned per platform (Instagram 60, Facebook 90, LinkedIn 120,
-                TikTok 30, X 35) — override only when you want a different limit.
-              </p>
+              <Label className="text-sm">Custom Channel Rules</Label>
             </div>
             <div className="space-y-2">
               {Object.entries(CHANNEL_DISPLAY_NAMES).map(([ch, label]) => (
@@ -834,6 +882,8 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
                   onChange={(next) =>
                     setChannelCaptions((prev) => ({ ...prev, [ch]: next }))
                   }
+                  onAutoFill={() => handleAutoFillChannel(ch)}
+                  autoFilling={autoFillingChannel === ch}
                 />
               ))}
             </div>
