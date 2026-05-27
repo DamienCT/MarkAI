@@ -26,3 +26,6 @@ class PlanningState(TypedDict, total=False):
     strategy_document: str  # Year-long content calendar strategy document (markdown)
     calendar_items: list[dict[str, Any]]
     calendar_item_ids: list[str]
+
+    # Plain-English summary for non-marketing readers (planning report)
+    executive_summary_plain: str

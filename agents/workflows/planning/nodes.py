@@ -9,7 +9,11 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, field_validator
 
-from shared.llm import chat_completion, parse_llm_json
+from shared.llm import (
+    chat_completion,
+    generate_executive_summary_plain,
+    parse_llm_json,
+)
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
     delete_planned_calendar_items,
@@ -915,15 +919,35 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     )
     logger.info("Stored %d calendar items for brand %s", len(ids), brand_id)
 
+    # Plain-English summary of the marketing plan (planning report) for
+    # non-marketing readers (IT/finance). Best-effort, empty on failure.
+    planning_summary_plain = await generate_executive_summary_plain(
+        "planning",
+        {
+            "campaigns": state.get("campaigns", []),
+            "calendar_items_count": len(ids),
+            "enabled_channels": enabled_channels,
+        },
+    )
+
     # Persist year-long strategy document as an agent_run artifact
     if strategy_document:
         try:
+            # Separate plain-English summary for the content-calendar report.
+            calendar_summary_plain = await generate_executive_summary_plain(
+                "content_calendar",
+                {
+                    "strategy_document": strategy_document[:8000],
+                    "enabled_channels": enabled_channels,
+                },
+            )
             await store_strategy(
                 brand_id,
                 {
                     "type": "content_calendar_strategy",
                     "strategy_document": strategy_document,
                     "enabled_channels": enabled_channels,
+                    "executive_summary_plain": calendar_summary_plain,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                 },
                 agent_type="content_calendar",
@@ -932,4 +956,8 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
         except Exception:
             logger.exception("Failed to store strategy document for brand %s", brand_id)
 
-    return {"status": "completed", "calendar_item_ids": ids}
+    return {
+        "status": "completed",
+        "calendar_item_ids": ids,
+        "executive_summary_plain": planning_summary_plain,
+    }

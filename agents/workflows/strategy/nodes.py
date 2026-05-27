@@ -8,7 +8,11 @@ from typing import Any
 
 from langgraph.types import interrupt
 
-from shared.llm import chat_completion, parse_llm_json
+from shared.llm import (
+    chat_completion,
+    generate_executive_summary_plain,
+    parse_llm_json,
+)
 from shared.sanitize import sanitize_json_for_prompt
 from shared.tools.database import get_brand_config, get_latest_research, store_strategy
 
@@ -271,6 +275,11 @@ async def human_review(state: StrategyState) -> dict[str, Any]:
         "monthly_themes": state.get("themes"),
     }
 
+    # Plain-English summary for non-marketing readers (IT/finance). Stored
+    # inside the strategy payload so it persists via store_strategy.
+    summary_plain = await generate_executive_summary_plain("strategy", strategy_summary)
+    strategy_summary["executive_summary_plain"] = summary_plain
+
     # Auto-approve for automated pipeline triggers (no human in the loop)
     # Can also be controlled per-brand via brand_guidelines.pipeline_auto_approve
     auto_approve = state.get("auto_approve") or state.get("trigger") == "event"
@@ -290,7 +299,11 @@ async def human_review(state: StrategyState) -> dict[str, Any]:
             state.get("trigger"),
         )
         await store_strategy(state["brand_id"], strategy_summary)
-        return {"human_approved": True, "status": "approved"}
+        return {
+            "human_approved": True,
+            "status": "approved",
+            "executive_summary_plain": summary_plain,
+        }
 
     review = interrupt(
         {
@@ -307,7 +320,11 @@ async def human_review(state: StrategyState) -> dict[str, Any]:
     if approved:
         # Store the approved strategy
         await store_strategy(state["brand_id"], strategy_summary)
-        return {"human_approved": True, "status": "approved"}
+        return {
+            "human_approved": True,
+            "status": "approved",
+            "executive_summary_plain": summary_plain,
+        }
     else:
         return {
             "human_approved": False,

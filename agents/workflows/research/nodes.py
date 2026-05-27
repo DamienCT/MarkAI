@@ -6,7 +6,12 @@ import json
 import logging
 from typing import Any
 
-from shared.llm import chat_completion, get_embedding, parse_llm_json
+from shared.llm import (
+    chat_completion,
+    generate_executive_summary_plain,
+    get_embedding,
+    parse_llm_json,
+)
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.browser import crawl_site
 from shared.tools.social import get_social_profiles, get_engagement_data
@@ -501,6 +506,18 @@ async def store_results(state: ResearchState) -> dict[str, Any]:
         "events": state.get("events", []),
     }
 
+    # Plain-English summary for non-marketing readers (IT/finance). Built from
+    # the structured findings; best-effort, empty string on failure.
+    summary_plain = await generate_executive_summary_plain(
+        "research",
+        {
+            "gaps": state.get("gaps", []),
+            "personas": state.get("personas", []),
+            "competitor_analysis": state.get("competitor_analysis", []),
+            "social_analysis": state.get("social_analysis", {}),
+        },
+    )
+
     # Store competitors discovered during research
     competitors = state.get("competitor_analysis", [])
     if competitors:
@@ -531,4 +548,8 @@ async def store_results(state: ResearchState) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Qdrant vector store failed (non-fatal): %s", exc)
 
-    return {"status": "completed", "research_data": research_data}
+    return {
+        "status": "completed",
+        "research_data": research_data,
+        "executive_summary_plain": summary_plain,
+    }

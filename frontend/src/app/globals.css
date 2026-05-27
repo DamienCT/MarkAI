@@ -117,6 +117,10 @@
 }
 
 /* Print styles for intelligence reports */
+@page {
+  size: A4;
+  margin: 1.5cm;
+}
 @media print {
   nav, aside, header, footer,
   [data-no-print],
@@ -124,14 +128,42 @@
     display: none !important;
   }
   body {
-    font-size: 12pt;
+    font-size: 11pt;
     color: #000 !important;
     background: #fff !important;
   }
-  .print-break {
-    page-break-before: always;
-  }
+  /* Preserve brand colors, badges, and chart fills in the PDF */
   * {
     box-shadow: none !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
+  /* Keep each card whole instead of splitting it across a page boundary */
+  .print-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  /* The cover always starts the document and gets its own page */
+  .print-cover {
+    page-break-after: always;
+  }
+  /* Don't strand a heading at the bottom of a page */
+  h1, h2, h3, h4 {
+    page-break-after: avoid;
+  }
+  /* Repeating footer on every printed page */
+  .print-footer {
+    display: block !important;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 8pt;
+    color: #666 !important;
+  }
+}
+/* Footer only exists in print output */
+.print-footer {
+  display: none;
 }

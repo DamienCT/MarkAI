@@ -29,3 +29,6 @@ class StrategyState(TypedDict, total=False):
     # Human review
     human_approved: bool
     human_feedback: str
+
+    # Plain-English summary for non-marketing readers
+    executive_summary_plain: str

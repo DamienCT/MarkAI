@@ -23,3 +23,4 @@ class ResearchState(TypedDict, total=False):
     gaps: list[dict[str, Any]]
     events: list[dict[str, Any]]
     research_data: dict
+    executive_summary_plain: str

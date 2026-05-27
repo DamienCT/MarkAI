@@ -297,6 +297,70 @@ async def chat_completion(
         )
 
 
+# Human-readable labels for each report type, used in the plain-English
+# summary prompt so the LLM frames its output for the right document.
+_REPORT_TYPE_LABELS: dict[str, str] = {
+    "research": "market research report",
+    "strategy": "marketing strategy",
+    "planning": "marketing plan",
+    "content_calendar": "content calendar strategy",
+}
+
+
+async def generate_executive_summary_plain(
+    report_type: str, payload: dict[str, Any]
+) -> str:
+    """Produce a 3-4 sentence plain-English summary of a report.
+
+    Written for non-marketing readers (IT, finance, ops): no jargon, and any
+    specialized marketing term that must appear is defined inline in the same
+    sentence. Returns "" on failure so callers can degrade gracefully — the
+    frontend hides the summary block when this is empty.
+    """
+    label = _REPORT_TYPE_LABELS.get(report_type, "report")
+    try:
+        # Trim the payload so we don't blow the context window on huge reports.
+        payload_json = json.dumps(payload, default=str)[:12000]
+    except (TypeError, ValueError):
+        payload_json = str(payload)[:12000]
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You write plain-English executive summaries for business "
+                "documents. Your reader is NOT a marketer — assume they work "
+                "in IT, finance, or operations and have never seen marketing "
+                "jargon. Rules:\n"
+                "- 3 to 4 sentences. No more.\n"
+                "- State what this document covers, the single most important "
+                "finding, and the main recommended action.\n"
+                "- Plain words only. If you must use a specialized term "
+                "(e.g. 'content pillar', 'persona', 'positioning'), define it "
+                "in the same sentence in parentheses.\n"
+                "- No bullet points, no headings, no markdown. Just sentences.\n"
+                "- Concrete and specific. Use real numbers from the data.\n"
+                "Return ONLY the summary text."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"This is a {label}. Summarize it for a non-marketing reader.\n\n"
+                f"Report data (JSON):\n{payload_json}"
+            ),
+        },
+    ]
+    try:
+        result = await chat_completion(messages, temperature=0.4, max_tokens=400)
+        return str(result or "").strip().strip('"')
+    except Exception as exc:  # noqa: BLE001 — summary is best-effort
+        logger.warning(
+            "generate_executive_summary_plain failed for %s: %s", report_type, exc
+        )
+        return ""
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),

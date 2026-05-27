@@ -2,8 +2,9 @@
 
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, apiUrl } from "@/lib/api";
 import { formatDate, formatDateTime, statusColor } from "@/lib/utils";
 import {
   Card,
@@ -16,12 +17,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { SafeValue, formatKeyValue } from "@/components/ui/safe-render";
+import { ContentCalendarStrategy } from "@/components/intelligence/ContentCalendarStrategy";
+import { ReportCharts } from "@/components/intelligence/ReportCharts";
 import {
   ArrowLeft,
-  Printer,
   Clock,
   Zap,
   AlertTriangle,
@@ -45,7 +48,20 @@ import {
   BookOpen,
   Megaphone,
   LayoutGrid,
+  Pencil,
+  Save,
+  X,
+  Download,
+  ChevronDown,
+  ChevronUp,
+  FlaskConical,
+  StickyNote,
+  Loader2,
 } from "lucide-react";
+
+// Role hierarchy mirror — edit is allowed for manager+ (same bar as brand
+// creation). Kept local to avoid a redirecting role hook on this view page.
+const ROLE_LEVELS: Record<string, number> = { viewer: 10, editor: 60, manager: 80, admin: 100 };
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -57,6 +73,7 @@ interface ReportData {
   brand_description: string | null;
   brand_website: string | null;
   brand_industry: string | null;
+  brand_logo_url: string | null;
   status: string;
   trigger: string;
   input_payload: Record<string, unknown> | null;
@@ -100,6 +117,9 @@ interface OutputPayload {
   strategy_document?: string;
   markdown?: string;
   content?: string;
+  // Plain-English summary + user-editable fields
+  executive_summary_plain?: string;
+  notes?: string;
   [key: string]: unknown;
 }
 
@@ -281,9 +301,21 @@ export default function ReportPage() {
   const params = useParams();
   const router = useRouter();
   const runId = params.id as string;
+  const { data: session } = useSession();
 
   const [report, setReport] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Edit mode (manager+ only). Draft fields are seeded from the report when
+  // the user clicks Edit and pushed via PATCH on Save (overwrite, no history).
+  const userRole = (session?.user as Record<string, unknown> | undefined)?.role as string | undefined;
+  const canEdit = (ROLE_LEVELS[userRole ?? "viewer"] ?? 0) >= ROLE_LEVELS.manager;
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draftSummary, setDraftSummary] = useState("");
+  const [draftNotes, setDraftNotes] = useState("");
+  const [draftRecommendations, setDraftRecommendations] = useState("");
+  const [showRawData, setShowRawData] = useState(false);
 
   useEffect(() => {
     async function fetchReport() {
@@ -304,6 +336,56 @@ export default function ReportPage() {
     }
     if (runId) fetchReport();
   }, [runId]);
+
+  function startEditing() {
+    const out = report?.output_payload || {};
+    setDraftSummary(String(out.executive_summary_plain || ""));
+    setDraftNotes(String(out.notes || ""));
+    const recs = Array.isArray(out.recommendations) ? out.recommendations : [];
+    setDraftRecommendations(recs.join("\n"));
+    setEditing(true);
+  }
+
+  async function saveEdits() {
+    if (!report) return;
+    setSaving(true);
+    try {
+      const recommendations = draftRecommendations
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const updated = await api.patch<{ output_payload: OutputPayload }>(
+        `/api/v1/intelligence/report/${runId}`,
+        {
+          executive_summary_plain: draftSummary.trim(),
+          notes: draftNotes.trim(),
+          recommendations,
+        }
+      );
+      setReport({ ...report, output_payload: updated.output_payload });
+      setEditing(false);
+      toast.success("Report updated");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to save changes";
+      toast.error(detail);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Name the print/PDF output after the report so "Save as PDF" gets a clean
+  // filename instead of the page URL.
+  function downloadPdf() {
+    const prev = document.title;
+    const dn = report ? formatAgentType(report.agent_type) : "Report";
+    const brand = report?.brand_name ? ` - ${report.brand_name}` : "";
+    const date = report?.created_at ? ` - ${report.created_at.slice(0, 10)}` : "";
+    document.title = `MARKAI - ${dn}${brand}${date}`;
+    window.print();
+    setTimeout(() => {
+      document.title = prev;
+    }, 1000);
+  }
 
   if (loading) {
     return (
@@ -360,6 +442,10 @@ export default function ReportPage() {
   // Content calendar strategy fields
   const strategyDocument = output.strategy_document || output.markdown || output.content;
 
+  // Plain-English summary + free-text notes (Q1=B / Q5 editable fields)
+  const summaryPlain = String(output.executive_summary_plain || "").trim();
+  const notes = String(output.notes || "").trim();
+
   // Executive summary stats
   const gapCount = gaps.length;
   const personaCount = personas.length;
@@ -384,7 +470,7 @@ export default function ReportPage() {
 
       <div className="space-y-8 max-w-5xl mx-auto pb-12">
         {/* ── Top Bar (no-print) ──────────────────────────────────── */}
-        <div className="flex items-center justify-between no-print" data-no-print>
+        <div className="flex items-center justify-between gap-2 no-print" data-no-print>
           <Button
             variant="ghost"
             size="sm"
@@ -392,42 +478,146 @@ export default function ReportPage() {
           >
             <ArrowLeft className="mr-2 h-4 w-4" /> Back to Intelligence
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => window.print()}
-          >
-            <Printer className="mr-2 h-4 w-4" /> Print Report
-          </Button>
-        </div>
-
-        {/* ── Header ──────────────────────────────────────────────── */}
-        <div className="space-y-3">
-          <h1 className="text-3xl font-bold tracking-tight">{reportTitle}</h1>
-          <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-            <Badge className={statusColor(report.status)}>
-              {report.status}
-            </Badge>
-            <span className="flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" />
-              Generated {formatDateTime(report.created_at)}
-            </span>
-            {report.duration_ms && (
-              <span className="flex items-center gap-1">
-                <Zap className="h-3.5 w-3.5" />
-                {formatDuration(report.duration_ms)}
-              </span>
-            )}
-            {report.tokens_used && (
-              <span className="text-xs">
-                {report.tokens_used.toLocaleString()} tokens
-              </span>
-            )}
-            {report.cost_usd != null && report.cost_usd > 0 && (
-              <span className="text-xs">${report.cost_usd.toFixed(4)}</span>
+          <div className="flex items-center gap-2">
+            {editing ? (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={saving}>
+                  <X className="mr-2 h-4 w-4" /> Cancel
+                </Button>
+                <Button size="sm" onClick={saveEdits} disabled={saving}>
+                  {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                  Save
+                </Button>
+              </>
+            ) : (
+              <>
+                {canEdit && (
+                  <Button variant="outline" size="sm" onClick={startEditing}>
+                    <Pencil className="mr-2 h-4 w-4" /> Edit
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" onClick={downloadPdf}>
+                  <Download className="mr-2 h-4 w-4" /> Download PDF
+                </Button>
+              </>
             )}
           </div>
         </div>
+
+        {/* ── Cover ───────────────────────────────────────────────── */}
+        <div className="rounded-xl border bg-gradient-to-br from-primary/5 to-transparent p-6 sm:p-8 print-cover">
+          <div className="flex items-start gap-4">
+            {report.brand_logo_url && (
+              <img
+                src={apiUrl(report.brand_logo_url)}
+                alt={report.brand_name || "Brand"}
+                className="h-16 w-16 rounded-lg object-cover border bg-white shrink-0"
+              />
+            )}
+            <div className="min-w-0 space-y-1">
+              <p className="text-xs font-semibold uppercase tracking-widest text-primary">
+                {displayName}{needsReportSuffix ? " Report" : ""}
+              </p>
+              <h1 className="text-3xl font-bold tracking-tight">
+                {report.brand_name || "Brand Intelligence"}
+              </h1>
+              {report.brand_description && (
+                <p className="text-sm text-muted-foreground max-w-2xl">
+                  {report.brand_description}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="mt-5 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+            <span>Prepared by MARKAI Intelligence Engine</span>
+            <span className="text-muted-foreground/40">|</span>
+            <span className="flex items-center gap-1">
+              <Clock className="h-3.5 w-3.5" />
+              {formatDate(report.created_at)}
+            </span>
+            <Badge className={statusColor(report.status)}>{report.status}</Badge>
+          </div>
+        </div>
+
+        {/* ── TL;DR / Bottom Line (Q1=B) — hidden when absent (Q6=C) ─ */}
+        {(summaryPlain || editing) && (
+          <Card className="border-primary/30 bg-primary/5 print-break" id="section-tldr">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Lightbulb className="h-5 w-5 text-primary" />
+                Bottom Line
+              </CardTitle>
+              <CardDescription>
+                Plain-English summary — what this report means and what to do about it.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {editing ? (
+                <Textarea
+                  value={draftSummary}
+                  onChange={(e) => setDraftSummary(e.target.value)}
+                  rows={4}
+                  placeholder="A 3-4 sentence plain-English summary for any reader."
+                />
+              ) : (
+                <p className="text-sm leading-relaxed whitespace-pre-line">{summaryPlain}</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Methodology ─────────────────────────────────────────── */}
+        <Card className="print-break" id="section-methodology">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <FlaskConical className="h-5 w-5 text-primary" />
+              How this report was produced
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <div>
+                <p className="text-xs text-muted-foreground">Generated by</p>
+                <p className="text-sm font-medium">MARKAI AI Engine</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Date</p>
+                <p className="text-sm font-medium">{formatDate(report.created_at)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Generation time</p>
+                <p className="text-sm font-medium">{formatDuration(report.duration_ms)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Trigger</p>
+                <p className="text-sm font-medium capitalize">{report.trigger || "manual"}</p>
+              </div>
+              {report.tokens_used != null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">AI tokens used</p>
+                  <p className="text-sm font-medium">{report.tokens_used.toLocaleString()}</p>
+                </div>
+              )}
+              {report.cost_usd != null && report.cost_usd > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Estimated cost</p>
+                  <p className="text-sm font-medium">${report.cost_usd.toFixed(4)}</p>
+                </div>
+              )}
+              {isResearch && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Sources analyzed</p>
+                  <p className="text-sm font-medium">
+                    {competitorCount} competitor{competitorCount !== 1 ? "s" : ""}
+                  </p>
+                </div>
+              )}
+            </div>
+            <p className="mt-4 text-xs text-muted-foreground italic">
+              This document was generated automatically by an AI system from public and brand-provided data. Figures are AI estimates and should be sense-checked before high-stakes decisions.
+            </p>
+          </CardContent>
+        </Card>
 
         <Separator />
 
@@ -637,6 +827,9 @@ export default function ReportPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* ── Charts (annotated, simple — skipped if no usable data) ── */}
+        <ReportCharts agentType={agentType} output={output as Record<string, unknown>} />
 
         {/* ════════════════════════════════════════════════════════════
             RESEARCH REPORT SECTIONS
@@ -1729,22 +1922,20 @@ export default function ReportPage() {
             CONTENT CALENDAR STRATEGY SECTIONS
             ════════════════════════════════════════════════════════════ */}
 
-        {/* ── Strategy Document (Markdown) ────────────────────────── */}
-        {isContentCalendar && strategyDocument && (
+        {/* ── Strategy Document → month-by-month cards + timeline ──── */}
+        {isContentCalendar && strategyDocument && typeof strategyDocument === "string" && (
+          <ContentCalendarStrategy document={strategyDocument} />
+        )}
+        {isContentCalendar && strategyDocument && typeof strategyDocument !== "string" && (
           <Card className="print-break">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <BookOpen className="h-5 w-5 text-primary" />
                 Strategy Document
               </CardTitle>
-              <CardDescription>Full year-long content calendar strategy</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="prose max-w-none dark:prose-invert prose-headings:text-foreground prose-headings:border-b prose-headings:pb-2 prose-headings:mb-4 prose-h2:text-lg prose-h2:border-primary/20 prose-h3:text-base prose-h3:border-none prose-p:text-muted-foreground prose-strong:text-foreground prose-li:text-muted-foreground prose-table:text-sm prose-th:bg-muted prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-hr:border-primary/20">
-                {typeof strategyDocument === "string"
-                  ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{strategyDocument}</ReactMarkdown>
-                  : <SafeValue value={strategyDocument} />}
-              </div>
+              <div className="text-sm"><SafeValue value={strategyDocument} /></div>
             </CardContent>
           </Card>
         )}
@@ -1795,33 +1986,13 @@ export default function ReportPage() {
           </Card>
         )}
 
-        {/* ════════════════════════════════════════════════════════════
-            GENERIC FALLBACK — raw output for unknown types
-            ════════════════════════════════════════════════════════════ */}
-        {!isResearch && !isStrategy && !isPlanning && !isContentCalendar && output && Object.keys(output).length > 0 && (
-          <Card className="print-break">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5 text-primary" />
-                Report Output
-              </CardTitle>
-              <CardDescription>Raw output data from agent run</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-sm space-y-3">
-                <SafeValue value={output} />
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
         {/* ── Section 5: Errors & Recommendations ─────────────────── */}
-        {(errors.length > 0 || recommendations.length > 0) && (
-          <Card className="print-break">
+        {(errors.length > 0 || recommendations.length > 0 || editing) && (
+          <Card className="print-break" id="section-recommendations">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Lightbulb className="h-5 w-5 text-primary" />
-                {errors.length > 0 && recommendations.length > 0
+                {errors.length > 0 && (recommendations.length > 0 || editing)
                   ? "Issues & Recommendations"
                   : errors.length > 0
                   ? "Issues Encountered"
@@ -1848,7 +2019,20 @@ export default function ReportPage() {
                 </div>
               )}
 
-              {recommendations.length > 0 && (
+              {editing ? (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                    Recommendations
+                  </h4>
+                  <Textarea
+                    value={draftRecommendations}
+                    onChange={(e) => setDraftRecommendations(e.target.value)}
+                    rows={5}
+                    placeholder="One recommendation per line."
+                  />
+                  <p className="text-xs text-muted-foreground">One recommendation per line.</p>
+                </div>
+              ) : recommendations.length > 0 ? (
                 <div className="space-y-2">
                   <h4 className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
                     Recommendations
@@ -1867,9 +2051,66 @@ export default function ReportPage() {
                     ))}
                   </ul>
                 </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Notes (free text, editable) ─────────────────────────── */}
+        {(notes || editing) && (
+          <Card className="print-break" id="section-notes">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <StickyNote className="h-5 w-5 text-primary" />
+                Notes
+              </CardTitle>
+              <CardDescription>Internal notes added by your team.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {editing ? (
+                <Textarea
+                  value={draftNotes}
+                  onChange={(e) => setDraftNotes(e.target.value)}
+                  rows={4}
+                  placeholder="Add any notes or context for this report."
+                />
+              ) : (
+                <p className="text-sm leading-relaxed whitespace-pre-line">{notes}</p>
               )}
             </CardContent>
           </Card>
+        )}
+
+        {/* ── Raw data (devs only, off by default) ─────────────────── */}
+        {output && Object.keys(output).length > 0 && (
+          <div className="no-print" data-no-print>
+            <Button variant="ghost" size="sm" onClick={() => setShowRawData((v) => !v)}>
+              {showRawData ? (
+                <ChevronUp className="mr-1.5 h-4 w-4" />
+              ) : (
+                <ChevronDown className="mr-1.5 h-4 w-4" />
+              )}
+              {showRawData ? "Hide raw data" : "Show raw data"}
+            </Button>
+            {showRawData && (
+              <Card className="mt-3">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileText className="h-5 w-5 text-primary" />
+                    Raw Output
+                  </CardTitle>
+                  <CardDescription>
+                    Unprocessed agent output — for debugging only.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <pre className="text-xs overflow-auto rounded-md bg-muted p-3 max-h-96">
+                    {JSON.stringify(output, null, 2)}
+                  </pre>
+                </CardContent>
+              </Card>
+            )}
+          </div>
         )}
 
         {/* ── Footer ──────────────────────────────────────────────── */}
@@ -1880,6 +2121,12 @@ export default function ReportPage() {
           </p>
           <p className="mt-1">Report ID: {report.id}</p>
         </div>
+      </div>
+
+      {/* Print-only repeating footer (hidden on screen via CSS) */}
+      <div className="print-footer">
+        {report.brand_name || "MARKAI"} · {displayName}
+        {needsReportSuffix ? " Report" : ""} · {formatDate(report.created_at)}
       </div>
     </>
   );

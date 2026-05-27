@@ -245,12 +245,14 @@ async def get_report(
     brand_description = None
     brand_website = None
     brand_industry = None
+    brand_logo_url = None
     if run.brand_id:
         brand_result = await db.execute(select(Brand).where(Brand.id == run.brand_id))
         brand = brand_result.scalar_one_or_none()
         if brand:
             brand_name = brand.name
             brand_description = brand.description
+            brand_logo_url = brand.logo_url
             guidelines = brand.brand_guidelines or {}
             brand_website = guidelines.get("website_url")
             brand_industry = guidelines.get("industry")
@@ -263,6 +265,7 @@ async def get_report(
         "brand_description": brand_description,
         "brand_website": brand_website,
         "brand_industry": brand_industry,
+        "brand_logo_url": brand_logo_url,
         "status": run.status,
         "trigger": run.trigger,
         "input_payload": run.input_payload,
@@ -274,6 +277,63 @@ async def get_report(
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "created_at": run.created_at.isoformat(),
+    }
+
+
+class ReportEditBody(BaseModel):
+    """Whitelisted, user-editable fields of a report's output_payload.
+
+    Only these three are editable (Q5 hybrid): the plain-English summary,
+    the recommendations list, and a free-text notes field. Structured
+    findings (gaps, personas, pillars, etc.) stay read-only — to change them
+    the user reworks/regenerates the report. Any field left None is untouched.
+    """
+
+    executive_summary_plain: str | None = None
+    recommendations: list[str] | None = None
+    notes: str | None = None
+
+
+@router.patch("/report/{run_id}")
+async def edit_report(
+    run_id: uuid.UUID,
+    body: ReportEditBody,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Edit the user-editable fields of a report and overwrite them in place.
+
+    Access is limited to manager+ (same bar as brand creation). Edits
+    overwrite the stored values in agent_runs.output_payload — there is no
+    version history (Q4 overwrite). Returns the updated report payload.
+    """
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    payload = dict(run.output_payload) if isinstance(run.output_payload, dict) else {}
+
+    # Apply only the fields the caller actually sent (exclude_unset keeps
+    # untouched fields out of the patch so we never blank them by accident).
+    patch = body.model_dump(exclude_unset=True)
+    for key, value in patch.items():
+        payload[key] = value
+
+    run.output_payload = payload
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(run, "output_payload")
+    await db.commit()
+    await db.refresh(run)
+
+    return {
+        "id": str(run.id),
+        "agent_type": run.agent_type,
+        "output_payload": run.output_payload,
     }
 
 
