@@ -49,6 +49,7 @@ CONTENT_PIPELINE_STEPS = [
     "source_product_image",
     "enhance_image_prompt",
     "generate_background",
+    "plan_overlay_layout",
     "apply_branding",
     "adapt_platforms",
     "generate_mockups",
@@ -645,9 +646,6 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
             or "None available"
         )
 
-        # Brand URL for CTA
-        brand_url = brand.get("website_url", "")
-
         brief_text = sanitize_for_prompt(
             item.get("content_brief") or item.get("description") or ""
         )
@@ -670,10 +668,9 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     "healthy eating, even if the brand is positioned for "
                     "something else commercially.\n\n"
                     f"LENGTH: Stay strictly under {max_words} words (HARD LIMIT). "
-                    "Start with the provided hook. End with a CTA followed by "
-                    "the brand URL on its own line. If your draft exceeds "
-                    f"{max_words} words, rewrite tighter before returning. "
-                    "Do not submit an over-length caption.\n\n"
+                    "Start with the provided hook. End with a short CTA. "
+                    f"If your draft exceeds {max_words} words, rewrite tighter "
+                    "before returning. Do not submit an over-length caption.\n\n"
                     "LAYOUT — give the caption visual breathing room:\n"
                     "- Open with the hook on its own line.\n"
                     "- Separate distinct sections with a blank line (\\n\\n).\n"
@@ -683,17 +680,16 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     "  brief doesn't call for one. If you do use a list, the "
                     "  marker (✓, →, •, or numbered) should fit "
                     "  the brand voice.\n"
-                    "- End with a short CTA line, then a label line ending with "
-                    "  ':' (e.g. 'Shop now:', 'Try it today:', 'Read more:'), "
-                    "  then the URL on its own line. Never embed a URL inside "
-                    "  a sentence.\n\n"
+                    "- End with a short CTA line (e.g. 'Shop now', 'Try it "
+                    "  today', 'Save the date'). NO URL, NO link of any kind — "
+                    "  links are handled outside the caption.\n\n"
                     "ABSOLUTE RULES:\n"
                     "- NEVER include hashtags (#anything) anywhere inside the "
                     "  caption body. Hashtags are appended automatically by the "
                     "  publishing pipeline from a separate field. Writing them "
                     "  in the caption will produce duplicates in the final post.\n"
-                    "- The URL belongs on its own line, preceded by a short "
-                    "  label line ending with ':'.\n\n"
+                    "- NEVER include URLs, web addresses, or 'http://' / "
+                    "  'https://' / 'www.' anywhere in the caption.\n\n"
                     "WRITE LIKE A HUMAN, NOT AN AI:\n"
                     "- Vary sentence length. Short. Then medium. Occasionally a "
                     "  longer one if the thought needs it.\n"
@@ -726,7 +722,6 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     f"SUB-THEME: {sanitize_for_prompt(item.get('weekly_sub_theme', ''))}\n\n"
                     f"BRAND TONE REFERENCE (voice/style only, NOT topic):\n"
                     f"  Name: {sanitize_for_prompt(brand.get('name', ''))}\n"
-                    f"  URL (for CTA): {sanitize_for_prompt(brand_url)}\n"
                     f"  Positioning summary: {positioning_text}\n\n"
                     f"AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}\n"
                     f"  Cares about: {sanitize_for_prompt(pain_points)}\n"
@@ -742,9 +737,8 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     f"{recent_captions}\n\n"
                     f"For style cues only, posts that performed well:\n"
                     f"{top_captions}\n\n"
-                    f"CTA: end with a natural-sounding call-to-action that "
-                    f"includes the URL {sanitize_for_prompt(brand_url)}. "
-                    f"Make it match the brief's topic, not a generic brand pitch."
+                    f"CTA: end with a short natural-sounding call-to-action "
+                    f"that matches the brief's topic. NO URL, NO link."
                 ),
             },
         ]
@@ -1385,13 +1379,13 @@ async def _shorten_caption_with_llm(
                 "PRESERVE THE STRUCTURE:\n"
                 "- Keep blank lines (\\n\\n) between distinct sections so the "
                 "  caption keeps its visual breathing room.\n"
-                "- Keep the URL on its own line, preceded by its short label "
-                "  line ending with ':'. Never embed a URL inside a sentence.\n"
                 "- If the original uses a list, keep the list (you may drop or "
                 "  shorten individual items). Do not collapse a structured "
                 "  caption into a single paragraph.\n"
                 "- NEVER insert hashtags (#anything) in the rewrite. Hashtags "
-                "  are handled separately by the publishing pipeline."
+                "  are handled separately by the publishing pipeline.\n"
+                "- NEVER insert URLs or links. If the original happens to "
+                "  contain one, strip it out."
             ),
         },
         {
@@ -1399,7 +1393,7 @@ async def _shorten_caption_with_llm(
             "content": (
                 f"Rewrite this {channel or 'social'} caption to be under "
                 f"{max_words} words while keeping the same topic, voice, hook, "
-                f"CTA, URL line, and overall multi-block layout. Trim filler, "
+                f"CTA, and overall multi-block layout. Trim filler, "
                 f"merge sentences, drop adjectives, shorten list items. "
                 f"NEVER exceed {max_words} words.\n\n"
                 f"Original:\n{sanitize_for_prompt(caption, max_length=4000)}"
@@ -1553,9 +1547,9 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
                 "  short list, Q&A. Don't force a list when the brief doesn't "
                 "  call for one. List markers (✓, →, •, numbered) "
                 "  should fit the brand voice.\n"
-                "- End each caption with a short CTA line, then a label line "
-                "  ending with ':' (e.g. 'Shop now:'), then the URL on its "
-                "  own line. Never embed a URL inside a sentence.\n"
+                "- End each caption with a short CTA line (e.g. 'Shop now', "
+                "  'Try it today'). NO URL, NO link of any kind anywhere in "
+                "  the caption.\n"
                 "- NEVER include hashtags (#anything) inside the caption "
                 "  string. Hashtags go in the separate 'hashtags' array.\n\n"
                 "Return JSON with platform names as keys. Each platform object must contain:\n"
@@ -1573,8 +1567,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
                 f"BRAND VOICE: {sanitize_for_prompt(str(positioning.get('brand_voice', '')))}\n"
                 f"KEY MESSAGES: {sanitize_for_prompt(key_messages_str)}\n"
                 f"TARGET AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))} — "
-                f"{sanitize_for_prompt(audience_tone)}\n"
-                f"BRAND URL: {sanitize_for_prompt(brand.get('website_url', ''))}\n\n"
+                f"{sanitize_for_prompt(audience_tone)}\n\n"
                 f"Original platform: {sanitize_for_prompt(source_platform)}\n"
                 f"Hook: {sanitize_for_prompt(state.get('hook', ''))}\n"
                 f"Caption: {sanitize_for_prompt(state.get('caption', ''))}\n"
@@ -1754,6 +1747,151 @@ def _bytes_to_logo_png(raw: bytes) -> bytes | None:
     return raw
 
 
+_VALID_ANCHORS = {"top-left", "top-right", "bottom-left", "bottom-right"}
+
+
+async def _vision_plan_overlay(image_data: bytes) -> dict[str, Any] | None:
+    """Ask the vision LLM where to place the logo and text card.
+
+    Returns a dict with keys ``logo_anchor``, ``text_anchor``,
+    ``quality_score`` (0-10) and ``notes``, or None if the call fails or
+    yields an unusable result. The caller then falls back to the legacy
+    variance heuristic.
+    """
+    import base64 as _b64
+
+    b64 = _b64.b64encode(image_data).decode("ascii")
+    data_url = f"data:image/png;base64,{b64}"
+
+    system = (
+        "You are a layout director for marketing posts. The picture you "
+        "receive will get a small brand logo (~14% of width) in one corner "
+        "and a frosted text card (~55% of width) anchored in another corner. "
+        "Choose the corner for each so that the main product/subject and any "
+        "visible product packaging are NEVER covered, and so the logo lands "
+        "over a calm uncluttered area. Return strict JSON with this shape:\n"
+        "{\n"
+        '  "logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
+        '  "text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
+        '  "quality_score": 0-10,  // overall composition quality\n'
+        '  "notes": "short reason"\n'
+        "}\n"
+        "Rules: logo_anchor and text_anchor MUST be different corners. "
+        "Prefer text_anchor at the bottom when the top half is busier, top "
+        "when the bottom half is busier. Never put the logo over the main "
+        "subject. Output JSON only — no prose."
+    )
+
+    messages = [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Pick logo_anchor and text_anchor for this image.",
+                },
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+
+    try:
+        result = await chat_completion(
+            messages,
+            category="vision",
+            temperature=0.2,
+            max_tokens=300,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        logger.warning("Vision-critic call failed: %s", exc)
+        return None
+
+    plan = parse_llm_json(str(result), fallback=None)
+    if not isinstance(plan, dict):
+        logger.warning("Vision-critic returned non-dict: %r", plan)
+        return None
+
+    logo_anchor = str(plan.get("logo_anchor", "")).strip().lower()
+    text_anchor = str(plan.get("text_anchor", "")).strip().lower()
+    if logo_anchor not in _VALID_ANCHORS or text_anchor not in _VALID_ANCHORS:
+        logger.warning("Vision-critic returned invalid anchors: %r", plan)
+        return None
+    if logo_anchor == text_anchor:
+        logger.warning(
+            "Vision-critic chose same corner for logo and text — discarding"
+        )
+        return None
+
+    try:
+        score = float(plan.get("quality_score", 0))
+    except (TypeError, ValueError):
+        score = 0.0
+
+    return {
+        "logo_anchor": logo_anchor,
+        "text_anchor": text_anchor,
+        "quality_score": score,
+        "notes": str(plan.get("notes", ""))[:300],
+    }
+
+
+async def plan_overlay_layout(state: ContentState) -> dict[str, Any]:
+    """Vision-critic step: pick the best corners for the logo and text card.
+
+    Runs between ``generate_background`` and ``apply_branding``. The image
+    here is the pre-product-replacement render — Gemini replaces the product
+    in place during ``apply_branding``, so corner-anchor decisions made here
+    stay valid afterward.
+
+    On any failure we silently fall back to the legacy variance heuristic
+    (no ``overlay_plan`` is written to state).
+    """
+    await update_agent_run_step(
+        state.get("run_id", ""),
+        "plan_overlay_layout",
+        _STEP_INDEX["plan_overlay_layout"],
+    )
+    generated_image_url = state.get("generated_image")
+    if not generated_image_url:
+        return {}
+
+    import base64 as _b64
+    import httpx
+
+    try:
+        if generated_image_url.startswith("data:"):
+            _, b64_part = generated_image_url.split(",", 1)
+            image_data = _b64.b64decode(b64_part)
+        elif generated_image_url.startswith("content-images/"):
+            image_data = await async_download_file(
+                "content-images",
+                generated_image_url.replace("content-images/", ""),
+            )
+        else:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.get(generated_image_url)
+                resp.raise_for_status()
+                image_data = resp.content
+    except Exception as exc:
+        logger.warning("plan_overlay_layout: image fetch failed: %s", exc)
+        return {}
+
+    plan = await _vision_plan_overlay(image_data)
+    if plan is None:
+        return {}
+
+    logger.info(
+        "Overlay plan: logo=%s text=%s score=%.1f (%s)",
+        plan["logo_anchor"],
+        plan["text_anchor"],
+        plan["quality_score"],
+        plan["notes"],
+    )
+    return {"overlay_plan": plan}
+
+
 async def apply_branding(state: ContentState) -> dict[str, Any]:
     """Apply logo overlay and text to the generated image.
 
@@ -1867,18 +2005,22 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         # Build text overlay lines
         brand_name = brand.get("name", "")
         theme = item.get("theme", "")
-        website = brand.get("website_url", "")
         text_line1 = state.get("hook", theme)
-        text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
+        text_line2 = brand_name
 
         # Apply overlay — scale depends on the chosen variant (icon-only logos
-        # need a smaller scale than wordmarks).
+        # need a smaller scale than wordmarks). If the vision-critic node
+        # produced an overlay_plan, its corner anchors override the legacy
+        # variance heuristic so the card and logo never land on the product.
+        overlay_plan = state.get("overlay_plan") or {}
         branded_bytes = overlay_logo_and_text(
             image_data,
             logo_png,
             text_line1=text_line1,
             text_line2=text_line2,
             logo_scale=scale_for_logo_variant(chosen_label),
+            logo_anchor=overlay_plan.get("logo_anchor"),
+            text_anchor=overlay_plan.get("text_anchor"),
         )
 
         # Upload branded image to MinIO

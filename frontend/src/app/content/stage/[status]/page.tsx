@@ -13,7 +13,16 @@ import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/utils";
 import { STATUS_COLORS, CHANNEL_COLORS, CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
 import { WorkingStageTracker } from "@/components/content/WorkingStageTracker";
+import { useOpenedContent } from "@/lib/opened-content";
 import type { CalendarItem, Brand } from "@/types";
+
+const DATE_FILTERS: { value: string; label: string; days: number | null }[] = [
+  { value: "all", label: "All time", days: null },
+  { value: "today", label: "Today", days: 1 },
+  { value: "7d", label: "Last 7 days", days: 7 },
+  { value: "30d", label: "Last 30 days", days: 30 },
+  { value: "90d", label: "Last 90 days", days: 90 },
+];
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "Queued",
@@ -39,6 +48,8 @@ export default function StagePage() {
   const [loading, setLoading] = useState(true);
   const [brandFilter, setBrandFilter] = useState<string>("all");
   const [channelFilter, setChannelFilter] = useState<string>("all");
+  const [dateFilter, setDateFilter] = useState<string>("all");
+  const { isOpened } = useOpenedContent();
 
   // Bulk selection + delete (so users don't have to open each card to delete).
   const [selectMode, setSelectMode] = useState(false);
@@ -106,12 +117,18 @@ export default function StagePage() {
   }, [items]);
 
   const filtered = useMemo(() => {
+    const dateCfg = DATE_FILTERS.find((d) => d.value === dateFilter);
+    const cutoff = dateCfg?.days != null ? Date.now() - dateCfg.days * 86_400_000 : null;
     return items.filter(i => {
       if (brandFilter !== "all" && i.brand_id !== brandFilter) return false;
       if (channelFilter !== "all" && i.channel !== channelFilter) return false;
+      if (cutoff !== null) {
+        if (!i.created_at) return false;
+        if (new Date(i.created_at).getTime() < cutoff) return false;
+      }
       return true;
     });
-  }, [items, brandFilter, channelFilter]);
+  }, [items, brandFilter, channelFilter, dateFilter]);
 
   const label = STATUS_LABELS[status] || status;
 
@@ -182,6 +199,16 @@ export default function StagePage() {
                   ))}
                 </SelectContent>
               </Select>
+              <Select value={dateFilter} onValueChange={setDateFilter}>
+                <SelectTrigger className="w-[150px]" aria-label="Filter by generation date">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DATE_FILTERS.map(d => (
+                    <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </>
           )}
         </div>
@@ -233,9 +260,16 @@ export default function StagePage() {
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <p className={`text-sm font-medium line-clamp-2 flex-1 ${selectMode ? "pr-6" : ""}`}>{item.title || "Untitled"}</p>
                   {!selectMode && (
-                    <Badge variant="outline" className={`text-[10px] shrink-0 ${CHANNEL_COLORS[item.channel] || ""}`}>
-                      {CHANNEL_DISPLAY[item.channel] || item.channel}
-                    </Badge>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {!isOpened(item.id) && (
+                        <span className="inline-flex items-center rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 leading-none">
+                          New
+                        </span>
+                      )}
+                      <Badge variant="outline" className={`text-[10px] ${CHANNEL_COLORS[item.channel] || ""}`}>
+                        {CHANNEL_DISPLAY[item.channel] || item.channel}
+                      </Badge>
+                    </div>
                   )}
                 </div>
                 {item.description && (

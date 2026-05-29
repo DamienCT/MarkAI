@@ -496,7 +496,9 @@ async def generate_image(
                     body["background"] = "opaque"
                 elif attempt_model == "dall-e-3":
                     body["quality"] = "hd"
-                    body["style"] = "natural"  # less stylized than "vivid"
+                    # NOTE: 'style' was removed — OpenAI now rejects it with
+                    # 400 "Unknown parameter: 'style'." for dall-e-3, which
+                    # was breaking the fallback path entirely.
                 resp = await client.post(
                     "https://api.openai.com/v1/images/generations",
                     headers={"Authorization": f"Bearer {openai_key}"},

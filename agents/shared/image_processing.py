@@ -222,13 +222,14 @@ def select_logo_variant(
 
 # Logos with a wordmark (text alongside the symbol) need more width to be
 # legible; icon-only marks (favicon/watermark) become visually heavy at the
-# same width and should be scaled down.
+# same width and should be scaled down. Tuned smaller after user feedback
+# that the overlay was visually overpowering the product.
 _LOGO_SCALE_BY_VARIANT = {
-    "primary": 0.18,
-    "light": 0.18,
-    "dark": 0.18,
-    "icon": 0.10,
-    "watermark": 0.10,
+    "primary": 0.14,
+    "light": 0.14,
+    "dark": 0.14,
+    "icon": 0.08,
+    "watermark": 0.08,
 }
 
 
@@ -240,15 +241,45 @@ def scale_for_logo_variant(variant: str) -> float:
 # ── Logo + text overlay ──────────────────────────────────────────
 
 
+_TEXT_ANCHORS = {"bottom-left", "bottom-right", "top-left", "top-right"}
+_LOGO_ANCHORS = {"top-left", "top-right", "bottom-left", "bottom-right"}
+
+
+def _anchor_to_position(
+    anchor: str, box_w: int, box_h: int, img_w: int, img_h: int, margin: int
+) -> tuple[int, int]:
+    """Convert an anchor keyword to a pixel (x, y) top-left coordinate."""
+    if anchor == "top-left":
+        return (margin, margin)
+    if anchor == "top-right":
+        return (max(margin, img_w - box_w - margin), margin)
+    if anchor == "bottom-left":
+        return (margin, max(margin, img_h - box_h - margin))
+    if anchor == "bottom-right":
+        return (
+            max(margin, img_w - box_w - margin),
+            max(margin, img_h - box_h - margin),
+        )
+    return (margin, margin)
+
+
 def overlay_logo_and_text(
     image_data: bytes,
     logo_data: bytes,
     text_line1: str,
     text_line2: str | None = None,
     logo_opacity: float = 0.92,
-    logo_scale: float = 0.18,
+    logo_scale: float = 0.14,
+    logo_anchor: str | None = None,
+    text_anchor: str | None = None,
 ) -> bytes:
-    """Overlay a transparent logo on the best monotone area + text bar at bottom.
+    """Overlay a transparent logo on the best monotone area + text bar.
+
+    ``logo_anchor`` / ``text_anchor`` are corner keywords
+    ('top-left'|'top-right'|'bottom-left'|'bottom-right') typically supplied
+    by the vision-critic step. When unset, the legacy heuristics are used:
+    variance-based corner selection for the logo, and bottom-left for the
+    text bar.
 
     Returns the composited image as PNG bytes.
     """
@@ -281,21 +312,28 @@ def overlay_logo_and_text(
         alpha = ImageEnhance.Brightness(alpha).enhance(logo_opacity)
         logo.putalpha(alpha)
 
-        lx, ly = find_best_logo_position(image_data, logo_w, logo_h)
+        if logo_anchor in _LOGO_ANCHORS:
+            lx, ly = _anchor_to_position(
+                logo_anchor, logo_w, logo_h, base.width, base.height,
+                margin=int(base.width * 0.04),
+            )
+        else:
+            lx, ly = find_best_logo_position(image_data, logo_w, logo_h)
         overlay.paste(logo, (lx, ly), logo)
 
     # --- Text overlay (frosted glass card) ---
     # The card is a blurred crop of the underlying photo + a semi-transparent
     # tint (dark on bright backgrounds, light on dark backgrounds) so it stays
     # legible across very different scenes without us having to hand-tune
-    # opacity per image.
-    font_large = _load_font(int(base.width * 0.040), "regular")
-    font_small = _load_font(int(base.width * 0.026), "light")
+    # opacity per image. Sizing trimmed down from the original spec — the
+    # earlier card was visually overpowering the product.
+    font_large = _load_font(int(base.width * 0.030), "regular")
+    font_small = _load_font(int(base.width * 0.019), "light")
     margin = int(base.width * 0.04)
-    pad_x = max(20, int(base.width * 0.020))
-    pad_y = max(14, int(base.width * 0.014))
-    radius = max(16, int(base.width * 0.014))
-    max_text_w = base.width - 2 * margin - 2 * pad_x
+    pad_x = max(14, int(base.width * 0.014))
+    pad_y = max(10, int(base.width * 0.010))
+    radius = max(12, int(base.width * 0.011))
+    max_text_w = int(base.width * 0.55) - 2 * pad_x  # cap card to ~55% of image width
 
     # Truncate text to fit within image width
     def _fit_text(text: str, font) -> str:
@@ -329,13 +367,30 @@ def overlay_logo_and_text(
     total_w = max(text_w1, text_w2)
     total_h = text_h1 + (text_h2 + line_gap if text_line2 else 0)
 
-    card_x1 = margin
-    card_y2 = base.height - margin
-    card_y1 = card_y2 - total_h - 2 * pad_y
-    card_x2 = card_x1 + total_w + 2 * pad_x
+    card_w_full = total_w + 2 * pad_x
+    card_h_full = total_h + 2 * pad_y
+
+    anchor = text_anchor if text_anchor in _TEXT_ANCHORS else "bottom-left"
+    if anchor == "bottom-left":
+        card_x1 = margin
+        card_y1 = base.height - margin - card_h_full
+    elif anchor == "bottom-right":
+        card_x1 = base.width - margin - card_w_full
+        card_y1 = base.height - margin - card_h_full
+    elif anchor == "top-left":
+        card_x1 = margin
+        card_y1 = margin
+    else:  # top-right
+        card_x1 = base.width - margin - card_w_full
+        card_y1 = margin
+
+    card_x2 = card_x1 + card_w_full
+    card_y2 = card_y1 + card_h_full
     # Clamp to image bounds defensively
-    card_x2 = min(card_x2, base.width - margin)
+    card_x1 = max(card_x1, 0)
     card_y1 = max(card_y1, 0)
+    card_x2 = min(card_x2, base.width)
+    card_y2 = min(card_y2, base.height)
     card_w = card_x2 - card_x1
     card_h = card_y2 - card_y1
 

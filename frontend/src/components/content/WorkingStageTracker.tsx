@@ -16,6 +16,7 @@ const CONTENT_PIPELINE_STEPS = [
   { key: "generate_hashtags", label: "Hashtags", short: "#" },
   { key: "source_product_image", label: "Product", short: "Prod" },
   { key: "generate_background", label: "Image", short: "Img" },
+  { key: "plan_overlay_layout", label: "Layout", short: "Lay" },
   { key: "apply_branding", label: "Branding", short: "Brand" },
   { key: "adapt_platforms", label: "Adapt", short: "Adapt" },
   { key: "generate_mockups", label: "Mockups", short: "Mock" },

@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { Save } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Loader2, Save, Wand2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,14 +27,27 @@ function safeHashtags(raw: unknown): string[] {
 interface ContentEditorProps {
   content: Content;
   onSave: (data: Partial<Content>) => Promise<void>;
+  onRegenerateCaption?: () => Promise<void>;
+  regeneratingCaption?: boolean;
 }
 
-export function ContentEditor({ content, onSave }: ContentEditorProps) {
+export function ContentEditor({
+  content,
+  onSave,
+  onRegenerateCaption,
+  regeneratingCaption = false,
+}: ContentEditorProps) {
   const [caption, setCaption] = useState(content.caption || content.body_text || "");
   const [hashtags, setHashtags] = useState(safeHashtags(content.hashtags).join(", "));
   const [cta, setCta] = useState(content.cta || content.cta_text || "");
   const [title, setTitle] = useState(content.title || content.headline || "");
   const [saving, setSaving] = useState(false);
+
+  // Reflect parent-driven updates (e.g. after Regenerate Caption replaces
+  // content.caption) back into the local editor state.
+  useEffect(() => {
+    setCaption(content.caption || content.body_text || "");
+  }, [content.caption, content.body_text]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -94,7 +107,27 @@ export function ContentEditor({ content, onSave }: ContentEditorProps) {
 
           <TabsContent value="main" className="space-y-4 mt-4">
             <div className="space-y-2">
-              <Label htmlFor="caption">Caption</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="caption">Caption</Label>
+                {onRegenerateCaption && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs"
+                    disabled={regeneratingCaption}
+                    onClick={() => onRegenerateCaption()}
+                    title="Regenerate this caption with AI, using the brand voice and channel rules"
+                  >
+                    {regeneratingCaption ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="h-3.5 w-3.5" />
+                    )}
+                    {regeneratingCaption ? "Regenerating…" : "Regenerate"}
+                  </Button>
+                )}
+              </div>
               <Textarea
                 id="caption"
                 value={caption}

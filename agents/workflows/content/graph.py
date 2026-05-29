@@ -17,6 +17,7 @@ from workflows.content.nodes import (
     source_product_image_node,
     enhance_image_prompt,
     generate_background,
+    plan_overlay_layout,
     adapt_platforms,
     apply_branding,
     generate_mockups_node,
@@ -34,6 +35,7 @@ CONTENT_PIPELINE_STEPS = [
     "source_product_image",
     "enhance_image_prompt",
     "generate_background",
+    "plan_overlay_layout",
     "apply_branding",
     "adapt_platforms",
     "generate_mockups",
@@ -96,6 +98,7 @@ _nodes = [
     ("source_product_image", source_product_image_node),
     ("enhance_image_prompt", enhance_image_prompt),
     ("generate_background", generate_background),
+    ("plan_overlay_layout", plan_overlay_layout),
     ("apply_branding", apply_branding),
     ("adapt_platforms", adapt_platforms),
     ("generate_mockups", generate_mockups_node),
@@ -131,7 +134,14 @@ builder.add_conditional_edges(
     {"end": END, "continue": "generate_background"},
 )
 builder.add_conditional_edges(
-    "generate_background", _check_failed, {"end": END, "continue": "apply_branding"}
+    "generate_background",
+    _check_failed,
+    {"end": END, "continue": "plan_overlay_layout"},
+)
+builder.add_conditional_edges(
+    "plan_overlay_layout",
+    _check_failed,
+    {"end": END, "continue": "apply_branding"},
 )
 builder.add_conditional_edges(
     "apply_branding", _check_failed, {"end": END, "continue": "adapt_platforms"}

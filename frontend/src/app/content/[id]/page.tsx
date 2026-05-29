@@ -15,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { api, API_BASE_URL, fileUrl } from "@/lib/api";
+import { useOpenedContent } from "@/lib/opened-content";
 import type { Content, Approval, CalendarItem, Brand } from "@/types";
 
 function safeHashtags(raw: unknown): string[] {
@@ -41,12 +42,20 @@ export default function ContentDetailPage() {
   const [submittingApproval, setSubmittingApproval] = useState(false);
   const [imagePrompt, setImagePrompt] = useState("");
   const [regeneratingImage, setRegeneratingImage] = useState(false);
+  const [regeneratingCaption, setRegeneratingCaption] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const imageUploadInputRef = useRef<HTMLInputElement>(null);
   const [imageCacheBust, setImageCacheBust] = useState("");
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduleTime, setScheduleTime] = useState("09:00");
   const [scheduling, setScheduling] = useState(false);
+  const { markOpened } = useOpenedContent();
+
+  // The URL param is the calendar item id — flag it as seen so the "New"
+  // badge stops showing for it in the Kanban / stage views.
+  useEffect(() => {
+    if (contentId) markOpened(contentId);
+  }, [contentId, markOpened]);
 
   useEffect(() => {
     async function fetchData() {
@@ -145,6 +154,24 @@ export default function ContentDetailPage() {
       setRegeneratingImage(false);
     }
   }, [content, imagePrompt]);
+
+  const handleRegenerateCaption = useCallback(async () => {
+    if (!content) return;
+    setRegeneratingCaption(true);
+    try {
+      const updated = await api.post<Content>(
+        `/api/v1/content/${content.id}/regenerate-caption`,
+        {}
+      );
+      setContent(updated);
+      toast.success("Caption regenerated");
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to regenerate caption";
+      toast.error(detail);
+    } finally {
+      setRegeneratingCaption(false);
+    }
+  }, [content]);
 
   const handleUploadImage = useCallback(async (file: File) => {
     if (!content) return;
@@ -579,7 +606,12 @@ export default function ContentDetailPage() {
 
         {/* Edit Tab */}
         <TabsContent value="edit" className="mt-6">
-          <ContentEditor content={content} onSave={handleSave} />
+          <ContentEditor
+            content={content}
+            onSave={handleSave}
+            onRegenerateCaption={handleRegenerateCaption}
+            regeneratingCaption={regeneratingCaption}
+          />
         </TabsContent>
 
         {/* History Tab */}

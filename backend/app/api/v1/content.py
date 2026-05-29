@@ -1,3 +1,4 @@
+import logging
 import os as _os
 import uuid
 
@@ -14,8 +15,11 @@ from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
 from app.models.calendar_item import CalendarItem
 from app.schemas.content import ContentCreate, ContentResponse, ContentUpdate
-from app.services import content_service, minio_service
+from app.services import brand_service, content_service, minio_service
 from app.services.content_service import InvalidStatusTransition
+from app.utils.sanitize import sanitize_for_prompt as _sanitize
+
+logger = logging.getLogger(__name__)
 
 _limiter = Limiter(key_func=get_remote_address)
 
@@ -126,6 +130,187 @@ async def regenerate_image(
     )
 
     return {"status": "queued", "message": "Image regeneration started"}
+
+
+class CaptionRegenerateRequest(BaseModel):
+    prompt: str | None = None
+
+
+# Per-channel default word caps used when no per-channel override is set.
+# Same defaults the content workflow uses for caption length.
+_DEFAULT_MAX_WORDS_BY_CHANNEL = {
+    "instagram": 60,
+    "facebook": 90,
+    "linkedin": 120,
+    "tiktok": 30,
+    "x": 35,
+    "website_blog": 800,
+    "teams": 80,
+}
+
+
+@router.post("/{content_id}/regenerate-caption", response_model=ContentResponse)
+@_limiter.limit("20/minute")
+async def regenerate_caption(
+    request: Request,
+    content_id: uuid.UUID,
+    body: CaptionRegenerateRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Regenerate just the caption for an existing content piece.
+
+    Synchronous — one LLM call, no NATS round-trip. Image regeneration uses
+    NATS because it takes 30 to 180s; caption is one to three seconds so the
+    polling/queue overhead would just hurt UX. Uses the brand voice profile
+    plus any per-channel Custom Channel Rules so the regenerated caption
+    respects the same constraints as a fresh generation.
+    """
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    content_obj = await content_service.get_content(db, content_id)
+    if content_obj is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    brand = await brand_service.get_brand(db, content_obj.brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    # The channel lives on the calendar item, not on content.
+    cal_item = await db.get(CalendarItem, content_obj.calendar_item_id)
+    channel = ((cal_item.channel if cal_item else "") or "").lower()
+
+    guidelines = brand.brand_guidelines or {}
+    channel_rules = (
+        ((guidelines.get("channels") or {}).get(channel) or {}).get("caption") or {}
+    )
+
+    ta_desc = (
+        (brand.target_audience or {}).get("description", "Not set")
+        if isinstance(brand.target_audience, dict)
+        else "Not set"
+    )
+
+    title = (content_obj.headline or "").strip()
+    if cal_item is not None:
+        brief = cal_item.content_brief or cal_item.description or cal_item.title or ""
+        pillar = cal_item.pillar or ""
+        audience = cal_item.target_audience or ""
+    else:
+        brief = ""
+        pillar = ""
+        audience = ""
+
+    tone_override = channel_rules.get("tone_override") or brand.tone_of_voice or ""
+    emoji_override = channel_rules.get("emoji_override") or guidelines.get(
+        "emoji_usage", "moderate"
+    )
+    max_words = int(
+        channel_rules.get("max_words")
+        or _DEFAULT_MAX_WORDS_BY_CHANNEL.get(channel, 90)
+    )
+    hook_format = channel_rules.get("hook_format") or ""
+    structure_template = channel_rules.get("structure_template") or ""
+    extra_brief = channel_rules.get("caption_brief") or ""
+    must_name_product = bool(channel_rules.get("must_name_product"))
+
+    custom_request = ((body.prompt if body else None) or "").strip()
+    previous_caption = (content_obj.caption or "").strip()
+
+    system_parts: list[str] = [
+        f"You write social captions for {_sanitize(brand.name or '')} on "
+        f"{_sanitize(channel or 'social')}.",
+        f"Brand description: {_sanitize(brand.description or 'Not set')}",
+        f"Tone of voice: {_sanitize(tone_override or 'Not set')}",
+        f"Voice style: {_sanitize(guidelines.get('voice_style', 'Not set'))}",
+        f"Target audience: {_sanitize(ta_desc)}",
+        f"Dos: {_sanitize(', '.join(guidelines.get('dos', [])) or 'Not set')}",
+        f"Donts: {_sanitize(', '.join(guidelines.get('donts', [])) or 'Not set')}",
+        f"Emoji usage: {_sanitize(str(emoji_override))}",
+    ]
+    if hook_format:
+        system_parts.append(f"Hook format: {_sanitize(hook_format)}")
+    if structure_template:
+        system_parts.append(f"Structure template: {_sanitize(structure_template)}")
+    if extra_brief:
+        system_parts.append(f"Extra brief for this channel: {_sanitize(extra_brief)}")
+
+    system_parts.append("")
+    system_parts.append("ABSOLUTE RULES:")
+    system_parts.append(f"- HARD limit: stay strictly under {max_words} words.")
+    system_parts.append(
+        "- NEVER include hashtags (#anything) inside the caption body. "
+        "Hashtags live in a separate field appended later."
+    )
+    system_parts.append(
+        "- Open with a single hook line. Separate distinct sections with a "
+        "blank line."
+    )
+    system_parts.append(
+        "- End with a short CTA line (e.g. 'Shop now', 'Try it today'). "
+        "NEVER include URLs or links of any kind in the caption."
+    )
+    system_parts.append(
+        "- Avoid AI cliches: elevate, unlock, discover, journey, dive, "
+        "transform, empower, seamless, robust, leverage, embark, foster, "
+        "harness, holistic."
+    )
+    system_parts.append("- No em-dashes between clauses.")
+    if must_name_product:
+        system_parts.append("- Mention the product by name.")
+    system_parts.append(
+        "Return ONLY the caption body. No markdown headers, no quotes, no "
+        "explanations."
+    )
+
+    user_parts: list[str] = []
+    user_parts.append(f"Post title: {_sanitize(title or '(none)')}")
+    user_parts.append(f"Brief: {_sanitize(brief or '(none)')}")
+    if pillar:
+        user_parts.append(f"Pillar: {_sanitize(pillar)}")
+    if audience:
+        user_parts.append(f"Audience: {_sanitize(audience)}")
+    if previous_caption:
+        user_parts.append("")
+        user_parts.append("Previous caption (for reference — do not copy):")
+        user_parts.append(_sanitize(previous_caption[:600]))
+    if custom_request:
+        user_parts.append("")
+        user_parts.append(
+            f"Additional guidance from editor: {_sanitize(custom_request)}"
+        )
+    user_parts.append("")
+    user_parts.append(
+        "Write a fresh caption that follows the rules above. Use a different "
+        "wording and angle from any previous version."
+    )
+
+    # Import here to avoid a circular import at module load time.
+    from app.api.v1.intelligence import _call_llm
+
+    try:
+        raw = await _call_llm(
+            messages=[
+                {"role": "system", "content": "\n".join(system_parts)},
+                {"role": "user", "content": "\n".join(user_parts)},
+            ],
+            temperature=0.8,
+        )
+    except Exception as exc:
+        logger.error("Caption regeneration LLM call failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Caption regeneration failed")
+
+    new_caption = (raw or "").strip().strip('"').strip("'").strip()
+    if not new_caption:
+        raise HTTPException(status_code=502, detail="LLM returned empty caption")
+
+    updated = await content_service.update_content(
+        db, content_id, ContentUpdate(caption=new_caption)
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    return updated
 
 
 # Statuses where the image is effectively locked — the content either went out

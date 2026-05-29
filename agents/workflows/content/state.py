@@ -45,6 +45,9 @@ class ContentState(TypedDict, total=False):
     branded_image: str | None
     logo_png_data: bytes | None
 
+    # Vision-critic layout plan (chooses logo + text corner anchors)
+    overlay_plan: dict[str, Any] | None
+
     # Social mockup previews (for approval UI)
     mockup_urls: dict[str, str]
 

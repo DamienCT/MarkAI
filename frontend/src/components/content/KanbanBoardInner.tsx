@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { formatDate } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { useOpenedContent } from "@/lib/opened-content";
 import type { CalendarItem, ActiveAgentRun } from "@/types";
 import type { KanbanBoardProps } from "./KanbanBoard";
 import { CHANNEL_COLORS, CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
@@ -52,10 +53,33 @@ const ROW2_COLUMNS: { id: string; label: string; color: string }[] = [
 const COLUMNS = [...ROW1_COLUMNS, ...ROW2_COLUMNS];
 const MAX_VISIBLE_ITEMS = 3;
 
-/** Compact single-line item shown in the column preview */
-function CompactItem({ item, currentStep }: { item: CalendarItem; currentStep?: string }) {
+/** Small green pill flagging a calendar item that hasn't been opened yet. */
+function NewPill() {
   return (
-    <Link href={`/content/${item.id}`} className="block">
+    <span className="shrink-0 inline-flex items-center rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 leading-none">
+      New
+    </span>
+  );
+}
+
+/** Compact single-line item shown in the column preview */
+function CompactItem({
+  item,
+  currentStep,
+  isNew,
+}: {
+  item: CalendarItem;
+  currentStep?: string;
+  isNew?: boolean;
+}) {
+  return (
+    // Stop propagation so the click doesn't bubble to the column wrapper button
+    // (which would otherwise navigate to the stage list instead of the post).
+    <Link
+      href={`/content/${item.id}`}
+      className="block"
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 transition-colors group">
         <Badge variant="outline" className={`text-[10px] px-1 py-0 shrink-0 ${CHANNEL_COLORS[item.channel] || ""}`}>
           {CHANNEL_PREFIX[item.channel] || item.channel}
@@ -63,6 +87,7 @@ function CompactItem({ item, currentStep }: { item: CalendarItem; currentStep?: 
         <span className="text-xs truncate flex-1 group-hover:text-primary transition-colors">
           {item.title || "Untitled"}
         </span>
+        {isNew && <NewPill />}
         {currentStep && (
           <PipelineProgressDots currentStep={currentStep} size="xs" />
         )}
@@ -78,11 +103,14 @@ function CompactItem({ item, currentStep }: { item: CalendarItem; currentStep?: 
 }
 
 /** Full card shown in the stage modal and drag overlay */
-function KanbanCard({ item }: { item: CalendarItem }) {
+function KanbanCard({ item, isNew }: { item: CalendarItem; isNew?: boolean }) {
   return (
     <Link href={`/content/${item.id}`}>
       <Card className="p-3 cursor-pointer hover:shadow-md transition-shadow">
-        <p className="text-sm font-medium line-clamp-2">{item.title || "Untitled"}</p>
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-medium line-clamp-2 flex-1">{item.title || "Untitled"}</p>
+          {isNew && <NewPill />}
+        </div>
         <div className="flex items-center gap-2 mt-2 flex-wrap">
           {item.channel && (
             <Badge variant="outline" className={`text-[10px] ${CHANNEL_COLORS[item.channel] || ""}`}>
@@ -110,7 +138,7 @@ function KanbanCard({ item }: { item: CalendarItem }) {
   );
 }
 
-function SortableItem({ item }: { item: CalendarItem }) {
+function SortableItem({ item, isNew }: { item: CalendarItem; isNew?: boolean }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
     data: { status: item.status },
@@ -124,7 +152,7 @@ function SortableItem({ item }: { item: CalendarItem }) {
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <KanbanCard item={item} />
+      <KanbanCard item={item} isNew={isNew} />
     </div>
   );
 }
@@ -133,6 +161,7 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeRuns, setActiveRuns] = useState<ActiveAgentRun[]>([]);
   const router = useRouter();
+  const { isOpened } = useOpenedContent();
 
   // Fetch active content runs for progress dots on working items
   const hasWorkingItems = useMemo(
@@ -253,6 +282,7 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
                       key={item.id}
                       item={item}
                       currentStep={column.id === "working" ? runStepMap[item.id] : undefined}
+                      isNew={!isOpened(item.id)}
                     />
                   ))}
                 </div>
@@ -299,7 +329,7 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
       </div>
 
       <DragOverlay>
-        {activeItem ? <KanbanCard item={activeItem} /> : null}
+        {activeItem ? <KanbanCard item={activeItem} isNew={!isOpened(activeItem.id)} /> : null}
       </DragOverlay>
 
     </DndContext>
