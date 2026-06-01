@@ -65,9 +65,10 @@ interface CalendarViewProps {
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-// Ordered: Queued -> Working -> In Review -> Reworking -> Scheduled -> Published -> Failed
+// Ordered: Planned -> Queued -> Working -> In Review -> Reworking -> Scheduled -> Published -> Failed
 const STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }> = {
-  queued:      { bg: "bg-slate-200 dark:bg-slate-700",   text: "text-slate-800 dark:text-slate-200", label: "Queued" },
+  planned:     { bg: "bg-slate-200 dark:bg-slate-700",   text: "text-slate-800 dark:text-slate-200", label: "Planned" },
+  queued:      { bg: "bg-sky-200 dark:bg-sky-800",       text: "text-sky-900 dark:text-sky-100",    label: "Queued" },
   working:     { bg: "bg-indigo-200 dark:bg-indigo-800", text: "text-indigo-900 dark:text-indigo-100", label: "Working" },
   in_review:   { bg: "bg-amber-200 dark:bg-amber-800",   text: "text-amber-900 dark:text-amber-100", label: "In Review" },
   reworking:   { bg: "bg-orange-200 dark:bg-orange-800",  text: "text-orange-900 dark:text-orange-100", label: "Reworking" },
@@ -77,7 +78,7 @@ const STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }>
 };
 
 function getStatusStyle(status: string) {
-  return STATUS_CONFIG[status] || STATUS_CONFIG.queued;
+  return STATUS_CONFIG[status] || STATUS_CONFIG.planned;
 }
 
 const MAX_VISIBLE_ITEMS = 4;
