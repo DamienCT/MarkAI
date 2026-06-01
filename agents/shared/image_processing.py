@@ -188,17 +188,24 @@ def select_logo_variant(
     """Select the best logo variant based on image brightness at the placement region.
 
     Label keys match the UI (frontend LogosTab): primary, icon, watermark, dark, light.
+    Semantically — 'dark' is the variant FOR dark backgrounds (i.e. a light
+    logo); 'light' is the variant FOR light backgrounds (i.e. a dark logo).
 
     Priority logic:
-    - High variance (busy background) → watermark if available
-    - Dark background (brightness < 100) → dark (white-on-dark) > light > primary
-    - Light background (brightness > 160) → light > primary > dark
+    - Very busy background → watermark if available (rare — threshold raised
+      because watermark prints too faint to be legible on most photos)
+    - Dark background (brightness < 100) → dark variant (light logo for dark bg)
+    - Light background (brightness > 160) → light variant (dark logo for light bg)
     - Mid-tone → primary
     """
     labels = set(available_labels)
 
-    # Busy/high-contrast background → prefer watermark for subtlety
-    if variance > 2000 and "watermark" in labels:
+    # Only fall back to watermark when the background is genuinely chaotic
+    # (sky + faces + product) AND no proper dark/light variant exists. The
+    # earlier 2000 threshold was triggering on normal mid-frame textures.
+    if variance > 5000 and "watermark" in labels and not (
+        "dark" in labels or "light" in labels
+    ):
         return "watermark"
 
     # Dark background → need a light-colored logo

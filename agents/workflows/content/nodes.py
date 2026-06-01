@@ -1825,36 +1825,65 @@ def _bytes_to_logo_png(raw: bytes) -> bytes | None:
 _VALID_ANCHORS = {"top-left", "top-right", "bottom-left", "bottom-right"}
 
 
-async def _vision_plan_overlay(image_data: bytes) -> dict[str, Any] | None:
+async def _vision_plan_overlay(
+    image_data: bytes,
+    available_logo_variants: list[str] | None = None,
+) -> dict[str, Any] | None:
     """Ask the vision LLM where to place the logo and text card.
 
     Returns a dict with keys ``logo_anchor``, ``text_anchor``,
-    ``quality_score`` (0-10) and ``notes``, or None if the call fails or
-    yields an unusable result. The caller then falls back to the legacy
-    variance heuristic.
+    ``logo_variant_hint``, ``quality_score`` (0-10) and ``notes``, or None
+    if the call fails or yields an unusable result. The caller then falls
+    back to the legacy variance heuristic.
+
+    ``available_logo_variants`` constrains the variant hint to logos that
+    actually exist for this brand — otherwise the model can pick a key the
+    brand doesn't have.
     """
     import base64 as _b64
 
     b64 = _b64.b64encode(image_data).decode("ascii")
     data_url = f"data:image/png;base64,{b64}"
 
+    # Variant options the brand actually has, so the hint isn't unusable.
+    variant_options = available_logo_variants or [
+        "primary", "dark", "light", "icon", "watermark",
+    ]
+    variant_options_str = "|".join(f'"{v}"' for v in variant_options)
+
     system = (
         "You are a layout director for marketing posts. The picture you "
-        "receive will get a small brand logo (~14% of width) in one corner "
-        "and a frosted text card (~55% of width) anchored in another corner. "
-        "Choose the corner for each so that the main product/subject and any "
-        "visible product packaging are NEVER covered, and so the logo lands "
-        "over a calm uncluttered area. Return strict JSON with this shape:\n"
+        "receive will get a small brand logo (~17% of width) in one corner "
+        "and a frosted text card (~72% of width) anchored in another corner. "
+        "Decide WHERE both go AND WHICH logo color variant to use for the "
+        "best contrast against the chosen corner.\n\n"
+        "Return strict JSON with this shape:\n"
         "{\n"
         '  "logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
         '  "text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
-        '  "quality_score": 0-10,  // overall composition quality\n'
+        f'  "logo_variant_hint": {variant_options_str},\n'
+        '  "quality_score": 0-10,\n'
         '  "notes": "short reason"\n'
-        "}\n"
-        "Rules: logo_anchor and text_anchor MUST be different corners. "
-        "Prefer text_anchor at the bottom when the top half is busier, top "
-        "when the bottom half is busier. Never put the logo over the main "
-        "subject. Output JSON only — no prose."
+        "}\n\n"
+        "Rules:\n"
+        "- logo_anchor and text_anchor MUST be different corners.\n"
+        "- Anchor placement: the main product/subject and any visible "
+        "  product packaging must NEVER be covered. The logo lands over a "
+        "  calm uncluttered area (sky, blur, solid wall, shadow).\n"
+        "- Variant choice: look at the actual color/brightness of the area "
+        "  where the LOGO will sit.\n"
+        "    * Bright/light backdrop (white wall, sky, light surface) → "
+        "      pick 'dark' (or 'primary' if dark isn't available) — a dark "
+        "      logo reads on light.\n"
+        "    * Dark/saturated backdrop (shadow, deep color, night scene) → "
+        "      pick 'light' (or 'primary' if light isn't available) — a "
+        "      light logo reads on dark.\n"
+        "    * Busy/textured backdrop where neither contrasts well → pick "
+        "      'watermark' if available.\n"
+        "    * Only fall back to 'primary' when nothing else fits.\n"
+        "- Prefer text_anchor at the bottom when the top half is busier, "
+        "  top when the bottom half is busier.\n"
+        "Output JSON only — no prose."
     )
 
     messages = [
@@ -1864,7 +1893,7 @@ async def _vision_plan_overlay(image_data: bytes) -> dict[str, Any] | None:
             "content": [
                 {
                     "type": "text",
-                    "text": "Pick logo_anchor and text_anchor for this image.",
+                    "text": "Pick logo_anchor, text_anchor and logo_variant_hint for this image.",
                 },
                 {"type": "image_url", "image_url": {"url": data_url}},
             ],
@@ -1876,7 +1905,7 @@ async def _vision_plan_overlay(image_data: bytes) -> dict[str, Any] | None:
             messages,
             category="vision",
             temperature=0.2,
-            max_tokens=300,
+            max_tokens=400,
             response_format={"type": "json_object"},
         )
     except Exception as exc:
@@ -1899,6 +1928,13 @@ async def _vision_plan_overlay(image_data: bytes) -> dict[str, Any] | None:
         )
         return None
 
+    # logo_variant_hint is optional — if the model returns something the
+    # brand doesn't have, we drop it (apply_branding will fall back to its
+    # brightness heuristic for the variant).
+    variant_hint = str(plan.get("logo_variant_hint", "")).strip().lower()
+    if available_logo_variants and variant_hint not in available_logo_variants:
+        variant_hint = ""
+
     try:
         score = float(plan.get("quality_score", 0))
     except (TypeError, ValueError):
@@ -1907,6 +1943,7 @@ async def _vision_plan_overlay(image_data: bytes) -> dict[str, Any] | None:
     return {
         "logo_anchor": logo_anchor,
         "text_anchor": text_anchor,
+        "logo_variant_hint": variant_hint,
         "quality_score": score,
         "notes": str(plan.get("notes", ""))[:300],
     }
@@ -1953,14 +1990,26 @@ async def plan_overlay_layout(state: ContentState) -> dict[str, Any]:
         logger.warning("plan_overlay_layout: image fetch failed: %s", exc)
         return {}
 
-    plan = await _vision_plan_overlay(image_data)
+    # Pass the brand's actual logo variants so the model picks a key that
+    # this brand has uploaded — otherwise its hint is unusable.
+    brand = state.get("brand", {})
+    brand_guidelines = brand.get("brand_guidelines") or {}
+    if isinstance(brand_guidelines, str):
+        try:
+            brand_guidelines = json.loads(brand_guidelines)
+        except (json.JSONDecodeError, TypeError):
+            brand_guidelines = {}
+    available_variants = list((brand_guidelines.get("logos") or {}).keys())
+
+    plan = await _vision_plan_overlay(image_data, available_variants)
     if plan is None:
         return {}
 
     logger.info(
-        "Overlay plan: logo=%s text=%s score=%.1f (%s)",
+        "Overlay plan: logo=%s text=%s variant=%s score=%.1f (%s)",
         plan["logo_anchor"],
         plan["text_anchor"],
+        plan.get("logo_variant_hint") or "(none)",
         plan["quality_score"],
         plan["notes"],
     )
@@ -2045,14 +2094,26 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             image_data, approx_logo_w, approx_logo_h
         )
 
-        chosen_label = select_logo_variant(
-            brightness, variance, list(available_logos.keys())
-        )
+        # Prefer the vision-critic's variant hint when it picked a logo the
+        # brand actually has; otherwise fall back to the brightness heuristic.
+        overlay_plan_state = state.get("overlay_plan") or {}
+        variant_hint = (overlay_plan_state.get("logo_variant_hint") or "").strip().lower()
+        if variant_hint and variant_hint in available_logos:
+            chosen_label = variant_hint
+            logger.info(
+                "Logo variant from vision-critic: %s (brightness=%.0f, variance=%.0f)",
+                chosen_label, brightness, variance,
+            )
+        else:
+            chosen_label = select_logo_variant(
+                brightness, variance, list(available_logos.keys())
+            )
+            logger.info(
+                "Logo variant from brightness heuristic: %s "
+                "(brightness=%.0f, variance=%.0f, available=%s)",
+                chosen_label, brightness, variance, list(available_logos.keys()),
+            )
         chosen_url = available_logos[chosen_label]
-        logger.info(
-            "Logo variant selected: %s (brightness=%.0f, variance=%.0f, available=%s)",
-            chosen_label, brightness, variance, list(available_logos.keys()),
-        )
 
         # Download and convert the chosen logo
         logo_png = None
@@ -2077,11 +2138,13 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             logger.info("No logo could be loaded — skipping branding overlay")
             return {}
 
-        # Build text overlay lines
-        brand_name = brand.get("name", "")
+        # Build text overlay lines. text_line2 used to repeat the brand
+        # name, but the logo image already shows it — printing it again
+        # under the hook reads as redundant. Leave it None unless we have
+        # a non-redundant secondary line to show.
         theme = item.get("theme", "")
         text_line1 = state.get("hook", theme)
-        text_line2 = brand_name
+        text_line2 = None
 
         # Apply overlay — scale depends on the chosen variant (icon-only logos
         # need a smaller scale than wordmarks). If the vision-critic node
