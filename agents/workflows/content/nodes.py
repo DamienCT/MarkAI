@@ -253,11 +253,22 @@ def _effective_caption_settings(brand: dict, channel: str) -> dict[str, Any]:
 # A bare emoji level ("moderate") is too vague — the model reads it as
 # "don't overdo it" and emits none. These spell out the expected count and
 # placement so the directive actually lands.
+#
+# Common ban appended to every level above 'none': national flag emojis
+# (🇮🇹, 🇫🇷, etc.) read as "country shorthand" and look amateurish in
+# product marketing — they also render as raw "IT"/"FR" on systems whose
+# font doesn't support regional-indicator pairs (most desktop browsers).
+_EMOJI_BAN_NOTE = (
+    " NEVER use national flag emojis (no 🇮🇹 🇫🇷 🇬🇧 🇲🇺 etc.) — they "
+    "render as broken letters on many devices and read as cheap shorthand. "
+    "Also avoid the same single emoji combo (e.g. ☕🇮🇹) appearing on "
+    "consecutive posts — vary your picks."
+)
 _EMOJI_DIRECTIVES: dict[str, str] = {
     "none": "Do not use any emojis at all.",
-    "minimal": "Use emojis very sparingly — at most 1, and only if it genuinely fits. Never in the hook.",
-    "moderate": "Use 2 to 4 relevant emojis, placed naturally in the body (e.g. beside a benefit or just before the CTA). Never in the hook, and never several in a row.",
-    "heavy": "Use emojis freely — 5 or more — for energy and visual rhythm, but keep each one relevant to the words around it. Keep them out of the hook.",
+    "minimal": "Use emojis very sparingly — at most 1, and only if it genuinely fits. Never in the hook." + _EMOJI_BAN_NOTE,
+    "moderate": "Use 2 to 4 relevant emojis, placed naturally in the body (e.g. beside a benefit or just before the CTA). Never in the hook, and never several in a row." + _EMOJI_BAN_NOTE,
+    "heavy": "Use emojis freely — 5 or more — for energy and visual rhythm, but keep each one relevant to the words around it. Keep them out of the hook." + _EMOJI_BAN_NOTE,
 }
 
 
@@ -315,6 +326,25 @@ _PROMO_DIRECTIVE = (
     "- Keep the brand voice for TONE (warmth, language register) but the "
     "INTENT is conversion, not vibes.\n"
 )
+
+
+# Regional Indicator Symbols block: U+1F1E6 to U+1F1FF. A national flag is
+# always a *pair* of these. We strip any consecutive pair so the model can't
+# slip a flag past the prompt-level ban. Trailing whitespace/punctuation
+# left over from the strip is cleaned up too.
+_FLAG_EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
+
+
+def _strip_flag_emojis(text: str) -> str:
+    """Remove national-flag emojis from a generated string."""
+    if not text:
+        return text
+    cleaned = _FLAG_EMOJI_RE.sub("", text)
+    # Collapse the double-spaces / leading-trailing whitespace the strip leaves
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r" +\n", "\n", cleaned)
+    cleaned = re.sub(r"\n +", "\n", cleaned)
+    return cleaned.strip()
 
 
 def _emoji_directive(emoji_setting: Any) -> str:
@@ -894,7 +924,7 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
             },
         ]
         hook = await chat_completion(prompt, temperature=0.8, max_tokens=256)
-        return {"hook": hook.strip().strip('"')}
+        return {"hook": _strip_flag_emojis(hook.strip().strip('"'))}
     except Exception as exc:
         logger.error("generate_hook failed: %s", exc)
         return {
@@ -1077,7 +1107,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
             },
         ]
         caption = await chat_completion(prompt, temperature=0.8, max_tokens=2048)
-        return {"caption": caption.strip()}
+        return {"caption": _strip_flag_emojis(caption.strip())}
     except Exception as exc:
         logger.error("generate_caption failed: %s", exc)
         return {
@@ -1985,6 +2015,16 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
         # Enforce per-channel max_words: LLM retry first, hard-trim fallback.
         adaptations = await _enforce_caption_word_limits(adaptations, brand)
 
+        # Strip national-flag emojis from every per-platform caption + cta.
+        # The prompt asks for it but the model occasionally slips one in.
+        if isinstance(adaptations, dict):
+            for _platform, _payload in list(adaptations.items()):
+                if not isinstance(_payload, dict):
+                    continue
+                for _field in ("caption", "cta", "title", "description"):
+                    if isinstance(_payload.get(_field), str):
+                        _payload[_field] = _strip_flag_emojis(_payload[_field])
+
         # Extract CTA from the primary platform adaptation
         primary = adaptations.get(source_platform, {})
         cta = primary.get("cta", "")
@@ -2174,6 +2214,10 @@ async def _vision_plan_overlay(
         '  "logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
         '  "text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
         f'  "logo_variant_hint": {variant_options_str},\n'
+        '  "subject_bbox": [x, y, w, h],  // normalized [0..1] bounding box\n'
+        '                                 // of the FULL product/subject\n'
+        '                                 // including packaging that\n'
+        '                                 // extends near image edges\n'
         '  "quality_score": 0-10,\n'
         '  "notes": "short reason"\n'
         "}\n\n"
@@ -2182,6 +2226,11 @@ async def _vision_plan_overlay(
         "- Anchor placement: the main product/subject and any visible "
         "  product packaging must NEVER be covered. The logo lands over a "
         "  calm uncluttered area (sky, blur, solid wall, shadow).\n"
+        "- subject_bbox: report the FULL bounding box of the product and "
+        "  any branded packaging — including parts that extend toward "
+        "  image edges. A box that excludes the packaging extending into "
+        "  a corner is WRONG and will cause the text card to overlap it. "
+        "  Coordinates are normalized to [0..1] where (0,0) is top-left.\n"
         "- Variant choice: look at the actual color/brightness of the area "
         "  where the LOGO will sit.\n"
         "    * Bright/light backdrop (white wall, sky, light surface) → "
@@ -2252,10 +2301,26 @@ async def _vision_plan_overlay(
     except (TypeError, ValueError):
         score = 0.0
 
+    # Parse the subject bbox — list/tuple of 4 floats in [0,1]. Anything
+    # malformed becomes None so the geometric rescue downstream short-circuits.
+    raw_bbox = plan.get("subject_bbox")
+    subject_bbox: list[float] | None = None
+    if isinstance(raw_bbox, (list, tuple)) and len(raw_bbox) == 4:
+        try:
+            x, y, w, h = (float(v) for v in raw_bbox)
+            if 0 <= x <= 1 and 0 <= y <= 1 and 0 < w <= 1 and 0 < h <= 1:
+                # Clamp the box to stay inside the image
+                w = min(w, 1 - x)
+                h = min(h, 1 - y)
+                subject_bbox = [x, y, w, h]
+        except (TypeError, ValueError):
+            subject_bbox = None
+
     return {
         "logo_anchor": logo_anchor,
         "text_anchor": text_anchor,
         "logo_variant_hint": variant_hint,
+        "subject_bbox": subject_bbox,
         "quality_score": score,
         "notes": str(plan.get("notes", ""))[:300],
     }
@@ -2463,14 +2528,76 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         # produced an overlay_plan, its corner anchors override the legacy
         # variance heuristic so the card and logo never land on the product.
         overlay_plan = state.get("overlay_plan") or {}
+        logo_anchor = overlay_plan.get("logo_anchor")
+        text_anchor = overlay_plan.get("text_anchor")
+
+        # Geometric rescue: if the vision-critic gave us a low-confidence
+        # plan (score < 8) AND it also reported the subject bounding box,
+        # try the alternate corners for the text card and pick the one
+        # with the LEAST overlap with the subject. Avoids the 'I thought
+        # the product was central but its packaging extends into a corner'
+        # case where the LLM was wrong about its own anchor choice.
+        plan_score = float(overlay_plan.get("quality_score") or 10)
+        subject_bbox = overlay_plan.get("subject_bbox")
+        if (
+            plan_score < 8
+            and text_anchor
+            and isinstance(subject_bbox, (list, tuple))
+            and len(subject_bbox) == 4
+        ):
+            from PIL import Image as _PILImage
+            from io import BytesIO as _BytesIO
+            _info_img = _PILImage.open(_BytesIO(image_data))
+            img_w, img_h = _info_img.size
+            _info_img.close()
+
+            sx, sy, sw, sh = (float(v) for v in subject_bbox)
+            subj_rect = (sx * img_w, sy * img_h, (sx + sw) * img_w, (sy + sh) * img_h)
+
+            # Card dims approximated from the same ratios overlay_logo_and_text
+            # uses (font_large 0.030, pad_y ~0.010, no text_line2). Width is
+            # capped to 72% of base width.
+            margin = int(img_w * 0.04)
+            card_w_est = int(img_w * 0.72)
+            card_h_est = int(img_w * 0.030) + 2 * max(10, int(img_w * 0.010)) + 6
+
+            def _rect_for_anchor(anchor: str) -> tuple[float, float, float, float]:
+                if anchor == "top-left":
+                    return (margin, margin, margin + card_w_est, margin + card_h_est)
+                if anchor == "top-right":
+                    return (img_w - margin - card_w_est, margin, img_w - margin, margin + card_h_est)
+                if anchor == "bottom-left":
+                    return (margin, img_h - margin - card_h_est, margin + card_w_est, img_h - margin)
+                return (img_w - margin - card_w_est, img_h - margin - card_h_est, img_w - margin, img_h - margin)
+
+            def _overlap(r1, r2) -> float:
+                x1 = max(r1[0], r2[0]); y1 = max(r1[1], r2[1])
+                x2 = min(r1[2], r2[2]); y2 = min(r1[3], r2[3])
+                if x2 <= x1 or y2 <= y1:
+                    return 0.0
+                return (x2 - x1) * (y2 - y1)
+
+            candidates = [
+                a for a in ("bottom-left", "bottom-right", "top-left", "top-right")
+                if a != logo_anchor  # never put text on same corner as logo
+            ]
+            scored = {a: _overlap(subj_rect, _rect_for_anchor(a)) for a in candidates}
+            best_anchor = min(scored, key=scored.get)
+            if best_anchor != text_anchor and scored[best_anchor] < scored.get(text_anchor, float("inf")):
+                logger.info(
+                    "Overlap rescue: text_anchor %s (overlap=%.0fpx) -> %s (overlap=%.0fpx)",
+                    text_anchor, scored.get(text_anchor, -1), best_anchor, scored[best_anchor],
+                )
+                text_anchor = best_anchor
+
         branded_bytes = overlay_logo_and_text(
             image_data,
             logo_png,
             text_line1=text_line1,
             text_line2=text_line2,
             logo_scale=scale_for_logo_variant(chosen_label),
-            logo_anchor=overlay_plan.get("logo_anchor"),
-            text_anchor=overlay_plan.get("text_anchor"),
+            logo_anchor=logo_anchor,
+            text_anchor=text_anchor,
         )
 
         # Upload branded image to MinIO
@@ -2686,6 +2813,10 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
             "raw_image": generated_image_url,
             "branded_image": state.get("branded_image"),
             "mockup_urls": state.get("mockup_urls", {}),
+            # Traceability for the branding pipeline — lets us debug
+            # logo/overlay choices after the fact without re-running.
+            "overlay_plan": state.get("overlay_plan"),
+            "logo_variant_used": state.get("logo_variant_used"),
         },
         "status": "in_review",
     }
