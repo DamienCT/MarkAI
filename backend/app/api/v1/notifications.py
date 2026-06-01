@@ -1,9 +1,10 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import Notification, User
@@ -53,6 +54,46 @@ async def list_notifications(
     notifications = result.scalars().all()
 
     return [_serialize_notification(n) for n in notifications]
+
+
+@router.post("/mark-read")
+async def mark_all_read(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mark all of the current user's unread notifications as read.
+
+    Called by the bell-icon 'Clear all' button in the top nav.
+    """
+    now = datetime.now(timezone.utc)
+    stmt = (
+        update(Notification)
+        .where(Notification.user_id == current_user.id)
+        .where(Notification.is_read == False)  # noqa: E712
+        .values(is_read=True, read_at=now)
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    return {"marked_read": result.rowcount or 0}
+
+
+@router.post("/{notification_id}/read")
+async def mark_one_read(
+    notification_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mark a single notification as read."""
+    now = datetime.now(timezone.utc)
+    stmt = (
+        update(Notification)
+        .where(Notification.id == notification_id)
+        .where(Notification.user_id == current_user.id)
+        .values(is_read=True, read_at=now)
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    return {"marked_read": result.rowcount or 0}
 
 
 @router.get("/stream")

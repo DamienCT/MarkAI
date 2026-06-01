@@ -260,6 +260,62 @@ _EMOJI_DIRECTIVES: dict[str, str] = {
 }
 
 
+# Keywords that flag a brief as promotional in intent. Bilingual EN/FR because
+# the user writes briefs in either language and the LLM is sensitive to the
+# *angle* the brief sets, not the literal product name.
+_PROMO_KEYWORDS = re.compile(
+    r"\b("
+    r"promo(?:tion(?:al)?|tionnel(?:le)?s?)?|"
+    r"sales?|soldes?|"
+    r"discount(?:ed|s)?|rabais|"
+    r"offers?|offres?|offerts?|"
+    r"deals?|"
+    r"limited[- ](?:time|edition|stock)|edition[- ]limit[ée]e|"
+    r"flash[- ]?sale|"
+    r"\d+\s*%(?:\s*off)?|"
+    r"save\s+\$|economisez|"
+    r"clearance|liquidation|"
+    r"buy\s+\d+\s+get|achetez\s+\d+"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_promo_intent(brief: str) -> bool:
+    """Return True when the brief reads as a sales/promo request.
+
+    A short brief like 'Make a promotion post for X' gets swallowed by the
+    brand-voice rules (FancyFinds reads premium-editorial) and the model
+    produces a generic product appreciation post. Detecting promo intent
+    lets us swap in a sales-oriented directive so 'promotion' actually
+    produces an offer-driven caption.
+    """
+    if not brief:
+        return False
+    return bool(_PROMO_KEYWORDS.search(brief))
+
+
+# Directive injected when the brief looks promotional. Forces the model to
+# write a sales post (offer hook, urgency, sales CTA) instead of the default
+# editorial product intro.
+_PROMO_DIRECTIVE = (
+    "PROMOTIONAL POST MODE:\n"
+    "- This is a SALES post, not an editorial product introduction.\n"
+    "- Open with the offer or value angle (price, discount, limited "
+    "availability, bundle) — NOT a lifestyle musing.\n"
+    "- Inject ONE concrete element of urgency or scarcity (this week, "
+    "while stocks last, today only, limited stock, weekend deal). If the "
+    "brief doesn't give a specific timeframe, pick a plausible short one.\n"
+    "- Name the product clearly with a buying reason (taste, format, "
+    "price point) — no generic 'I bring rich aroma' lifestyle prose.\n"
+    "- End with a SALES CTA that drives action: 'Get yours today', "
+    "'Grab one before they run out', 'Stock up now', 'Order this week'. "
+    "NOT contemplative CTAs like 'Make your next cup count'.\n"
+    "- Keep the brand voice for TONE (warmth, language register) but the "
+    "INTENT is conversion, not vibes.\n"
+)
+
+
 def _emoji_directive(emoji_setting: Any) -> str:
     """Translate an emoji level word into an explicit, actionable instruction.
 
@@ -508,9 +564,10 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
             content_prefs.get("tone", "") if isinstance(content_prefs, dict) else ""
         )
 
-        brief_text = sanitize_for_prompt(
-            item.get("content_brief") or item.get("description") or ""
-        )
+        raw_brief = item.get("content_brief") or item.get("description") or ""
+        brief_text = sanitize_for_prompt(raw_brief)
+        is_promo = _detect_promo_intent(raw_brief)
+        promo_section = f"{_PROMO_DIRECTIVE}\n\n" if is_promo else ""
 
         bible_section = f"{brand_bible_block}\n\n" if brand_bible_block else ""
         prompt = [
@@ -519,6 +576,7 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
                 "content": (
                     f"{voice_block}\n\n"
                     f"{bible_section}"
+                    f"{promo_section}"
                     f"{hook_format_directive}"
                     "You write short, scroll-stopping hooks for social posts. "
                     "Output a single line under 8 words and 50 characters.\n\n"
@@ -646,9 +704,12 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
             or "None available"
         )
 
-        brief_text = sanitize_for_prompt(
-            item.get("content_brief") or item.get("description") or ""
-        )
+        raw_brief = item.get("content_brief") or item.get("description") or ""
+        brief_text = sanitize_for_prompt(raw_brief)
+        is_promo = _detect_promo_intent(raw_brief)
+        promo_section = f"{_PROMO_DIRECTIVE}\n\n" if is_promo else ""
+        if is_promo:
+            logger.info("Promo intent detected in brief — injecting sales directive")
 
         bible_section = f"{brand_bible_block}\n\n" if brand_bible_block else ""
         prompt = [
@@ -657,6 +718,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                 "content": (
                     f"{voice_block}\n\n"
                     f"{bible_section}"
+                    f"{promo_section}"
                     f"{channel_constraints_block}\n\n"
                     "You write social captions that sound like a real person "
                     "wrote them, not an AI optimizing for engagement.\n\n"
@@ -1526,6 +1588,18 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
     bible_section_for_adapt = (
         f"{bible_block_for_adapt}\n\n" if bible_block_for_adapt else ""
     )
+
+    # Carry the promotional angle through platform adaptation so a sales
+    # post stays a sales post when rewritten for X/LinkedIn/Facebook etc.
+    raw_brief_adapt = (
+        state.get("calendar_item", {}).get("content_brief")
+        or state.get("calendar_item", {}).get("description")
+        or ""
+    )
+    promo_section_adapt = (
+        f"{_PROMO_DIRECTIVE}\n\n" if _detect_promo_intent(raw_brief_adapt) else ""
+    )
+
     prompt = [
         {
             "role": "system",
@@ -1534,6 +1608,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
                 "Adapt the following content for each platform below, "
                 "respecting each platform's constraints AND the brand voice rules.\n\n"
                 f"{bible_section_for_adapt}"
+                f"{promo_section_adapt}"
                 "Platform specifications (HARD LIMITS, never exceed):\n"
                 f"{spec_lines}\n\n"
                 "WORD COUNT IS A HARD LIMIT. For each platform, count words "
