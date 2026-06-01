@@ -2531,17 +2531,18 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         logo_anchor = overlay_plan.get("logo_anchor")
         text_anchor = overlay_plan.get("text_anchor")
 
-        # Geometric rescue: if the vision-critic gave us a low-confidence
-        # plan (score < 8) AND it also reported the subject bounding box,
-        # try the alternate corners for the text card and pick the one
-        # with the LEAST overlap with the subject. Avoids the 'I thought
-        # the product was central but its packaging extends into a corner'
-        # case where the LLM was wrong about its own anchor choice.
+        # Geometric rescue: whenever the vision-critic returned a valid
+        # subject bbox, validate the chosen text_anchor against it. The
+        # LLM is good at *perception* (where the subject is) but bad at
+        # *geometry* (does my card rect overlap the subject rect?). It
+        # routinely reports a bbox covering an entire image half then
+        # places the card squarely inside it with score 9. We trust the
+        # bbox over the anchor choice — if a different corner gives less
+        # overlap, we switch. This runs regardless of confidence.
         plan_score = float(overlay_plan.get("quality_score") or 10)
         subject_bbox = overlay_plan.get("subject_bbox")
         if (
-            plan_score < 8
-            and text_anchor
+            text_anchor
             and isinstance(subject_bbox, (list, tuple))
             and len(subject_bbox) == 4
         ):
