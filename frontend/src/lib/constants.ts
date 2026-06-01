@@ -24,7 +24,8 @@ export const CHANNEL_COLORS: Record<string, string> = {
 };
 
 export const STATUS_COLORS: Record<string, string> = {
-  queued: "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200",
+  planned: "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200",
+  queued: "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-200",
   working: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200",
   in_review: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
   reworking: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { Plus, LayoutGrid, List } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -34,34 +34,11 @@ interface BrandChannelConfig {
   channels?: Record<string, { enabled?: boolean }>;
 }
 
-// Date filter options (filters by calendar_item.created_at — i.e. when the
-// post entered the pipeline, which is what the UI calls "generation date").
-const DATE_FILTERS: { value: string; label: string; days: number | null }[] = [
-  { value: "all", label: "All time", days: null },
-  { value: "today", label: "Today", days: 1 },
-  { value: "7d", label: "Last 7 days", days: 7 },
-  { value: "30d", label: "Last 30 days", days: 30 },
-  { value: "90d", label: "Last 90 days", days: 90 },
-];
-
 export default function ContentStudioPage() {
   const { hasAccess, loading: roleLoading } = useRequireRole("editor");
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"kanban" | "grid">("kanban");
-  const [dateFilter, setDateFilter] = useState<string>("all");
-
-  // Apply the date-range filter on the client. We filter by created_at —
-  // the field that closest tracks "when this post was generated/queued".
-  const filteredItems = useMemo(() => {
-    const cfg = DATE_FILTERS.find((d) => d.value === dateFilter);
-    if (!cfg || cfg.days === null) return items;
-    const cutoff = Date.now() - cfg.days * 24 * 60 * 60 * 1000;
-    return items.filter((i) => {
-      if (!i.created_at) return false;
-      return new Date(i.created_at).getTime() >= cutoff;
-    });
-  }, [items, dateFilter]);
 
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -251,16 +228,6 @@ export default function ContentStudioPage() {
           <p className="text-muted-foreground">Create, manage, and schedule content</p>
         </div>
         <div className="flex gap-2 items-center">
-          <Select value={dateFilter} onValueChange={setDateFilter}>
-            <SelectTrigger className="w-[150px]" aria-label="Filter by generation date">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {DATE_FILTERS.map((d) => (
-                <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
           <div className="flex rounded-md border">
             <Button
               variant={view === "kanban" ? "secondary" : "ghost"}
@@ -289,16 +256,16 @@ export default function ContentStudioPage() {
           <Skeleton className="h-[500px] w-full" />
         </div>
       ) : view === "kanban" ? (
-        <KanbanBoard items={filteredItems} onStatusChange={handleStatusChange} />
+        <KanbanBoard items={items} onStatusChange={handleStatusChange} />
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {filteredItems.length === 0 ? (
+          {items.length === 0 ? (
             <div className="col-span-full text-center py-12">
               <p className="text-lg font-medium text-muted-foreground">No content yet</p>
               <p className="text-sm text-muted-foreground mt-1">Create your first piece of content to get started</p>
             </div>
           ) : (
-            filteredItems.map((item) => <ContentCard key={item.id} item={item} />)
+            items.map((item) => <ContentCard key={item.id} item={item} />)
           )}
         </div>
       )}

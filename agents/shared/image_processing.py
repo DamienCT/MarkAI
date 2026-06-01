@@ -225,11 +225,11 @@ def select_logo_variant(
 # same width and should be scaled down. Tuned smaller after user feedback
 # that the overlay was visually overpowering the product.
 _LOGO_SCALE_BY_VARIANT = {
-    "primary": 0.14,
-    "light": 0.14,
-    "dark": 0.14,
-    "icon": 0.08,
-    "watermark": 0.08,
+    "primary": 0.17,
+    "light": 0.17,
+    "dark": 0.17,
+    "icon": 0.10,
+    "watermark": 0.10,
 }
 
 
@@ -268,8 +268,8 @@ def overlay_logo_and_text(
     logo_data: bytes,
     text_line1: str,
     text_line2: str | None = None,
-    logo_opacity: float = 0.92,
-    logo_scale: float = 0.14,
+    logo_opacity: float = 0.95,
+    logo_scale: float = 0.17,
     logo_anchor: str | None = None,
     text_anchor: str | None = None,
 ) -> bytes:
@@ -333,7 +333,7 @@ def overlay_logo_and_text(
     pad_x = max(14, int(base.width * 0.014))
     pad_y = max(10, int(base.width * 0.010))
     radius = max(12, int(base.width * 0.011))
-    max_text_w = int(base.width * 0.55) - 2 * pad_x  # cap card to ~55% of image width
+    max_text_w = int(base.width * 0.72) - 2 * pad_x  # cap card to ~72% of image width
 
     # Truncate text to fit within image width
     def _fit_text(text: str, font) -> str:

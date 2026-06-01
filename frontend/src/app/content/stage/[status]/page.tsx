@@ -25,6 +25,7 @@ const DATE_FILTERS: { value: string; label: string; days: number | null }[] = [
 ];
 
 const STATUS_LABELS: Record<string, string> = {
+  planned: "Planned",
   queued: "Queued",
   working: "Working",
   in_review: "In Review",
@@ -199,23 +200,25 @@ export default function StagePage() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={dateFilter} onValueChange={setDateFilter}>
-                <SelectTrigger className="w-[150px]" aria-label="Filter by generation date">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {DATE_FILTERS.map(d => (
-                    <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {status !== "working" && (
+                <Select value={dateFilter} onValueChange={setDateFilter}>
+                  <SelectTrigger className="w-[150px]" aria-label="Filter by generation date">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DATE_FILTERS.map(d => (
+                      <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </>
           )}
         </div>
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-32" />
           ))}
@@ -232,7 +235,7 @@ export default function StagePage() {
           {status === "working" && (
             <WorkingStageTracker items={filtered} pollInterval={5000} />
           )}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
           {filtered.map(item => {
             const selected = selectedIds.has(item.id);
             return (

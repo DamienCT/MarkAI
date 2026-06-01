@@ -37,7 +37,8 @@ const CHANNEL_PREFIX: Record<string, string> = {
 
 // Row 1: Content Pipeline (pre-publish)
 const ROW1_COLUMNS: { id: string; label: string; color: string }[] = [
-  { id: "queued", label: "Queued", color: "bg-slate-50 dark:bg-slate-900" },
+  { id: "planned", label: "Planned", color: "bg-slate-50 dark:bg-slate-900" },
+  { id: "queued", label: "Queued", color: "bg-sky-50 dark:bg-sky-950" },
   { id: "working", label: "Working", color: "bg-indigo-50 dark:bg-indigo-950" },
   { id: "in_review", label: "In Review", color: "bg-amber-50 dark:bg-amber-950" },
   { id: "reworking", label: "Reworking", color: "bg-orange-50 dark:bg-orange-950" },
@@ -312,7 +313,7 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
         {/* Row 1: Content Pipeline */}
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Content Pipeline</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2">
             {ROW1_COLUMNS.map(renderColumn)}
           </div>
         </div>

@@ -402,7 +402,6 @@ async def get_embedding(
 # nearest one for whichever model is being tried, so a fallback model never
 # receives a size that was chosen for a different model (a common 400 cause).
 _GPT_IMAGE_SIZES = {"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"}
-_DALLE3_SIZES = {"square": "1024x1024", "landscape": "1792x1024", "portrait": "1024x1792"}
 
 # HTTP statuses worth retrying on the SAME model before falling back — these
 # are transient (server/load) rather than a permanent rejection of the request.
@@ -428,8 +427,6 @@ def _size_for_model(model: str, requested_size: str) -> str:
     aspect = _aspect_of(requested_size)
     if "gpt-image" in model:
         return _GPT_IMAGE_SIZES[aspect]
-    if model == "dall-e-3":
-        return _DALLE3_SIZES[aspect]
     return requested_size
 
 
@@ -462,10 +459,13 @@ async def generate_image(
     if not openai_key:
         raise RuntimeError("OPENAI_API_KEY not set — required for image generation")
 
-    # Try the selected model first, fall back to dall-e-3 if it fails (e.g. org not verified)
+    # Try the selected model first, fall back to gpt-image-1 if it fails.
+    # dall-e-3 was retired by OpenAI (returns "model does not exist"); the
+    # original gpt-image-1 is the most stable long-lived image model.
+    _IMAGE_FALLBACK = "gpt-image-1"
     models_to_try = [raw_model]
-    if raw_model != "dall-e-3":
-        models_to_try.append("dall-e-3")
+    if raw_model != _IMAGE_FALLBACK:
+        models_to_try.append(_IMAGE_FALLBACK)
 
     last_error: Exception | None = None
     for attempt_model in models_to_try:
@@ -481,10 +481,9 @@ async def generate_image(
                     attempt_model, model_size, sub_attempt + 1, _IMAGE_SUBATTEMPTS,
                 )
                 client = get_http_client()
-                # Build request body with model-specific quality / style params.
-                # gpt-image-* and dall-e-3 have different parameter shapes —
-                # sending the wrong one causes 400. quality="high"/"hd"
-                # improves photorealism vs the lower defaults.
+                # Build request body. gpt-image-* takes quality="high" and
+                # background="opaque" for photorealistic output. dall-e-* is
+                # retired at OpenAI so we no longer emit those params.
                 body: dict = {
                     "model": attempt_model,
                     "prompt": prompt,
@@ -494,11 +493,6 @@ async def generate_image(
                 if "gpt-image" in attempt_model:
                     body["quality"] = "high"
                     body["background"] = "opaque"
-                elif attempt_model == "dall-e-3":
-                    body["quality"] = "hd"
-                    # NOTE: 'style' was removed — OpenAI now rejects it with
-                    # 400 "Unknown parameter: 'style'." for dall-e-3, which
-                    # was breaking the fallback path entirely.
                 resp = await client.post(
                     "https://api.openai.com/v1/images/generations",
                     headers={"Authorization": f"Bearer {openai_key}"},
