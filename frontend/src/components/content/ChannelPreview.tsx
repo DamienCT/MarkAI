@@ -1,12 +1,78 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   Heart, MessageCircle, Send, Bookmark, Share2,
-  ThumbsUp, MoreHorizontal, Globe, Repeat2,
+  ThumbsUp, MoreHorizontal, Globe, Repeat2, X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { sanitizeImageUrl } from "@/lib/utils";
+
+/** Image that opens a full-screen lightbox on click. Used by every channel
+ *  preview so the user can inspect the actual rendered image (with overlay
+ *  + logo) at full resolution instead of squinting at the small thumbnail. */
+function ClickableImage({
+  src,
+  alt,
+  className,
+}: {
+  src: string;
+  alt: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  // Close the lightbox on Escape so users don't have to hunt for the X.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    // Prevent body scroll while the lightbox is open
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  return (
+    <>
+      <img
+        src={src}
+        alt={alt}
+        className={`${className || ""} cursor-zoom-in`}
+        onClick={() => setOpen(true)}
+      />
+      {open && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4"
+          onClick={() => setOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image preview"
+        >
+          <button
+            type="button"
+            className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 transition-colors"
+            aria-label="Close preview"
+            onClick={(e) => { e.stopPropagation(); setOpen(false); }}
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <img
+            src={src}
+            alt={alt}
+            className="max-h-[90vh] max-w-[95vw] object-contain rounded-md shadow-2xl cursor-zoom-out"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </>
+  );
+}
 
 interface PreviewProps {
   brandName: string;
@@ -72,7 +138,7 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
       </div>
       {/* Image */}
       {imageUrl && sanitizeImageUrl(imageUrl) ? (
-        <img src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-square object-cover" />
+        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-square object-cover" />
       ) : (
         <ImagePlaceholder />
       )}
@@ -119,11 +185,13 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
         <p className={`text-sm whitespace-pre-wrap ${compact ? "line-clamp-3" : ""}`}>{caption}</p>
         <HashtagsDisplay hashtags={hashtags} />
       </div>
-      {/* Image */}
+      {/* Image — aspect matches the actual generated landscape (1536x1024 = 3:2).
+          A previous 16:9 mask center-cropped 80px top/bottom and clipped the
+          text card whose anchor sits 4% above the image bottom. */}
       {imageUrl && sanitizeImageUrl(imageUrl) ? (
-        <img src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[16/9] object-cover" />
+        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[3/2] object-cover" />
       ) : (
-        <div className="w-full aspect-[16/9] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
+        <div className="w-full aspect-[3/2] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
           <Globe className="h-10 w-10 opacity-20" />
         </div>
       )}
@@ -166,11 +234,13 @@ export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, ima
         <p className={`text-sm leading-relaxed whitespace-pre-wrap ${compact ? "line-clamp-4" : ""}`}>{caption}</p>
         <HashtagsDisplay hashtags={hashtags} />
       </div>
-      {/* Image */}
+      {/* Image — match the actual generated landscape ratio (1536x1024 = 3:2).
+          LinkedIn's link-preview spec is 1.91:1 but our images are generated
+          at 3:2; cropping to 1.91:1 here clips the bottom of the text card. */}
       {imageUrl && sanitizeImageUrl(imageUrl) ? (
-        <img src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[1.91/1] object-cover" />
+        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[3/2] object-cover" />
       ) : (
-        <div className="w-full aspect-[1.91/1] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
+        <div className="w-full aspect-[3/2] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
           <Globe className="h-10 w-10 opacity-20" />
         </div>
       )}
@@ -215,7 +285,7 @@ export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, 
           <HashtagsDisplay hashtags={hashtags} />
           {/* Image */}
           {imageUrl ? (
-            <img src={imageUrl} alt="Post" className="w-full rounded-xl mt-2 border aspect-[16/9] object-cover" />
+            <ClickableImage src={imageUrl} alt="Post" className="w-full rounded-xl mt-2 border aspect-[16/9] object-cover" />
           ) : (
             <div className="w-full rounded-xl mt-2 border aspect-[16/9] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
               <Globe className="h-8 w-8 opacity-20" />

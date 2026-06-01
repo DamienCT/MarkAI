@@ -2406,27 +2406,41 @@ async def _vision_review_branding(
 
     system = (
         "You review a social-media post that already has a brand logo and a "
-        "text card composited onto a photo. Your job is to spot placement "
-        "problems and propose corrections — NOT to second-guess solid "
-        "placements.\n\n"
-        "Approve unless ONE of these is clearly true:\n"
-        "- The text card overlaps the product/subject/packaging meaningfully.\n"
-        "- The logo overlaps the subject or is unreadable due to low contrast.\n"
-        "- The logo is clipped by the image edge.\n"
-        "- The chosen logo color variant disappears into the background.\n\n"
+        "text card composited onto a photo. Be STRICT — your job is to "
+        "catch every placement problem, not approve borderline cases.\n\n"
+        "REJECT (ok=false) whenever ANY of these is true:\n"
+        "- The text card sits in front of, or partially covers, ANY of: "
+        "  product packaging, the hero product, food items, drink items, "
+        "  hands, faces, plates, props, or any other distinctive scene "
+        "  element. Even partial cover = reject. A clear empty backdrop "
+        "  (wall, sky, tablecloth, soft blur) is the only acceptable "
+        "  backing.\n"
+        "- The logo overlaps any subject content or sits too close to "
+        "  the image edge (<5% margin on any side) or is too low-"
+        "  contrast against its backdrop to read at a glance.\n"
+        "- The logo color variant blends into the background (e.g. a "
+        "  white-toned logo on a light wall).\n\n"
+        "When you reject, propose ONLY the fields that need to change. "
+        "Look at all four corners; pick the corner whose backdrop is "
+        "clearly empty/uniform — even if that means flipping top-bottom "
+        "or left-right.\n\n"
         "Return strict JSON:\n"
         "{\n"
         '  "ok": true|false,\n'
         '  "new_text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right"|"",\n'
         '  "new_logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right"|"",\n'
         f'  "new_logo_variant": {variant_options_str}|"",\n'
-        '  "reason": "one short sentence"\n'
+        '  "reason": "what is being covered or what is wrong"\n'
         "}\n\n"
         "Rules:\n"
-        "- If ok=true, all 'new_' fields MUST be empty strings.\n"
+        "- If ok=true, all 'new_' fields MUST be empty strings AND the "
+        "  reason must briefly confirm both card and logo land on empty "
+        "  backdrops (e.g. 'card on wall, logo on sky').\n"
         "- If ok=false, fill ONLY the fields that need to change — leave "
-        "  the others empty. Do not propose moves that aren't necessary.\n"
-        "- new_text_anchor and new_logo_anchor must remain DIFFERENT corners.\n"
+        "  the others empty if they're already fine.\n"
+        "- new_text_anchor and new_logo_anchor must remain DIFFERENT "
+        "  corners. Never propose putting the card on the same corner as "
+        "  the logo.\n"
         "- Only suggest a variant that's in the provided list."
     )
 
