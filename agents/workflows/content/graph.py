@@ -11,6 +11,7 @@ from langgraph.graph import StateGraph, END
 from workflows.content.state import ContentState
 from workflows.content.nodes import (
     load_context,
+    enrich_user_brief,
     generate_hook,
     generate_caption,
     generate_hashtags,
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Ordered pipeline steps — used by the frontend workflow tracker
 CONTENT_PIPELINE_STEPS = [
     "load_context",
+    "enrich_user_brief",
     "generate_hook",
     "generate_caption",
     "generate_hashtags",
@@ -92,6 +94,7 @@ def _check_failed(state: ContentState) -> str:
 # Build nodes with step tracking wrappers
 _nodes = [
     ("load_context", load_context),
+    ("enrich_user_brief", enrich_user_brief),
     ("generate_hook", generate_hook),
     ("generate_caption", generate_caption),
     ("generate_hashtags", generate_hashtags),
@@ -112,7 +115,10 @@ for idx, (name, fn) in enumerate(_nodes):
 
 builder.set_entry_point("load_context")
 builder.add_conditional_edges(
-    "load_context", _check_failed, {"end": END, "continue": "generate_hook"}
+    "load_context", _check_failed, {"end": END, "continue": "enrich_user_brief"}
+)
+builder.add_conditional_edges(
+    "enrich_user_brief", _check_failed, {"end": END, "continue": "generate_hook"}
 )
 builder.add_conditional_edges(
     "generate_hook", _check_failed, {"end": END, "continue": "generate_caption"}

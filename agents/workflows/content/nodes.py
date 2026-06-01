@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # Step tracking: maps node key to (index, key) for progress reporting
 CONTENT_PIPELINE_STEPS = [
     "load_context",
+    "enrich_user_brief",
     "generate_hook",
     "generate_caption",
     "generate_hashtags",
@@ -506,7 +507,278 @@ async def load_context(state: ContentState) -> dict[str, Any]:
         "top_performing": intel.get("top_performing", []),
         "product": product,
         "sub_brand": sub_brand,
+        # Surface the full intelligence reports so enrich_user_brief and the
+        # generation nodes can pull excerpts as needed. The auto-planning
+        # agent has always had this context; manual posts now get parity.
+        "research": intel.get("research", {}),
+        "planning": intel.get("planning", {}),
+        "events": intel.get("events", []),
     }
+
+
+async def enrich_user_brief(state: ContentState) -> dict[str, Any]:
+    """Parse a free-text user prompt and fill in structured fields.
+
+    Auto-planned posts arrive with product_ids, pillar, target_audience
+    already set by the planning agent. Manually-created posts arrive with
+    just a title + free-form description (the user types things like
+    'promotion post for Citterio Prosciutto Parma'). This node bridges
+    that gap by asking an LLM to map the user's prompt onto the brand's
+    actual catalogue + strategy, then writing the matched values into the
+    state so all downstream nodes (generate_hook, generate_caption,
+    source_product_image, etc.) behave the same way as for auto-planned
+    posts.
+
+    No-ops when product / pillar / audience are already resolved.
+    """
+    await update_agent_run_step(
+        state.get("run_id", ""), "enrich_user_brief", _STEP_INDEX["enrich_user_brief"],
+    )
+
+    item = state.get("calendar_item", {})
+    brand = state.get("brand", {})
+
+    # If load_context already resolved everything (auto-planning path),
+    # skip the LLM call — there's nothing to enrich.
+    has_product = bool(state.get("product"))
+    has_pillar = bool(state.get("relevant_pillar"))
+    has_audience = bool(state.get("relevant_audience"))
+    if has_product and has_pillar and has_audience:
+        logger.info("Brief already structured — skipping enrichment")
+        return {}
+
+    brief = (item.get("content_brief") or item.get("description") or "").strip()
+    if not brief:
+        return {}
+
+    # Build candidate lookup tables for the LLM. Keep them compact so the
+    # prompt stays under the context budget for a 'text-fast' call.
+    products_list = brand.get("products") or []
+    products_for_prompt = [
+        {"id": str(p.get("id", "")), "name": p.get("name", "")}
+        for p in products_list
+        if p.get("id") and p.get("name")
+    ][:200]  # cap — brands with huge catalogs would otherwise blow the prompt
+
+    strategy = state.get("strategy", {}) or {}
+    raw_pillars = strategy.get("content_pillars") or strategy.get("pillars") or []
+    pillar_names: list[str] = []
+    for p in raw_pillars:
+        if isinstance(p, dict) and p.get("name"):
+            pillar_names.append(str(p["name"]))
+        elif isinstance(p, str) and p.strip():
+            pillar_names.append(p.strip())
+
+    research = state.get("research") or {}
+    research_personas = research.get("personas") if isinstance(research, dict) else None
+    if not research_personas:
+        # Fallback to brand-level audiences if no research output exists yet
+        research_personas = brand.get("audiences") or []
+    audience_names: list[str] = []
+    for a in research_personas:
+        if isinstance(a, dict) and a.get("name"):
+            audience_names.append(str(a["name"]))
+        elif isinstance(a, str) and a.strip():
+            audience_names.append(a.strip())
+
+    # Compact excerpts from the intelligence reports. These give the LLM
+    # the *strategic* context the auto-planning agent has — so a manual
+    # brief like 'promotion post for X' inherits the same brand-aware
+    # matching (the right audience, the right pillar, the right angle).
+    positioning = state.get("positioning") or {}
+    value_prop = str(positioning.get("value_proposition", "") or "")[:600]
+    brand_voice = str(positioning.get("brand_voice", "") or "")[:400]
+
+    research_summary = ""
+    if isinstance(research, dict):
+        for key in ("summary", "executive_summary", "key_findings", "insights"):
+            val = research.get(key)
+            if isinstance(val, str) and val.strip():
+                research_summary = val[:1200]
+                break
+
+    planning_excerpt = state.get("month_context", "") or ""
+    planning_excerpt = planning_excerpt[:1200]
+
+    top_performing = state.get("top_performing") or []
+    top_titles = ", ".join(
+        str(p.get("title", "")) for p in top_performing[:5] if p.get("title")
+    )
+
+    system = (
+        "You extract structured marketing-post fields from a user's free-form "
+        "brief. You are NEVER creative — you only MATCH the user's intent to "
+        "items from the provided brand catalogues, informed by the brand's "
+        "intelligence reports (positioning, research insights, current-month "
+        "planning excerpt, top-performing posts). The reports tell you WHO "
+        "the brand sells to and WHAT angles work — use them to disambiguate "
+        "when the brief is sparse, but NEVER invent items that aren't in the "
+        "lists.\n\n"
+        "Return strict JSON with this shape:\n"
+        "{\n"
+        '  "product_id": "<uuid from the products list, or empty>",\n'
+        '  "pillar": "<exact name from pillars list, or empty>",\n'
+        '  "audience": "<exact name from audiences list, or empty>",\n'
+        '  "intent": "promotion|educational|announcement|lifestyle|launch|other",\n'
+        '  "refined_brief": "<1 to 2 sentences synthesizing what to write about, '
+        'grounded in the brand positioning + planning excerpt>"\n'
+        "}\n\n"
+        "Matching rules:\n"
+        "- Product: match if the brief names the product OR uses a recognizable "
+        "  paraphrase (e.g. 'Italian ham' → Citterio Prosciutto Parma). When "
+        "  multiple products could fit, pick the one most aligned with the "
+        "  current-month planning excerpt or the top-performing angles.\n"
+        "- Pillar / audience: fill if the brief OR the matched product OR the "
+        "  research insights clearly signal one. Empty string is fine if "
+        "  truly unclear.\n"
+        "- Intent: 'promotion' if the brief mentions promo/sale/offer/discount; "
+        "  'educational' for tips/how-to/explainers; 'announcement' for launches "
+        "  or events; 'lifestyle' for vibe/scene posts; 'other' if unclear.\n"
+        "- refined_brief: weave in 1 specific hook from the brand positioning "
+        "  or planning excerpt that grounds the post (e.g. 'premium summer "
+        "  shelf', 'channel-fit assortment'). Do NOT just restate the user "
+        "  prompt verbatim — add the strategic angle the reports provide."
+    )
+
+    user_parts = [
+        f"USER BRIEF:\n{sanitize_for_prompt(brief)}",
+        "",
+        f"BRAND PRODUCTS (id, name):\n{sanitize_json_for_prompt(products_for_prompt)}",
+        "",
+        f"BRAND PILLARS:\n{sanitize_json_for_prompt(pillar_names)}",
+        "",
+        f"BRAND AUDIENCES:\n{sanitize_json_for_prompt(audience_names)}",
+    ]
+    if value_prop:
+        user_parts.append("")
+        user_parts.append(
+            f"BRAND POSITIONING (value proposition):\n{sanitize_for_prompt(value_prop)}"
+        )
+    if brand_voice:
+        user_parts.append(f"BRAND VOICE: {sanitize_for_prompt(brand_voice)}")
+    if research_summary:
+        user_parts.append("")
+        user_parts.append(
+            f"RESEARCH INSIGHTS (latest report):\n{sanitize_for_prompt(research_summary)}"
+        )
+    if planning_excerpt:
+        user_parts.append("")
+        user_parts.append(
+            f"CURRENT-MONTH PLANNING EXCERPT:\n{sanitize_for_prompt(planning_excerpt)}"
+        )
+    if top_titles:
+        user_parts.append("")
+        user_parts.append(
+            f"TOP-PERFORMING POSTS (last 90d, for ANGLE inspiration only — do NOT copy): {sanitize_for_prompt(top_titles)}"
+        )
+    user = "\n".join(user_parts)
+
+    try:
+        result = await chat_completion(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            category="text-fast",  # mapping is mechanical — fast model is fine
+            temperature=0.1,
+            max_tokens=500,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        logger.warning("enrich_user_brief LLM call failed: %s", exc)
+        return {}
+
+    enriched = parse_llm_json(str(result), fallback=None)
+    if not isinstance(enriched, dict):
+        logger.warning("enrich_user_brief returned non-dict: %r", enriched)
+        return {}
+
+    out: dict[str, Any] = {}
+    item_patch: dict[str, Any] = {}  # for the in-memory calendar_item dict
+
+    # ---- Product matching ----
+    if not has_product:
+        matched_pid = (enriched.get("product_id") or "").strip()
+        matched_product = next(
+            (p for p in products_list if str(p.get("id", "")) == matched_pid),
+            {},
+        )
+        if matched_product:
+            out["product"] = matched_product
+            out["product_id"] = str(matched_product.get("id", ""))
+            out["sub_brand"] = _resolve_sub_brand(matched_product, brand)
+            # Drop lifestyle-only flag so source_product_image_node fetches
+            # the real product image instead of skipping product replacement.
+            out["is_lifestyle_only"] = False
+            item_patch["product_ids"] = [str(matched_product.get("id", ""))]
+            logger.info(
+                "Enriched product: %s (id=%s)",
+                matched_product.get("name"), matched_product.get("id"),
+            )
+
+    # ---- Pillar matching ----
+    if not has_pillar:
+        matched_pillar_name = (enriched.get("pillar") or "").strip()
+        if matched_pillar_name:
+            matched_pillar = next(
+                (
+                    p for p in raw_pillars
+                    if (isinstance(p, dict) and str(p.get("name", "")).lower() == matched_pillar_name.lower())
+                    or (isinstance(p, str) and p.lower() == matched_pillar_name.lower())
+                ),
+                None,
+            )
+            if matched_pillar:
+                normalized = (
+                    matched_pillar if isinstance(matched_pillar, dict)
+                    else {"name": matched_pillar}
+                )
+                out["relevant_pillar"] = normalized
+                item_patch["pillar"] = normalized.get("name", matched_pillar_name)
+                logger.info("Enriched pillar: %s", item_patch["pillar"])
+
+    # ---- Audience matching ----
+    if not has_audience:
+        matched_audience_name = (enriched.get("audience") or "").strip()
+        if matched_audience_name:
+            matched_audience = next(
+                (
+                    a for a in research_personas
+                    if (isinstance(a, dict) and matched_audience_name.lower() in str(a.get("name", "")).lower())
+                    or (isinstance(a, str) and matched_audience_name.lower() in a.lower())
+                ),
+                None,
+            )
+            if matched_audience:
+                normalized = (
+                    matched_audience if isinstance(matched_audience, dict)
+                    else {"name": matched_audience}
+                )
+                out["relevant_audience"] = normalized
+                item_patch["target_audience"] = normalized.get("name", matched_audience_name)
+                logger.info("Enriched audience: %s", item_patch["target_audience"])
+
+    # ---- Brief refinement + intent ----
+    refined_brief = (enriched.get("refined_brief") or "").strip()
+    intent = (enriched.get("intent") or "").strip().lower()
+    # If the LLM gave us an intent, weave it into the brief so the promo-
+    # intent detector + downstream prompts can pick it up.
+    if refined_brief:
+        if intent and intent != "other" and intent not in refined_brief.lower():
+            refined_brief = f"[{intent}] {refined_brief}"
+        # Don't overwrite a brief that's already richer than ours.
+        if len(refined_brief) > len(brief) // 2:
+            item_patch["content_brief"] = refined_brief
+            logger.info("Enriched brief (intent=%s): %s", intent or "n/a", refined_brief[:120])
+
+    # Merge item_patch back into the in-memory calendar_item so downstream
+    # nodes see the enriched fields. We don't bother persisting to DB —
+    # the state is the single source of truth for this run.
+    if item_patch:
+        updated_item = {**item, **item_patch}
+        out["calendar_item"] = updated_item
+
+    return out
 
 
 async def generate_hook(state: ContentState) -> dict[str, Any]:
@@ -945,6 +1217,10 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     - NEVER AI-generate product photos
     - Only use images from the product's image_urls gallery (real web photos)
     - If no gallery images exist, mark as lifestyle-only (no product in image)
+    - When the title and product_ids don't match, also scan the description
+      and content_brief for any product name from the brand's catalogue.
+      Users often type the product name in the description rather than the
+      title (e.g. title='Promotion Day', description='post for Citterio...').
     """
     await update_agent_run_step(state.get("run_id", ""), "source_product_image", _STEP_INDEX["source_product_image"])
     item = state.get("calendar_item", {})
@@ -955,8 +1231,11 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     product_ids = item.get("product_ids") or []
     product_sku = item.get("product_sku")
     product_name = item.get("product_name") or item.get("title", "")
+    description = item.get("description") or ""
+    content_brief = item.get("content_brief") or ""
+    free_text = " ".join(filter(None, [description, content_brief])).lower()
 
-    if not product_sku and not product_name and not product_ids:
+    if not product_sku and not product_name and not product_ids and not free_text.strip():
         return {
             "product_image": None,
             "needs_manual_image": False,
@@ -986,6 +1265,39 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
                 "name_pattern": f"%{product_name[:30]}%" if product_name else "%",
             },
         )
+
+    # Fallback: scan the description/content_brief for any product name from
+    # the brand's catalogue. Token-overlap match — find the product whose
+    # name shares the most non-trivial words with the free-text.
+    if not products and free_text:
+        all_products = await execute_query(
+            "SELECT id, name, image_urls, primary_image_url FROM products "
+            "WHERE brand_id = :brand_id AND is_active = true",
+            {"brand_id": brand_id},
+        )
+        best, best_score = None, 0
+        # Ignore common short / noise tokens so 'post', 'the', 'a', 'for' etc.
+        # don't drag every product up the score.
+        _stop = {"the", "a", "an", "for", "of", "in", "with", "and", "post", "want", "promotion", "this", "product"}
+        text_tokens = {t for t in re.findall(r"[a-z0-9]+", free_text) if len(t) > 2 and t not in _stop}
+        for p in all_products:
+            name = (p.get("name") or "").lower()
+            name_tokens = {t for t in re.findall(r"[a-z0-9]+", name) if len(t) > 2 and t not in _stop}
+            if not name_tokens:
+                continue
+            overlap = len(text_tokens & name_tokens)
+            # Require at least 2 overlapping product-name tokens so a single
+            # generic word like 'coffee' or 'cheese' doesn't false-match.
+            if overlap >= 2 and overlap > best_score:
+                best, best_score = p, overlap
+        if best is not None:
+            logger.info(
+                "Product matched via description scan: '%s' (overlap=%d)",
+                best.get("name"), best_score,
+            )
+            products = [best]
+            # Keep product_name fresh so downstream logging is accurate.
+            product_name = best.get("name", product_name)
 
     if not products:
         logger.info("No matching product found for '%s' — lifestyle only", product_name)

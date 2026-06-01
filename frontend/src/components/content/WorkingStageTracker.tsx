@@ -11,6 +11,7 @@ import type { CalendarItem, ActiveAgentRun } from "@/types";
 
 const CONTENT_PIPELINE_STEPS = [
   { key: "load_context", label: "Context", short: "Ctx" },
+  { key: "enrich_user_brief", label: "Enrich", short: "Enr" },
   { key: "generate_hook", label: "Hook", short: "Hook" },
   { key: "generate_caption", label: "Caption", short: "Cap" },
   { key: "generate_hashtags", label: "Hashtags", short: "#" },

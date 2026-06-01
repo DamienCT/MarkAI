@@ -26,6 +26,12 @@ class ContentState(TypedDict, total=False):
     product: dict[str, Any]
     sub_brand: str
 
+    # Full intelligence reports — exposed so enrich_user_brief and the
+    # generation nodes can mine them when the brief is sparse.
+    research: dict[str, Any]
+    planning: dict[str, Any]
+    events: list[dict[str, Any]]
+
     # Generated content
     hook: str
     caption: str
