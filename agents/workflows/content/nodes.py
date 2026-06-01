@@ -50,8 +50,8 @@ CONTENT_PIPELINE_STEPS = [
     "source_product_image",
     "enhance_image_prompt",
     "generate_background",
-    "plan_overlay_layout",
     "apply_branding",
+    "review_branding",
     "adapt_platforms",
     "generate_mockups",
     "store_content",
@@ -801,12 +801,51 @@ async def enrich_user_brief(state: ContentState) -> dict[str, Any]:
             item_patch["content_brief"] = refined_brief
             logger.info("Enriched brief (intent=%s): %s", intent or "n/a", refined_brief[:120])
 
-    # Merge item_patch back into the in-memory calendar_item so downstream
-    # nodes see the enriched fields. We don't bother persisting to DB —
-    # the state is the single source of truth for this run.
+    # Merge item_patch into the in-memory calendar_item AND persist the
+    # enriched fields back to the DB row. The UI (Kanban, stage list,
+    # detail page) reads pillar / target_audience / product_ids straight
+    # from calendar_items — without persisting, those badges stayed
+    # empty for manually-created posts even though the workflow knew
+    # the values.
     if item_patch:
         updated_item = {**item, **item_patch}
         out["calendar_item"] = updated_item
+
+        db_patch: dict[str, Any] = {}
+        if "pillar" in item_patch:
+            db_patch["pillar"] = item_patch["pillar"]
+        if "target_audience" in item_patch:
+            db_patch["target_audience"] = item_patch["target_audience"]
+        if "content_brief" in item_patch:
+            db_patch["content_brief"] = item_patch["content_brief"]
+        # product_ids is a UUID[] column — only persist when we have a
+        # valid uuid string list
+        if "product_ids" in item_patch and isinstance(item_patch["product_ids"], list):
+            db_patch["product_ids"] = item_patch["product_ids"]
+
+        if db_patch and item.get("id"):
+            set_parts = []
+            params: dict[str, Any] = {"id": item["id"]}
+            for col, val in db_patch.items():
+                if col == "product_ids":
+                    # Postgres uuid[] cast — bind as JSON array string
+                    set_parts.append(f"{col} = (:{col})::uuid[]")
+                    params[col] = "{" + ",".join(val) + "}"
+                else:
+                    set_parts.append(f"{col} = :{col}")
+                    params[col] = val
+            try:
+                await execute_update(
+                    f"UPDATE calendar_items SET {', '.join(set_parts)}, "
+                    f"updated_at = NOW() WHERE id = :id",
+                    params,
+                )
+                logger.info(
+                    "Enriched fields persisted to calendar_items.%s: %s",
+                    item["id"], list(db_patch.keys()),
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist enriched fields: %s", exc)
 
     return out
 
@@ -2174,225 +2213,6 @@ def _bytes_to_logo_png(raw: bytes) -> bytes | None:
     return raw
 
 
-_VALID_ANCHORS = {"top-left", "top-right", "bottom-left", "bottom-right"}
-
-
-async def _vision_plan_overlay(
-    image_data: bytes,
-    available_logo_variants: list[str] | None = None,
-) -> dict[str, Any] | None:
-    """Ask the vision LLM where to place the logo and text card.
-
-    Returns a dict with keys ``logo_anchor``, ``text_anchor``,
-    ``logo_variant_hint``, ``quality_score`` (0-10) and ``notes``, or None
-    if the call fails or yields an unusable result. The caller then falls
-    back to the legacy variance heuristic.
-
-    ``available_logo_variants`` constrains the variant hint to logos that
-    actually exist for this brand — otherwise the model can pick a key the
-    brand doesn't have.
-    """
-    import base64 as _b64
-
-    b64 = _b64.b64encode(image_data).decode("ascii")
-    data_url = f"data:image/png;base64,{b64}"
-
-    # Variant options the brand actually has, so the hint isn't unusable.
-    variant_options = available_logo_variants or [
-        "primary", "dark", "light", "icon", "watermark",
-    ]
-    variant_options_str = "|".join(f'"{v}"' for v in variant_options)
-
-    system = (
-        "You are a layout director for marketing posts. The picture you "
-        "receive will get a small brand logo (~17% of width) in one corner "
-        "and a frosted text card (~72% of width) anchored in another corner. "
-        "Decide WHERE both go AND WHICH logo color variant to use for the "
-        "best contrast against the chosen corner.\n\n"
-        "Return strict JSON with this shape:\n"
-        "{\n"
-        '  "logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
-        '  "text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
-        f'  "logo_variant_hint": {variant_options_str},\n'
-        '  "subject_bbox": [x, y, w, h],  // normalized [0..1] bounding box\n'
-        '                                 // of the FULL product/subject\n'
-        '                                 // including packaging that\n'
-        '                                 // extends near image edges\n'
-        '  "quality_score": 0-10,\n'
-        '  "notes": "short reason"\n'
-        "}\n\n"
-        "Rules:\n"
-        "- logo_anchor and text_anchor MUST be different corners.\n"
-        "- Anchor placement: the main product/subject and any visible "
-        "  product packaging must NEVER be covered. The logo lands over a "
-        "  calm uncluttered area (sky, blur, solid wall, shadow).\n"
-        "- subject_bbox: report the FULL bounding box of the product and "
-        "  any branded packaging — including parts that extend toward "
-        "  image edges. A box that excludes the packaging extending into "
-        "  a corner is WRONG and will cause the text card to overlap it. "
-        "  Coordinates are normalized to [0..1] where (0,0) is top-left.\n"
-        "- Variant choice: look at the actual color/brightness of the area "
-        "  where the LOGO will sit.\n"
-        "    * Bright/light backdrop (white wall, sky, light surface) → "
-        "      pick 'dark' (or 'primary' if dark isn't available) — a dark "
-        "      logo reads on light.\n"
-        "    * Dark/saturated backdrop (shadow, deep color, night scene) → "
-        "      pick 'light' (or 'primary' if light isn't available) — a "
-        "      light logo reads on dark.\n"
-        "    * Busy/textured backdrop where neither contrasts well → pick "
-        "      'watermark' if available.\n"
-        "    * Only fall back to 'primary' when nothing else fits.\n"
-        "- Prefer text_anchor at the bottom when the top half is busier, "
-        "  top when the bottom half is busier.\n"
-        "Output JSON only — no prose."
-    )
-
-    messages = [
-        {"role": "system", "content": system},
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Pick logo_anchor, text_anchor and logo_variant_hint for this image.",
-                },
-                {"type": "image_url", "image_url": {"url": data_url}},
-            ],
-        },
-    ]
-
-    try:
-        result = await chat_completion(
-            messages,
-            category="vision",
-            temperature=0.2,
-            max_tokens=400,
-            response_format={"type": "json_object"},
-        )
-    except Exception as exc:
-        logger.warning("Vision-critic call failed: %s", exc)
-        return None
-
-    plan = parse_llm_json(str(result), fallback=None)
-    if not isinstance(plan, dict):
-        logger.warning("Vision-critic returned non-dict: %r", plan)
-        return None
-
-    logo_anchor = str(plan.get("logo_anchor", "")).strip().lower()
-    text_anchor = str(plan.get("text_anchor", "")).strip().lower()
-    if logo_anchor not in _VALID_ANCHORS or text_anchor not in _VALID_ANCHORS:
-        logger.warning("Vision-critic returned invalid anchors: %r", plan)
-        return None
-    if logo_anchor == text_anchor:
-        logger.warning(
-            "Vision-critic chose same corner for logo and text — discarding"
-        )
-        return None
-
-    # logo_variant_hint is optional — if the model returns something the
-    # brand doesn't have, we drop it (apply_branding will fall back to its
-    # brightness heuristic for the variant).
-    variant_hint = str(plan.get("logo_variant_hint", "")).strip().lower()
-    if available_logo_variants and variant_hint not in available_logo_variants:
-        variant_hint = ""
-
-    try:
-        score = float(plan.get("quality_score", 0))
-    except (TypeError, ValueError):
-        score = 0.0
-
-    # Parse the subject bbox — list/tuple of 4 floats in [0,1]. Anything
-    # malformed becomes None so the geometric rescue downstream short-circuits.
-    raw_bbox = plan.get("subject_bbox")
-    subject_bbox: list[float] | None = None
-    if isinstance(raw_bbox, (list, tuple)) and len(raw_bbox) == 4:
-        try:
-            x, y, w, h = (float(v) for v in raw_bbox)
-            if 0 <= x <= 1 and 0 <= y <= 1 and 0 < w <= 1 and 0 < h <= 1:
-                # Clamp the box to stay inside the image
-                w = min(w, 1 - x)
-                h = min(h, 1 - y)
-                subject_bbox = [x, y, w, h]
-        except (TypeError, ValueError):
-            subject_bbox = None
-
-    return {
-        "logo_anchor": logo_anchor,
-        "text_anchor": text_anchor,
-        "logo_variant_hint": variant_hint,
-        "subject_bbox": subject_bbox,
-        "quality_score": score,
-        "notes": str(plan.get("notes", ""))[:300],
-    }
-
-
-async def plan_overlay_layout(state: ContentState) -> dict[str, Any]:
-    """Vision-critic step: pick the best corners for the logo and text card.
-
-    Runs between ``generate_background`` and ``apply_branding``. The image
-    here is the pre-product-replacement render — Gemini replaces the product
-    in place during ``apply_branding``, so corner-anchor decisions made here
-    stay valid afterward.
-
-    On any failure we silently fall back to the legacy variance heuristic
-    (no ``overlay_plan`` is written to state).
-    """
-    await update_agent_run_step(
-        state.get("run_id", ""),
-        "plan_overlay_layout",
-        _STEP_INDEX["plan_overlay_layout"],
-    )
-    generated_image_url = state.get("generated_image")
-    if not generated_image_url:
-        return {}
-
-    import base64 as _b64
-    import httpx
-
-    try:
-        if generated_image_url.startswith("data:"):
-            _, b64_part = generated_image_url.split(",", 1)
-            image_data = _b64.b64decode(b64_part)
-        elif generated_image_url.startswith("content-images/"):
-            image_data = await async_download_file(
-                "content-images",
-                generated_image_url.replace("content-images/", ""),
-            )
-        else:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.get(generated_image_url)
-                resp.raise_for_status()
-                image_data = resp.content
-    except Exception as exc:
-        logger.warning("plan_overlay_layout: image fetch failed: %s", exc)
-        return {}
-
-    # Pass the brand's actual logo variants so the model picks a key that
-    # this brand has uploaded — otherwise its hint is unusable.
-    brand = state.get("brand", {})
-    brand_guidelines = brand.get("brand_guidelines") or {}
-    if isinstance(brand_guidelines, str):
-        try:
-            brand_guidelines = json.loads(brand_guidelines)
-        except (json.JSONDecodeError, TypeError):
-            brand_guidelines = {}
-    available_variants = list((brand_guidelines.get("logos") or {}).keys())
-
-    plan = await _vision_plan_overlay(image_data, available_variants)
-    if plan is None:
-        return {}
-
-    logger.info(
-        "Overlay plan: logo=%s text=%s variant=%s score=%.1f (%s)",
-        plan["logo_anchor"],
-        plan["text_anchor"],
-        plan.get("logo_variant_hint") or "(none)",
-        plan["quality_score"],
-        plan["notes"],
-    )
-    return {"overlay_plan": plan}
-
-
 async def apply_branding(state: ContentState) -> dict[str, Any]:
     """Apply logo overlay and text to the generated image.
 
@@ -2471,25 +2291,18 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             image_data, approx_logo_w, approx_logo_h
         )
 
-        # Prefer the vision-critic's variant hint when it picked a logo the
-        # brand actually has; otherwise fall back to the brightness heuristic.
-        overlay_plan_state = state.get("overlay_plan") or {}
-        variant_hint = (overlay_plan_state.get("logo_variant_hint") or "").strip().lower()
-        if variant_hint and variant_hint in available_logos:
-            chosen_label = variant_hint
-            logger.info(
-                "Logo variant from vision-critic: %s (brightness=%.0f, variance=%.0f)",
-                chosen_label, brightness, variance,
-            )
-        else:
-            chosen_label = select_logo_variant(
-                brightness, variance, list(available_logos.keys())
-            )
-            logger.info(
-                "Logo variant from brightness heuristic: %s "
-                "(brightness=%.0f, variance=%.0f, available=%s)",
-                chosen_label, brightness, variance, list(available_logos.keys()),
-            )
+        # Use the brightness heuristic for the variant — the same default
+        # that's worked reliably for months. The vision-critic now runs
+        # AFTER this step (review_branding) and can override the variant
+        # if the rendered logo turns out unreadable.
+        chosen_label = select_logo_variant(
+            brightness, variance, list(available_logos.keys())
+        )
+        logger.info(
+            "Logo variant (brightness heuristic): %s "
+            "(brightness=%.0f, variance=%.0f, available=%s)",
+            chosen_label, brightness, variance, list(available_logos.keys()),
+        )
         chosen_url = available_logos[chosen_label]
 
         # Download and convert the chosen logo
@@ -2523,82 +2336,21 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         text_line1 = state.get("hook", theme)
         text_line2 = None
 
-        # Apply overlay — scale depends on the chosen variant (icon-only logos
-        # need a smaller scale than wordmarks). If the vision-critic node
-        # produced an overlay_plan, its corner anchors override the legacy
-        # variance heuristic so the card and logo never land on the product.
-        overlay_plan = state.get("overlay_plan") or {}
-        logo_anchor = overlay_plan.get("logo_anchor")
-        text_anchor = overlay_plan.get("text_anchor")
-
-        # Geometric rescue: whenever the vision-critic returned a valid
-        # subject bbox, validate the chosen text_anchor against it. The
-        # LLM is good at *perception* (where the subject is) but bad at
-        # *geometry* (does my card rect overlap the subject rect?). It
-        # routinely reports a bbox covering an entire image half then
-        # places the card squarely inside it with score 9. We trust the
-        # bbox over the anchor choice — if a different corner gives less
-        # overlap, we switch. This runs regardless of confidence.
-        plan_score = float(overlay_plan.get("quality_score") or 10)
-        subject_bbox = overlay_plan.get("subject_bbox")
-        if (
-            text_anchor
-            and isinstance(subject_bbox, (list, tuple))
-            and len(subject_bbox) == 4
-        ):
-            from PIL import Image as _PILImage
-            from io import BytesIO as _BytesIO
-            _info_img = _PILImage.open(_BytesIO(image_data))
-            img_w, img_h = _info_img.size
-            _info_img.close()
-
-            sx, sy, sw, sh = (float(v) for v in subject_bbox)
-            subj_rect = (sx * img_w, sy * img_h, (sx + sw) * img_w, (sy + sh) * img_h)
-
-            # Card dims approximated from the same ratios overlay_logo_and_text
-            # uses (font_large 0.030, pad_y ~0.010, no text_line2). Width is
-            # capped to 72% of base width.
-            margin = int(img_w * 0.04)
-            card_w_est = int(img_w * 0.72)
-            card_h_est = int(img_w * 0.030) + 2 * max(10, int(img_w * 0.010)) + 6
-
-            def _rect_for_anchor(anchor: str) -> tuple[float, float, float, float]:
-                if anchor == "top-left":
-                    return (margin, margin, margin + card_w_est, margin + card_h_est)
-                if anchor == "top-right":
-                    return (img_w - margin - card_w_est, margin, img_w - margin, margin + card_h_est)
-                if anchor == "bottom-left":
-                    return (margin, img_h - margin - card_h_est, margin + card_w_est, img_h - margin)
-                return (img_w - margin - card_w_est, img_h - margin - card_h_est, img_w - margin, img_h - margin)
-
-            def _overlap(r1, r2) -> float:
-                x1 = max(r1[0], r2[0]); y1 = max(r1[1], r2[1])
-                x2 = min(r1[2], r2[2]); y2 = min(r1[3], r2[3])
-                if x2 <= x1 or y2 <= y1:
-                    return 0.0
-                return (x2 - x1) * (y2 - y1)
-
-            candidates = [
-                a for a in ("bottom-left", "bottom-right", "top-left", "top-right")
-                if a != logo_anchor  # never put text on same corner as logo
-            ]
-            scored = {a: _overlap(subj_rect, _rect_for_anchor(a)) for a in candidates}
-            best_anchor = min(scored, key=scored.get)
-            if best_anchor != text_anchor and scored[best_anchor] < scored.get(text_anchor, float("inf")):
-                logger.info(
-                    "Overlap rescue: text_anchor %s (overlap=%.0fpx) -> %s (overlap=%.0fpx)",
-                    text_anchor, scored.get(text_anchor, -1), best_anchor, scored[best_anchor],
-                )
-                text_anchor = best_anchor
-
+        # Apply overlay with the legacy hardcoded defaults: text card pins
+        # to bottom-left, logo lands in whichever top corner has the lowest
+        # local variance. This is the placement the image-gen prompt has
+        # always asked the model to leave clean ("reserve bottom-left for
+        # text, top-right for logo"), so the two stay in sync by default.
+        # If the model didn't respect the composition rule, the downstream
+        # review_branding node spots it and re-runs the overlay.
         branded_bytes = overlay_logo_and_text(
             image_data,
             logo_png,
             text_line1=text_line1,
             text_line2=text_line2,
             logo_scale=scale_for_logo_variant(chosen_label),
-            logo_anchor=logo_anchor,
-            text_anchor=text_anchor,
+            # logo_anchor=None  → use find_best_logo_position variance fallback
+            # text_anchor=None  → bottom-left default inside the overlay fn
         )
 
         # Upload branded image to MinIO
@@ -2609,8 +2361,17 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             "content-images", branded_obj, branded_bytes, "image/png"
         )
 
+        # Also stash the post-Gemini, pre-overlay image so review_branding
+        # can cheaply re-render with different anchors/variants without
+        # paying the Gemini product-replacement cost a second time.
+        composed_obj = f"{brand_id}/{state['calendar_item_id']}/composed.png"
+        await async_upload_file(
+            "content-images", composed_obj, image_data, "image/png"
+        )
+
         return {
             "branded_image": f"content-images/{branded_obj}",
+            "composed_image": f"content-images/{composed_obj}",
             "logo_png_data": logo_png,
             "logo_variant_used": chosen_label,
         }
@@ -2619,6 +2380,214 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         logger.exception("Branding overlay failed: %s", exc)
         # Don't fail the whole pipeline — continue without branding
         return {"errors": [*(state.get("errors") or []), f"Branding overlay failed: {exc}"]}
+
+
+_REVIEW_VALID_ANCHORS = {"top-left", "top-right", "bottom-left", "bottom-right"}
+
+
+async def _vision_review_branding(
+    branded_image_data: bytes,
+    available_logo_variants: list[str],
+) -> dict[str, Any] | None:
+    """Ask a vision LLM whether the fully-branded image is acceptable.
+
+    Returns None on call failure (caller treats as 'approved'). Otherwise
+    returns ``{"ok": bool, "new_text_anchor", "new_logo_anchor",
+    "new_logo_variant", "reason"}``. Suggested fields are validated against
+    the brand's available variants and the four valid corners.
+    """
+    import base64 as _b64
+
+    b64 = _b64.b64encode(branded_image_data).decode("ascii")
+    data_url = f"data:image/png;base64,{b64}"
+    variant_options_str = "|".join(
+        f'"{v}"' for v in available_logo_variants or ["primary", "dark", "light"]
+    )
+
+    system = (
+        "You review a social-media post that already has a brand logo and a "
+        "text card composited onto a photo. Your job is to spot placement "
+        "problems and propose corrections — NOT to second-guess solid "
+        "placements.\n\n"
+        "Approve unless ONE of these is clearly true:\n"
+        "- The text card overlaps the product/subject/packaging meaningfully.\n"
+        "- The logo overlaps the subject or is unreadable due to low contrast.\n"
+        "- The logo is clipped by the image edge.\n"
+        "- The chosen logo color variant disappears into the background.\n\n"
+        "Return strict JSON:\n"
+        "{\n"
+        '  "ok": true|false,\n'
+        '  "new_text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right"|"",\n'
+        '  "new_logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right"|"",\n'
+        f'  "new_logo_variant": {variant_options_str}|"",\n'
+        '  "reason": "one short sentence"\n'
+        "}\n\n"
+        "Rules:\n"
+        "- If ok=true, all 'new_' fields MUST be empty strings.\n"
+        "- If ok=false, fill ONLY the fields that need to change — leave "
+        "  the others empty. Do not propose moves that aren't necessary.\n"
+        "- new_text_anchor and new_logo_anchor must remain DIFFERENT corners.\n"
+        "- Only suggest a variant that's in the provided list."
+    )
+
+    messages = [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Review this branded post."},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+
+    try:
+        result = await chat_completion(
+            messages,
+            category="vision",
+            temperature=0.2,
+            max_tokens=300,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        logger.warning("review_branding LLM call failed: %s", exc)
+        return None
+
+    review = parse_llm_json(str(result), fallback=None)
+    if not isinstance(review, dict):
+        logger.warning("review_branding returned non-dict: %r", review)
+        return None
+
+    ok = bool(review.get("ok"))
+    new_text = str(review.get("new_text_anchor", "")).strip().lower()
+    new_logo = str(review.get("new_logo_anchor", "")).strip().lower()
+    new_variant = str(review.get("new_logo_variant", "")).strip().lower()
+
+    if new_text and new_text not in _REVIEW_VALID_ANCHORS:
+        new_text = ""
+    if new_logo and new_logo not in _REVIEW_VALID_ANCHORS:
+        new_logo = ""
+    if new_text and new_logo and new_text == new_logo:
+        # Discard logo move that would collide with the text card
+        new_logo = ""
+    if new_variant and new_variant not in (available_logo_variants or []):
+        new_variant = ""
+
+    return {
+        "ok": ok,
+        "new_text_anchor": new_text,
+        "new_logo_anchor": new_logo,
+        "new_logo_variant": new_variant,
+        "reason": str(review.get("reason", ""))[:300],
+    }
+
+
+async def review_branding(state: ContentState) -> dict[str, Any]:
+    """Review the fully-branded image and re-compose if the LLM flags an
+    overlap, clipping, or contrast issue. No-op when the default placement
+    is fine (most of the time).
+    """
+    await update_agent_run_step(
+        state.get("run_id", ""), "review_branding", _STEP_INDEX["review_branding"],
+    )
+
+    branded_url = state.get("branded_image")
+    composed_url = state.get("composed_image")
+    logo_png = state.get("logo_png_data")
+    current_variant = state.get("logo_variant_used", "")
+    brand = state.get("brand", {})
+    brand_guidelines = brand.get("brand_guidelines") or {}
+    if isinstance(brand_guidelines, str):
+        try:
+            brand_guidelines = json.loads(brand_guidelines)
+        except (json.JSONDecodeError, TypeError):
+            brand_guidelines = {}
+    logos_cfg = brand_guidelines.get("logos", {}) or {}
+    available_variants = list(logos_cfg.keys())
+
+    if not branded_url or not branded_url.startswith("content-images/"):
+        return {}
+
+    try:
+        branded_bytes = await async_download_file(
+            "content-images", branded_url.replace("content-images/", "")
+        )
+    except Exception as exc:
+        logger.warning("review_branding: failed to load branded image: %s", exc)
+        return {}
+
+    review = await _vision_review_branding(branded_bytes, available_variants)
+    if review is None or review.get("ok"):
+        if review:
+            logger.info("review_branding: approved (%s)", review.get("reason", ""))
+        return {"branding_review": review or {"ok": True}}
+
+    new_text = review.get("new_text_anchor", "")
+    new_logo = review.get("new_logo_anchor", "")
+    new_variant = review.get("new_logo_variant", "")
+    logger.info(
+        "review_branding: needs change — text=%r logo=%r variant=%r (%s)",
+        new_text, new_logo, new_variant, review.get("reason"),
+    )
+
+    # Nothing actionable suggested — keep the original
+    if not (new_text or new_logo or new_variant):
+        return {"branding_review": review}
+
+    # Pull the pre-overlay composed image so we can re-render cheaply.
+    if not composed_url or not composed_url.startswith("content-images/"):
+        logger.warning("review_branding: no composed image — cannot re-render")
+        return {"branding_review": review}
+    try:
+        composed_bytes = await async_download_file(
+            "content-images", composed_url.replace("content-images/", "")
+        )
+    except Exception as exc:
+        logger.warning("review_branding: failed to load composed image: %s", exc)
+        return {"branding_review": review}
+
+    # Swap the logo if the variant changed
+    if new_variant and new_variant != current_variant:
+        from shared.config import settings
+        api_base = getattr(settings, "BACKEND_URL", "") or "http://backend:8000"
+        info = logos_cfg.get(new_variant) or {}
+        url = info.get("url") if isinstance(info, dict) else None
+        if url and url.startswith("/"):
+            url = f"{api_base}{url}"
+        if url:
+            raw = await _download_logo_bytes(url)
+            if raw:
+                converted = _bytes_to_logo_png(raw)
+                if converted:
+                    logo_png = converted
+                    current_variant = new_variant
+                    logger.info("review_branding: swapped logo variant -> %s", new_variant)
+
+    if not logo_png:
+        logger.warning("review_branding: no logo bytes — keeping original branded image")
+        return {"branding_review": review}
+
+    # Re-overlay with the suggested anchors (fall back to defaults when empty)
+    new_branded = overlay_logo_and_text(
+        composed_bytes,
+        logo_png,
+        text_line1=state.get("hook", "") or state.get("calendar_item", {}).get("theme", ""),
+        text_line2=None,
+        logo_scale=scale_for_logo_variant(current_variant),
+        logo_anchor=new_logo or None,
+        text_anchor=new_text or None,
+    )
+
+    brand_id = state["brand_id"]
+    branded_obj = f"{brand_id}/{state['calendar_item_id']}/branded.png"
+    await async_upload_file("content-images", branded_obj, new_branded, "image/png")
+    logger.info("review_branding: re-rendered branded.png with adjustments")
+
+    return {
+        "branded_image": f"content-images/{branded_obj}",
+        "logo_variant_used": current_variant,
+        "branding_review": review,
+    }
 
 
 async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
@@ -2816,8 +2785,8 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
             "mockup_urls": state.get("mockup_urls", {}),
             # Traceability for the branding pipeline — lets us debug
             # logo/overlay choices after the fact without re-running.
-            "overlay_plan": state.get("overlay_plan"),
             "logo_variant_used": state.get("logo_variant_used"),
+            "branding_review": state.get("branding_review"),
         },
         "status": "in_review",
     }

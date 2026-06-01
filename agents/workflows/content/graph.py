@@ -18,9 +18,9 @@ from workflows.content.nodes import (
     source_product_image_node,
     enhance_image_prompt,
     generate_background,
-    plan_overlay_layout,
-    adapt_platforms,
     apply_branding,
+    review_branding,
+    adapt_platforms,
     generate_mockups_node,
     store_content_node,
 )
@@ -37,8 +37,8 @@ CONTENT_PIPELINE_STEPS = [
     "source_product_image",
     "enhance_image_prompt",
     "generate_background",
-    "plan_overlay_layout",
     "apply_branding",
+    "review_branding",
     "adapt_platforms",
     "generate_mockups",
     "store_content",
@@ -101,8 +101,8 @@ _nodes = [
     ("source_product_image", source_product_image_node),
     ("enhance_image_prompt", enhance_image_prompt),
     ("generate_background", generate_background),
-    ("plan_overlay_layout", plan_overlay_layout),
     ("apply_branding", apply_branding),
+    ("review_branding", review_branding),
     ("adapt_platforms", adapt_platforms),
     ("generate_mockups", generate_mockups_node),
     ("store_content", store_content_node),
@@ -142,15 +142,13 @@ builder.add_conditional_edges(
 builder.add_conditional_edges(
     "generate_background",
     _check_failed,
-    {"end": END, "continue": "plan_overlay_layout"},
-)
-builder.add_conditional_edges(
-    "plan_overlay_layout",
-    _check_failed,
     {"end": END, "continue": "apply_branding"},
 )
 builder.add_conditional_edges(
-    "apply_branding", _check_failed, {"end": END, "continue": "adapt_platforms"}
+    "apply_branding", _check_failed, {"end": END, "continue": "review_branding"}
+)
+builder.add_conditional_edges(
+    "review_branding", _check_failed, {"end": END, "continue": "adapt_platforms"}
 )
 builder.add_conditional_edges(
     "adapt_platforms", _check_failed, {"end": END, "continue": "generate_mockups"}

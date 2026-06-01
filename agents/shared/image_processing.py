@@ -319,13 +319,18 @@ def overlay_logo_and_text(
         alpha = ImageEnhance.Brightness(alpha).enhance(logo_opacity)
         logo.putalpha(alpha)
 
+        # Logos get a larger margin than the text card (~6% vs 4%). Wide
+        # wordmark logos at 17% width look clipped against a tight 4%
+        # margin on landscape images — the eye reads the script trailing
+        # into the bezel even when the bbox technically fits.
+        logo_margin = int(base.width * 0.06)
         if logo_anchor in _LOGO_ANCHORS:
             lx, ly = _anchor_to_position(
                 logo_anchor, logo_w, logo_h, base.width, base.height,
-                margin=int(base.width * 0.04),
+                margin=logo_margin,
             )
         else:
-            lx, ly = find_best_logo_position(image_data, logo_w, logo_h)
+            lx, ly = find_best_logo_position(image_data, logo_w, logo_h, margin=logo_margin)
         overlay.paste(logo, (lx, ly), logo)
 
     # --- Text overlay (frosted glass card) ---
