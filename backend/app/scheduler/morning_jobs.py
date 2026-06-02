@@ -6,7 +6,7 @@ from sqlalchemy import text
 from app.auth.models import ScheduledJobLog
 from app.models.base import async_session_factory
 from app.services import nats_service
-from app.services.notification_service import notify_failure
+from app.services.notification_service import create_notification, notify_failure
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,22 @@ async def run_morning_jobs() -> None:
         logger.error("Content top-up failed in morning jobs: %s", e)
         await notify_failure("morning_jobs.content_topup", None, e)
 
+    # 5. Runway alert — ping brand owners 2 days before their last scheduled
+    # post runs out, so they have time to plan/generate more content.
+    try:
+        await _runway_alert()
+    except Exception as e:
+        logger.error("Runway alert failed: %s", e)
+        await notify_failure("morning_jobs.runway_alert", None, e)
+
+    # 6. Stuck-in-review alert — nudge owners when posts have been sitting
+    # in `in_review` for more than 48h.
+    try:
+        await _stuck_in_review_alert()
+    except Exception as e:
+        logger.error("Stuck-in-review alert failed: %s", e)
+        await notify_failure("morning_jobs.stuck_in_review_alert", None, e)
+
     await _log_job("morning_jobs", "completed")
     logger.info("Morning jobs completed")
 
@@ -149,3 +165,137 @@ async def _topup_content_generation() -> None:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+
+# Statuses that count as "still on the calendar" — published posts no longer
+# extend the runway, but anything from planned to approved does.
+_RUNWAY_STATUSES = ("planned", "queued", "working", "in_review", "approved")
+
+
+async def _runway_alert() -> None:
+    """For each active brand, notify the owner when the last scheduled post
+    is ~2 days away — i.e., the calendar runs out soon and they need to plan
+    or generate more.
+
+    Anti-spam: skip when a `runway_alert` notification already exists for the
+    same brand owner in the last 48h.
+    """
+    now = datetime.now(timezone.utc)
+    window_start = now + timedelta(days=1, hours=12)
+    window_end = now + timedelta(days=2, hours=12)
+    dedup_since = now - timedelta(hours=48)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT b.id, b.name, b.created_by, MAX(ci.scheduled_at) AS last_post "
+                "FROM brands b "
+                "JOIN calendar_items ci ON ci.brand_id = b.id "
+                "WHERE b.is_active = true "
+                "  AND b.created_by IS NOT NULL "
+                f"  AND ci.status = ANY(ARRAY{list(_RUNWAY_STATUSES)}) "
+                "  AND ci.scheduled_at IS NOT NULL "
+                "GROUP BY b.id, b.name, b.created_by "
+                "HAVING MAX(ci.scheduled_at) BETWEEN :ws AND :we"
+            ),
+            {"ws": window_start, "we": window_end},
+        )
+        candidates = result.fetchall()
+
+        for brand_id, brand_name, owner_id, last_post in candidates:
+            dedup = await session.execute(
+                text(
+                    "SELECT 1 FROM notifications "
+                    "WHERE user_id = :uid "
+                    "  AND notification_type = 'runway_alert' "
+                    "  AND reference_id = :bid "
+                    "  AND created_at >= :since "
+                    "LIMIT 1"
+                ),
+                {"uid": owner_id, "bid": brand_id, "since": dedup_since},
+            )
+            if dedup.first() is not None:
+                continue
+
+            last_date = (
+                last_post.strftime("%a %b %d") if last_post else "—"
+            )
+            await create_notification(
+                db=session,
+                user_id=owner_id,
+                notification_type="runway_alert",
+                title=f"Content calendar runs out in 2 days — {brand_name}",
+                body=(
+                    f"Last scheduled post: {last_date}. "
+                    "Generate more content or plan a new batch to avoid a gap."
+                ),
+                reference_type="brand",
+                reference_id=brand_id,
+            )
+            logger.info(
+                "Runway alert sent to %s for brand %s (last post %s)",
+                owner_id, brand_name, last_date,
+            )
+
+
+async def _stuck_in_review_alert() -> None:
+    """Notify brand owners when one or more posts have been waiting in
+    `in_review` for more than 48 hours. One grouped notification per brand
+    per day at most (dedup window 72h).
+    """
+    now = datetime.now(timezone.utc)
+    stuck_threshold = now - timedelta(hours=48)
+    dedup_since = now - timedelta(hours=72)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT b.id, b.name, b.created_by, "
+                "       COUNT(ci.id) AS stuck_count, "
+                "       MIN(ci.updated_at) AS oldest_updated, "
+                "       (ARRAY_AGG(ci.title ORDER BY ci.updated_at ASC))[1] AS oldest_title "
+                "FROM brands b "
+                "JOIN calendar_items ci ON ci.brand_id = b.id "
+                "WHERE b.is_active = true "
+                "  AND b.created_by IS NOT NULL "
+                "  AND ci.status = 'in_review' "
+                "  AND ci.updated_at < :threshold "
+                "GROUP BY b.id, b.name, b.created_by"
+            ),
+            {"threshold": stuck_threshold},
+        )
+        rows = result.fetchall()
+
+        for brand_id, brand_name, owner_id, stuck_count, oldest_updated, oldest_title in rows:
+            dedup = await session.execute(
+                text(
+                    "SELECT 1 FROM notifications "
+                    "WHERE user_id = :uid "
+                    "  AND notification_type = 'stuck_in_review' "
+                    "  AND reference_id = :bid "
+                    "  AND created_at >= :since "
+                    "LIMIT 1"
+                ),
+                {"uid": owner_id, "bid": brand_id, "since": dedup_since},
+            )
+            if dedup.first() is not None:
+                continue
+
+            age_days = max(1, int((now - oldest_updated).total_seconds() // 86400))
+            preview = (oldest_title or "Untitled")[:80]
+            await create_notification(
+                db=session,
+                user_id=owner_id,
+                notification_type="stuck_in_review",
+                title=(
+                    f"{stuck_count} post{'s' if stuck_count != 1 else ''} "
+                    f"waiting for review — {brand_name}"
+                ),
+                body=f"Oldest: \"{preview}\" — {age_days} day{'s' if age_days != 1 else ''} ago",
+                reference_type="brand",
+                reference_id=brand_id,
+            )
+            logger.info(
+                "Stuck-in-review alert sent to %s for brand %s (%d posts, oldest %d days)",
+                owner_id, brand_name, stuck_count, age_days,
+            )

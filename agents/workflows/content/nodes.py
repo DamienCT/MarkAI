@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -345,6 +346,23 @@ def _strip_flag_emojis(text: str) -> str:
     cleaned = re.sub(r" +\n", "\n", cleaned)
     cleaned = re.sub(r"\n +", "\n", cleaned)
     return cleaned.strip()
+
+
+def _clean_website_for_overlay(url: str | None) -> str | None:
+    """Strip protocol, www, and trailing slash so the URL fits the overlay card.
+
+    https://www.fancyfinds.mu/ → fancyfinds.mu
+    Returns None when the input is empty so the overlay leaves line 2 blank.
+    """
+    if not url:
+        return None
+    cleaned = url.strip()
+    if not cleaned:
+        return None
+    cleaned = re.sub(r"^https?://", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^www\.", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.rstrip("/")
+    return cleaned or None
 
 
 def _emoji_directive(emoji_setting: Any) -> str:
@@ -828,9 +846,12 @@ async def enrich_user_brief(state: ContentState) -> dict[str, Any]:
             params: dict[str, Any] = {"id": item["id"]}
             for col, val in db_patch.items():
                 if col == "product_ids":
-                    # Postgres uuid[] cast — bind as JSON array string
-                    set_parts.append(f"{col} = (:{col})::uuid[]")
-                    params[col] = "{" + ",".join(val) + "}"
+                    # asyncpg expects a Python list of UUID objects for a
+                    # uuid[] column — the legacy psycopg2 '{uuid,...}' string
+                    # literal trips DataError under asyncpg and rolls back
+                    # the whole UPDATE, so pillar/audience/brief also stay null.
+                    set_parts.append(f"{col} = :{col}")
+                    params[col] = [uuid.UUID(s) for s in val]
                 else:
                     set_parts.append(f"{col} = :{col}")
                     params[col] = val
@@ -2328,13 +2349,12 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             logger.info("No logo could be loaded — skipping branding overlay")
             return {}
 
-        # Build text overlay lines. text_line2 used to repeat the brand
-        # name, but the logo image already shows it — printing it again
-        # under the hook reads as redundant. Leave it None unless we have
-        # a non-redundant secondary line to show.
+        # Build text overlay lines. Line 1 = hook (the catchy opener).
+        # Line 2 = the brand's website as a domain-only string so the card
+        # doubles as a CTA without bloating the caption with a clickable link.
         theme = item.get("theme", "")
         text_line1 = state.get("hook", theme)
-        text_line2 = None
+        text_line2 = _clean_website_for_overlay(brand.get("website_url"))
 
         # Apply overlay with the legacy hardcoded defaults: text card pins
         # to bottom-left, logo lands in whichever top corner has the lowest
@@ -2586,7 +2606,7 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
         composed_bytes,
         logo_png,
         text_line1=state.get("hook", "") or state.get("calendar_item", {}).get("theme", ""),
-        text_line2=None,
+        text_line2=_clean_website_for_overlay(brand.get("website_url")),
         logo_scale=scale_for_logo_variant(current_variant),
         logo_anchor=new_logo or None,
         text_anchor=new_text or None,
@@ -2860,6 +2880,31 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
             logger.warning("No manager/admin user found — skipping approval creation")
     except Exception as appr_exc:
         logger.warning("Failed to create approval record: %s", appr_exc)
+
+    # Notify the calendar item's creator that the post is ready for review.
+    # Falls back to the brand owner when created_by is unset (auto-planned).
+    try:
+        from shared.tools.database import create_notification
+
+        ci = state.get("calendar_item", {}) or {}
+        br = state.get("brand", {}) or {}
+        recipient = ci.get("created_by") or br.get("created_by")
+        if recipient:
+            brand_name = br.get("name") or "your brand"
+            channel = (ci.get("channel") or "").capitalize() or "Social"
+            hook_preview = (state.get("hook") or ci.get("title") or "Untitled").strip()
+            if len(hook_preview) > 120:
+                hook_preview = hook_preview[:117].rstrip() + "…"
+            await create_notification(
+                user_id=str(recipient),
+                notification_type="content_ready",
+                title=f"{channel} post ready for review — {brand_name}",
+                body=hook_preview,
+                reference_type="content",
+                reference_id=content_id,
+            )
+    except Exception as notif_exc:
+        logger.debug("content_ready notification skipped: %s", notif_exc)
 
     return {
         "status": "in_review",

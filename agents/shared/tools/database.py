@@ -695,6 +695,46 @@ async def execute_update(query: str, params: dict[str, Any] | None = None) -> in
         return result.rowcount
 
 
+async def create_notification(
+    user_id: str,
+    notification_type: str,
+    title: str,
+    body: str | None = None,
+    reference_type: str | None = None,
+    reference_id: str | None = None,
+) -> None:
+    """Insert an in-app notification from an agent worker.
+
+    Mirrors backend/app/services/notification_service.create_notification but
+    accessible from the agents container without importing FastAPI deps.
+    Silently swallows errors so a notification failure never breaks the
+    workflow.
+    """
+    if not user_id:
+        return
+    try:
+        await execute_update(
+            "INSERT INTO notifications "
+            "(user_id, notification_type, title, body, channel, "
+            " reference_type, reference_id, is_read) "
+            "VALUES (:user_id, :ntype, :title, :body, 'in_app', "
+            " :ref_type, :ref_id, false)",
+            {
+                "user_id": user_id,
+                "ntype": notification_type,
+                "title": title[:500],
+                "body": body,
+                "ref_type": reference_type,
+                "ref_id": reference_id,
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to create notification (%s for %s): %s",
+            notification_type, user_id, exc,
+        )
+
+
 # ── Recent calendar items helper ─────────────────────────────────────────
 
 

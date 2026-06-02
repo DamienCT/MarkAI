@@ -941,7 +941,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
                     "enabled_channels": enabled_channels,
                 },
             )
-            await store_strategy(
+            cc_run_id = await store_strategy(
                 brand_id,
                 {
                     "type": "content_calendar_strategy",
@@ -953,6 +953,32 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
                 agent_type="content_calendar",
             )
             logger.info("Stored year-long strategy document for brand %s", brand_id)
+
+            # Notify brand owner that the Content Calendar Strategy is ready.
+            # (The worker hook covers research/strategy/planning, but not
+            # content_calendar — it's stored inline here, never traverses
+            # complete_agent_run via the worker.)
+            try:
+                from shared.tools.database import create_notification, execute_query
+
+                rows = await execute_query(
+                    "SELECT name, created_by FROM brands WHERE id = :bid",
+                    {"bid": brand_id},
+                )
+                if rows and rows[0].get("created_by"):
+                    await create_notification(
+                        user_id=str(rows[0]["created_by"]),
+                        notification_type="context_ready",
+                        title=(
+                            f"Content Calendar Strategy ready — "
+                            f"{rows[0].get('name') or 'your brand'}"
+                        ),
+                        body="Click to review and approve.",
+                        reference_type="agent_run",
+                        reference_id=str(cc_run_id) if cc_run_id else None,
+                    )
+            except Exception as notif_exc:
+                logger.debug("content_calendar notification skipped: %s", notif_exc)
         except Exception:
             logger.exception("Failed to store strategy document for brand %s", brand_id)
 

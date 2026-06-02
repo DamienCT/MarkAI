@@ -27,6 +27,7 @@ import { ContentCard } from "@/components/content/ContentCard";
 import { api } from "@/lib/api";
 import { getStoredBrandId } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
+import { watchPost } from "@/lib/post-watch";
 import type { CalendarItem, Brand, Channel } from "@/types";
 import { ALL_CHANNELS, CHANNEL_DISPLAY_NAMES } from "@/types";
 
@@ -203,11 +204,23 @@ export default function ContentStudioPage() {
           status: "queued",
         })
       );
-      await Promise.all(promises);
+      const createdItems = await Promise.all(promises);
+
+      // Hand off to the global post-watch toaster (mounted in
+      // providers-wrapper) — it polls every 5s from anywhere in the app
+      // and fires a green toast when each post finishes generation.
+      for (const it of createdItems) {
+        watchPost(
+          it.id,
+          it.title || formTitle.trim() || "Untitled",
+          it.channel
+        );
+      }
+
       toast.success(
         formChannels.length === 1
-          ? "Content created successfully"
-          : `${formChannels.length} content items created`
+          ? "Content created — we'll ping you when it's ready"
+          : `${formChannels.length} content items created — we'll ping you when each is ready`
       );
       setDialogOpen(false);
       resetForm();

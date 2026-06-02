@@ -915,6 +915,59 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             tokens_used,
         )
 
+        # ── Notify brand owner when a context report finishes ─────────
+        if (
+            not workflow_failed
+            and brand_id
+            and run_id
+            and agent_type in ("research", "strategy", "planning")
+        ):
+            try:
+                from shared.tools.database import create_notification, execute_query
+
+                _DOC_LABEL = {
+                    "research": "Research Report",
+                    "strategy": "Marketing Strategy",
+                    "planning": "Marketing Plan",
+                }
+                rows = await execute_query(
+                    "SELECT name, created_by FROM brands WHERE id = :bid",
+                    {"bid": brand_id},
+                )
+                if rows and rows[0].get("created_by"):
+                    await create_notification(
+                        user_id=str(rows[0]["created_by"]),
+                        notification_type="context_ready",
+                        title=f"{_DOC_LABEL[agent_type]} ready — {rows[0].get('name') or 'your brand'}",
+                        body="Click to review and approve.",
+                        reference_type="agent_run",
+                        reference_id=str(run_id),
+                    )
+
+                    # Final "all 4 reports ready" notif when the planning
+                    # agent finishes the activation chain — last gate before
+                    # the brand can start generating content.
+                    if agent_type == "planning":
+                        done = await execute_query(
+                            "SELECT DISTINCT agent_type FROM agent_runs "
+                            "WHERE brand_id = :bid "
+                            "  AND agent_type IN ('research','strategy','planning','content_calendar') "
+                            "  AND status = 'completed'",
+                            {"bid": brand_id},
+                        )
+                        done_types = {r["agent_type"] for r in done}
+                        if done_types >= {"research", "strategy", "planning", "content_calendar"}:
+                            await create_notification(
+                                user_id=str(rows[0]["created_by"]),
+                                notification_type="context_all_ready",
+                                title=f"All 4 context reports ready — {rows[0].get('name') or 'your brand'}",
+                                body="Approve them on the brand page to unlock content generation.",
+                                reference_type="brand",
+                                reference_id=str(brand_id),
+                            )
+            except Exception as notif_exc:
+                logger.debug("context_ready notification skipped: %s", notif_exc)
+
         # ── Activation: mark brand as active once the planning pipeline finishes
         if (
             agent_type == "planning"

@@ -17,6 +17,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
+import { NOTIFICATIONS_FETCHED_EVENT } from "@/lib/notification-toaster";
 import type { Notification } from "@/types";
 
 interface HeaderProps {
@@ -38,6 +39,13 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
       });
       setNotifications(data);
       setUnreadCount(data.length);
+      // Broadcast so the global notification-toaster can pop a toast for
+      // anything new since the last poll — see useNotificationToaster().
+      window.dispatchEvent(
+        new CustomEvent(NOTIFICATIONS_FETCHED_EVENT, {
+          detail: { notifications: data },
+        })
+      );
     } catch {
       // Notifications endpoint may not be available
     }

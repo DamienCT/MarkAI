@@ -9,6 +9,16 @@ import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePostWatchToaster } from "@/lib/post-watch";
+import { useNotificationToaster } from "@/lib/notification-toaster";
+
+/** Renders nothing — exists only to mount the global toaster hooks once
+ * inside the authenticated shell so they survive route changes. */
+function GlobalToasters() {
+  usePostWatchToaster();
+  useNotificationToaster();
+  return null;
+}
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
@@ -62,6 +72,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <SessionProvider>
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
         <AuthGate>
+          <GlobalToasters />
           <div className="flex h-screen overflow-hidden">
             <Sidebar />
             <div className="flex flex-1 flex-col overflow-hidden">
