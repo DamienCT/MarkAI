@@ -320,7 +320,6 @@ export default function ReportPage() {
   const [saving, setSaving] = useState(false);
   const [editDraft, setEditDraft] = useState<{ [k: string]: Json }>({});
   const [showRawData, setShowRawData] = useState(false);
-  const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
     async function fetchReport() {
@@ -373,115 +372,13 @@ export default function ReportPage() {
     }
   }
 
-  // Direct PDF download (no print dialog). We rasterize the whole report
-  // element — not just the visible viewport — then paginate it onto A4 pages.
-  // html2canvas-pro (not the original html2canvas) is required: this app uses
-  // Tailwind v4, whose default palette compiles to oklch()/oklab() colors that
-  // the original library cannot parse ("unsupported color function oklab").
-  // Both libs load from a CDN on first use to avoid a build-time dependency.
-  async function downloadPdf() {
+  // Hand off to the browser's native print engine: it honors @media print
+  // rules in globals.css (page breaks, hidden chrome, vector output) and
+  // sidesteps html2canvas's oklch/oklab parsing failures with Tailwind v4.
+  // The user picks "Save as PDF" in the print dialog.
+  function downloadPdf() {
     if (!report) return;
-    const el = document.getElementById("report-export-root");
-    if (!el) return;
-    setExportingPdf(true);
-
-    type Html2Canvas = (
-      element: HTMLElement,
-      options: Record<string, unknown>
-    ) => Promise<HTMLCanvasElement>;
-    type JsPdf = {
-      internal: { pageSize: { getWidth: () => number; getHeight: () => number } };
-      addImage: (
-        data: string,
-        format: string,
-        x: number,
-        y: number,
-        w: number,
-        h: number
-      ) => void;
-      addPage: () => void;
-      save: (filename: string) => void;
-    };
-    type JsPdfCtor = new (opts: {
-      orientation: string;
-      unit: string;
-      format: string;
-    }) => JsPdf;
-    const w = window as unknown as {
-      html2canvas?: Html2Canvas;
-      jspdf?: { jsPDF: JsPdfCtor };
-    };
-
-    const loadScript = (src: string) =>
-      new Promise<void>((resolve, reject) => {
-        const s = document.createElement("script");
-        s.src = src;
-        s.onload = () => resolve();
-        s.onerror = () => reject(new Error("Could not load the PDF library"));
-        document.body.appendChild(s);
-      });
-
-    try {
-      if (typeof w.html2canvas !== "function") {
-        await loadScript(
-          "https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.8/dist/html2canvas-pro.min.js"
-        );
-      }
-      if (!w.jspdf?.jsPDF) {
-        await loadScript(
-          "https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"
-        );
-      }
-      if (typeof w.html2canvas !== "function" || !w.jspdf?.jsPDF) {
-        throw new Error("Could not load the PDF library");
-      }
-
-      const dn = formatAgentType(report.agent_type);
-      const brand = report.brand_name ? ` - ${report.brand_name}` : "";
-      const date = report.created_at ? ` - ${report.created_at.slice(0, 10)}` : "";
-      const filename = `MARKAI - ${dn}${brand}${date}.pdf`;
-
-      // Hide on-screen controls (buttons/toggles) during capture.
-      document.documentElement.classList.add("pdf-exporting");
-      const canvas = await w.html2canvas(el, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: "#ffffff",
-      });
-
-      const pdf = new w.jspdf.jsPDF({
-        orientation: "portrait",
-        unit: "mm",
-        format: "a4",
-      });
-      const margin = 10; // mm
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-      const usableW = pageW - margin * 2;
-      const usableH = pageH - margin * 2;
-      // Scale the full-width capture to the usable page width; the rendered
-      // height is what we slice across pages.
-      const imgH = (canvas.height * usableW) / canvas.width;
-      const imgData = canvas.toDataURL("image/jpeg", 0.95);
-
-      let heightLeft = imgH;
-      let position = margin; // top offset of the (full) image on the current page
-      pdf.addImage(imgData, "JPEG", margin, position, usableW, imgH);
-      heightLeft -= usableH;
-      while (heightLeft > 0) {
-        position -= usableH; // shift the image up by one page worth
-        pdf.addPage();
-        pdf.addImage(imgData, "JPEG", margin, position, usableW, imgH);
-        heightLeft -= usableH;
-      }
-      pdf.save(filename);
-    } catch (err: unknown) {
-      const detail = (err as { message?: string })?.message || "PDF export failed";
-      toast.error(detail);
-    } finally {
-      document.documentElement.classList.remove("pdf-exporting");
-      setExportingPdf(false);
-    }
+    window.print();
   }
 
   if (loading) {
@@ -602,13 +499,9 @@ export default function ReportPage() {
                     <Pencil className="mr-2 h-4 w-4" /> Edit
                   </Button>
                 )}
-                <Button variant="outline" size="sm" onClick={downloadPdf} disabled={exportingPdf}>
-                  {exportingPdf ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Download className="mr-2 h-4 w-4" />
-                  )}
-                  {exportingPdf ? "Exporting…" : "Download PDF"}
+                <Button variant="outline" size="sm" onClick={downloadPdf}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download PDF
                 </Button>
               </>
             )}

@@ -122,6 +122,20 @@
   margin: 1.5cm;
 }
 @media print {
+  /* Neutralize the AppShell's fixed-viewport / scroll-container constraints
+     so the full report flows across pages instead of being clipped to the
+     visible viewport. */
+  html, body {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  [class*="h-screen"],
+  [class*="overflow-hidden"],
+  main[class*="overflow-y-auto"] {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
   nav, aside, header, footer,
   [data-no-print],
   .no-print {
@@ -166,11 +180,4 @@
 /* Footer only exists in print output */
 .print-footer {
   display: none;
-}
-
-/* While exporting to PDF (html2pdf capture), hide on-screen-only controls
-   (back/edit/download buttons, toggles) so they don't appear in the file. */
-.pdf-exporting [data-no-print],
-.pdf-exporting .no-print {
-  display: none !important;
 }

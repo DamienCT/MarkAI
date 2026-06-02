@@ -220,12 +220,16 @@ export default function BrandDetailPage() {
     setLoadingIntel(true);
     try {
       const [runsData, compData] = await Promise.allSettled([
-        api.get<AgentRun[]>("/api/v1/agents/runs", { brand_id: brandId, limit: 20 }),
+        api.get<{ runs: AgentRun[]; content_stats: { generated: number; failed: number; in_progress: number; total: number } }>(
+          "/api/v1/agents/runs/latest-by-type",
+          { brand_id: brandId }
+        ),
         api.get<{ competitors: CompetitorData[] }>(`/api/v1/intelligence/research/${brandId}`),
       ]);
       if (runsData.status === "fulfilled") {
-        setResearch(runsData.value);
-        setPipelineRuns(runsData.value);
+        setResearch(runsData.value.runs);
+        setPipelineRuns(runsData.value.runs);
+        setContentStats(runsData.value.content_stats);
       }
       if (compData.status === "fulfilled") {
         setCompetitors(compData.value.competitors || []);
