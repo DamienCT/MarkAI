@@ -219,8 +219,8 @@ export default function ContentStudioPage() {
 
       toast.success(
         formChannels.length === 1
-          ? "Content created — we'll ping you when it's ready"
-          : `${formChannels.length} content items created — we'll ping you when each is ready`
+          ? "Content created — we will notify you when it's ready"
+          : `${formChannels.length} content items created — we will notify you when each is ready`
       );
       setDialogOpen(false);
       resetForm();

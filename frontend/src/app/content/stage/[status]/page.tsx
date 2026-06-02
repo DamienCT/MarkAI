@@ -50,6 +50,10 @@ export default function StagePage() {
   const [brandFilter, setBrandFilter] = useState<string>("all");
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("all");
+  // "all" | "system" | "manual". Items whose `theme` is populated come from
+  // the planning agent (it sets theme + weekly_sub_theme); manual New Content
+  // creations leave theme null.
+  const [originFilter, setOriginFilter] = useState<string>("all");
   const { isOpened } = useOpenedContent();
 
   // Bulk selection + delete (so users don't have to open each card to delete).
@@ -127,9 +131,14 @@ export default function StagePage() {
         if (!i.created_at) return false;
         if (new Date(i.created_at).getTime() < cutoff) return false;
       }
+      if (originFilter !== "all") {
+        const fromSystem = !!(i.theme && i.theme.trim());
+        if (originFilter === "system" && !fromSystem) return false;
+        if (originFilter === "manual" && fromSystem) return false;
+      }
       return true;
     });
-  }, [items, brandFilter, channelFilter, dateFilter]);
+  }, [items, brandFilter, channelFilter, dateFilter, originFilter]);
 
   const label = STATUS_LABELS[status] || status;
 
@@ -209,6 +218,18 @@ export default function StagePage() {
                     {DATE_FILTERS.map(d => (
                       <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
                     ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {status === "in_review" && (
+                <Select value={originFilter} onValueChange={setOriginFilter}>
+                  <SelectTrigger className="w-[140px]" aria-label="Filter by origin">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Origins</SelectItem>
+                    <SelectItem value="system">System</SelectItem>
+                    <SelectItem value="manual">Manual</SelectItem>
                   </SelectContent>
                 </Select>
               )}

@@ -2458,9 +2458,11 @@ async def _vision_review_branding(
         "  backdrops (e.g. 'card on wall, logo on sky').\n"
         "- If ok=false, fill ONLY the fields that need to change — leave "
         "  the others empty if they're already fine.\n"
-        "- new_text_anchor and new_logo_anchor must remain DIFFERENT "
-        "  corners. Never propose putting the card on the same corner as "
-        "  the logo.\n"
+        "- new_text_anchor and new_logo_anchor must be in DIFFERENT "
+        "  horizontal bands — one in top-* and one in bottom-*. Never "
+        "  put both at top or both at bottom: they collide visually even "
+        "  when in different left/right corners (the card spans up to 72% "
+        "  of the image width).\n"
         "- Only suggest a variant that's in the provided list."
     )
 
@@ -2501,9 +2503,13 @@ async def _vision_review_branding(
         new_text = ""
     if new_logo and new_logo not in _REVIEW_VALID_ANCHORS:
         new_logo = ""
-    if new_text and new_logo and new_text == new_logo:
-        # Discard logo move that would collide with the text card
-        new_logo = ""
+    if new_text and new_logo:
+        # Reject pairs in the same horizontal band — corners on the same
+        # top or bottom strip collide visually even when left/right differ.
+        text_band = "top" if new_text.startswith("top") else "bottom"
+        logo_band = "top" if new_logo.startswith("top") else "bottom"
+        if text_band == logo_band:
+            new_logo = ""
     if new_variant and new_variant not in (available_logo_variants or []):
         new_variant = ""
 
@@ -2601,15 +2607,28 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
         logger.warning("review_branding: no logo bytes — keeping original branded image")
         return {"branding_review": review}
 
-    # Re-overlay with the suggested anchors (fall back to defaults when empty)
+    # Enforce different horizontal bands at render time. find_best_logo_position
+    # NEVER returns bottom corners (bottom is "reserved for text") — so if the
+    # critic moves text to a top corner without proposing a new logo position,
+    # the logo silently lands at top-* via variance and we get same-band
+    # collision. Pin the logo to the diagonal bottom corner in that case.
+    effective_text = new_text or "bottom-left"
+    effective_logo = new_logo
+    if effective_text.startswith("top") and not (
+        effective_logo and effective_logo.startswith("bottom")
+    ):
+        effective_logo = (
+            "bottom-right" if effective_text == "top-left" else "bottom-left"
+        )
+
     new_branded = overlay_logo_and_text(
         composed_bytes,
         logo_png,
         text_line1=state.get("hook", "") or state.get("calendar_item", {}).get("theme", ""),
         text_line2=_clean_website_for_overlay(brand.get("website_url")),
         logo_scale=scale_for_logo_variant(current_variant),
-        logo_anchor=new_logo or None,
-        text_anchor=new_text or None,
+        logo_anchor=effective_logo or None,
+        text_anchor=effective_text,
     )
 
     brand_id = state["brand_id"]
