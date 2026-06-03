@@ -426,7 +426,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         else:
             image_size = "1024x1024"
 
-        image_url = await generate_image(image_prompt, size=image_size)
+        image_url = await generate_image(image_prompt, size=image_size, channel=cal_channel)
         logger.info(
             "Image generated for content %s (channel=%s, size=%s): %s chars",
             content_id, cal_channel or "default", image_size, len(image_url),

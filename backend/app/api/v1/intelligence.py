@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import delete as sa_delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
@@ -464,6 +464,11 @@ async def get_trending_topics(
             "llm_angle": t.llm_angle,
             "velocity": t.velocity,
             "raw_metric": t.raw_metric,
+            "geo": (
+                t.extra_data.get("geo")
+                if isinstance(t.extra_data, dict)
+                else None
+            ),
             "discovered_at": t.discovered_at.isoformat() if t.discovered_at else None,
             "brand_id": str(t.brand_id),
             "brand_name": brand_name,
@@ -489,6 +494,31 @@ async def _run_trends_refresh() -> None:
         logger.exception("Manual trends refresh failed: %s", exc)
     finally:
         _trends_refresh_in_progress = False
+
+
+@router.delete("/trends/{trend_id}", status_code=200)
+async def delete_trend(
+    trend_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a single trending topic by id. Manager+ only.
+
+    UI usage: bulk delete uses Promise.allSettled to call this in parallel
+    for each selected trend, mirroring the content stage delete pattern.
+    """
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from app.models.trending_topic import TrendingTopic
+
+    result = await db.execute(
+        sa_delete(TrendingTopic).where(TrendingTopic.id == trend_id)
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Trend not found")
+    return {"deleted": result.rowcount}
 
 
 @router.post("/trends/refresh", status_code=202)

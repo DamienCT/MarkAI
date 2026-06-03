@@ -1711,7 +1711,9 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         image_size = "1024x1024"  # square (instagram, x, default)
 
     try:
-        image_url = await generate_image(prompt_text, size=image_size)
+        image_url = await generate_image(
+            prompt_text, size=image_size, channel=channel_lower or None
+        )
         return {"generated_image": image_url}
     except Exception:
         logger.exception("Background image generation failed")

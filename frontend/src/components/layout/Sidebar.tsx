@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   LayoutDashboard,
   Building2,
@@ -12,7 +13,6 @@ import {
   CheckSquare,
   Search,
   BarChart3,
-  Brain,
   Terminal,
   Server,
   Settings,
@@ -21,8 +21,6 @@ import {
   Shield,
   Users,
   Cpu,
-  FlaskConical,
-  Image as ImageIcon,
   Menu,
   X,
 } from "lucide-react";
@@ -30,7 +28,18 @@ import { cn } from "@/lib/utils";
 import { BrandSwitcher } from "./BrandSwitcher";
 import { Button } from "@/components/ui/button";
 
-const navigation = [
+// `minRole` restricts a menu link to roles at or above the given level.
+// Items without minRole are visible to everyone (page-level role checks
+// still redirect unauthorized users at click time).
+type NavItem = {
+  name: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  exact?: boolean;
+  minRole?: "viewer" | "editor" | "manager" | "admin";
+};
+
+const navigation: NavItem[] = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard, exact: true },
   { name: "Brands", href: "/brands", icon: Building2 },
   { name: "Content Studio", href: "/content", icon: FileText, exact: true },
@@ -39,15 +48,19 @@ const navigation = [
   { name: "Approvals", href: "/approvals", icon: CheckSquare },
   { name: "Intelligence", href: "/intelligence", icon: Search, exact: true },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
-  { name: "Learning", href: "/learning", icon: Brain },
   { name: "AI Providers", href: "/providers", icon: Cpu },
-  { name: "Prompt Lab", href: "/prompts", icon: FlaskConical },
-  { name: "Product Images", href: "/intelligence/products", icon: ImageIcon },
-  { name: "System", href: "/system", icon: Server, exact: true },
-  { name: "Audit Log", href: "/system/audit", icon: Shield },
-  { name: "Settings", href: "/settings", icon: Settings, exact: true },
-  { name: "Users", href: "/settings/users", icon: Users },
+  { name: "System", href: "/system", icon: Server, exact: true, minRole: "admin" },
+  { name: "Audit Log", href: "/system/audit", icon: Shield, minRole: "admin" },
+  { name: "Settings", href: "/settings", icon: Settings, exact: true, minRole: "admin" },
+  { name: "Users", href: "/settings/users", icon: Users, minRole: "admin" },
 ];
+
+const ROLE_LEVELS: Record<string, number> = {
+  viewer: 10,
+  editor: 60,
+  manager: 80,
+  admin: 100,
+};
 
 function isNavActive(pathname: string, href: string, exact?: boolean): boolean {
   if (exact) {
@@ -62,10 +75,12 @@ function SidebarContent({
   collapsed,
   pathname,
   onNavClick,
+  userLevel,
 }: {
   collapsed: boolean;
   pathname: string;
   onNavClick?: () => void;
+  userLevel: number;
 }) {
   return (
     <>
@@ -76,7 +91,10 @@ function SidebarContent({
       )}
 
       <nav className="flex-1 overflow-y-auto py-2">
-        {navigation.map((item) => {
+        {navigation.filter((item) => {
+          if (!item.minRole) return true;
+          return userLevel >= ROLE_LEVELS[item.minRole];
+        }).map((item) => {
           const active = isNavActive(pathname, item.href, item.exact);
           return (
             <Link
@@ -106,6 +124,14 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
+  const { data: session } = useSession();
+
+  // Current user's role level — used to gate role-restricted menu items.
+  // Default to "viewer" when the session is still loading or the role
+  // claim is missing, so admin-only links stay hidden by default.
+  const userRole =
+    (session?.user as Record<string, unknown> | undefined)?.role as string | undefined;
+  const userLevel = ROLE_LEVELS[userRole ?? "viewer"] ?? 0;
 
   // Close mobile drawer on route change
   useEffect(() => {
@@ -151,7 +177,7 @@ export function Sidebar() {
                 <X className="h-4 w-4" />
               </Button>
             </div>
-            <SidebarContent collapsed={false} pathname={pathname} onNavClick={() => setMobileOpen(false)} />
+            <SidebarContent collapsed={false} pathname={pathname} onNavClick={() => setMobileOpen(false)} userLevel={userLevel} />
           </div>
         </div>
       )}
@@ -181,7 +207,7 @@ export function Sidebar() {
             {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
           </Button>
         </div>
-        <SidebarContent collapsed={collapsed} pathname={pathname} />
+        <SidebarContent collapsed={collapsed} pathname={pathname} userLevel={userLevel} />
       </div>
     </>
   );

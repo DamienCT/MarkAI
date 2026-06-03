@@ -430,6 +430,31 @@ def _size_for_model(model: str, requested_size: str) -> str:
     return requested_size
 
 
+async def _get_channel_fallback_model(channel: str, category: str) -> str | None:
+    """Look up the configured fallback model for (channel, category) in the
+    channel_model_fallbacks table. Returns the model_id if a row exists and
+    is_active=true, otherwise None. Best-effort: any DB error returns None
+    so the caller falls through to the hardcoded safety net."""
+    try:
+        from shared.tools.database import async_session_factory
+        from sqlalchemy import text
+
+        async with async_session_factory() as session:
+            result = await session.execute(
+                text(
+                    "SELECT model_id FROM channel_model_fallbacks "
+                    "WHERE channel = :channel AND category = :category "
+                    "AND is_active = true LIMIT 1"
+                ),
+                {"channel": channel.lower(), "category": category},
+            )
+            row = result.first()
+            return row[0] if row else None
+    except Exception as exc:
+        logger.debug("Channel fallback lookup failed for %s/%s: %s", channel, category, exc)
+        return None
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -442,11 +467,19 @@ async def generate_image(
     category: str = "image",
     size: str = "1024x1024",
     n: int = 1,
+    channel: str | None = None,
 ) -> str:
     """Generate an image and return the first image URL or data URI.
 
     Tries LiteLLM proxy first; falls back to direct OpenAI API if proxy returns 400.
     Handles both url and b64_json response formats.
+
+    The fallback cascade, in order:
+      1. primary model (param `model` or the active model for `category`)
+      2. per-channel fallback (if `channel` supplied and a row exists in
+         channel_model_fallbacks with is_active=true)
+      3. hardcoded ultimate safety net `gpt-image-1`
+    Duplicates are removed so we never retry the same model twice.
     """
     if model is None:
         model = await get_model_for_category(category)
@@ -459,12 +492,18 @@ async def generate_image(
     if not openai_key:
         raise RuntimeError("OPENAI_API_KEY not set — required for image generation")
 
-    # Try the selected model first, fall back to gpt-image-1 if it fails.
-    # dall-e-3 was retired by OpenAI (returns "model does not exist"); the
-    # original gpt-image-1 is the most stable long-lived image model.
+    # Build the fallback cascade. The hardcoded gpt-image-1 stays as the
+    # ultimate safety net so an empty channel_model_fallbacks table keeps
+    # today's behaviour unchanged.
     _IMAGE_FALLBACK = "gpt-image-1"
-    models_to_try = [raw_model]
-    if raw_model != _IMAGE_FALLBACK:
+    models_to_try: list[str] = [raw_model]
+
+    if channel:
+        channel_fallback = await _get_channel_fallback_model(channel, category)
+        if channel_fallback and channel_fallback not in models_to_try:
+            models_to_try.append(channel_fallback)
+
+    if _IMAGE_FALLBACK not in models_to_try:
         models_to_try.append(_IMAGE_FALLBACK)
 
     last_error: Exception | None = None

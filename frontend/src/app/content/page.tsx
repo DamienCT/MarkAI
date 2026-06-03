@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Plus, LayoutGrid, List } from "lucide-react";
+import { ArrowLeft, Plus, LayoutGrid, List } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
@@ -44,6 +44,7 @@ export default function ContentStudioPage() {
 
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [cameFromTrend, setCameFromTrend] = useState(false);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
@@ -119,12 +120,16 @@ export default function ContentStudioPage() {
     const brandIdParam = searchParams.get("brand_id");
     const titleParam = searchParams.get("title");
     const descriptionParam = searchParams.get("description");
+    const originParam = searchParams.get("origin");
     if (!brandIdParam && !titleParam && !descriptionParam) return;
 
     if (brandIdParam) setFormBrandId(brandIdParam);
     if (titleParam) setFormTitle(titleParam);
     if (descriptionParam) setFormDescription(descriptionParam);
     setDialogOpen(true);
+    // Track that the dialog was opened from a trend card so closing it
+    // (X, Cancel, ESC, click-outside) returns the user to /intelligence.
+    if (originParam === "trend") setCameFromTrend(true);
 
     // Strip the params so a refresh doesn't re-open the dialog
     router.replace("/content", { scroll: false });
@@ -244,6 +249,10 @@ export default function ContentStudioPage() {
           ? "Content created — we will notify you when it's ready"
           : `${formChannels.length} content items created — we will notify you when each is ready`
       );
+      // After a successful submit, stay in Content Studio to let the user
+      // see the new card. The "back to intelligence" auto-nav only fires
+      // on actual cancel/close, not on submit.
+      setCameFromTrend(false);
       setDialogOpen(false);
       resetForm();
       fetchItems(getStoredBrandId());
@@ -306,9 +315,38 @@ export default function ContentStudioPage() {
       )}
 
       {/* New Content Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) {
+            resetForm();
+            // When the dialog was opened from a trend card, closing it
+            // (X / Cancel / ESC / click-outside) sends the user back to
+            // the Intelligence page where they came from.
+            if (cameFromTrend) {
+              setCameFromTrend(false);
+              router.push("/intelligence");
+            }
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
+            {cameFromTrend && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="self-start -ml-2 mb-1 h-7 px-2 text-xs text-muted-foreground"
+                onClick={() => {
+                  setDialogOpen(false);
+                }}
+              >
+                <ArrowLeft className="mr-1 h-3.5 w-3.5" />
+                Back to Intelligence
+              </Button>
+            )}
             <DialogTitle>Create New Content</DialogTitle>
             <DialogDescription>Add a new content item to your calendar.</DialogDescription>
           </DialogHeader>

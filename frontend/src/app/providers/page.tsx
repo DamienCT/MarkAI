@@ -25,6 +25,21 @@ interface HealthStatus {
   detail?: string;
 }
 
+interface ChannelFallback {
+  channel: string;
+  category: string;
+  model_id: string;
+  is_active: boolean;
+}
+
+// Channels that support a per-channel image-gen fallback. Must mirror
+// SUPPORTED_FALLBACK_CHANNELS in backend/app/api/v1/providers.py.
+const FALLBACK_CHANNELS: { id: string; label: string }[] = [
+  { id: "instagram", label: "Instagram" },
+  { id: "facebook", label: "Facebook" },
+  { id: "linkedin", label: "LinkedIn" },
+];
+
 export default function ProvidersPage() {
   const { hasAccess, loading: roleLoading } = useRequireRole("manager");
   const [categories, setCategories] = useState<AIModelCategory[]>([]);
@@ -35,6 +50,8 @@ export default function ProvidersPage() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [savingSlug, setSavingSlug] = useState<string | null>(null);
   const [totalModels, setTotalModels] = useState(0);
+  const [channelFallbacks, setChannelFallbacks] = useState<Record<string, ChannelFallback>>({});
+  const [savingFallback, setSavingFallback] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -84,10 +101,25 @@ export default function ProvidersPage() {
     }
   }, []);
 
+  const fetchFallbacks = useCallback(async () => {
+    try {
+      const rows = await api.get<ChannelFallback[]>(
+        "/api/v1/providers/channel-fallbacks",
+        { category: "image" }
+      );
+      const map: Record<string, ChannelFallback> = {};
+      for (const row of rows) map[row.channel] = row;
+      setChannelFallbacks(map);
+    } catch {
+      // Fallbacks are optional; ignore on error.
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
     fetchHealth();
-  }, [fetchData, fetchHealth]);
+    fetchFallbacks();
+  }, [fetchData, fetchHealth, fetchFallbacks]);
 
   const handleDiscover = async () => {
     setDiscovering(true);
@@ -123,6 +155,34 @@ export default function ProvidersPage() {
       toast.error(detail);
     } finally {
       setSavingSlug(null);
+    }
+  };
+
+  const handleFallbackChange = async (
+    channel: string,
+    category: string,
+    patch: { model_id?: string; is_active?: boolean }
+  ) => {
+    const existing = channelFallbacks[channel];
+    const model_id = patch.model_id ?? existing?.model_id ?? "";
+    const is_active = patch.is_active ?? existing?.is_active ?? true;
+    if (!model_id) {
+      toast.error("Pick a model first");
+      return;
+    }
+    setSavingFallback(channel);
+    try {
+      const updated = await api.put<ChannelFallback>(
+        "/api/v1/providers/channel-fallbacks",
+        { channel, category, model_id, is_active }
+      );
+      setChannelFallbacks((prev) => ({ ...prev, [channel]: updated }));
+      toast.success(`Fallback for ${channel} saved`);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to save fallback";
+      toast.error(detail);
+    } finally {
+      setSavingFallback(null);
     }
   };
 
@@ -262,6 +322,72 @@ export default function ProvidersPage() {
                     {availableModels.length} model{availableModels.length !== 1 ? "s" : ""} available
                   </div>
                   {isSaving && <p className="text-xs text-muted-foreground animate-pulse">Saving...</p>}
+
+                  {category.slug === "image" && (
+                    <div className="pt-3 mt-3 border-t space-y-2">
+                      <div className="text-sm font-medium">Fallback per channel</div>
+                      <p className="text-xs text-muted-foreground">
+                        Used if the active model fails for the channel. Falls through to{" "}
+                        <span className="font-mono">gpt-image-1</span> as a last resort.
+                      </p>
+                      {FALLBACK_CHANNELS.map((ch) => {
+                        const fb = channelFallbacks[ch.id];
+                        const savingThis = savingFallback === ch.id;
+                        return (
+                          <div
+                            key={ch.id}
+                            className="flex items-center gap-2 rounded-md border p-2"
+                          >
+                            <span className="text-xs font-medium w-20 shrink-0">
+                              {ch.label}
+                            </span>
+                            <select
+                              className="flex h-8 flex-1 min-w-0 rounded-md border border-input bg-background text-foreground px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50 [&>option]:bg-background [&>option]:text-foreground"
+                              value={fb?.model_id ?? ""}
+                              disabled={savingThis || availableModels.length === 0}
+                              onChange={(e) =>
+                                handleFallbackChange(ch.id, "image", {
+                                  model_id: e.target.value,
+                                })
+                              }
+                            >
+                              <option value="">
+                                {availableModels.length === 0 ? "No models" : "Pick a model..."}
+                              </option>
+                              {availableModels.map((m) => (
+                                <option key={m.id} value={m.model_id}>
+                                  {m.model_id}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              disabled={savingThis || !fb?.model_id}
+                              onClick={() =>
+                                handleFallbackChange(ch.id, "image", {
+                                  is_active: !(fb?.is_active ?? false),
+                                })
+                              }
+                              className={`shrink-0 inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide transition-colors disabled:opacity-50 ${
+                                fb?.is_active
+                                  ? "bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300"
+                                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+                              }`}
+                              title={
+                                !fb?.model_id
+                                  ? "Pick a model first"
+                                  : fb?.is_active
+                                    ? "Active — click to disable"
+                                    : "Inactive — click to enable"
+                              }
+                            >
+                              {fb?.is_active ? "Active" : "Inactive"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             );

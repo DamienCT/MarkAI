@@ -13,6 +13,7 @@ from app.models.product import Product
 from app.models.event import Event
 from app.models.trending_topic import TrendingTopic
 from app.models.ai_model import AIModelCategory, AIModel, AIModelSelection
+from app.models.channel_model_fallback import ChannelModelFallback
 
 __all__ = [
     "Base",
@@ -32,4 +33,5 @@ __all__ = [
     "AIModelCategory",
     "AIModel",
     "AIModelSelection",
+    "ChannelModelFallback",
 ]

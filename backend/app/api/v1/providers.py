@@ -1,4 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import httpx
@@ -7,6 +10,7 @@ from app.auth.models import User
 from app.auth.permissions import role_has_access
 from app.config import settings
 from app.deps import get_current_user, get_db
+from app.models.channel_model_fallback import ChannelModelFallback
 from app.schemas.ai_model import (
     AIModelResponse,
     AIModelSelectionResponse,
@@ -20,6 +24,10 @@ from app.services.ai_model_service import (
     list_models_by_category,
     set_active_model,
 )
+
+# Channels that can have a per-channel fallback model. Image-publishing
+# surfaces only — Teams / website blog don't generate images via this path.
+SUPPORTED_FALLBACK_CHANNELS = ("instagram", "facebook", "linkedin")
 
 router = APIRouter()
 
@@ -144,3 +152,92 @@ async def provider_health(
         return {"status": "unreachable", "detail": "Cannot connect to LiteLLM proxy"}
     except Exception as exc:
         return {"status": "error", "detail": str(exc)}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Channel-specific model fallbacks
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ChannelFallbackResponse(BaseModel):
+    channel: str
+    category: str
+    model_id: str
+    is_active: bool
+
+
+class ChannelFallbackUpdate(BaseModel):
+    channel: str
+    category: str
+    model_id: str
+    is_active: bool = True
+
+
+@router.get("/channel-fallbacks", response_model=list[ChannelFallbackResponse])
+async def list_channel_fallbacks(
+    category: str = Query("image"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List configured channel-specific fallback models for a category.
+
+    Returns one entry per (channel, category) row that exists in the DB.
+    Channels without a configured fallback simply don't appear.
+    """
+    result = await db.execute(
+        select(ChannelModelFallback).where(ChannelModelFallback.category == category)
+    )
+    return [
+        ChannelFallbackResponse(
+            channel=row.channel,
+            category=row.category,
+            model_id=row.model_id,
+            is_active=row.is_active,
+        )
+        for row in result.scalars().all()
+    ]
+
+
+@router.put("/channel-fallbacks", response_model=ChannelFallbackResponse)
+async def update_channel_fallback(
+    body: ChannelFallbackUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upsert a channel-specific fallback model. Admin only.
+
+    Matches the permission level of `update_active_model` so the active
+    model and its channel-level fallbacks live under the same gate.
+    """
+    if not role_has_access(current_user.role, "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    channel = body.channel.lower().strip()
+    if channel not in SUPPORTED_FALLBACK_CHANNELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Channel '{channel}' not supported. Use one of: {', '.join(SUPPORTED_FALLBACK_CHANNELS)}",
+        )
+
+    stmt = pg_insert(ChannelModelFallback).values(
+        channel=channel,
+        category=body.category,
+        model_id=body.model_id,
+        is_active=body.is_active,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="channel_model_fallbacks_uniq",
+        set_={
+            "model_id": stmt.excluded.model_id,
+            "is_active": stmt.excluded.is_active,
+        },
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    return ChannelFallbackResponse(
+        channel=channel,
+        category=body.category,
+        model_id=body.model_id,
+        is_active=body.is_active,
+    )

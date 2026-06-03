@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,16 +25,22 @@ import {
   CalendarDays,
   BookOpen,
   ArrowRight,
+  ArrowDown,
+  ArrowUp,
   Clock,
   CheckCircle2,
+  CheckSquare,
   Loader2,
   AlertCircle,
+  Square,
   Target,
+  Trash2,
   Users,
   TrendingUp,
   Compass,
   LayoutGrid,
   Megaphone,
+  X,
 } from "lucide-react";
 import { formatKeyValue } from "@/components/ui/safe-render";
 
@@ -63,6 +69,7 @@ interface TrendData {
   llm_angle: string | null;
   velocity: "rising" | "stable" | "falling";
   raw_metric: string | null;
+  geo: string | null;
   discovered_at: string;
   brand_id: string;
   brand_name: string;
@@ -331,6 +338,10 @@ export default function IntelligencePage() {
   const [selectedBrand, setSelectedBrand] = useState<string>("all");
   const [loading, setLoading] = useState(true);
   const [refreshingTrends, setRefreshingTrends] = useState(false);
+  const [trendsSortDir, setTrendsSortDir] = useState<"desc" | "asc">("desc");
+  const [trendsSelectMode, setTrendsSelectMode] = useState(false);
+  const [selectedTrendIds, setSelectedTrendIds] = useState<Set<string>>(new Set());
+  const [deletingTrends, setDeletingTrends] = useState(false);
 
   useEffect(() => {
     setSelectedBrand(getStoredBrandValue());
@@ -351,11 +362,13 @@ export default function IntelligencePage() {
     async function fetchData() {
       setLoading(true);
       try {
-        const params: Record<string, string | number> = { limit: 50 };
-        if (selectedBrand !== "all") params.brand_id = selectedBrand;
+        const reportsParams: Record<string, string | number> = { limit: 50 };
+        if (selectedBrand !== "all") reportsParams.brand_id = selectedBrand;
+        const trendsParams: Record<string, string | number> = { limit: 20 };
+        if (selectedBrand !== "all") trendsParams.brand_id = selectedBrand;
         const [reportsData, trendsData] = await Promise.allSettled([
-          api.get<AgentReport[]>("/api/v1/intelligence/reports", params, { signal }),
-          api.get<TrendData[]>("/api/v1/intelligence/trends", { limit: 20 }, { signal }),
+          api.get<AgentReport[]>("/api/v1/intelligence/reports", reportsParams, { signal }),
+          api.get<TrendData[]>("/api/v1/intelligence/trends", trendsParams, { signal }),
         ]);
         if (reportsData.status === "fulfilled") setReports(reportsData.value);
         if (trendsData.status === "fulfilled") setTrends(trendsData.value);
@@ -411,6 +424,58 @@ export default function IntelligencePage() {
   function getLatestByType(agentType: string): AgentReport | undefined {
     return reports.find((r) => r.report_type === agentType);
   }
+
+  const toggleTrendSelect = (id: string) => {
+    setSelectedTrendIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const exitTrendSelectMode = () => {
+    setTrendsSelectMode(false);
+    setSelectedTrendIds(new Set());
+  };
+
+  const handleBulkDeleteTrends = async () => {
+    if (selectedTrendIds.size === 0) return;
+    const n = selectedTrendIds.size;
+    if (!window.confirm(`Delete ${n} trend${n !== 1 ? "s" : ""}? This cannot be undone.`)) {
+      return;
+    }
+    setDeletingTrends(true);
+    const ids = Array.from(selectedTrendIds);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((id) => api.delete<unknown>(`/api/v1/intelligence/trends/${id}`))
+      );
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - ok;
+      if (ok) {
+        setTrends((cur) => cur.filter((t) => !selectedTrendIds.has(t.id)));
+        toast.success(`Deleted ${ok} trend${ok !== 1 ? "s" : ""}`);
+      }
+      if (failed) {
+        toast.error(`Failed to delete ${failed} trend${failed !== 1 ? "s" : ""}`);
+      }
+      exitTrendSelectMode();
+    } finally {
+      setDeletingTrends(false);
+    }
+  };
+
+  // Trends sorted by discovery date; toggle flips the order.
+  const sortedTrends = useMemo(() => {
+    const copy = [...trends];
+    copy.sort((a, b) => {
+      const diff =
+        new Date(b.discovered_at).getTime() - new Date(a.discovered_at).getTime();
+      return trendsSortDir === "desc" ? diff : -diff;
+    });
+    return copy;
+  }, [trends, trendsSortDir]);
 
   if (loading) {
     return (
@@ -516,7 +581,7 @@ export default function IntelligencePage() {
       {/* ── Trends Section ────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
             <div>
               <CardTitle className="flex items-center gap-2">
                 <TrendingUp className="h-5 w-5 text-primary" />
@@ -526,31 +591,99 @@ export default function IntelligencePage() {
                 Worldwide Trends, scored and ranked by AI for each brand. Click a card to generate a post.
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRefreshTrends}
-              disabled={refreshingTrends}
-              title="Run the pull + scoring cycle now (managers+)"
-            >
-              {refreshingTrends ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            <div className="flex items-center gap-2 flex-wrap">
+              {trendsSelectMode ? (
+                <>
+                  <span className="text-sm text-muted-foreground">
+                    {selectedTrendIds.size} selected
+                  </span>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={selectedTrendIds.size === 0 || deletingTrends}
+                    onClick={handleBulkDeleteTrends}
+                  >
+                    {deletingTrends ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    Delete
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={exitTrendSelectMode}
+                    disabled={deletingTrends}
+                  >
+                    <X className="mr-1.5 h-3.5 w-3.5" />
+                    Cancel
+                  </Button>
+                </>
               ) : (
-                <TrendingUp className="mr-1.5 h-3.5 w-3.5" />
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTrendsSelectMode(true)}
+                    disabled={sortedTrends.length === 0}
+                  >
+                    <CheckSquare className="mr-1.5 h-3.5 w-3.5" />
+                    Select
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setTrendsSortDir((d) => (d === "desc" ? "asc" : "desc"))
+                    }
+                    title={
+                      trendsSortDir === "desc"
+                        ? "Newest first — click to switch to oldest first"
+                        : "Oldest first — click to switch to newest first"
+                    }
+                  >
+                    {trendsSortDir === "desc" ? (
+                      <ArrowDown className="mr-1.5 h-3.5 w-3.5" />
+                    ) : (
+                      <ArrowUp className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    Date
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRefreshTrends}
+                    disabled={refreshingTrends}
+                    title="Run the pull + scoring cycle now (managers+)"
+                  >
+                    {refreshingTrends ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <TrendingUp className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {refreshingTrends ? "Refreshing..." : "Refresh now"}
+                  </Button>
+                </>
               )}
-              {refreshingTrends ? "Refreshing..." : "Refresh now"}
-            </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
-          {trends.length === 0 ? (
+          {sortedTrends.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
               No trending topics yet.
             </p>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {trends.map((trend) => (
-                <TrendCard key={trend.id} trend={trend} />
+              {sortedTrends.map((trend) => (
+                <TrendCard
+                  key={trend.id}
+                  trend={trend}
+                  selectMode={trendsSelectMode}
+                  selected={selectedTrendIds.has(trend.id)}
+                  onToggleSelect={() => toggleTrendSelect(trend.id)}
+                />
               ))}
             </div>
           )}
@@ -572,7 +705,33 @@ function velocityClass(v: TrendData["velocity"]): string {
   return "text-muted-foreground";
 }
 
-function TrendCard({ trend }: { trend: TrendData }) {
+const GEO_FLAGS: Record<string, string> = {
+  US: "🇺🇸",
+  GB: "🇬🇧",
+  FR: "🇫🇷",
+  IN: "🇮🇳",
+  JP: "🇯🇵",
+  ZA: "🇿🇦",
+  MU: "🇲🇺",
+};
+
+function geoBadge(geo: string | null | undefined): { flag: string; label: string } | null {
+  if (!geo) return null;
+  const code = geo.toUpperCase();
+  return { flag: GEO_FLAGS[code] ?? "🌐", label: code };
+}
+
+function TrendCard({
+  trend,
+  selectMode,
+  selected,
+  onToggleSelect,
+}: {
+  trend: TrendData;
+  selectMode: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+}) {
   const router = useRouter();
 
   const openInNewContent = () => {
@@ -585,17 +744,47 @@ function TrendCard({ trend }: { trend: TrendData }) {
     router.push(`/content?${params.toString()}`);
   };
 
+  const handleClick = () => {
+    if (selectMode) onToggleSelect();
+    else openInNewContent();
+  };
+
   return (
     <button
       type="button"
-      onClick={openInNewContent}
-      className="group flex flex-col gap-2 rounded-md border p-3 text-left transition-colors hover:bg-accent hover:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary"
-      title={trend.relevance_reason || "Click to draft a post"}
+      onClick={handleClick}
+      className={`group flex flex-col gap-2 rounded-md border p-3 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${
+        selectMode && selected
+          ? "border-primary bg-primary/5"
+          : "hover:bg-accent hover:border-primary/50"
+      }`}
+      title={
+        selectMode
+          ? selected
+            ? "Click to deselect"
+            : "Click to select"
+          : trend.relevance_reason || "Click to draft a post"
+      }
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium leading-tight flex-1 min-w-0">
-          {trend.topic}
-        </p>
+        <div className="flex items-start gap-2 flex-1 min-w-0">
+          {selectMode && (
+            selected ? (
+              <CheckSquare
+                className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                aria-hidden="true"
+              />
+            ) : (
+              <Square
+                className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50"
+                aria-hidden="true"
+              />
+            )
+          )}
+          <p className="text-sm font-medium leading-tight flex-1 min-w-0">
+            {trend.topic}
+          </p>
+        </div>
         <span
           className={`text-base font-semibold shrink-0 ${velocityClass(trend.velocity)}`}
           aria-label={`Velocity: ${trend.velocity}`}
@@ -609,15 +798,37 @@ function TrendCard({ trend }: { trend: TrendData }) {
       )}
 
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <Badge
-          variant="secondary"
-          className="text-[10px] bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300"
-        >
-          {trend.brand_name}
-        </Badge>
         <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-muted-foreground capitalize">
-            {trend.platform}
+          {(() => {
+            const g = geoBadge(trend.geo);
+            return g ? (
+              <Badge
+                variant="outline"
+                className="text-[10px] gap-1"
+                title={`Trending in ${g.label}`}
+              >
+                <span>{g.flag}</span>
+                <span>{g.label}</span>
+              </Badge>
+            ) : null;
+          })()}
+          <Badge
+            variant="secondary"
+            className="text-[10px] bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300"
+          >
+            {trend.brand_name}
+          </Badge>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span
+            className="text-[10px] text-muted-foreground"
+            title={new Date(trend.discovered_at).toLocaleString("en-GB", {
+              timeZone: "Indian/Mauritius",
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+          >
+            {formatRelativeTime(trend.discovered_at)}
           </span>
           <Badge variant="outline" className="text-[10px]">
             {trend.relevance_score}

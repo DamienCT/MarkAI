@@ -9,21 +9,23 @@ directly related?" so unrelated-but-creative ideas get through.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote_plus
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.agent_run import AgentRun
 from app.models.base import async_session_factory
 from app.models.brand import Brand
+from app.models.calendar_item import CalendarItem
 from app.models.trending_topic import TrendingTopic
 
 logger = logging.getLogger(__name__)
@@ -42,77 +44,155 @@ TRENDS_TTL_DAYS = 14
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Google Trends pull (worldwide, via the public RSS "Trending now" feed)
+# Google Trends pull (rising queries, via the public Explore API)
 # ─────────────────────────────────────────────────────────────────────────
 
-# Public, no-auth Google Trends feed. Same data as the trends.google.com
-# "Trending now" page. Each <item> carries title + approx_traffic + first
-# related news article. Stable as of 2026 — replaced the deprecated
-# pytrends.trending_searches endpoint which now returns 404.
-_TRENDS_RSS_URL = "https://trends.google.com/trending/rss?geo={geo}"
-_TRENDS_GEOS = ("US", "GB", "FR", "IN", "JP", "ZA")
-_TRENDS_NS = {"ht": "https://trends.google.com/trending/rss"}
+# trends.google.com's Explore page is served by two undocumented JSON APIs:
+# 1) POST-like GET /api/explore  → returns widget tokens (one per data card)
+# 2) GET /api/widgetdata/relatedsearches  → returns the actual ranked
+#    keywords for the RELATED_QUERIES widget. rankedList[0] is "Top" and
+#    rankedList[1] is "Rising". We use Rising only — momentum > volume.
+#
+# This endpoint supports Mauritius (geo=MU), unlike the /trending/rss feed
+# which returns 400 for MU.
+_TRENDS_EXPLORE_URL = "https://trends.google.com/trends/api/explore"
+_TRENDS_WIDGETDATA_URL = "https://trends.google.com/trends/api/widgetdata/relatedsearches"
+_TRENDS_WARMUP_URL = "https://trends.google.com/?geo=MU"
+_TRENDS_GEOS = ("US", "GB", "FR", "IN", "JP", "ZA", "MU")
+_TRENDS_TIME_RANGE = "today 1-m"
+
+_TRENDS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _strip_xssi_prefix(text_body: str) -> str:
+    """Google's internal JSON APIs prefix responses with )]}',\\n or similar
+    anti-XSSI tokens. Strip everything before the first '{'."""
+    idx = text_body.find("{")
+    return text_body[idx:] if idx >= 0 else text_body
+
+
+async def _pull_rising_for_geo(
+    client: httpx.AsyncClient, geo: str
+) -> list[dict[str, Any]]:
+    """Two-step fetch of the 'Rising queries' widget for one geo. Returns
+    [] on any failure (best-effort, per-geo isolated)."""
+    explore_payload = {
+        "comparisonItem": [
+            {"keyword": "", "geo": geo, "time": _TRENDS_TIME_RANGE}
+        ],
+        "category": 0,
+        "property": "",
+    }
+    try:
+        resp = await client.get(
+            _TRENDS_EXPLORE_URL,
+            params={
+                "hl": "en-US",
+                "tz": "0",
+                "req": json.dumps(explore_payload),
+            },
+        )
+        if resp.status_code != 200:
+            logger.debug("Trends explore %s: HTTP %s", geo, resp.status_code)
+            return []
+        explore_data = json.loads(_strip_xssi_prefix(resp.text))
+        rq_widget = next(
+            (
+                w
+                for w in explore_data.get("widgets", [])
+                if w.get("id") == "RELATED_QUERIES"
+            ),
+            None,
+        )
+        if rq_widget is None:
+            return []
+
+        await asyncio.sleep(2)
+
+        resp2 = await client.get(
+            _TRENDS_WIDGETDATA_URL,
+            params={
+                "hl": "en-US",
+                "tz": "0",
+                "req": json.dumps(rq_widget["request"]),
+                "token": rq_widget["token"],
+            },
+        )
+        if resp2.status_code != 200:
+            logger.debug("Trends widgetdata %s: HTTP %s", geo, resp2.status_code)
+            return []
+        widget_data = json.loads(_strip_xssi_prefix(resp2.text))
+
+        ranked_lists = widget_data.get("default", {}).get("rankedList", [])
+        # rankedList[0] = Top, rankedList[1] = Rising. We only want Rising.
+        if len(ranked_lists) < 2:
+            return []
+        rising = ranked_lists[1].get("rankedKeyword", [])
+
+        out: list[dict[str, Any]] = []
+        for item in rising:
+            topic = str(item.get("query", "")).strip()[:255]
+            if not topic:
+                continue
+            formatted = str(
+                item.get("formattedValue") or item.get("value") or ""
+            ).strip()[:50]
+            out.append({
+                "topic": topic,
+                "source": "google_trends_rising",
+                "source_url": f"https://trends.google.com/trends/explore?q={quote_plus(topic)}&geo={geo}",
+                "raw_metric": formatted or None,
+                "metadata": {"geo": geo, "type": "rising"},
+            })
+        return out
+    except Exception as exc:
+        logger.debug("Trends pull failed for geo=%s: %s", geo, exc)
+        return []
 
 
 async def pull_google_trends_worldwide() -> list[dict[str, Any]]:
-    """Return raw worldwide trending searches as a flat list of dicts.
-
-    Fetches the public Google Trends RSS feed for several geos in parallel,
-    parses the XML, and dedupes by lower-cased topic. Best-effort — returns
-    an empty list on any total failure.
-    """
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-        ),
-        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
-    }
-
+    """Pull RISING queries from Google Trends across our target geos
+    (including Maurice), deduplicated by topic. Best-effort: returns
+    whatever geos succeeded."""
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
 
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers) as client:
+    async with httpx.AsyncClient(
+        timeout=20.0, follow_redirects=True, headers=_TRENDS_HEADERS
+    ) as client:
+        # Warm-up so Google sets the consent cookie. Without it the API
+        # often 429s on the first real call from a fresh container IP.
+        try:
+            await client.get(_TRENDS_WARMUP_URL)
+        except Exception:
+            pass
+        await asyncio.sleep(3)
+
         for geo in _TRENDS_GEOS:
-            try:
-                resp = await client.get(_TRENDS_RSS_URL.format(geo=geo))
-                if resp.status_code != 200 or not resp.text:
-                    logger.debug("Trends RSS %s: HTTP %s", geo, resp.status_code)
+            geo_trends = await _pull_rising_for_geo(client, geo)
+            for t in geo_trends:
+                key = t["topic"].lower()
+                if key in seen:
                     continue
-                root = ET.fromstring(resp.text)
-            except Exception as exc:
-                logger.debug("Trends RSS %s: fetch/parse failed — %s", geo, exc)
-                continue
-
-            for item in root.iter("item"):
-                title_el = item.find("title")
-                topic = (title_el.text or "").strip() if title_el is not None else ""
-                # SQL column is VARCHAR(255); guard against any unusually long
-                # Google trend title overflowing the column at insert time.
-                topic = topic[:255]
-                if not topic or topic.lower() in seen:
-                    continue
-                seen.add(topic.lower())
-
-                approx_el = item.find("ht:approx_traffic", _TRENDS_NS)
-                raw_metric_raw = (approx_el.text or "").strip() if approx_el is not None else None
-                # VARCHAR(50) safety
-                raw_metric = raw_metric_raw[:50] if raw_metric_raw else None
-
-                news_url_el = item.find("ht:news_item/ht:news_item_url", _TRENDS_NS)
-                news_url = (news_url_el.text or "").strip() if news_url_el is not None else None
-
-                out.append({
-                    "topic": topic,
-                    "source": "google",
-                    "source_url": news_url
-                    or f"https://trends.google.com/trends/explore?q={quote_plus(topic)}",
-                    "raw_metric": raw_metric,
-                    "metadata": {"geo": geo},
-                })
+                seen.add(key)
+                out.append(t)
+            # Spread out the calls — Google rate-limits aggressively.
+            await asyncio.sleep(5)
 
     if not out:
-        logger.warning("Google Trends RSS returned 0 items across all geos")
+        logger.warning("Google Trends rising: 0 items across all geos")
+    else:
+        logger.info(
+            "Google Trends rising: %d unique items from %d geos",
+            len(out),
+            len(_TRENDS_GEOS),
+        )
     return out
 
 
@@ -122,26 +202,33 @@ async def pull_google_trends_worldwide() -> list[dict[str, Any]]:
 
 
 _SCORING_SYSTEM_PROMPT = (
-    "You are a creative marketing strategist. Given a list of trending topics "
-    "and a brand's pillars + audiences + positioning, you decide if each "
-    "trend could be turned into a useful marketing post for this brand.\n\n"
+    "You are a creative marketing strategist. You will receive a brand "
+    "context (summary + four strategy documents + upcoming calendar) and a "
+    "list of trending topics. Decide for each trend if it could be turned "
+    "into a useful marketing post for this brand.\n\n"
     "Be PERMISSIVE and CREATIVE — even if a trend has no direct relation to "
     "the brand's category, ask yourself: 'could a skilled copywriter bridge "
     "this trend to one of the brand's products, audiences, or values to make "
     "a memorable post?' If yes, accept it with a clear pitch.\n\n"
     "Reject only when the trend is:\n"
     "- Politically divisive or sensitive\n"
-    "- Tragedy / disaster / death\n"
+    "- Tragedy / disaster / death / health crisis / outbreak\n"
     "- Adult / NSFW content\n"
     "- Truly unbridgeable (e.g. a niche software bug for a food brand)\n\n"
-    "For each accepted trend, return:\n"
-    "- score: 0..100 (50+ to keep, higher = stronger fit)\n"
-    "- reason: 1 short sentence explaining the bridge\n"
-    "- angle: a punchy 1-2 sentence pitch ready to use as a post brief "
-    "(specific, actionable, voice already adapted to the brand)\n\n"
-    "Return STRICT JSON of the form:\n"
-    '{"results": [{"topic": "<exact original topic>", "score": <int>, '
-    '"reason": "<sentence>", "angle": "<pitch>"}, ...]}'
+    "ALSO: for each accepted trend, check the UPCOMING CALENDAR section. If "
+    "an existing calendar item ALREADY clearly covers this trend (same event, "
+    "same theme — not a loose topical overlap), set already_planned=true. "
+    "We will then skip it so the trends list only surfaces gaps. When in "
+    "doubt, prefer already_planned=false.\n\n"
+    "Return STRICT JSON:\n"
+    '{"results": [{"topic": "<exact original topic>", "score": <int 0-100>, '
+    '"reason": "<sentence>", "angle": "<pitch>", "already_planned": <bool>}, ...]}\n\n'
+    "Per-field rules:\n"
+    "- score 0..100 — 50+ to keep, higher = stronger fit\n"
+    "- reason: 1 short sentence explaining the bridge to this brand\n"
+    "- angle: a punchy 1-2 sentence pitch (specific, actionable, voice "
+    "already adapted to the brand)\n"
+    "- already_planned: true ONLY if a calendar item clearly covers it"
 )
 
 
@@ -193,8 +280,94 @@ async def _call_llm_json(messages: list[dict], temperature: float = 0.5) -> dict
         return json.loads(resp.json()["choices"][0]["message"]["content"])
 
 
-def _build_brand_context(brand: Brand) -> str:
-    """Compact brand description fed to the LLM scorer."""
+# Max chars per document section in the LLM prompt (keep tokens reasonable).
+_DOC_CHAR_CAP = 1000
+
+# How far ahead we look when checking calendar matches.
+_CALENDAR_WINDOW_DAYS = 30
+
+# The four strategy reports we squeeze into the LLM prompt for richer scoring.
+_BRAND_DOC_TYPES = ("research", "strategy", "branding", "planning")
+
+
+async def _load_brand_documents(
+    db: AsyncSession, brand_id: Any
+) -> dict[str, str]:
+    """Return latest completed report per agent_type, as a short text blob
+    suitable for direct injection into the LLM prompt."""
+    docs: dict[str, str] = {}
+    for agent_type in _BRAND_DOC_TYPES:
+        result = await db.execute(
+            select(AgentRun)
+            .where(AgentRun.brand_id == brand_id)
+            .where(AgentRun.agent_type == agent_type)
+            .where(AgentRun.status == "completed")
+            .order_by(AgentRun.completed_at.desc().nullslast())
+            .limit(1)
+        )
+        run = result.scalar_one_or_none()
+        if run is None or not isinstance(run.output_payload, dict):
+            continue
+        payload = run.output_payload
+        # Prefer the plain-English summary; fall back to a compact JSON dump
+        # of the signal-rich fields if the summary hasn't been generated.
+        text_blob = payload.get("executive_summary_plain")
+        if not text_blob:
+            stripped = {
+                k: v
+                for k, v in payload.items()
+                if k
+                not in {
+                    "raw_response",
+                    "metadata",
+                    "tokens_used",
+                    "model_used",
+                    "model",
+                }
+            }
+            try:
+                text_blob = json.dumps(stripped, ensure_ascii=False)
+            except Exception:
+                text_blob = str(stripped)
+        docs[agent_type] = str(text_blob)[:_DOC_CHAR_CAP]
+    return docs
+
+
+async def _load_upcoming_calendar(
+    db: AsyncSession, brand_id: Any
+) -> list[dict[str, Any]]:
+    """Calendar items scheduled in the next CALENDAR_WINDOW_DAYS for this
+    brand. Used by the LLM to decide if a trend is already-planned."""
+    cutoff = datetime.now(timezone.utc) + timedelta(days=_CALENDAR_WINDOW_DAYS)
+    result = await db.execute(
+        select(CalendarItem)
+        .where(CalendarItem.brand_id == brand_id)
+        .where(CalendarItem.scheduled_at.is_not(None))
+        .where(CalendarItem.scheduled_at >= func.now())
+        .where(CalendarItem.scheduled_at <= cutoff)
+        .order_by(CalendarItem.scheduled_at.asc())
+        .limit(40)
+    )
+    items: list[dict[str, Any]] = []
+    for ci in result.scalars().all():
+        items.append({
+            "title": ci.title,
+            "theme": ci.theme,
+            "weekly_sub_theme": ci.weekly_sub_theme,
+            "content_brief": (ci.content_brief or "")[:300],
+            "scheduled_at": ci.scheduled_at.isoformat() if ci.scheduled_at else None,
+        })
+    return items
+
+
+def _build_brand_context(
+    brand: Brand,
+    docs: dict[str, str] | None = None,
+    calendar: list[dict[str, Any]] | None = None,
+) -> str:
+    """Compact brand description + 4 strategy documents + upcoming calendar,
+    fed to the LLM scorer. Sections are appended only if data exists, so a
+    brand with empty reports still gets a meaningful prompt from the summary."""
     guidelines = brand.brand_guidelines or {}
     if isinstance(guidelines, str):
         try:
@@ -237,7 +410,7 @@ def _build_brand_context(brand: Brand) -> str:
     voice = brand.tone_of_voice or guidelines.get("tone_of_voice") or ""
     voice = str(voice)[:300]
 
-    parts = [f"BRAND: {brand.name}"]
+    parts: list[str] = [f"BRAND: {brand.name}"]
     if brand.description:
         parts.append(f"DESCRIPTION: {str(brand.description)[:400]}")
     if pillar_names:
@@ -248,27 +421,61 @@ def _build_brand_context(brand: Brand) -> str:
         parts.append(f"POSITIONING: {positioning}")
     if voice:
         parts.append(f"VOICE: {voice}")
+
+    if docs:
+        parts.append("\n--- BRAND STRATEGY DOCUMENTS ---")
+        for doc_type in _BRAND_DOC_TYPES:
+            blob = docs.get(doc_type)
+            if blob:
+                parts.append(f"\n[{doc_type.upper()}]\n{blob}")
+
+    if calendar:
+        parts.append(
+            f"\n--- UPCOMING CALENDAR (next {_CALENDAR_WINDOW_DAYS} days, "
+            f"{len(calendar)} items) ---"
+        )
+        for ci in calendar:
+            bits: list[str] = []
+            if ci.get("scheduled_at"):
+                bits.append(ci["scheduled_at"][:10])
+            bits.append(ci.get("title", "(no title)"))
+            if ci.get("theme"):
+                bits.append(f"theme={ci['theme']}")
+            if ci.get("weekly_sub_theme"):
+                bits.append(f"sub={ci['weekly_sub_theme']}")
+            if ci.get("content_brief"):
+                bits.append(f"brief={ci['content_brief']}")
+            parts.append("- " + " | ".join(bits))
+
     return "\n".join(parts)
 
 
 async def score_trends_for_brand(
-    brand: Brand, raw_trends: list[dict[str, Any]]
+    db: AsyncSession, brand: Brand, raw_trends: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """LLM-score every raw trend for a single brand. Returns the trends
-    augmented with `score`, `reason`, and `angle`. Trends the LLM
-    rejected (or below MIN_RELEVANCE_SCORE) are filtered out.
+    """LLM-score every raw trend for a single brand, using the brand's
+    four strategy documents + upcoming calendar as extra context.
+
+    Returns kept trends augmented with `score`, `reason`, `angle`. Filters
+    out:
+    - LLM rejections (no entry in results, or below MIN_RELEVANCE_SCORE)
+    - LLM hallucinations (topic not in raw_trends)
+    - Trends already covered by an upcoming calendar item (already_planned)
     """
     if not raw_trends:
         return []
 
-    brand_context = _build_brand_context(brand)
-    topics_block = "\n".join(f"- {t['topic']}" for t in raw_trends)
+    docs = await _load_brand_documents(db, brand.id)
+    calendar = await _load_upcoming_calendar(db, brand.id)
+    brand_context = _build_brand_context(brand, docs=docs, calendar=calendar)
 
+    topics_block = "\n".join(f"- {t['topic']}" for t in raw_trends)
     user_msg = (
         f"{brand_context}\n\n"
         f"TRENDS TO EVALUATE:\n{topics_block}\n\n"
         "Return JSON as specified. Skip trends you reject — only include "
-        "trends with a real angle for this brand."
+        "trends with a real angle for this brand. Mark already_planned=true "
+        "only when a calendar item clearly covers the trend."
     )
 
     try:
@@ -287,10 +494,10 @@ async def score_trends_for_brand(
     if not isinstance(results, list):
         return []
 
-    # Index raw trends by lowered topic for quick lookup of source metadata.
     raw_by_topic = {str(t["topic"]).lower(): t for t in raw_trends}
 
     scored: list[dict[str, Any]] = []
+    skipped_planned = 0
     for r in results:
         if not isinstance(r, dict):
             continue
@@ -301,19 +508,27 @@ async def score_trends_for_brand(
         score = int(score)
         if score < MIN_RELEVANCE_SCORE:
             continue
+        if r.get("already_planned") is True:
+            skipped_planned += 1
+            continue
         raw = raw_by_topic.get(topic.lower())
         if not raw:
-            # LLM hallucinated a topic not in the list — skip.
             continue
         scored.append({
             **raw,
-            "topic": raw["topic"],  # preserve original casing
+            "topic": raw["topic"],
             "relevance_score": score,
             "relevance_reason": str(r.get("reason", ""))[:600],
             "llm_angle": str(r.get("angle", ""))[:1200],
         })
 
-    # Keep the top N by score
+    if skipped_planned:
+        logger.info(
+            "Brand %s: skipped %d trends already in calendar",
+            brand.name,
+            skipped_planned,
+        )
+
     scored.sort(key=lambda x: x["relevance_score"], reverse=True)
     return scored[:MAX_TRENDS_PER_BRAND]
 
@@ -452,7 +667,7 @@ async def pull_and_score_all_brands() -> None:
         total_upserted = 0
         for brand in brands:
             try:
-                scored = await score_trends_for_brand(brand, raw_trends)
+                scored = await score_trends_for_brand(db, brand, raw_trends)
                 if not scored:
                     logger.info("Brand %s: 0 trends kept after scoring", brand.name)
                     continue
