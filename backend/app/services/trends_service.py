@@ -371,6 +371,10 @@ async def _upsert_trends(
         else:
             velocity = "falling"
 
+        # pg_insert().values() and stmt.excluded both work at the table
+        # level, so keys here are SQL column names, not ORM attribute names.
+        # The TrendingTopic.extra_data attribute maps to the SQL column
+        # named `metadata` — use that name throughout the UPSERT.
         stmt = pg_insert(TrendingTopic).values(
             brand_id=brand_id,
             topic=t["topic"],
@@ -381,7 +385,7 @@ async def _upsert_trends(
             relevance_score=new_score,
             relevance_reason=t.get("relevance_reason"),
             llm_angle=t.get("llm_angle"),
-            extra_data=t.get("metadata") or {},
+            metadata=t.get("metadata") or {},
             expires_at=expires_at,
         )
         stmt = stmt.on_conflict_do_update(
@@ -393,7 +397,7 @@ async def _upsert_trends(
                 "relevance_score": stmt.excluded.relevance_score,
                 "relevance_reason": stmt.excluded.relevance_reason,
                 "llm_angle": stmt.excluded.llm_angle,
-                "extra_data": stmt.excluded.extra_data,
+                "metadata": stmt.excluded.metadata,
                 "discovered_at": text("now()"),
                 "expires_at": stmt.excluded.expires_at,
             },
