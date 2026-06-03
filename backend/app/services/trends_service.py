@@ -87,12 +87,17 @@ async def pull_google_trends_worldwide() -> list[dict[str, Any]]:
             for item in root.iter("item"):
                 title_el = item.find("title")
                 topic = (title_el.text or "").strip() if title_el is not None else ""
+                # SQL column is VARCHAR(255); guard against any unusually long
+                # Google trend title overflowing the column at insert time.
+                topic = topic[:255]
                 if not topic or topic.lower() in seen:
                     continue
                 seen.add(topic.lower())
 
                 approx_el = item.find("ht:approx_traffic", _TRENDS_NS)
-                raw_metric = (approx_el.text or "").strip() if approx_el is not None else None
+                raw_metric_raw = (approx_el.text or "").strip() if approx_el is not None else None
+                # VARCHAR(50) safety
+                raw_metric = raw_metric_raw[:50] if raw_metric_raw else None
 
                 news_url_el = item.find("ht:news_item/ht:news_item_url", _TRENDS_NS)
                 news_url = (news_url_el.text or "").strip() if news_url_el is not None else None
@@ -371,10 +376,12 @@ async def _upsert_trends(
         else:
             velocity = "falling"
 
-        # pg_insert().values() and stmt.excluded both work at the table
-        # level, so keys here are SQL column names, not ORM attribute names.
-        # The TrendingTopic.extra_data attribute maps to the SQL column
-        # named `metadata` — use that name throughout the UPSERT.
+        # TrendingTopic.extra_data is the ORM attribute mapped to the SQL
+        # column named `metadata`. pg_insert(ORMClass).values() resolves
+        # kwargs via ORM attribute names (and `metadata` collides with
+        # Base.metadata), so use `extra_data` here. stmt.excluded and the
+        # set_ dict keys below operate at the table level, so they use the
+        # actual SQL column name `metadata`.
         stmt = pg_insert(TrendingTopic).values(
             brand_id=brand_id,
             topic=t["topic"],
@@ -385,7 +392,7 @@ async def _upsert_trends(
             relevance_score=new_score,
             relevance_reason=t.get("relevance_reason"),
             llm_angle=t.get("llm_angle"),
-            metadata=t.get("metadata") or {},
+            extra_data=t.get("metadata") or {},
             expires_at=expires_at,
         )
         stmt = stmt.on_conflict_do_update(
@@ -459,6 +466,14 @@ async def pull_and_score_all_brands() -> None:
                 logger.exception(
                     "Trend scoring failed for brand %s: %s", brand.name, exc
                 )
+                # The session may be in a "needs rollback" state if the
+                # exception came from a partial UPSERT. Roll back so the
+                # next brand (and the cleanup below) can run on a clean
+                # session instead of cascading the failure.
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
 
         # Cleanup expired rows globally (cheap, one DELETE)
         removed = await _cleanup_expired(db)
