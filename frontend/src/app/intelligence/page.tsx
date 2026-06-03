@@ -523,7 +523,7 @@ export default function IntelligencePage() {
                 Trending Topics
               </CardTitle>
               <CardDescription>
-                Worldwide Google Trends, scored per brand by the LLM. Click a card to draft a post.
+                Worldwide Trends, scored and ranked by AI for each brand. Click a card to generate a post.
               </CardDescription>
             </div>
             <Button
@@ -545,7 +545,7 @@ export default function IntelligencePage() {
         <CardContent>
           {trends.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
-              No trending topics yet — the cron runs every 6h.
+              No trending topics yet.
             </p>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">

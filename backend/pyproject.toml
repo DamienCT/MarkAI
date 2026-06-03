@@ -36,7 +36,6 @@ dependencies = [
     "python-json-logger>=3.0",
     "tenacity>=9.0",
     "duckduckgo-search>=7.0",
-    "pytrends>=4.9",
 ]
 
 [tool.hatch.build.targets.wheel]

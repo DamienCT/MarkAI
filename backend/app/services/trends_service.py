@@ -9,9 +9,9 @@ directly related?" so unrelated-but-creative ideas get through.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote_plus
@@ -42,58 +42,73 @@ TRENDS_TTL_DAYS = 14
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Google Trends pull (worldwide, via pytrends)
+# Google Trends pull (worldwide, via the public RSS "Trending now" feed)
 # ─────────────────────────────────────────────────────────────────────────
+
+# Public, no-auth Google Trends feed. Same data as the trends.google.com
+# "Trending now" page. Each <item> carries title + approx_traffic + first
+# related news article. Stable as of 2026 — replaced the deprecated
+# pytrends.trending_searches endpoint which now returns 404.
+_TRENDS_RSS_URL = "https://trends.google.com/trending/rss?geo={geo}"
+_TRENDS_GEOS = ("US", "GB", "FR", "IN", "JP", "ZA")
+_TRENDS_NS = {"ht": "https://trends.google.com/trending/rss"}
 
 
 async def pull_google_trends_worldwide() -> list[dict[str, Any]]:
     """Return raw worldwide trending searches as a flat list of dicts.
 
-    pytrends is synchronous so we run it in a thread to keep the event
-    loop free. Falls back to an empty list on any failure (the cron is
-    best-effort, not load-bearing).
+    Fetches the public Google Trends RSS feed for several geos in parallel,
+    parses the XML, and dedupes by lower-cased topic. Best-effort — returns
+    an empty list on any total failure.
     """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
+    }
 
-    def _sync_pull() -> list[dict[str, Any]]:
-        try:
-            from pytrends.request import TrendReq
-        except ImportError:
-            logger.error("pytrends not installed — add `pytrends` to requirements.txt")
-            return []
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
 
-        try:
-            pytrends = TrendReq(hl="en-US", tz=0, timeout=(10, 25))
-            # Worldwide daily trending searches. Empty pn = global / US fallback.
-            # We try several geos for breadth, then dedupe by topic name.
-            seen: set[str] = set()
-            out: list[dict[str, Any]] = []
-            for geo in ("united_states", "united_kingdom", "france", "india", "japan"):
-                try:
-                    df = pytrends.trending_searches(pn=geo)
-                    if df is None or df.empty:
-                        continue
-                    # Single-column dataframe of topic strings
-                    for topic in df.iloc[:, 0].tolist():
-                        topic = str(topic).strip()
-                        if not topic or topic.lower() in seen:
-                            continue
-                        seen.add(topic.lower())
-                        out.append({
-                            "topic": topic,
-                            "source": "google",
-                            "source_url": f"https://trends.google.com/trends/explore?q={quote_plus(topic)}",
-                            "raw_metric": None,
-                            "metadata": {"geo": geo},
-                        })
-                except Exception as inner_exc:
-                    logger.debug("pytrends pull failed for geo=%s: %s", geo, inner_exc)
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers) as client:
+        for geo in _TRENDS_GEOS:
+            try:
+                resp = await client.get(_TRENDS_RSS_URL.format(geo=geo))
+                if resp.status_code != 200 or not resp.text:
+                    logger.debug("Trends RSS %s: HTTP %s", geo, resp.status_code)
                     continue
-            return out
-        except Exception as exc:
-            logger.warning("Google Trends pull failed: %s", exc)
-            return []
+                root = ET.fromstring(resp.text)
+            except Exception as exc:
+                logger.debug("Trends RSS %s: fetch/parse failed — %s", geo, exc)
+                continue
 
-    return await asyncio.to_thread(_sync_pull)
+            for item in root.iter("item"):
+                title_el = item.find("title")
+                topic = (title_el.text or "").strip() if title_el is not None else ""
+                if not topic or topic.lower() in seen:
+                    continue
+                seen.add(topic.lower())
+
+                approx_el = item.find("ht:approx_traffic", _TRENDS_NS)
+                raw_metric = (approx_el.text or "").strip() if approx_el is not None else None
+
+                news_url_el = item.find("ht:news_item/ht:news_item_url", _TRENDS_NS)
+                news_url = (news_url_el.text or "").strip() if news_url_el is not None else None
+
+                out.append({
+                    "topic": topic,
+                    "source": "google",
+                    "source_url": news_url
+                    or f"https://trends.google.com/trends/explore?q={quote_plus(topic)}",
+                    "raw_metric": raw_metric,
+                    "metadata": {"geo": geo},
+                })
+
+    if not out:
+        logger.warning("Google Trends RSS returned 0 items across all geos")
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────
