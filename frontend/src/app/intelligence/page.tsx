@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -56,9 +57,15 @@ interface TrendData {
   id: string;
   topic: string;
   platform: string;
+  source_url: string | null;
   relevance_score: number;
-  description: string;
+  relevance_reason: string | null;
+  llm_angle: string | null;
+  velocity: "rising" | "stable" | "falling";
+  raw_metric: string | null;
   discovered_at: string;
+  brand_id: string;
+  brand_name: string;
 }
 
 interface ReportCardConfig {
@@ -323,6 +330,7 @@ export default function IntelligencePage() {
   const [brands, setBrands] = useState<BrandOption[]>([]);
   const [selectedBrand, setSelectedBrand] = useState<string>("all");
   const [loading, setLoading] = useState(true);
+  const [refreshingTrends, setRefreshingTrends] = useState(false);
 
   useEffect(() => {
     setSelectedBrand(getStoredBrandValue());
@@ -361,6 +369,43 @@ export default function IntelligencePage() {
 
     return () => controller.abort();
   }, [selectedBrand]);
+
+  // Manual refresh of trends — kicks the cron job immediately and polls
+  // for fresh rows. The backend job runs in the background and typically
+  // finishes in 30-90s (one pytrends call + one LLM call per brand).
+  const handleRefreshTrends = async () => {
+    if (refreshingTrends) return;
+    setRefreshingTrends(true);
+    try {
+      await api.post("/api/v1/intelligence/trends/refresh");
+      toast.success("Trends refresh started — results will appear in ~1 minute.");
+      // Poll every 15s for up to 2 min, replace `trends` when new data arrives
+      let elapsed = 0;
+      const tick = async () => {
+        try {
+          const params: Record<string, string | number> = { limit: 20 };
+          if (selectedBrand !== "all") params.brand_id = selectedBrand;
+          const fresh = await api.get<TrendData[]>("/api/v1/intelligence/trends", params);
+          if (Array.isArray(fresh) && fresh.length > 0) {
+            setTrends(fresh);
+          }
+        } catch {
+          // poll failure ignored
+        }
+        elapsed += 15;
+        if (elapsed >= 120) {
+          setRefreshingTrends(false);
+        } else {
+          setTimeout(tick, 15000);
+        }
+      };
+      setTimeout(tick, 15000);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail;
+      toast.error(detail || "Could not start the trends refresh");
+      setRefreshingTrends(false);
+    }
+  };
 
   // Find the latest report for each agent type
   function getLatestByType(agentType: string): AgentReport | undefined {
@@ -471,34 +516,114 @@ export default function IntelligencePage() {
       {/* ── Trends Section ────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <TrendingUp className="h-5 w-5 text-primary" />
-            Trending Topics
-          </CardTitle>
-          <CardDescription>Current trends and emerging topics</CardDescription>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <TrendingUp className="h-5 w-5 text-primary" />
+                Trending Topics
+              </CardTitle>
+              <CardDescription>
+                Worldwide Google Trends, scored per brand by the LLM. Click a card to draft a post.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefreshTrends}
+              disabled={refreshingTrends}
+              title="Run the pull + scoring cycle now (managers+)"
+            >
+              {refreshingTrends ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <TrendingUp className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              {refreshingTrends ? "Refreshing..." : "Refresh now"}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {trends.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-8">No trending topics detected</p>
+            <p className="text-sm text-muted-foreground text-center py-8">
+              No trending topics yet — the cron runs every 6h.
+            </p>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {trends.map((trend, idx) => (
-                <div key={trend.id || idx} className="flex items-center justify-between rounded-md border p-3">
-                  <div>
-                    <p className="text-sm font-medium">{trend.topic}</p>
-                    <p className="text-xs text-muted-foreground capitalize">{trend.platform}</p>
-                  </div>
-                  <div className="text-right">
-                    <Badge variant="outline">
-                      {Math.round(trend.relevance_score * 100)}% relevant
-                    </Badge>
-                  </div>
-                </div>
+              {trends.map((trend) => (
+                <TrendCard key={trend.id} trend={trend} />
               ))}
             </div>
           )}
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function velocityIcon(v: TrendData["velocity"]): string {
+  if (v === "rising") return "↑";
+  if (v === "falling") return "↓";
+  return "→";
+}
+
+function velocityClass(v: TrendData["velocity"]): string {
+  if (v === "rising") return "text-emerald-600 dark:text-emerald-400";
+  if (v === "falling") return "text-rose-600 dark:text-rose-400";
+  return "text-muted-foreground";
+}
+
+function TrendCard({ trend }: { trend: TrendData }) {
+  const router = useRouter();
+
+  const openInNewContent = () => {
+    const params = new URLSearchParams({
+      brand_id: trend.brand_id,
+      title: trend.topic,
+      description: trend.llm_angle || trend.relevance_reason || trend.topic,
+      origin: "trend",
+    });
+    router.push(`/content?${params.toString()}`);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={openInNewContent}
+      className="group flex flex-col gap-2 rounded-md border p-3 text-left transition-colors hover:bg-accent hover:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary"
+      title={trend.relevance_reason || "Click to draft a post"}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-sm font-medium leading-tight flex-1 min-w-0">
+          {trend.topic}
+        </p>
+        <span
+          className={`text-base font-semibold shrink-0 ${velocityClass(trend.velocity)}`}
+          aria-label={`Velocity: ${trend.velocity}`}
+        >
+          {velocityIcon(trend.velocity)}
+        </span>
+      </div>
+
+      {trend.llm_angle && (
+        <p className="text-xs text-muted-foreground line-clamp-2">{trend.llm_angle}</p>
+      )}
+
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <Badge
+          variant="secondary"
+          className="text-[10px] bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300"
+        >
+          {trend.brand_name}
+        </Badge>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-muted-foreground capitalize">
+            {trend.platform}
+          </span>
+          <Badge variant="outline" className="text-[10px]">
+            {trend.relevance_score}
+          </Badge>
+        </div>
+      </div>
+    </button>
   );
 }

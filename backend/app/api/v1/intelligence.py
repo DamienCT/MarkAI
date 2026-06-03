@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
@@ -422,61 +422,101 @@ async def edit_report(
 @router.get("/trends")
 async def get_trending_topics(
     brand_id: uuid.UUID | None = None,
+    limit: int = 20,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get trending topics from the latest strategy output."""
-    stmt = (
-        select(AgentRun)
-        .where(
-            AgentRun.agent_type == "strategy",
-            AgentRun.status == "completed",
-        )
-        .order_by(AgentRun.completed_at.desc())
-        .limit(1)
-    )
+    """List trending topics discovered + LLM-scored by the 6h cron.
 
-    if brand_id:
-        stmt = stmt.where(AgentRun.brand_id == brand_id)
+    Returns the highest-scoring topics first. When ``brand_id`` is set,
+    scoped to that brand; otherwise returns the global top across all
+    brands (with the brand_name on each row so the UI can badge it).
+    """
+    from app.models.trending_topic import TrendingTopic
+    from app.models.brand import Brand
+
+    limit = max(1, min(limit, 100))
+
+    stmt = (
+        select(TrendingTopic, Brand.name)
+        .join(Brand, Brand.id == TrendingTopic.brand_id)
+        .where(TrendingTopic.expires_at > func.now())
+        .order_by(
+            TrendingTopic.relevance_score.desc(),
+            TrendingTopic.discovered_at.desc(),
+        )
+        .limit(limit)
+    )
+    if brand_id is not None:
+        stmt = stmt.where(TrendingTopic.brand_id == brand_id)
 
     result = await db.execute(stmt)
-    run = result.scalar_one_or_none()
+    rows = result.all()
 
-    if not run or not run.output_payload:
-        return []
+    return [
+        {
+            "id": str(t.id),
+            "topic": t.topic,
+            "platform": t.source,
+            "source_url": t.source_url,
+            "relevance_score": t.relevance_score,
+            "relevance_reason": t.relevance_reason,
+            "llm_angle": t.llm_angle,
+            "velocity": t.velocity,
+            "raw_metric": t.raw_metric,
+            "discovered_at": t.discovered_at.isoformat() if t.discovered_at else None,
+            "brand_id": str(t.brand_id),
+            "brand_name": brand_name,
+        }
+        for t, brand_name in rows
+    ]
 
-    # Extract themes from strategy output
-    payload = run.output_payload if isinstance(run.output_payload, dict) else {}
-    themes = payload.get("themes", [])
 
-    trends = []
-    for i, theme in enumerate(themes):
-        if isinstance(theme, dict):
-            trends.append(
-                {
-                    "topic": theme.get("name", theme.get("theme", f"Theme {i + 1}")),
-                    "platform": theme.get("platform", "all"),
-                    "relevance_score": theme.get("relevance", theme.get("score", 0.8)),
-                    "description": theme.get("description", ""),
-                    "discovered_at": run.completed_at.isoformat()
-                    if run.completed_at
-                    else None,
-                }
-            )
-        elif isinstance(theme, str):
-            trends.append(
-                {
-                    "topic": theme,
-                    "platform": "all",
-                    "relevance_score": 0.8,
-                    "description": "",
-                    "discovered_at": run.completed_at.isoformat()
-                    if run.completed_at
-                    else None,
-                }
-            )
+# Module-level lock prevents concurrent runs of the trends pull, which is
+# expensive (one pytrends call + one LLM call per active brand). The lock
+# is reset when the background task finishes — see _run_trends_refresh.
+_trends_refresh_in_progress = False
 
-    return trends
+
+async def _run_trends_refresh() -> None:
+    """Background task wrapper that resets the lock when done."""
+    global _trends_refresh_in_progress
+    try:
+        from app.services.trends_service import pull_and_score_all_brands
+
+        await pull_and_score_all_brands()
+    except Exception as exc:
+        logger.exception("Manual trends refresh failed: %s", exc)
+    finally:
+        _trends_refresh_in_progress = False
+
+
+@router.post("/trends/refresh", status_code=202)
+@_limiter.limit("3/hour")
+async def trigger_trends_refresh(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+):
+    """Manually trigger the trends pull + LLM scoring without waiting for
+    the 6h cron. Returns immediately; the work runs in the background.
+
+    Capped at 3 calls/hour per IP (slowapi) + a global in-flight lock so
+    overlapping clicks don't spawn parallel runs.
+    """
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    global _trends_refresh_in_progress
+    if _trends_refresh_in_progress:
+        raise HTTPException(
+            status_code=409,
+            detail="A trends refresh is already in progress — wait for it to finish.",
+        )
+
+    _trends_refresh_in_progress = True
+    background_tasks.add_task(_run_trends_refresh)
+    return {"status": "started", "message": "Trends refresh kicked off in the background."}
 
 
 class WorkflowTrigger(BaseModel):

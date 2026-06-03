@@ -94,6 +94,18 @@ def setup_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Every 6 hours — pull Google Trends and LLM-score per active brand
+    from app.services.trends_service import pull_and_score_all_brands
+
+    scheduler.add_job(
+        pull_and_score_all_brands,
+        IntervalTrigger(hours=6),
+        id="trends_pull",
+        name="Pull trending topics + LLM score per brand",
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+        replace_existing=True,
+    )
+
     # Start the scheduler on the current (running) event loop.
     # This MUST happen inside an async context so get_event_loop()
     # returns the uvicorn loop, not a new detached one.

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useRef, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Plus, LayoutGrid, List } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -108,6 +109,27 @@ export default function ContentStudioPage() {
       abortRef.current?.abort();
     };
   }, [fetchItems]);
+
+  // Open the New Content dialog pre-filled when arriving from a trend card
+  // (or any other "Create post about X" CTA). Reads ?brand_id&title&description
+  // from the URL, opens the dialog, then clears the params.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  useEffect(() => {
+    const brandIdParam = searchParams.get("brand_id");
+    const titleParam = searchParams.get("title");
+    const descriptionParam = searchParams.get("description");
+    if (!brandIdParam && !titleParam && !descriptionParam) return;
+
+    if (brandIdParam) setFormBrandId(brandIdParam);
+    if (titleParam) setFormTitle(titleParam);
+    if (descriptionParam) setFormDescription(descriptionParam);
+    setDialogOpen(true);
+
+    // Strip the params so a refresh doesn't re-open the dialog
+    router.replace("/content", { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // When brand selection changes in the form, update available channels
   useEffect(() => {

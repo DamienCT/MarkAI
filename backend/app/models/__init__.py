@@ -11,6 +11,7 @@ from app.models.adaptation import Adaptation
 from app.models.competitor import Competitor
 from app.models.product import Product
 from app.models.event import Event
+from app.models.trending_topic import TrendingTopic
 from app.models.ai_model import AIModelCategory, AIModel, AIModelSelection
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "Competitor",
     "Product",
     "Event",
+    "TrendingTopic",
     "AIModelCategory",
     "AIModel",
     "AIModelSelection",
