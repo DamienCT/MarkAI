@@ -72,16 +72,19 @@ export default function ContentStudioPage() {
       if (brandId) params.brand_id = brandId;
       const data = await api.get<CalendarItem[]>("/api/v1/calendar", params, { signal });
       const allItems = Array.isArray(data) ? data : [];
-      // Filter queued/planned items to next 7 days only — other statuses show regardless
+      // Queued/planned items appear in the kanban when:
+      //  - they have NO scheduled_at (user can create posts without a date), OR
+      //  - they ARE scheduled within the next 7 days
+      // Other statuses (working, in_review, scheduled, etc.) always show.
       const now = new Date();
       const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
       const filtered = allItems.filter((item) => {
         if (item.status === "queued" || item.status === "planned") {
-          if (!item.scheduled_at) return false;
+          if (!item.scheduled_at) return true;
           const d = new Date(item.scheduled_at);
           return d >= now && d <= horizon;
         }
-        return true; // Show all other statuses (working, in_review, scheduled, etc.)
+        return true;
       });
       setItems(filtered);
     } catch (err) {

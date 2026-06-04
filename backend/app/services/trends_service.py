@@ -227,7 +227,17 @@ _SCORING_SYSTEM_PROMPT = (
     "- score 0..100 — 50+ to keep, higher = stronger fit\n"
     "- reason: 1 short sentence explaining the bridge to this brand\n"
     "- angle: a punchy 1-2 sentence pitch (specific, actionable, voice "
-    "already adapted to the brand)\n"
+    "already adapted to the brand). MUST embed a CONCRETE VISUAL CUE "
+    "matching the trend's context — e.g. 'with the football pitch on the "
+    "TV behind' for a football match trend, 'on Roland Garros clay court' "
+    "for a tennis trend, 'with a Christmas tree and red ribbons' for a "
+    "December trend, 'fireworks at midnight' for New Year, 'red roses on "
+    "the table' for Valentine's, 'a basketball court scene' for an NBA "
+    "trend. Without this noun the downstream image model produces a "
+    "generic scene. Also: name AT MOST ONE brand-product in the angle "
+    "(the hero). Describe any companions in GENERIC terms ('charcuterie "
+    "spread', 'sharing plates', 'cheese board') — never name a second "
+    "brand-product, the image can only have one hero.\n"
     "- already_planned: true ONLY if a calendar item clearly covers it"
 )
 
