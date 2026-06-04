@@ -1656,13 +1656,24 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"real DSLR camera, NOT an artwork, NOT a rendering, NOT an illustration."
         )
     elif is_lifestyle_only or not has_product_image:
-        # Pure lifestyle — no product in the image
+        # Pure lifestyle — no product in the image.
+        # If the calendar item has a brief, use it as the scene description so
+        # the visual direction the user wrote (e.g. "Roland Garros court and
+        # player visual cue") actually reaches the image model. The enhancer
+        # is skipped for briefs >= 50 words and used to silently drop those
+        # briefs here — we now inject them verbatim as the SCENE block.
+        brief_text = (item.get("content_brief") or item.get("description") or "").strip()
+        scene_block = (
+            f"SCENE: {sanitize_for_prompt(brief_text, max_length=4000)}\n\n"
+            if brief_text
+            else "Natural human environment, ordinary real-world setting. "
+        )
         prompt_text = (
             f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "
-            f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
+            f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post.\n\n"
+            f"{scene_block}"
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. "
             f"Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
-            f"Natural human environment, ordinary real-world setting. "
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"
@@ -1677,13 +1688,22 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"Do NOT include any products. Focus on the lifestyle and mood."
         )
     else:
-        # Scene with generic product placeholder — will be replaced by Gemini later
+        # Scene with generic product placeholder — will be replaced by Gemini later.
+        # Same brief-injection logic as the lifestyle branch: the user's brief
+        # is the source of truth for the scene; the template only adds the
+        # placeholder + photographic guards on top.
+        brief_text = (item.get("content_brief") or item.get("description") or "").strip()
+        scene_block = (
+            f"SCENE: {sanitize_for_prompt(brief_text, max_length=4000)}\n\n"
+            if brief_text
+            else "Natural human environment, ordinary real-world setting. "
+        )
         prompt_text = (
             f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "
-            f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post. "
+            f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post.\n\n"
+            f"{scene_block}"
             f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. "
             f"Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
-            f"Natural human environment, ordinary real-world setting. "
             f"Include a realistic unlabeled neutral product container with authentic "
             f"material textures (matte plastic or paperboard, slight wear, natural "
             f"shadows, NO writing on it) placed naturally in the scene. "
