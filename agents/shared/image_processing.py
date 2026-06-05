@@ -180,6 +180,36 @@ def analyze_logo_region_brightness(
     return mean_brightness, variance
 
 
+def analyze_brightness_at(
+    image_data: bytes,
+    anchor: str,
+    logo_w: int,
+    logo_h: int,
+    margin: int | None = None,
+) -> tuple[float, float]:
+    """Brightness + variance of the region at a SPECIFIC corner anchor.
+
+    Unlike ``analyze_logo_region_brightness`` (which only ever samples the
+    two top corners via ``find_best_logo_position``), this samples wherever
+    the logo will actually be placed — needed when the vision-critic
+    relocates the logo to a bottom corner and we must re-pick the color
+    variant for that new region. Returns ``(mean_brightness, variance)``.
+    """
+    img = Image.open(BytesIO(image_data)).convert("RGB")
+    arr = np.array(img, dtype=np.float32)
+    w, h = img.size
+    if margin is None:
+        margin = int(w * 0.06)
+    lx, ly = _anchor_to_position(anchor, logo_w, logo_h, w, h, margin)
+    lx = max(0, min(lx, max(0, w - logo_w)))
+    ly = max(0, min(ly, max(0, h - logo_h)))
+    region = arr[ly : ly + logo_h, lx : lx + logo_w]
+    if region.size == 0:
+        return 128.0, 0.0
+    gray = 0.299 * region[:, :, 0] + 0.587 * region[:, :, 1] + 0.114 * region[:, :, 2]
+    return float(np.mean(gray)), float(np.var(gray))
+
+
 def select_logo_variant(
     brightness: float,
     variance: float,
@@ -232,11 +262,11 @@ def select_logo_variant(
 # same width and should be scaled down. Tuned smaller after user feedback
 # that the overlay was visually overpowering the product.
 _LOGO_SCALE_BY_VARIANT = {
-    "primary": 0.17,
-    "light": 0.17,
-    "dark": 0.17,
-    "icon": 0.10,
-    "watermark": 0.10,
+    "primary": 0.24,
+    "light": 0.24,
+    "dark": 0.24,
+    "icon": 0.15,
+    "watermark": 0.15,
 }
 
 
@@ -331,6 +361,51 @@ def overlay_logo_and_text(
             )
         else:
             lx, ly = find_best_logo_position(image_data, logo_w, logo_h, margin=logo_margin)
+
+        # --- Adaptive contrast halo ---
+        # Keeps the "no plate" look but guarantees the logo reads on any
+        # backdrop. The glow is the OPPOSITE luminance of the logo itself
+        # (a dark glow under a light/white logo, a light glow under a dark
+        # logo), plus a faint offset drop-shadow for depth. This is what
+        # rescues a white wordmark that lands on a light surface — the
+        # exact failure we saw with the FancyFinds posts.
+        logo_rgb = np.asarray(logo.convert("RGB"), dtype=np.float32)
+        logo_a = np.asarray(logo.split()[3], dtype=np.float32)
+        opaque = logo_a > 24
+        if opaque.any():
+            lum = (
+                0.299 * logo_rgb[..., 0]
+                + 0.587 * logo_rgb[..., 1]
+                + 0.114 * logo_rgb[..., 2]
+            )
+            logo_lum = float(lum[opaque].mean())
+        else:
+            logo_lum = 128.0
+        glow_color = (0, 0, 0) if logo_lum > 128 else (255, 255, 255)
+
+        halo_pad = max(8, int(logo_w * 0.14))
+        halo_size = (logo_w + 2 * halo_pad, logo_h + 2 * halo_pad)
+        blur_r = max(4, int(logo_w * 0.06))
+
+        # Silhouette = the logo's own alpha, thickened then blurred.
+        sil = Image.new("L", halo_size, 0)
+        sil.paste(logo.split()[3], (halo_pad, halo_pad))
+        sil = ImageEnhance.Brightness(sil).enhance(1.7)
+        sil = sil.filter(ImageFilter.GaussianBlur(radius=blur_r))
+
+        # Faint dark drop-shadow first (furthest back), offset down-right.
+        shadow_alpha = sil.point(lambda v: int(v * 0.35))
+        shadow = Image.new("RGBA", halo_size, (0, 0, 0, 0))
+        shadow.putalpha(shadow_alpha)
+        off = max(2, int(logo_w * 0.012))
+        overlay.paste(shadow, (lx - halo_pad + off, ly - halo_pad + off), shadow)
+
+        # Contrast glow directly behind the logo (capped alpha = subtle).
+        glow_alpha = sil.point(lambda v: int(v * 0.6))
+        glow = Image.new("RGBA", halo_size, (*glow_color, 0))
+        glow.putalpha(glow_alpha)
+        overlay.paste(glow, (lx - halo_pad, ly - halo_pad), glow)
+
         overlay.paste(logo, (lx, ly), logo)
 
     # --- Text overlay (frosted glass card) ---

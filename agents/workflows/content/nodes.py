@@ -30,6 +30,7 @@ from shared.image_processing import (
     scale_for_logo_variant,
     generate_mockup,
     analyze_logo_region_brightness,
+    analyze_brightness_at,
     select_logo_variant,
     resize_preserve_aspect,
     aspect_hint_for_size,
@@ -2342,12 +2343,16 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         from PIL import Image as _PILImage
         from io import BytesIO as _BytesIO
         _tmp_img = _PILImage.open(_BytesIO(image_data))
-        approx_logo_w = int(_tmp_img.width * 0.18)
+        _img_w = _tmp_img.width
+        approx_logo_w = int(_img_w * 0.24)
         approx_logo_h = int(approx_logo_w * 0.5)  # typical logo aspect ratio
         _tmp_img.close()
 
+        # Sample with the SAME margin the overlay uses (6% of width), not the
+        # 40px default — otherwise the variant is picked for a region the logo
+        # never actually occupies.
         brightness, variance = analyze_logo_region_brightness(
-            image_data, approx_logo_w, approx_logo_h
+            image_data, approx_logo_w, approx_logo_h, margin=int(_img_w * 0.06)
         )
 
         # Use the brightness heuristic for the variant — the same default
@@ -2362,6 +2367,28 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             "(brightness=%.0f, variance=%.0f, available=%s)",
             chosen_label, brightness, variance, list(available_logos.keys()),
         )
+
+        # Let the vision agent LOOK at the clean photo and judge where the
+        # logo + text should go (empty backdrops, different bands) and which
+        # variant contrasts with the logo's corner. The brightness heuristic
+        # above stays as the fallback when the call fails or is incomplete.
+        plan_logo_anchor: str | None = None
+        plan_text_anchor: str | None = None
+        plan = await _vision_plan_placement(image_data, list(available_logos.keys()))
+        if plan:
+            if plan.get("logo_variant") in available_logos:
+                chosen_label = plan["logo_variant"]
+            # Only honour the corners as a pair (both valid, different bands);
+            # otherwise fall back fully to the heuristic to avoid a collision.
+            if plan.get("logo_anchor") and plan.get("text_anchor"):
+                plan_logo_anchor = plan["logo_anchor"]
+                plan_text_anchor = plan["text_anchor"]
+            logger.info(
+                "Placement plan: logo=%s text=%s variant=%s (%s)",
+                plan_logo_anchor, plan_text_anchor, chosen_label,
+                plan.get("reason", ""),
+            )
+
         chosen_url = available_logos[chosen_label]
 
         # Download and convert the chosen logo
@@ -2394,21 +2421,19 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         text_line1 = state.get("hook", theme)
         text_line2 = _clean_website_for_overlay(brand.get("website_url"))
 
-        # Apply overlay with the legacy hardcoded defaults: text card pins
-        # to bottom-left, logo lands in whichever top corner has the lowest
-        # local variance. This is the placement the image-gen prompt has
-        # always asked the model to leave clean ("reserve bottom-left for
-        # text, top-right for logo"), so the two stay in sync by default.
-        # If the model didn't respect the composition rule, the downstream
-        # review_branding node spots it and re-runs the overlay.
+        # Apply overlay using the placement the vision agent chose by looking
+        # at the photo. If the agent didn't return a usable pair, anchors stay
+        # None and the overlay falls back to the legacy heuristic (text
+        # bottom-left, logo on the lowest-variance top corner). Either way the
+        # downstream review_branding node re-verifies and re-runs if needed.
         branded_bytes = overlay_logo_and_text(
             image_data,
             logo_png,
             text_line1=text_line1,
             text_line2=text_line2,
             logo_scale=scale_for_logo_variant(chosen_label),
-            # logo_anchor=None  → use find_best_logo_position variance fallback
-            # text_anchor=None  → bottom-left default inside the overlay fn
+            logo_anchor=plan_logo_anchor,
+            text_anchor=plan_text_anchor,
         )
 
         # Upload branded image to MinIO
@@ -2441,6 +2466,111 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
 
 
 _REVIEW_VALID_ANCHORS = {"top-left", "top-right", "bottom-left", "bottom-right"}
+
+
+async def _vision_plan_placement(
+    clean_image_data: bytes,
+    available_logo_variants: list[str],
+) -> dict[str, Any] | None:
+    """Ask a vision LLM to LOOK at the clean photo (pre-overlay) and decide
+    where the logo + text card should go and which logo color variant to use.
+
+    This is the "agent looks at the photo and judges where to put it" step —
+    it runs BEFORE anything is drawn, so the logo lands on a genuinely empty
+    backdrop instead of wherever the variance heuristic guesses. The downstream
+    ``review_branding`` node then re-verifies the rendered result.
+
+    Returns None on failure (caller falls back to the brightness heuristic).
+    Otherwise ``{"logo_anchor", "text_anchor", "logo_variant", "reason"}`` with
+    anchors validated to the four corners and forced into DIFFERENT bands.
+    """
+    import base64 as _b64
+
+    b64 = _b64.b64encode(clean_image_data).decode("ascii")
+    data_url = f"data:image/png;base64,{b64}"
+    variant_options_str = "|".join(
+        f'"{v}"' for v in available_logo_variants or ["primary", "dark", "light"]
+    )
+
+    system = (
+        "You decide where to place a brand logo and a text card on a social "
+        "photo, BEFORE they are drawn. Look carefully at the photo and find "
+        "the corners whose backdrop is empty/uniform (wall, sky, table, soft "
+        "blur). NEVER place either over the hero product, food, drinks, faces, "
+        "hands, or packaging.\n\n"
+        "Choose:\n"
+        "- logo_anchor: the emptiest, cleanest corner for the small logo.\n"
+        "- text_anchor: an empty corner for the text card, in a DIFFERENT "
+        "horizontal band than the logo (one must be top-*, the other "
+        "bottom-*). The text card can span up to 72% of the width, so "
+        "same-band placement collides.\n"
+        f"- logo_variant: pick from {variant_options_str}. Semantics: 'dark' "
+        "is a LIGHT/white logo (use on DARK backdrops); 'light' is a DARK logo "
+        "(use on LIGHT backdrops); 'primary' is the default mid-tone. Pick the "
+        "variant that will CONTRAST against the logo_anchor backdrop so the "
+        "logo reads at a glance.\n\n"
+        "Return strict JSON only:\n"
+        "{\n"
+        '  "logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
+        '  "text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
+        f'  "logo_variant": {variant_options_str},\n'
+        '  "reason": "which areas are empty and why these corners"\n'
+        "}"
+    )
+
+    messages = [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Plan the logo and text placement for this photo."},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+
+    try:
+        result = await chat_completion(
+            messages,
+            category="vision",
+            temperature=0.2,
+            max_tokens=300,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        logger.warning("plan_placement LLM call failed: %s", exc)
+        return None
+
+    plan = parse_llm_json(str(result), fallback=None)
+    if not isinstance(plan, dict):
+        logger.warning("plan_placement returned non-dict: %r", plan)
+        return None
+
+    logo_anchor = str(plan.get("logo_anchor", "")).strip().lower()
+    text_anchor = str(plan.get("text_anchor", "")).strip().lower()
+    variant = str(plan.get("logo_variant", "")).strip().lower()
+
+    if logo_anchor not in _REVIEW_VALID_ANCHORS:
+        logo_anchor = ""
+    if text_anchor not in _REVIEW_VALID_ANCHORS:
+        text_anchor = ""
+    # Force different horizontal bands — drop the logo anchor on collision so
+    # the caller falls back to the heuristic (which keeps the logo off the
+    # text's bottom band).
+    if logo_anchor and text_anchor:
+        lb = "top" if logo_anchor.startswith("top") else "bottom"
+        tb = "top" if text_anchor.startswith("top") else "bottom"
+        if lb == tb:
+            logo_anchor = ""
+    if variant and variant not in (available_logo_variants or []):
+        variant = ""
+
+    return {
+        "logo_anchor": logo_anchor,
+        "text_anchor": text_anchor,
+        "logo_variant": variant,
+        "reason": str(plan.get("reason", ""))[:300],
+    }
 
 
 async def _vision_review_branding(
@@ -2658,6 +2788,45 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
         effective_logo = (
             "bottom-right" if effective_text == "top-left" else "bottom-left"
         )
+
+    # Re-pick the color variant for the region the logo will ACTUALLY occupy.
+    # find_best_logo_position only ever samples the top corners, so when the
+    # critic relocates the logo to a bottom corner the original variant
+    # (chosen for a top region) can be wrong — e.g. a white wordmark landing
+    # on a light surface (the FancyFinds failure). Sample the destination
+    # corner and reselect from the brand's available variants.
+    if effective_logo:
+        try:
+            from PIL import Image as _PILImage
+            from io import BytesIO as _BytesIO
+            _ci = _PILImage.open(_BytesIO(composed_bytes))
+            _cw = _ci.width
+            _ci.close()
+            _lw = int(_cw * scale_for_logo_variant(current_variant))
+            _lh = int(_lw * 0.5)
+            b_at, v_at = analyze_brightness_at(composed_bytes, effective_logo, _lw, _lh)
+            region_variant = select_logo_variant(b_at, v_at, available_variants)
+            if region_variant and region_variant != current_variant:
+                from shared.config import settings as _settings
+                _api_base = getattr(_settings, "BACKEND_URL", "") or "http://backend:8000"
+                _info = logos_cfg.get(region_variant) or {}
+                _url = _info.get("url") if isinstance(_info, dict) else None
+                if _url and _url.startswith("/"):
+                    _url = f"{_api_base}{_url}"
+                if _url:
+                    _raw = await _download_logo_bytes(_url)
+                    if _raw:
+                        _conv = _bytes_to_logo_png(_raw)
+                        if _conv:
+                            logo_png = _conv
+                            current_variant = region_variant
+                            logger.info(
+                                "review_branding: re-picked variant for %s region "
+                                "-> %s (brightness=%.0f)",
+                                effective_logo, region_variant, b_at,
+                            )
+        except Exception as exc:
+            logger.warning("review_branding: region variant re-pick failed: %s", exc)
 
     new_branded = overlay_logo_and_text(
         composed_bytes,
