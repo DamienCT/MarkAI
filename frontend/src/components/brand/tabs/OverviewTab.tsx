@@ -338,6 +338,10 @@ export function OverviewTab({
             const contentRunning = contentStats.in_progress > 0;
             const contentFailed = contentStats.failed;
             const contentTotal = contentStats.total;
+            // 7-day window dates (matches the backend NOW()→NOW()+7d count)
+            const _fmtDay = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+            const weekStart = _fmtDay(new Date());
+            const weekEnd = _fmtDay(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
             const allReportsDone = REPORT_STAGES.every(s => {
               const r = latestByType[s.key] || (("altKey" in s && s.altKey) ? latestByType[s.altKey] : undefined);
               return r?.status === "completed";
@@ -485,7 +489,7 @@ export function OverviewTab({
                             <p className="text-sm">
                               <span className="font-medium">{contentCompleted}</span>
                               <span className="text-muted-foreground">
-                                {contentTotal > 0 ? ` of ${contentTotal}` : ""} content item{contentCompleted !== 1 ? "s" : ""} generated
+                                {contentTotal > 0 ? ` of ${contentTotal}` : ""} post{contentCompleted !== 1 ? "s" : ""} generated this week ({weekStart} – {weekEnd})
                               </span>
                               {contentFailed > 0 && (
                                 <span className="text-red-500 ml-1">({contentFailed} failed)</span>

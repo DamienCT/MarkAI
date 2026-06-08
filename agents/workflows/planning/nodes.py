@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -207,7 +208,7 @@ async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
 async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     brand_id = state["brand_id"]
     strategy = state.get("strategy", {})
-    scope_weeks = state.get("scope_weeks", 4)
+    scope_weeks = state.get("scope_weeks", 52)
     enabled_channels = state.get("enabled_channels", ["instagram"])
     events = state.get("events", [])
     events_block = _format_events_for_prompt(events)
@@ -368,12 +369,11 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     existing_items = state.get("existing_items", [])
     events = state.get("events", [])
 
-    # Calendar items are scoped to the next `scope_weeks` weeks (default 2)
-    # so a planning run finishes in ~2 min rather than ~36 min. The strategy
-    # document the LLM still references can describe a full year — we just
-    # don't materialise calendar_items beyond the configured horizon.
+    # Calendar items cover the full year (Jan 1 → Dec 31). The batch loop
+    # runs all week×channel combinations in parallel (semaphore=8) so the
+    # full-year run completes in ~5 min instead of the old ~36 min sequential.
     now = datetime.now(timezone.utc)
-    scope_weeks = max(1, int(state.get("scope_weeks", 2) or 2))
+    scope_weeks = max(1, int(state.get("scope_weeks", 52) or 52))
     start_date_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end_date_dt = start_date_dt + timedelta(weeks=scope_weeks)
 
@@ -574,67 +574,65 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         if rot_match:
             pillar_rotation = rot_match.group(1).strip()
 
-    # ── Generate per-channel per-week ──────────────────────────────
+    # ── Generate per-channel per-week (parallel) ───────────────
     all_items: list[dict[str, Any]] = []
     batch_size_days = 7
-    current_dt = start_date_dt
-    batch_num = 0
-    # Track expected vs actual for summary
     expected_total = 0
     channel_counts: dict[str, int] = {ch: 0 for ch in enabled_channels}
 
-    def _build_dedup_context(channel: str) -> str:
-        """Build dedup context filtered to this channel from existing + generated items."""
-        combined = list(existing_items) + all_items
-        channel_items = [i for i in combined if (i.get("platform") or i.get("channel", "")) == channel]
-        if not channel_items:
-            return ""
-        lines = []
-        for i in channel_items[-30:]:
-            date_val = i.get("scheduled_at") or i.get("scheduled_date", "")
-            date_str = str(date_val)[:10] if date_val else ""
-            theme = i.get("theme") or i.get("title", "")
-            sub = i.get("weekly_sub_theme", "")
-            pillar = i.get("pillar", "")
-            lines.append(f"{date_str} | {pillar} | {theme} | {sub}")
-        summary = "\n".join(lines)
-        return (
-            f"ALREADY SCHEDULED {channel.upper()} CONTENT (do NOT repeat these):\n"
-            f"{summary}\n\n"
-        )
+    # Pre-build all (batch_start, batch_end) windows for the full year
+    batch_windows: list[tuple[datetime, datetime]] = []
+    cur = start_date_dt
+    while cur < end_date_dt:
+        bend = min(cur + timedelta(days=batch_size_days), end_date_dt)
+        batch_windows.append((cur, bend))
+        cur = bend
 
-    while current_dt < end_date_dt:
-        batch_end = min(current_dt + timedelta(days=batch_size_days), end_date_dt)
-        batch_start_str = current_dt.strftime("%Y-%m-%d")
-        batch_last_day = (batch_end - timedelta(days=1))
-        batch_end_str = batch_last_day.strftime("%Y-%m-%d")
-        batch_month_name = current_dt.strftime("%B")
-        month_strategy = _extract_month_strategy(batch_month_name)
+    for _ in batch_windows:
+        for ch in enabled_channels:
+            expected_total += channel_cadence.get(ch, 3)
 
-        # Filter events that overlap this week-batch so the LLM schedules
-        # on the exact event date rather than scattering across the month.
-        week_events: list[dict[str, Any]] = []
-        for ev in events:
-            ev_start = ev.get("start")
-            if not ev_start:
-                continue
-            ev_end = ev.get("end") or ev_start
-            if ev_end >= batch_start_str and ev_start <= batch_end_str:
-                week_events.append(ev)
-        week_events_block = (
-            _format_events_for_prompt(week_events)
-            if week_events
-            else "(no significant events this week — schedule regular content only)"
-        )
+    # Semaphore caps concurrent LLM calls — 8 at a time avoids rate-limit
+    # spikes while keeping wall-clock time to ~5 min for a full year.
+    _sem = asyncio.Semaphore(8)
 
-        # Generate for EACH channel separately
-        for channel in enabled_channels:
-            batch_num += 1
+    async def _run_batch(batch_idx: int, batch_start: datetime, batch_end: datetime, channel: str) -> list[dict]:
+        async with _sem:
+            b_start_str = batch_start.strftime("%Y-%m-%d")
+            b_last_day = batch_end - timedelta(days=1)
+            b_end_str = b_last_day.strftime("%Y-%m-%d")
+            b_month = batch_start.strftime("%B")
+            month_strategy = _extract_month_strategy(b_month)
             posts_needed = channel_cadence.get(channel, 3)
-            expected_total += posts_needed
             best_days = channel_best_days.get(channel, "")
             best_times = channel_best_times.get(channel, "")
-            dedup = _build_dedup_context(channel)
+
+            # Dedup from DB-existing items only (no cross-batch deps in parallel mode)
+            ch_existing = [
+                i for i in existing_items
+                if (i.get("platform") or i.get("channel", "")) == channel
+            ]
+            dedup_lines = [
+                f"{str(i.get('scheduled_at') or i.get('scheduled_date', ''))[:10]} | "
+                f"{i.get('pillar', '')} | {i.get('theme') or i.get('title', '')} | "
+                f"{i.get('weekly_sub_theme', '')}"
+                for i in ch_existing[-30:]
+            ]
+            dedup = (
+                f"ALREADY SCHEDULED {channel.upper()} CONTENT (do NOT repeat these):\n"
+                + "\n".join(dedup_lines) + "\n\n"
+            ) if dedup_lines else ""
+
+            week_events = [
+                ev for ev in events
+                if ev.get("start") and (ev.get("end") or ev["start"]) >= b_start_str
+                and ev["start"] <= b_end_str
+            ]
+            week_events_block = (
+                _format_events_for_prompt(week_events)
+                if week_events
+                else "(no significant events this week — schedule regular content only)"
+            )
 
             prompt = [
                 {
@@ -642,7 +640,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                     "content": (
                         "You are a content calendar planner. Write all content in English.\n\n"
                         f"Generate EXACTLY {posts_needed} posts for {channel.upper()} "
-                        f"for the week of {batch_start_str} through {batch_end_str}.\n\n"
+                        f"for the week of {b_start_str} through {b_end_str}.\n\n"
                         "IMPORTANT: You MUST return a JSON array with the items. "
                         "Do NOT return error messages, questions, or clarification requests. "
                         "Use the information provided and make reasonable assumptions for anything missing.\n\n"
@@ -684,32 +682,23 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=2000)}\n\n"
                         f"SIGNIFICANT EVENTS THIS WEEK (schedule on the event date, do NOT invent others):\n"
                         f"{week_events_block}\n\n"
-                        f"STRATEGY FOR {batch_month_name.upper()} ({channel.upper()}):\n"
+                        f"STRATEGY FOR {b_month.upper()} ({channel.upper()}):\n"
                         f"{sanitize_for_prompt(month_strategy, max_length=5000)}\n\n"
                         f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=1500)}"
                     ),
                 },
             ]
 
-            # Debug log: what context is the LLM getting?
             logger.info(
-                "PROMPT_DEBUG batch=%d channel=%s week=%s→%s posts_needed=%d best_days=%s best_times=%s strategy_chars=%d",
-                batch_num, channel, batch_start_str, batch_end_str,
-                posts_needed, best_days[:50] if best_days else "none",
-                best_times[:50] if best_times else "none", len(month_strategy),
+                "PROMPT_DEBUG batch=%d channel=%s week=%s→%s posts_needed=%d",
+                batch_idx, channel, b_start_str, b_end_str, posts_needed,
             )
 
             try:
-                result = await chat_completion(
-                    prompt,
-                    temperature=0.5,
-                    max_tokens=4096,
-                )
-
-                # Debug log: what did the LLM return?
+                result = await chat_completion(prompt, temperature=0.5, max_tokens=4096)
                 logger.info(
                     "RESPONSE_DEBUG batch=%d channel=%s response_chars=%d preview=%s",
-                    batch_num, channel, len(result), result[:300],
+                    batch_idx, channel, len(result), result[:300],
                 )
 
                 batch_items = parse_llm_json(result, fallback=[])
@@ -721,27 +710,24 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                             (v for v in batch_items.values() if isinstance(v, list)), []
                         )
 
-                # Force correct platform on all items
                 for item in batch_items:
                     item["platform"] = channel
 
                 items_got = len(batch_items)
 
-                # ── Retry if under-producing ──────────────────────
                 if items_got < posts_needed and items_got > 0:
                     missing = posts_needed - items_got
                     logger.warning(
                         "RETRY batch=%d channel=%s: got %d/%d, retrying for %d more",
-                        batch_num, channel, items_got, posts_needed, missing,
+                        batch_idx, channel, items_got, posts_needed, missing,
                     )
-                    # Build list of dates already used
                     used_dates = [i.get("scheduled_date", "") for i in batch_items]
                     retry_prompt = [
                         {
                             "role": "system",
                             "content": (
                                 f"Generate EXACTLY {missing} more {channel.upper()} posts "
-                                f"for {batch_start_str} through {batch_end_str}. "
+                                f"for {b_start_str} through {b_end_str}. "
                                 f"Do NOT use these dates (already taken): {', '.join(used_dates)}. "
                                 f"Best days: {best_days or 'any remaining day'}. "
                                 f"Best times: {best_times or '07:00, 13:00, 20:00'}. "
@@ -765,21 +751,33 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                 if not batch_items:
                     logger.warning(
                         "BATCH_ZERO batch=%d channel=%s produced 0 items — response: %s",
-                        batch_num, channel, result[:500],
+                        batch_idx, channel, result[:500],
                     )
                 else:
-                    channel_counts[channel] = channel_counts.get(channel, 0) + len(batch_items)
-                    logger.info(
-                        "BATCH_OK batch=%d channel=%s produced %d items",
-                        batch_num, channel, len(batch_items),
-                    )
+                    logger.info("BATCH_OK batch=%d channel=%s produced %d items", batch_idx, channel, len(batch_items))
 
-                all_items.extend(batch_items)
+                return batch_items
 
             except Exception as batch_exc:
-                logger.error("BATCH_FAIL batch=%d channel=%s: %s", batch_num, channel, batch_exc)
+                logger.error("BATCH_FAIL batch=%d channel=%s: %s", batch_idx, channel, batch_exc)
+                return []
 
-        current_dt = batch_end
+    # Launch all batch×channel tasks concurrently
+    tasks = [
+        _run_batch(
+            idx * len(enabled_channels) + ch_idx,
+            bs, be, ch,
+        )
+        for idx, (bs, be) in enumerate(batch_windows)
+        for ch_idx, ch in enumerate(enabled_channels)
+    ]
+    batch_results = await asyncio.gather(*tasks)
+    for r in batch_results:
+        all_items.extend(r)
+        for item in r:
+            ch = item.get("platform", "")
+            if ch in channel_counts:
+                channel_counts[ch] += 1
 
     # ── Batch summary ─────────────────────────────────────────────
     logger.info(
@@ -832,7 +830,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     # mirroring what generate_calendar_items emitted above. Items beyond the
     # horizon get skipped by store_calendar_items via max_date.
     now = datetime.now(timezone.utc)
-    scope_weeks = max(1, int(state.get("scope_weeks", 2) or 2))
+    scope_weeks = max(1, int(state.get("scope_weeks", 52) or 52))
     max_date = (
         now.replace(hour=0, minute=0, second=0, microsecond=0)
         + timedelta(weeks=scope_weeks, days=1)  # +1 day cushion for end-of-window items

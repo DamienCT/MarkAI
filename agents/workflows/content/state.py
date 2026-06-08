@@ -52,6 +52,8 @@ class ContentState(TypedDict, total=False):
     composed_image: str | None
     logo_png_data: bytes | None
     logo_variant_used: str | None
+    logo_xy: tuple[float, float] | None
+    text_anchor_used: str | None
 
     # Vision-critic review after branding (decides whether to re-render)
     branding_review: dict[str, Any] | None

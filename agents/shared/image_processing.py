@@ -210,6 +210,31 @@ def analyze_brightness_at(
     return float(np.mean(gray)), float(np.var(gray))
 
 
+def analyze_brightness_at_xy(
+    image_data: bytes,
+    x: float,
+    y: float,
+    logo_w: int,
+    logo_h: int,
+) -> tuple[float, float]:
+    """Brightness + variance of the logo-sized region CENTERED at the
+    normalized point ``(x, y)`` (0..1). Used for free (x, y) logo placement so
+    the color variant is picked for the exact spot the logo will occupy.
+    """
+    img = Image.open(BytesIO(image_data)).convert("RGB")
+    arr = np.array(img, dtype=np.float32)
+    w, h = img.size
+    lx = int(x * w - logo_w / 2)
+    ly = int(y * h - logo_h / 2)
+    lx = max(0, min(lx, max(0, w - logo_w)))
+    ly = max(0, min(ly, max(0, h - logo_h)))
+    region = arr[ly : ly + logo_h, lx : lx + logo_w]
+    if region.size == 0:
+        return 128.0, 0.0
+    gray = 0.299 * region[:, :, 0] + 0.587 * region[:, :, 1] + 0.114 * region[:, :, 2]
+    return float(np.mean(gray)), float(np.var(gray))
+
+
 def select_logo_variant(
     brightness: float,
     variance: float,
@@ -309,14 +334,20 @@ def overlay_logo_and_text(
     logo_scale: float = 0.17,
     logo_anchor: str | None = None,
     text_anchor: str | None = None,
+    logo_xy: tuple[float, float] | None = None,
 ) -> bytes:
     """Overlay a transparent logo on the best monotone area + text bar.
 
+    ``logo_xy`` — when given, a normalized (0..1) (x, y) for the CENTER of the
+    logo, letting the vision step place the logo ANYWHERE on the cleanest spot
+    (corner, edge, or open middle), not just a corner. Takes precedence over
+    ``logo_anchor``.
+
     ``logo_anchor`` / ``text_anchor`` are corner keywords
     ('top-left'|'top-right'|'bottom-left'|'bottom-right') typically supplied
-    by the vision-critic step. When unset, the legacy heuristics are used:
-    variance-based corner selection for the logo, and bottom-left for the
-    text bar.
+    by the vision-critic step. When all are unset, the legacy heuristics are
+    used: variance-based corner selection for the logo, and bottom-left for
+    the text bar.
 
     Returns the composited image as PNG bytes.
     """
@@ -354,7 +385,17 @@ def overlay_logo_and_text(
         # margin on landscape images — the eye reads the script trailing
         # into the bezel even when the bbox technically fits.
         logo_margin = int(base.width * 0.06)
-        if logo_anchor in _LOGO_ANCHORS:
+        if logo_xy is not None:
+            # Free placement: logo_xy is the normalized (0..1) CENTER of the
+            # logo. Convert to a top-left pixel coord and clamp so the whole
+            # logo (plus a small safety margin) stays on-canvas.
+            cx, cy = logo_xy
+            lx = int(cx * base.width - logo_w / 2)
+            ly = int(cy * base.height - logo_h / 2)
+            edge = max(8, int(base.width * 0.02))
+            lx = max(edge, min(lx, base.width - logo_w - edge))
+            ly = max(edge, min(ly, base.height - logo_h - edge))
+        elif logo_anchor in _LOGO_ANCHORS:
             lx, ly = _anchor_to_position(
                 logo_anchor, logo_w, logo_h, base.width, base.height,
                 margin=logo_margin,

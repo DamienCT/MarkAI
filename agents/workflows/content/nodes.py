@@ -31,6 +31,7 @@ from shared.image_processing import (
     generate_mockup,
     analyze_logo_region_brightness,
     analyze_brightness_at,
+    analyze_brightness_at_xy,
     select_logo_variant,
     resize_preserve_aspect,
     aspect_hint_for_size,
@@ -2368,24 +2369,35 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             chosen_label, brightness, variance, list(available_logos.keys()),
         )
 
-        # Let the vision agent LOOK at the clean photo and judge where the
-        # logo + text should go (empty backdrops, different bands) and which
-        # variant contrasts with the logo's corner. The brightness heuristic
-        # above stays as the fallback when the call fails or is incomplete.
-        plan_logo_anchor: str | None = None
+        # Let the vision agent LOOK at the clean photo and judge WHERE the logo
+        # should go — anywhere clean/visible as a free (x, y) point — plus the
+        # text corner and the contrast variant. The brightness heuristic above
+        # stays as the fallback when the call fails or is incomplete.
+        plan_logo_xy: tuple[float, float] | None = None
         plan_text_anchor: str | None = None
         plan = await _vision_plan_placement(image_data, list(available_logos.keys()))
         if plan:
-            if plan.get("logo_variant") in available_logos:
+            if plan.get("logo_xy"):
+                plan_logo_xy = plan["logo_xy"]
+                plan_text_anchor = plan.get("text_anchor") or None
+                # Pick the variant for the EXACT spot the logo will occupy.
+                try:
+                    _px, _py = plan_logo_xy
+                    _b, _v = analyze_brightness_at_xy(
+                        image_data, _px, _py, approx_logo_w, approx_logo_h
+                    )
+                    _region_variant = select_logo_variant(
+                        _b, _v, list(available_logos.keys())
+                    )
+                    if _region_variant:
+                        chosen_label = _region_variant
+                except Exception as _exc:
+                    logger.warning("variant-at-xy failed: %s", _exc)
+            elif plan.get("logo_variant") in available_logos:
                 chosen_label = plan["logo_variant"]
-            # Only honour the corners as a pair (both valid, different bands);
-            # otherwise fall back fully to the heuristic to avoid a collision.
-            if plan.get("logo_anchor") and plan.get("text_anchor"):
-                plan_logo_anchor = plan["logo_anchor"]
-                plan_text_anchor = plan["text_anchor"]
             logger.info(
-                "Placement plan: logo=%s text=%s variant=%s (%s)",
-                plan_logo_anchor, plan_text_anchor, chosen_label,
+                "Placement plan: logo_xy=%s text=%s variant=%s (%s)",
+                plan_logo_xy, plan_text_anchor, chosen_label,
                 plan.get("reason", ""),
             )
 
@@ -2432,7 +2444,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             text_line1=text_line1,
             text_line2=text_line2,
             logo_scale=scale_for_logo_variant(chosen_label),
-            logo_anchor=plan_logo_anchor,
+            logo_xy=plan_logo_xy,
             text_anchor=plan_text_anchor,
         )
 
@@ -2457,6 +2469,8 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             "composed_image": f"content-images/{composed_obj}",
             "logo_png_data": logo_png,
             "logo_variant_used": chosen_label,
+            "logo_xy": plan_logo_xy,
+            "text_anchor_used": plan_text_anchor,
         }
 
     except Exception as exc:
@@ -2481,8 +2495,9 @@ async def _vision_plan_placement(
     ``review_branding`` node then re-verifies the rendered result.
 
     Returns None on failure (caller falls back to the brightness heuristic).
-    Otherwise ``{"logo_anchor", "text_anchor", "logo_variant", "reason"}`` with
-    anchors validated to the four corners and forced into DIFFERENT bands.
+    Otherwise ``{"logo_xy", "text_anchor", "logo_variant", "reason"}`` where
+    ``logo_xy`` is a normalized free (x, y) center (0..1) or None, and
+    ``text_anchor`` is a validated corner.
     """
     import base64 as _b64
 
@@ -2495,26 +2510,29 @@ async def _vision_plan_placement(
     system = (
         "You decide where to place a brand logo and a text card on a social "
         "photo, BEFORE they are drawn. Look carefully at the photo and find "
-        "the corners whose backdrop is empty/uniform (wall, sky, table, soft "
-        "blur). NEVER place either over the hero product, food, drinks, faces, "
-        "hands, or packaging.\n\n"
+        "the single cleanest, most empty area for the logo — it can be "
+        "ANYWHERE (a corner, an edge, or an open area in the middle such as "
+        "empty sky, a wall, a table, or soft blur). NEVER place the logo over "
+        "the hero product, food, drinks, faces, hands, or packaging, and not "
+        "on top of the text card.\n\n"
         "Choose:\n"
-        "- logo_anchor: the emptiest, cleanest corner for the small logo.\n"
-        "- text_anchor: an empty corner for the text card, in a DIFFERENT "
-        "horizontal band than the logo (one must be top-*, the other "
-        "bottom-*). The text card can span up to 72% of the width, so "
-        "same-band placement collides.\n"
+        "- logo_xy: the CENTER of the logo as two fractions x and y between 0 "
+        "and 1 (x=0 left, x=1 right, y=0 top, y=1 bottom). Pick the emptiest, "
+        "clearly-readable spot.\n"
+        "- text_anchor: a corner for the text card "
+        "('top-left'|'top-right'|'bottom-left'|'bottom-right'), on an empty "
+        "area, kept clear of the logo so they don't overlap.\n"
         f"- logo_variant: pick from {variant_options_str}. Semantics: 'dark' "
         "is a LIGHT/white logo (use on DARK backdrops); 'light' is a DARK logo "
         "(use on LIGHT backdrops); 'primary' is the default mid-tone. Pick the "
-        "variant that will CONTRAST against the logo_anchor backdrop so the "
-        "logo reads at a glance.\n\n"
+        "variant that CONTRASTS with the backdrop at logo_xy so it reads at a "
+        "glance.\n\n"
         "Return strict JSON only:\n"
         "{\n"
-        '  "logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
+        '  "logo_xy": {"x": 0.0-1.0, "y": 0.0-1.0},\n'
         '  "text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right",\n'
         f'  "logo_variant": {variant_options_str},\n'
-        '  "reason": "which areas are empty and why these corners"\n'
+        '  "reason": "where the empty area is and why"\n'
         "}"
     )
 
@@ -2546,27 +2564,34 @@ async def _vision_plan_placement(
         logger.warning("plan_placement returned non-dict: %r", plan)
         return None
 
-    logo_anchor = str(plan.get("logo_anchor", "")).strip().lower()
+    def _coord(v) -> float | None:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return max(0.05, min(0.95, f))
+
+    xy = plan.get("logo_xy")
+    logo_xy: tuple[float, float] | None = None
+    if isinstance(xy, dict):
+        cx, cy = _coord(xy.get("x")), _coord(xy.get("y"))
+        if cx is not None and cy is not None:
+            logo_xy = (cx, cy)
+    elif isinstance(xy, (list, tuple)) and len(xy) == 2:
+        cx, cy = _coord(xy[0]), _coord(xy[1])
+        if cx is not None and cy is not None:
+            logo_xy = (cx, cy)
+
     text_anchor = str(plan.get("text_anchor", "")).strip().lower()
     variant = str(plan.get("logo_variant", "")).strip().lower()
 
-    if logo_anchor not in _REVIEW_VALID_ANCHORS:
-        logo_anchor = ""
     if text_anchor not in _REVIEW_VALID_ANCHORS:
         text_anchor = ""
-    # Force different horizontal bands — drop the logo anchor on collision so
-    # the caller falls back to the heuristic (which keeps the logo off the
-    # text's bottom band).
-    if logo_anchor and text_anchor:
-        lb = "top" if logo_anchor.startswith("top") else "bottom"
-        tb = "top" if text_anchor.startswith("top") else "bottom"
-        if lb == tb:
-            logo_anchor = ""
     if variant and variant not in (available_logo_variants or []):
         variant = ""
 
     return {
-        "logo_anchor": logo_anchor,
+        "logo_xy": logo_xy,
         "text_anchor": text_anchor,
         "logo_variant": variant,
         "reason": str(plan.get("reason", ""))[:300],
@@ -2580,9 +2605,9 @@ async def _vision_review_branding(
     """Ask a vision LLM whether the fully-branded image is acceptable.
 
     Returns None on call failure (caller treats as 'approved'). Otherwise
-    returns ``{"ok": bool, "new_text_anchor", "new_logo_anchor",
-    "new_logo_variant", "reason"}``. Suggested fields are validated against
-    the brand's available variants and the four valid corners.
+    returns ``{"ok": bool, "new_text_anchor", "new_logo_xy",
+    "new_logo_variant", "reason"}``. ``new_logo_xy`` is a free normalized
+    (x, y) center (or None); text anchor + variant are validated.
     """
     import base64 as _b64
 
@@ -2609,28 +2634,26 @@ async def _vision_review_branding(
         "- The logo color variant blends into the background (e.g. a "
         "  white-toned logo on a light wall).\n\n"
         "When you reject, propose ONLY the fields that need to change. "
-        "Look at all four corners; pick the corner whose backdrop is "
-        "clearly empty/uniform — even if that means flipping top-bottom "
-        "or left-right.\n\n"
+        "For the logo, give new_logo_xy: the CENTER as fractions x,y in 0..1 "
+        "on the cleanest empty area ANYWHERE (corner, edge, or open middle), "
+        "never over product/subject/text. For the text card, give "
+        "new_text_anchor (a corner on an empty area).\n\n"
         "Return strict JSON:\n"
         "{\n"
         '  "ok": true|false,\n'
         '  "new_text_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right"|"",\n'
-        '  "new_logo_anchor": "top-left"|"top-right"|"bottom-left"|"bottom-right"|"",\n'
+        '  "new_logo_xy": {"x": 0.0-1.0, "y": 0.0-1.0} (or null if logo is fine),\n'
         f'  "new_logo_variant": {variant_options_str}|"",\n'
         '  "reason": "what is being covered or what is wrong"\n'
         "}\n\n"
         "Rules:\n"
-        "- If ok=true, all 'new_' fields MUST be empty strings AND the "
-        "  reason must briefly confirm both card and logo land on empty "
-        "  backdrops (e.g. 'card on wall, logo on sky').\n"
+        "- If ok=true, all 'new_' fields MUST be empty/null AND the reason "
+        "  must briefly confirm both card and logo land on empty backdrops "
+        "  (e.g. 'card on wall, logo on sky').\n"
         "- If ok=false, fill ONLY the fields that need to change — leave "
-        "  the others empty if they're already fine.\n"
-        "- new_text_anchor and new_logo_anchor must be in DIFFERENT "
-        "  horizontal bands — one in top-* and one in bottom-*. Never "
-        "  put both at top or both at bottom: they collide visually even "
-        "  when in different left/right corners (the card spans up to 72% "
-        "  of the image width).\n"
+        "  the others empty/null if they're already fine.\n"
+        "- Keep the logo (new_logo_xy) clear of the text card so they don't "
+        "  overlap (the card can span up to 72% of the image width).\n"
         "- Only suggest a variant that's in the provided list."
     )
 
@@ -2662,29 +2685,37 @@ async def _vision_review_branding(
         logger.warning("review_branding returned non-dict: %r", review)
         return None
 
+    def _rcoord(v) -> float | None:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return max(0.05, min(0.95, f))
+
     ok = bool(review.get("ok"))
     new_text = str(review.get("new_text_anchor", "")).strip().lower()
-    new_logo = str(review.get("new_logo_anchor", "")).strip().lower()
     new_variant = str(review.get("new_logo_variant", "")).strip().lower()
+
+    new_logo_xy: tuple[float, float] | None = None
+    rxy = review.get("new_logo_xy")
+    if isinstance(rxy, dict):
+        rx, ry = _rcoord(rxy.get("x")), _rcoord(rxy.get("y"))
+        if rx is not None and ry is not None:
+            new_logo_xy = (rx, ry)
+    elif isinstance(rxy, (list, tuple)) and len(rxy) == 2:
+        rx, ry = _rcoord(rxy[0]), _rcoord(rxy[1])
+        if rx is not None and ry is not None:
+            new_logo_xy = (rx, ry)
 
     if new_text and new_text not in _REVIEW_VALID_ANCHORS:
         new_text = ""
-    if new_logo and new_logo not in _REVIEW_VALID_ANCHORS:
-        new_logo = ""
-    if new_text and new_logo:
-        # Reject pairs in the same horizontal band — corners on the same
-        # top or bottom strip collide visually even when left/right differ.
-        text_band = "top" if new_text.startswith("top") else "bottom"
-        logo_band = "top" if new_logo.startswith("top") else "bottom"
-        if text_band == logo_band:
-            new_logo = ""
     if new_variant and new_variant not in (available_logo_variants or []):
         new_variant = ""
 
     return {
         "ok": ok,
         "new_text_anchor": new_text,
-        "new_logo_anchor": new_logo,
+        "new_logo_xy": new_logo_xy,
         "new_logo_variant": new_variant,
         "reason": str(review.get("reason", ""))[:300],
     }
@@ -2731,15 +2762,15 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
         return {"branding_review": review or {"ok": True}}
 
     new_text = review.get("new_text_anchor", "")
-    new_logo = review.get("new_logo_anchor", "")
+    new_logo_xy = review.get("new_logo_xy")
     new_variant = review.get("new_logo_variant", "")
     logger.info(
-        "review_branding: needs change — text=%r logo=%r variant=%r (%s)",
-        new_text, new_logo, new_variant, review.get("reason"),
+        "review_branding: needs change — text=%r logo_xy=%r variant=%r (%s)",
+        new_text, new_logo_xy, new_variant, review.get("reason"),
     )
 
     # Nothing actionable suggested — keep the original
-    if not (new_text or new_logo or new_variant):
+    if not (new_text or new_logo_xy or new_variant):
         return {"branding_review": review}
 
     # Pull the pre-overlay composed image so we can re-render cheaply.
@@ -2775,27 +2806,17 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
         logger.warning("review_branding: no logo bytes — keeping original branded image")
         return {"branding_review": review}
 
-    # Enforce different horizontal bands at render time. find_best_logo_position
-    # NEVER returns bottom corners (bottom is "reserved for text") — so if the
-    # critic moves text to a top corner without proposing a new logo position,
-    # the logo silently lands at top-* via variance and we get same-band
-    # collision. Pin the logo to the diagonal bottom corner in that case.
-    effective_text = new_text or "bottom-left"
-    effective_logo = new_logo
-    if effective_text.startswith("top") and not (
-        effective_logo and effective_logo.startswith("bottom")
-    ):
-        effective_logo = (
-            "bottom-right" if effective_text == "top-left" else "bottom-left"
-        )
+    # Resolve effective placement: use the critic's new free (x, y) if given,
+    # otherwise keep what apply_branding chose. Text keeps its corner.
+    current_xy = state.get("logo_xy")
+    current_text = state.get("text_anchor_used")
+    effective_xy = new_logo_xy or current_xy
+    effective_text = new_text or current_text or None
 
-    # Re-pick the color variant for the region the logo will ACTUALLY occupy.
-    # find_best_logo_position only ever samples the top corners, so when the
-    # critic relocates the logo to a bottom corner the original variant
-    # (chosen for a top region) can be wrong — e.g. a white wordmark landing
-    # on a light surface (the FancyFinds failure). Sample the destination
-    # corner and reselect from the brand's available variants.
-    if effective_logo:
+    # Re-pick the color variant for the EXACT spot the logo will occupy, so a
+    # relocated logo never blends into its new backdrop (e.g. a white wordmark
+    # landing on a light surface — the FancyFinds failure).
+    if effective_xy:
         try:
             from PIL import Image as _PILImage
             from io import BytesIO as _BytesIO
@@ -2804,7 +2825,8 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
             _ci.close()
             _lw = int(_cw * scale_for_logo_variant(current_variant))
             _lh = int(_lw * 0.5)
-            b_at, v_at = analyze_brightness_at(composed_bytes, effective_logo, _lw, _lh)
+            _ex, _ey = effective_xy
+            b_at, v_at = analyze_brightness_at_xy(composed_bytes, _ex, _ey, _lw, _lh)
             region_variant = select_logo_variant(b_at, v_at, available_variants)
             if region_variant and region_variant != current_variant:
                 from shared.config import settings as _settings
@@ -2821,9 +2843,9 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
                             logo_png = _conv
                             current_variant = region_variant
                             logger.info(
-                                "review_branding: re-picked variant for %s region "
+                                "review_branding: re-picked variant at xy=%s "
                                 "-> %s (brightness=%.0f)",
-                                effective_logo, region_variant, b_at,
+                                effective_xy, region_variant, b_at,
                             )
         except Exception as exc:
             logger.warning("review_branding: region variant re-pick failed: %s", exc)
@@ -2834,7 +2856,7 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
         text_line1=state.get("hook", "") or state.get("calendar_item", {}).get("theme", ""),
         text_line2=_clean_website_for_overlay(brand.get("website_url")),
         logo_scale=scale_for_logo_variant(current_variant),
-        logo_anchor=effective_logo or None,
+        logo_xy=effective_xy,
         text_anchor=effective_text,
     )
 
@@ -2846,6 +2868,8 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
     return {
         "branded_image": f"content-images/{branded_obj}",
         "logo_variant_used": current_variant,
+        "logo_xy": effective_xy,
+        "text_anchor_used": effective_text,
         "branding_review": review,
     }
 

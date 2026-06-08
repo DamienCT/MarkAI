@@ -866,7 +866,7 @@ export default function BrandDetailPage() {
               <img
                 src={apiUrl(brand.logo_url)}
                 alt={brand.name}
-                className="h-10 w-10 rounded-lg object-cover border"
+                className="h-10 max-w-[120px] rounded-lg object-contain border p-1"
                 loading="lazy"
               />
             )}
