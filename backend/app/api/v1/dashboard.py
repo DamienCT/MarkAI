@@ -27,8 +27,9 @@ async def dashboard_stats(
         await db.execute(
             text("""
             SELECT
-                (SELECT count(*) FROM brands) AS total_brands,
-                (SELECT count(*) FROM content) AS total_content,
+                (SELECT count(*) FROM brands WHERE status = 'active') AS active_brands,
+                (SELECT count(*) FROM calendar_items
+                   WHERE status IN ('queued', 'working', 'in_review', 'reworking')) AS content_in_pipeline,
                 (SELECT count(*) FROM approvals WHERE status = 'pending') AS pending_approvals,
                 (SELECT count(*) FROM calendar_items WHERE status = 'scheduled') AS scheduled_posts,
                 (SELECT count(*) FROM calendar_items WHERE status = 'published' AND published_at >= now() - interval '7 days') AS published_this_week,
@@ -38,8 +39,9 @@ async def dashboard_stats(
     ).fetchone()
 
     result = {
-        "total_brands": int(row[0]),
-        "total_content": int(row[1]),
+        # Field names MUST match the frontend DashboardStats interface.
+        "active_brands": int(row[0]),
+        "content_in_pipeline": int(row[1]),
         "pending_approvals": int(row[2]),
         "scheduled_posts": int(row[3]),
         "published_this_week": int(row[4]),

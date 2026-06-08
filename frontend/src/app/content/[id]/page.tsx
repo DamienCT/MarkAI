@@ -397,8 +397,13 @@ export default function ContentDetailPage() {
     content.generation_metadata?.generated_image_url ||
     ""
   ) as string;
+  // Cache key: prefer the post-save timestamp (imageCacheBust); otherwise key
+  // on content.updated_at (bumped by a DB trigger on every edit) so a NEW
+  // branded image at the SAME `branded.png` path is refetched after a page
+  // reload (F5) instead of serving the 1h browser-cached old version.
+  const imageVersion = imageCacheBust || (content.updated_at ? `v=${encodeURIComponent(content.updated_at)}` : "");
   const contentImageUrl = imagePath
-    ? (imagePath.startsWith("http") ? imagePath : `${API_BASE_URL}/api/v1/files/${imagePath}`) + (imageCacheBust ? `?${imageCacheBust}` : "")
+    ? (imagePath.startsWith("http") ? imagePath : `${API_BASE_URL}/api/v1/files/${imagePath}`) + (imageVersion ? `?${imageVersion}` : "")
     : undefined;
   // Thumbnail for faster preview loading (600px wide, quality 75)
   const contentThumbUrl = contentImageUrl
