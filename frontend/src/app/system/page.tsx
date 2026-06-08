@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -19,25 +18,9 @@ import { QueueDepth } from "@/components/system/QueueDepth";
 import { api } from "@/lib/api";
 import { statusColor } from "@/lib/utils";
 import type { ServiceStatus, AgentRun, SchedulerJob, QueueInfo, Brand } from "@/types";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Activity, ChevronDown, ChevronRight, Play } from "lucide-react";
+import { Activity, ChevronDown, ChevronRight } from "lucide-react";
 import { formatRelativeTime } from "@/lib/utils";
 import { useRequireRole } from "@/lib/hooks";
-
-const WORKFLOW_TYPES = [
-  "content_generation",
-  "content_adaptation",
-  "engagement_analysis",
-  "trend_analysis",
-  "performance_report",
-] as const;
 
 export default function SystemPage() {
   const { hasAccess, loading: roleLoading } = useRequireRole("admin");
@@ -60,7 +43,7 @@ export default function SystemPage() {
         const [svcData, runsData, jobsData, queueData, brandsData] = await Promise.allSettled([
           api.get<ServiceStatus[]>("/api/v1/system/services"),
           api.get<AgentRun[]>("/api/v1/agents/runs", { limit: 50 }),
-          api.get<SchedulerJob[]>("/api/v1/system/scheduler/jobs"),
+          api.get<SchedulerJob[]>("/api/v1/system/jobs"),
           api.get<QueueInfo[]>("/api/v1/system/queues"),
           api.get<Brand[]>("/api/v1/brands"),
         ]);
@@ -107,22 +90,6 @@ export default function SystemPage() {
   });
 
   const uniqueAgentTypes = Array.from(new Set(runs.map((r) => r.agent_type)));
-
-  const handleTriggerWorkflow = async (workflowType: string, brandId: string) => {
-    try {
-      await api.post("/api/v1/agents/trigger", {
-        agent_type: workflowType,
-        brand_id: brandId,
-      });
-      toast.success(`Triggered ${workflowType} for ${brandNameMap[brandId] || brandId}`);
-      // Refresh runs
-      const updatedRuns = await api.get<AgentRun[]>("/api/v1/agents/runs", { limit: 50 });
-      setRuns(updatedRuns);
-    } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to trigger workflow";
-      toast.error(detail);
-    }
-  };
 
   if (loading) {
     return (
@@ -311,50 +278,6 @@ export default function SystemPage() {
         </CardContent>
       </Card>
 
-      {/* Trigger Workflows */}
-      {brands.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Trigger Workflows</CardTitle>
-            <CardDescription>Manually trigger agent workflows per brand</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Brand</TableHead>
-                    {WORKFLOW_TYPES.map((wf) => (
-                      <TableHead key={wf} className="text-center text-xs">{wf.replace(/_/g, " ")}</TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {brands.filter((b) => b.is_active).map((brand) => (
-                    <TableRow key={brand.id}>
-                      <TableCell className="font-medium">{brand.name}</TableCell>
-                      {WORKFLOW_TYPES.map((wf) => (
-                        <TableCell key={wf} className="text-center">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-8 w-8"
-                            onClick={() => handleTriggerWorkflow(wf, brand.id)}
-                            title={`Trigger ${wf} for ${brand.name}`}
-                          >
-                            <Play className="h-3 w-3" />
-                          </Button>
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Scheduler Jobs */}
         <Card className="lg:col-span-2">
@@ -368,14 +291,14 @@ export default function SystemPage() {
             ) : (
               <div className="space-y-2">
                 {jobs.map((job) => (
-                  <div key={job.id} className="flex items-center justify-between rounded-md border p-3">
-                    <div>
-                      <p className="text-sm font-medium">{job.name}</p>
-                      <p className="text-xs text-muted-foreground">Schedule: {job.schedule}</p>
+                  <div key={job.id} className="flex items-center justify-between rounded-md border p-3 gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{job.name}</p>
+                      <p className="text-xs text-muted-foreground truncate" title={job.trigger}>{job.trigger}</p>
                     </div>
-                    <div className="text-right">
+                    <div className="text-right shrink-0">
                       <p className="text-xs text-muted-foreground">
-                        Runs: {job.run_count} | Next: {job.next_run || "N/A"}
+                        Next: {job.next_run_time ? new Date(job.next_run_time).toLocaleString() : "N/A"}
                       </p>
                     </div>
                   </div>

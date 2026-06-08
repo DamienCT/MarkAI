@@ -1,15 +1,27 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
 from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
 from app.schemas.approval import ApprovalCreate, ApprovalDecision, ApprovalResponse
-from app.services import approval_service
+from app.services import approval_service, audit_service
 
 router = APIRouter()
+
+
+async def _audit_decision(request, current_user, approval, decision) -> None:
+    """Record an approve/reject audit event for a resolved approval."""
+    await audit_service.record_audit(
+        action="approve" if decision.status == "approved" else "reject",
+        entity_type="content",
+        user_id=current_user.id,
+        entity_id=getattr(approval, "content_id", None),
+        new_values={"status": decision.status, "feedback": decision.feedback},
+        request=request,
+    )
 
 
 @router.get("/")
@@ -152,6 +164,7 @@ async def create_approval(
 async def update_approval(
     approval_id: uuid.UUID,
     decision: ApprovalDecision,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -169,6 +182,7 @@ async def update_approval(
         raise HTTPException(status_code=422, detail=str(e))
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found")
+    await _audit_decision(request, current_user, approval, decision)
     return approval
 
 
@@ -176,6 +190,7 @@ async def update_approval(
 async def decide_approval(
     approval_id: uuid.UUID,
     decision: ApprovalDecision,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -192,4 +207,5 @@ async def decide_approval(
         raise HTTPException(status_code=422, detail=str(e))
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found")
+    await _audit_decision(request, current_user, approval, decision)
     return approval

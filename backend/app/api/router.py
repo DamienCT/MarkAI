@@ -52,7 +52,7 @@ api_router.include_router(events.router, prefix="/events", tags=["events"])
 
 # Alias: frontend calls /api/v1/audit directly — redirects to system/audit-log
 from fastapi import Depends  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import select, delete  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 from app.deps import get_current_user, get_db  # noqa: E402
 from app.auth.models import AuditLog, User  # noqa: E402
@@ -64,6 +64,9 @@ from fastapi import HTTPException  # noqa: E402
 async def list_audit_log(
     page: int = 1,
     limit: int = 50,
+    action: str | None = None,
+    resource_type: str | None = None,
+    search: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -71,20 +74,48 @@ async def list_audit_log(
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     limit = min(limit, 200)
     offset = (page - 1) * limit
-    result = await db.execute(
-        select(AuditLog)
+    # Join the user so the UI can show a name instead of a bare UUID.
+    stmt = (
+        select(AuditLog, User.email)
+        .outerjoin(User, AuditLog.user_id == User.id)
         .order_by(AuditLog.created_at.desc())
-        .offset(offset)
-        .limit(limit)
     )
+    if action:
+        stmt = stmt.where(AuditLog.action == action)
+    if resource_type:  # frontend's "resource_type" maps to entity_type
+        stmt = stmt.where(AuditLog.entity_type == resource_type)
+    if search:
+        like = f"%{search}%"
+        stmt = stmt.where(AuditLog.action.ilike(like) | AuditLog.entity_type.ilike(like))
+    stmt = stmt.offset(offset).limit(limit)
+    result = await db.execute(stmt)
     return [
         {
             "id": str(row.id),
             "user_id": str(row.user_id) if row.user_id else None,
+            "user_name": email,
             "action": row.action,
-            "entity_type": row.entity_type,
-            "entity_id": str(row.entity_id) if row.entity_id else None,
+            # Expose under the names the Audit Log UI reads.
+            "resource_type": row.entity_type,
+            "resource_id": str(row.entity_id) if row.entity_id else None,
+            "ip_address": str(row.ip_address) if row.ip_address else None,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }
-        for row in result.scalars().all()
+        for row, email in result.all()
     ]
+
+
+@api_router.delete("/audit", tags=["system"])
+async def clear_audit_log(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete every audit log entry. Admin only.
+
+    Wipes the `audit_log` table only — no business data is touched.
+    """
+    if not role_has_access(current_user.role, "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    result = await db.execute(delete(AuditLog))
+    await db.commit()
+    return {"deleted": result.rowcount or 0}

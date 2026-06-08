@@ -46,7 +46,7 @@ const navigation: NavItem[] = [
   { name: "Events", href: "/events", icon: CalendarHeart },
   { name: "Intelligence", href: "/intelligence", icon: Search, exact: true },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
-  { name: "AI Providers", href: "/providers", icon: Cpu },
+  { name: "AI Providers", href: "/providers", icon: Cpu, minRole: "admin" },
   { name: "System", href: "/system", icon: Server, exact: true, minRole: "admin" },
   { name: "Audit Log", href: "/system/audit", icon: Shield, minRole: "admin" },
   { name: "Settings", href: "/settings", icon: Settings, exact: true, minRole: "admin" },

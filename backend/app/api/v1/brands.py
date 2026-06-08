@@ -23,7 +23,7 @@ from app.schemas.competitor import (
     CompetitorResponse,
     CompetitorUpdate,
 )
-from app.services import brand_service, fabric_service, minio_service
+from app.services import audit_service, brand_service, fabric_service, minio_service
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -147,6 +147,7 @@ async def get_brand(
 @router.post("/", response_model=BrandResponse, status_code=status.HTTP_201_CREATED)
 async def create_brand(
     data: BrandCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -158,13 +159,21 @@ async def create_brand(
     # Force new brands to onboarding status
     data.is_active = False
     data.status = "onboarding"
-    return await brand_service.create_brand(db, data)
+    brand = await brand_service.create_brand(db, data)
+    await audit_service.record_audit(
+        action="create", entity_type="brand", user_id=current_user.id,
+        entity_id=getattr(brand, "id", None),
+        new_values={"name": data.name, "slug": data.slug},
+        request=request,
+    )
+    return brand
 
 
 @router.put("/{brand_id}", response_model=BrandResponse)
 async def update_brand(
     brand_id: uuid.UUID,
     data: BrandUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -196,6 +205,12 @@ async def update_brand(
             )
             await db.commit()
 
+        await audit_service.record_audit(
+            action="update", entity_type="brand", user_id=current_user.id,
+            entity_id=brand_id,
+            new_values={"status": data.status, "is_active": data.is_active},
+            request=request,
+        )
         return brand
     except HTTPException:
         raise

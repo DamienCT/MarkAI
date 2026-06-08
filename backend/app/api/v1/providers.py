@@ -38,6 +38,8 @@ async def get_categories(
     db: AsyncSession = Depends(get_db),
 ):
     """List all model categories with their active selections."""
+    if not role_has_access(current_user.role, "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     categories = await list_categories(db)
     # Serialize active_model manually for the response
     result = []
@@ -136,6 +138,8 @@ async def provider_health(
     current_user: User = Depends(get_current_user),
 ):
     """Check LiteLLM proxy health."""
+    if not role_has_access(current_user.role, "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             headers = {}

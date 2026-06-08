@@ -41,7 +41,7 @@ const FALLBACK_CHANNELS: { id: string; label: string }[] = [
 ];
 
 export default function ProvidersPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("manager");
+  const { hasAccess, loading: roleLoading } = useRequireRole("admin");
   const [categories, setCategories] = useState<AIModelCategory[]>([]);
   const [modelsByCategory, setModelsByCategory] = useState<Record<string, AIModel[]>>({});
   const [loading, setLoading] = useState(true);

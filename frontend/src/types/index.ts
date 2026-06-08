@@ -352,11 +352,9 @@ export interface ServiceStatus {
 export interface SchedulerJob {
   id: string;
   name: string;
-  schedule: string;
-  last_run?: string;
-  next_run?: string;
-  status: "active" | "paused" | "failed";
-  run_count: number;
+  // Backend (APScheduler) shape: cron/interval expression + next fire time.
+  trigger: string;
+  next_run_time?: string | null;
 }
 
 export interface QueueInfo {
