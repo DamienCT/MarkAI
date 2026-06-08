@@ -199,6 +199,7 @@ export interface Approval {
   reviewer_name?: string;
   status: "pending" | "approved" | "rejected" | "revision_requested";
   comments?: string;
+  feedback?: string; // reviewer remark (API field; `comments` kept for back-compat)
   decided_at?: string;
   created_at: string;
 }

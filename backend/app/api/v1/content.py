@@ -188,6 +188,13 @@ async def rebrand_logo(
     if body.text_xy is not None and len(body.text_xy) != 2:
         raise HTTPException(status_code=400, detail="text_xy must be [x, y] or null")
 
+    # Flip to 'working' synchronously BEFORE returning so the client's status
+    # poll can't race past the (fast) re-render and reload a stale image. The
+    # worker restores `prior_status` when it finishes.
+    prior_status = cal_item.status
+    cal_item.status = "working"
+    await db.commit()
+
     from app.services import nats_service
 
     await nats_service.publish(
@@ -202,6 +209,7 @@ async def rebrand_logo(
             "text_scale": body.text_scale,
             "logo_variant": body.logo_variant,
             "text_style": body.text_style,
+            "prior_status": prior_status,
         },
     )
 

@@ -682,11 +682,19 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
         content_id, logo_xy, text_xy,
     )
 
-    # Capture the prior status so we restore it (don't clobber 'reworking').
-    prior_rows = await execute_query(
-        "SELECT status FROM calendar_items WHERE id = :id", {"id": calendar_item_id}
-    )
-    prior_status = (prior_rows[0].get("status") if prior_rows else None) or "in_review"
+    # The status to restore when done. The API already flipped the item to
+    # 'working' before publishing (so the client's poll can't race the fast
+    # re-render), and passes the real prior status here. Fall back to a DB
+    # read for older messages, and never restore to 'working' (would stick).
+    prior_status = payload.get("prior_status") or ""
+    if not prior_status:
+        prior_rows = await execute_query(
+            "SELECT status FROM calendar_items WHERE id = :id", {"id": calendar_item_id}
+        )
+        prior_status = (prior_rows[0].get("status") if prior_rows else None) or "in_review"
+    if prior_status == "working":
+        prior_status = "in_review"
+    # Ensure 'working' even if the API path didn't set it (idempotent).
     await execute_update(
         "UPDATE calendar_items SET status = 'working' WHERE id = :id",
         {"id": calendar_item_id},

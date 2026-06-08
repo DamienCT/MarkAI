@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, CalendarClock, Upload } from "lucide-react";
+import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, MessageSquare, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -52,6 +52,7 @@ export default function ContentDetailPage() {
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduleTime, setScheduleTime] = useState("09:00");
   const [scheduling, setScheduling] = useState(false);
+  const [passingToReview, setPassingToReview] = useState(false);
   const { markOpened } = useOpenedContent();
 
   // The URL param is the calendar item id — flag it as seen so the "New"
@@ -286,27 +287,21 @@ export default function ContentDetailPage() {
     }
   }, [calendarItem, scheduleDate, scheduleTime]);
 
-  const handleUpdateSchedule = useCallback(async () => {
-    if (!calendarItem?.id || !scheduleDate) {
-      toast.error("Please select a date");
-      return;
-    }
-    setScheduling(true);
+  const handlePassToReview = useCallback(async () => {
+    if (!calendarItem?.id) return;
+    setPassingToReview(true);
     try {
-      const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
-      await api.patch(`/api/v1/calendar/${calendarItem.id}`, {
-        scheduled_at: scheduledAt,
-      });
-      toast.success("Schedule updated");
+      await api.patch(`/api/v1/calendar/${calendarItem.id}`, { status: "in_review" });
+      toast.success("Moved to In Review");
       const updated = await api.get<CalendarItem>(`/api/v1/calendar/${calendarItem.id}`);
       setCalendarItem(updated);
     } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to update schedule";
+      const detail = (err as { detail?: string })?.detail || "Failed to move to In Review";
       toast.error(detail);
     } finally {
-      setScheduling(false);
+      setPassingToReview(false);
     }
-  }, [calendarItem, scheduleDate, scheduleTime]);
+  }, [calendarItem]);
 
   const handleDiscard = useCallback(async () => {
     if (!calendarItem?.id) {
@@ -423,6 +418,22 @@ export default function ContentDetailPage() {
     textAnchor: (gm.text_anchor_used as string | undefined) || null,
   };
   const canEditLogo = !!calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && !!cleanImageUrl;
+
+  // Latest reviewer remark (rejection feedback) for this content, if any.
+  const latestRemark = (() => {
+    const withFb = approvals.filter((a) => (a.feedback || a.comments || "").trim());
+    if (!withFb.length) return null;
+    const top = [...withFb].sort(
+      (a, b) =>
+        new Date(b.decided_at || b.created_at).getTime() -
+        new Date(a.decided_at || a.created_at).getTime()
+    )[0];
+    return {
+      text: (top.feedback || top.comments) as string,
+      by: top.reviewer_name,
+      at: top.decided_at || top.created_at,
+    };
+  })();
 
   return (
     <div className="space-y-6">
@@ -554,60 +565,60 @@ export default function ContentDetailPage() {
                 </Card>
               )}
 
-              {/* Schedule editor — editable for in_review, reworking, and scheduled */}
-              {calendarItem && ["in_review", "reworking", "scheduled"].includes(calendarItem.status) && (
-                <Card className="border-blue-500/30 bg-blue-500/5">
+              {/* Reviewer remarks (rejection feedback) — shown during review */}
+              {calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && (
+                <Card className={latestRemark ? "border-orange-500/40 bg-orange-500/5" : ""}>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-1.5">
-                      <CalendarClock className="h-4 w-4 text-blue-500" />
-                      Scheduled Date & Time
+                      <MessageSquare className="h-4 w-4 text-orange-500" />
+                      Remarks
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">Date</label>
-                        <input
-                          type="date"
-                          value={scheduleDate}
-                          onChange={(e) => setScheduleDate(e.target.value)}
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        />
+                  <CardContent>
+                    {latestRemark ? (
+                      <div className="space-y-1">
+                        <p className="text-sm whitespace-pre-wrap">{latestRemark.text}</p>
+                        <p className="text-xs text-muted-foreground">
+                          — {latestRemark.by || "Reviewer"}
+                          {latestRemark.at ? ` · ${new Date(latestRemark.at).toLocaleDateString()}` : ""}
+                        </p>
                       </div>
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">Time</label>
-                        <input
-                          type="time"
-                          value={scheduleTime}
-                          onChange={(e) => setScheduleTime(e.target.value)}
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        />
-                      </div>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={scheduling || !scheduleDate}
-                      onClick={handleUpdateSchedule}
-                      className="w-full"
-                    >
-                      {scheduling ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Saving...</> : "Update Schedule"}
-                    </Button>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No remarks</p>
+                    )}
                   </CardContent>
                 </Card>
               )}
 
-              {/* Discard content — visible for in_review and reworking statuses */}
+              {/* Pass to In Review + Discard — visible for in_review / reworking */}
               {calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="w-full"
-                  onClick={handleDiscard}
-                >
-                  <Trash2 className="mr-1.5 h-4 w-4" />
-                  Discard Content
-                </Button>
+                <div className="flex gap-2">
+                  {calendarItem.status === "reworking" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      disabled={passingToReview}
+                      onClick={handlePassToReview}
+                    >
+                      {passingToReview ? (
+                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <CheckCircle className="mr-1.5 h-4 w-4" />
+                      )}
+                      Pass to In Review
+                    </Button>
+                  )}
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="flex-1"
+                    onClick={handleDiscard}
+                  >
+                    <Trash2 className="mr-1.5 h-4 w-4" />
+                    Discard Content
+                  </Button>
+                </div>
               )}
 
               {/* Image regeneration */}

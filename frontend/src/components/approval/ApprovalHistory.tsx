@@ -56,8 +56,8 @@ export function ApprovalHistory({ approvals }: ApprovalHistoryProps) {
                   : formatRelativeTime(approval.created_at)}
               </span>
             </div>
-            {approval.comments && (
-              <p className="text-sm text-muted-foreground mt-1">{approval.comments}</p>
+            {(approval.feedback || approval.comments) && (
+              <p className="text-sm text-muted-foreground mt-1">{approval.feedback || approval.comments}</p>
             )}
           </div>
         </div>
