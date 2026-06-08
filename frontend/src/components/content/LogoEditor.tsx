@@ -16,7 +16,7 @@
  *  - Escape to cancel
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Move, RefreshCw } from "lucide-react";
+import { Loader2, Move, RefreshCw, Layers } from "lucide-react";
 
 export interface LogoPlacement {
   logo_xy: [number, number];
@@ -24,6 +24,7 @@ export interface LogoPlacement {
   text_xy: [number, number] | null;
   text_scale: number;
   logo_variant?: string;
+  text_style?: string; // "glass" | "solid"
 }
 
 interface LogoEditorProps {
@@ -92,6 +93,14 @@ export function LogoEditor({
     initial.text_xy || anchorToXy(initial.textAnchor)
   );
   const [textScale, setTextScale] = useState<number>(initial.text_scale || 1);
+  // Text card style: "glass" (frosted) or "solid" (sober dark panel).
+  const [textStyle, setTextStyle] = useState<string>(
+    initial.text_style === "solid" ? "solid" : "glass"
+  );
+  const toggleTextStyle = useCallback(
+    () => setTextStyle((s) => (s === "glass" ? "solid" : "glass")),
+    []
+  );
 
   // Logo variant (dark = white logo, light = dark logo, …). The reverse button
   // cycles only through these, in this order — watermark/secondary excluded.
@@ -121,6 +130,7 @@ export function LogoEditor({
   placementRef.current = {
     logo_xy: logoXy, logo_scale: logoScale, text_xy: textXy,
     text_scale: textScale, logo_variant: variant || undefined,
+    text_style: textStyle,
   };
 
   // So the outside-click saver can bail while a save is already in flight.
@@ -234,9 +244,9 @@ export function LogoEditor({
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span className="flex items-center gap-1.5">
-          <Move className="h-3.5 w-3.5" /> Glissez pour déplacer · coin bleu pour redimensionner
+          <Move className="h-3.5 w-3.5" /> Drag to move · blue corner to resize
         </span>
-        <span>Cliquez en dehors de la photo pour enregistrer · Échap pour annuler</span>
+        <span>Click outside the photo to save · Esc to cancel</span>
       </div>
 
       <div
@@ -256,15 +266,20 @@ export function LogoEditor({
             left: `${textXy[0] * 100}%`,
             top: `${textXy[1] * 100}%`,
             transform: "translate(-50%, -50%)",
+            // width:max-content sizes the card to its text regardless of its
+            // left position — without it, an absolutely-positioned auto-width
+            // box shrinks as `left` grows (the "folds into a square" bug when
+            // dragged right). maxWidth still caps it at 72% of the photo.
+            width: "max-content",
             maxWidth: "72%",
             padding: `${Math.max(6, dims.w * 0.012)}px ${Math.max(10, dims.w * 0.016)}px`,
-            background: "rgba(10,12,16,0.55)",
+            background: textStyle === "solid" ? "rgba(12,14,18,0.88)" : "rgba(10,12,16,0.5)",
             borderRadius: Math.max(8, dims.w * 0.011),
-            border: "1px solid rgba(255,255,255,0.35)",
+            border: textStyle === "solid" ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(255,255,255,0.35)",
             color: "white",
             cursor: "move",
             touchAction: "none",
-            backdropFilter: "blur(2px)",
+            backdropFilter: textStyle === "solid" ? "none" : "blur(2px)",
           }}
         >
           <div style={{ fontSize: fontLargePx, lineHeight: 1.15, fontWeight: 500 }}>
@@ -304,26 +319,38 @@ export function LogoEditor({
           </div>
         ) : null}
 
-        {/* Reverse / swap logo variant — kept INSIDE the frame so the click
-            doesn't trigger the outside-click save. */}
-        {variantKeys.length >= 2 ? (
+        {/* Style controls — kept INSIDE the frame so clicks don't trigger
+            the outside-click save. */}
+        <div className="absolute left-2 top-2 z-20 flex flex-col items-start gap-1.5">
+          {variantKeys.length >= 2 ? (
+            <button
+              type="button"
+              onPointerDown={(e) => { e.stopPropagation(); }}
+              onClick={cycleVariant}
+              className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+              title="Reverse logo (light / dark)"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              {variant ? `Logo: ${variant}` : "Reverse logo"}
+            </button>
+          ) : null}
           <button
             type="button"
             onPointerDown={(e) => { e.stopPropagation(); }}
-            onClick={cycleVariant}
-            className="absolute left-2 top-2 z-20 flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
-            title="Inverser le logo (clair / foncé)"
+            onClick={toggleTextStyle}
+            className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+            title="Toggle text card style (glass / solid)"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
-            {variant ? `Logo : ${variant}` : "Inverser logo"}
+            <Layers className="h-3.5 w-3.5" />
+            Overlay: {textStyle}
           </button>
-        ) : null}
+        </div>
 
         {/* Saving overlay */}
         {saving ? (
           <div className="absolute inset-0 flex items-center justify-center bg-black/40">
             <div className="flex items-center gap-2 rounded-md bg-white px-3 py-2 text-sm font-medium text-black shadow">
-              <Loader2 className="h-4 w-4 animate-spin" /> Rendu en cours…
+              <Loader2 className="h-4 w-4 animate-spin" /> Rendering…
             </div>
           </div>
         ) : null}

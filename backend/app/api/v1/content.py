@@ -145,6 +145,7 @@ class LogoRebrandRequest(BaseModel):
     text_xy: list[float] | None = None
     text_scale: float | None = 1.0
     logo_variant: str | None = None
+    text_style: str | None = None  # "glass" (default) | "solid"
 
 
 # Manual logo/overlay editing is only allowed while the post is in review.
@@ -200,6 +201,7 @@ async def rebrand_logo(
             "text_xy": body.text_xy,
             "text_scale": body.text_scale,
             "logo_variant": body.logo_variant,
+            "text_style": body.text_style,
         },
     )
 

@@ -15,10 +15,13 @@ function ClickableImage({
   src,
   alt,
   className,
+  overlay,
 }: {
   src: string;
   alt: string;
   className?: string;
+  /** Rendered at the image's top-right, revealed on hover over the image. */
+  overlay?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -40,12 +43,19 @@ function ClickableImage({
 
   return (
     <>
-      <img
-        src={src}
-        alt={alt}
-        className={`${className || ""} cursor-zoom-in`}
-        onClick={() => setOpen(true)}
-      />
+      <div className="relative group/img">
+        <img
+          src={src}
+          alt={alt}
+          className={`${className || ""} cursor-zoom-in`}
+          onClick={() => setOpen(true)}
+        />
+        {overlay ? (
+          <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity duration-150 group-hover/img:opacity-100 focus-within:opacity-100">
+            {overlay}
+          </div>
+        ) : null}
+      </div>
       {open && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4"
@@ -83,6 +93,8 @@ interface PreviewProps {
   avatarUrl?: string;
   cta?: string;
   compact?: boolean;
+  /** Optional control overlaid on the post image (revealed on hover). */
+  imageOverlay?: React.ReactNode;
 }
 
 function AvatarCircle({ name, size = "h-9 w-9", avatarUrl }: { name: string; size?: string; avatarUrl?: string }) {
@@ -124,7 +136,7 @@ function HashtagsDisplay({ hashtags }: { hashtags: string[] }) {
   );
 }
 
-export function InstagramPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact }: PreviewProps) {
+export function InstagramPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
@@ -138,7 +150,7 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
       </div>
       {/* Image */}
       {imageUrl && sanitizeImageUrl(imageUrl) ? (
-        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-square object-cover" />
+        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-square object-cover" overlay={imageOverlay} />
       ) : (
         <ImagePlaceholder />
       )}
@@ -166,7 +178,7 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
   );
 }
 
-export function FacebookPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact }: PreviewProps) {
+export function FacebookPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
@@ -189,7 +201,7 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
           A previous 16:9 mask center-cropped 80px top/bottom and clipped the
           text card whose anchor sits 4% above the image bottom. */}
       {imageUrl && sanitizeImageUrl(imageUrl) ? (
-        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[3/2] object-cover" />
+        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[3/2] object-cover" overlay={imageOverlay} />
       ) : (
         <div className="w-full aspect-[3/2] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
           <Globe className="h-10 w-10 opacity-20" />
@@ -217,7 +229,7 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
   );
 }
 
-export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact }: PreviewProps) {
+export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
@@ -238,7 +250,7 @@ export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, ima
           LinkedIn's link-preview spec is 1.91:1 but our images are generated
           at 3:2; cropping to 1.91:1 here clips the bottom of the text card. */}
       {imageUrl && sanitizeImageUrl(imageUrl) ? (
-        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[3/2] object-cover" />
+        <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[3/2] object-cover" overlay={imageOverlay} />
       ) : (
         <div className="w-full aspect-[3/2] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
           <Globe className="h-10 w-10 opacity-20" />
@@ -269,7 +281,7 @@ export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, ima
   );
 }
 
-export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact }: PreviewProps) {
+export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   const handle = brandHandle.startsWith("@") ? brandHandle : `@${brandHandle}`;
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
@@ -285,7 +297,7 @@ export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, 
           <HashtagsDisplay hashtags={hashtags} />
           {/* Image */}
           {imageUrl ? (
-            <ClickableImage src={imageUrl} alt="Post" className="w-full rounded-xl mt-2 border aspect-[16/9] object-cover" />
+            <ClickableImage src={imageUrl} alt="Post" className="w-full rounded-xl mt-2 border aspect-[16/9] object-cover" overlay={imageOverlay} />
           ) : (
             <div className="w-full rounded-xl mt-2 border aspect-[16/9] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
               <Globe className="h-8 w-8 opacity-20" />

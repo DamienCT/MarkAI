@@ -659,6 +659,9 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
     calendar_item_id = payload.get("calendar_item_id", "")
     logo_scale = payload.get("logo_scale")
     text_scale = payload.get("text_scale", 1.0)
+    text_style = (payload.get("text_style") or "glass").lower()
+    if text_style not in ("glass", "solid"):
+        text_style = "glass"
 
     def _xy(v):
         if isinstance(v, (list, tuple)) and len(v) == 2:
@@ -806,6 +809,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                         logo_xy=logo_xy,
                         text_xy=text_xy,
                         text_scale=float(text_scale or 1.0),
+                        text_style=text_style,
                         text_anchor=gen_meta.get("text_anchor_used"),
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
@@ -888,6 +892,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
         existing_metadata["logo_scale"] = float(logo_scale) if logo_scale else None
         existing_metadata["text_xy"] = list(text_xy) if text_xy else None
         existing_metadata["text_scale"] = float(text_scale or 1.0)
+        existing_metadata["text_style"] = text_style
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
         await execute_update(

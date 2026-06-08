@@ -337,6 +337,7 @@ def overlay_logo_and_text(
     logo_xy: tuple[float, float] | None = None,
     text_xy: tuple[float, float] | None = None,
     text_scale: float = 1.0,
+    text_style: str = "glass",
 ) -> bytes:
     """Overlay a transparent logo on the best monotone area + text bar.
 
@@ -349,6 +350,10 @@ def overlay_logo_and_text(
     text card, placing it freely anywhere (manual editor). Takes precedence
     over ``text_anchor``. ``text_scale`` multiplies the card font size (1.0 =
     default), letting the editor resize the text bar; clamped to [0.5, 2.5].
+
+    ``text_style`` — ``"glass"`` (default) renders the frosted-glass card
+    (blurred photo + adaptive tint); ``"solid"`` renders a sober near-opaque
+    dark panel with white text (no blur).
 
     ``logo_anchor`` / ``text_anchor`` are corner keywords
     ('top-left'|'top-right'|'bottom-left'|'bottom-right') typically supplied
@@ -541,53 +546,57 @@ def overlay_logo_and_text(
     card_w = card_x2 - card_x1
     card_h = card_y2 - card_y1
 
-    # Crop a slightly larger region so the Gaussian blur has clean edges,
-    # then crop back to the card dimensions after blurring.
-    blur_pad = max(8, int(base.width * 0.012))
-    src_left = max(0, card_x1 - blur_pad)
-    src_top = max(0, card_y1 - blur_pad)
-    src_right = min(base.width, card_x2 + blur_pad)
-    src_bottom = min(base.height, card_y2 + blur_pad)
-    under = base.crop((src_left, src_top, src_right, src_bottom))
-    blur_radius = max(12, int(base.width * 0.020))
-    blurred = under.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-
-    # Average luminance of the blurred backdrop drives tint direction.
-    sample = blurred.convert("L").resize((32, 32), Image.LANCZOS)
-    avg_lum = float(np.array(sample).mean())
-    bright_bg = avg_lum > 128
-
-    if bright_bg:
-        tint_rgba = (10, 12, 16, 130)         # dark tint over bright photos
-        text_color_main = (255, 255, 255, 245)
-        text_color_sub = (255, 255, 255, 215)
-        border_rgba = (255, 255, 255, 90)
-    else:
-        tint_rgba = (245, 245, 248, 140)      # light tint over dark photos
-        text_color_main = (18, 20, 24, 250)
-        text_color_sub = (40, 44, 50, 220)
-        border_rgba = (255, 255, 255, 130)
-
-    tint_layer = Image.new("RGBA", blurred.size, tint_rgba)
-    frosted_full = Image.alpha_composite(blurred.convert("RGBA"), tint_layer)
-
-    # Slice the frosted region back down to the card rect (we cropped extra
-    # for the blur \u2014 that extra is discarded here).
-    inner_left = card_x1 - src_left
-    inner_top = card_y1 - src_top
-    frosted_card = frosted_full.crop(
-        (inner_left, inner_top, inner_left + card_w, inner_top + card_h)
-    )
-
-    # Rounded-rectangle mask gives the card its soft corners.
+    # Rounded-rectangle mask gives the card its soft corners (both styles).
     card_mask = Image.new("L", (card_w, card_h), 0)
     ImageDraw.Draw(card_mask).rounded_rectangle(
         (0, 0, card_w, card_h), radius=radius, fill=255
     )
 
-    # Paste the frosted card directly into the base image (under the
-    # logo + text overlay we composite at the very end).
-    base.paste(frosted_card, (card_x1, card_y1), card_mask)
+    if (text_style or "glass").lower() == "solid":
+        # Sober card: a clean, near-opaque dark panel \u2014 no blur, no adaptive
+        # tint \u2014 with white text for maximum contrast on any backdrop.
+        card_fill = Image.new("RGBA", (card_w, card_h), (12, 14, 18, 214))
+        text_color_main = (255, 255, 255, 245)
+        text_color_sub = (255, 255, 255, 210)
+        border_rgba = (255, 255, 255, 70)
+    else:
+        # Frosted glass: a blurred crop of the photo behind the card + an
+        # adaptive tint (dark on bright photos, light on dark photos).
+        blur_pad = max(8, int(base.width * 0.012))
+        src_left = max(0, card_x1 - blur_pad)
+        src_top = max(0, card_y1 - blur_pad)
+        src_right = min(base.width, card_x2 + blur_pad)
+        src_bottom = min(base.height, card_y2 + blur_pad)
+        under = base.crop((src_left, src_top, src_right, src_bottom))
+        blur_radius = max(12, int(base.width * 0.020))
+        blurred = under.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+        sample = blurred.convert("L").resize((32, 32), Image.LANCZOS)
+        avg_lum = float(np.array(sample).mean())
+        bright_bg = avg_lum > 128
+
+        if bright_bg:
+            tint_rgba = (10, 12, 16, 130)         # dark tint over bright photos
+            text_color_main = (255, 255, 255, 245)
+            text_color_sub = (255, 255, 255, 215)
+            border_rgba = (255, 255, 255, 90)
+        else:
+            tint_rgba = (245, 245, 248, 140)      # light tint over dark photos
+            text_color_main = (18, 20, 24, 250)
+            text_color_sub = (40, 44, 50, 220)
+            border_rgba = (255, 255, 255, 130)
+
+        tint_layer = Image.new("RGBA", blurred.size, tint_rgba)
+        frosted_full = Image.alpha_composite(blurred.convert("RGBA"), tint_layer)
+        # Slice the frosted region back to the card rect (extra blur pad discarded).
+        inner_left = card_x1 - src_left
+        inner_top = card_y1 - src_top
+        card_fill = frosted_full.crop(
+            (inner_left, inner_top, inner_left + card_w, inner_top + card_h)
+        )
+
+    # Paste the card (frosted or solid) into the base with rounded corners.
+    base.paste(card_fill, (card_x1, card_y1), card_mask)
 
     # 1px hairline border drawn on the overlay layer for a clean edge.
     draw.rounded_rectangle(

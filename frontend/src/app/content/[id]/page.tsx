@@ -207,7 +207,7 @@ export default function ContentDetailPage() {
     setSavingLogo(true);
     try {
       await api.post(`/api/v1/content/${content.id}/rebrand-logo`, placement);
-      toast.success("Re-render du logo lancé…");
+      toast.success("Logo re-render started…");
       // Poll until the calendar item leaves "working", then reload the image.
       const calItemId = content.calendar_item_id;
       if (calItemId) {
@@ -221,14 +221,14 @@ export default function ContentDetailPage() {
               setContent(updated);
               setCalendarItem(calItem);
               setImageCacheBust(`_cb=${Date.now()}`);
-              toast.success("Logo mis à jour");
+              toast.success("Logo updated");
               break;
             }
           } catch { /* keep polling */ }
         }
       }
     } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Échec du re-render du logo";
+      const detail = (err as { detail?: string })?.detail || "Failed to re-render logo";
       toast.error(detail);
     } finally {
       setSavingLogo(false);
@@ -419,6 +419,7 @@ export default function ContentDetailPage() {
     logo_scale: (gm.logo_scale as number | undefined) || 0.2,
     text_xy: (gm.text_xy as [number, number] | null | undefined) || null,
     text_scale: (gm.text_scale as number | undefined) || 1,
+    text_style: (gm.text_style as string | undefined) || "glass",
     textAnchor: (gm.text_anchor_used as string | undefined) || null,
   };
   const canEditLogo = !!calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && !!cleanImageUrl;
@@ -499,19 +500,20 @@ export default function ContentDetailPage() {
                     hashtags={hashtags}
                     imageUrl={contentThumbUrl || contentImageUrl}
                     cta={content.cta || content.cta_text}
+                    imageOverlay={canEditLogo ? (
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="secondary"
+                        onClick={(e) => { e.stopPropagation(); setLogoEditMode(true); }}
+                        className="h-8 w-8 rounded-full shadow-md"
+                        title="Edit logo & text placement"
+                        aria-label="Edit logo"
+                      >
+                        <Edit3 className="h-4 w-4" />
+                      </Button>
+                    ) : undefined}
                   />
-                  {canEditLogo && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => setLogoEditMode(true)}
-                      className="absolute right-2 top-2 z-10 gap-1.5 shadow-md"
-                      title="Éditer la position/taille du logo et du texte"
-                    >
-                      <Edit3 className="h-3.5 w-3.5" /> Éditer logo
-                    </Button>
-                  )}
                 </div>
               )}
             </div>

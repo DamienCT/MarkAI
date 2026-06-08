@@ -3079,6 +3079,7 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
             "text_anchor_used": state.get("text_anchor_used"),
             "text_xy": list(state["text_xy"]) if state.get("text_xy") else None,
             "text_scale": state.get("text_scale", 1.0),
+            "text_style": state.get("text_style", "glass"),
             "branding_review": state.get("branding_review"),
         },
         "status": "in_review",
