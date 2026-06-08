@@ -92,7 +92,7 @@ function AvatarCircle({ name, size = "h-9 w-9", avatarUrl }: { name: string; siz
       <img
         src={avatarUrl}
         alt={name}
-        className={`${size} rounded-full object-cover shrink-0 bg-white`}
+        className={`${size} rounded-full object-contain shrink-0 bg-white border p-0.5`}
       />
     );
   }

@@ -3066,10 +3066,19 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
         "metadata": {
             "raw_image": generated_image_url,
             "branded_image": state.get("branded_image"),
+            # Clean base (no logo/text) — the manual logo/overlay editor
+            # re-composites from THIS, so the result keeps the same photo.
+            "composed_image": state.get("composed_image"),
             "mockup_urls": state.get("mockup_urls", {}),
             # Traceability for the branding pipeline — lets us debug
             # logo/overlay choices after the fact without re-running.
+            # logo_xy/text_* also seed the manual editor's initial positions.
             "logo_variant_used": state.get("logo_variant_used"),
+            "logo_xy": list(state["logo_xy"]) if state.get("logo_xy") else None,
+            "logo_scale": scale_for_logo_variant(state.get("logo_variant_used") or ""),
+            "text_anchor_used": state.get("text_anchor_used"),
+            "text_xy": list(state["text_xy"]) if state.get("text_xy") else None,
+            "text_scale": state.get("text_scale", 1.0),
             "branding_review": state.get("branding_review"),
         },
         "status": "in_review",

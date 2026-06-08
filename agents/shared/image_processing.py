@@ -335,6 +335,8 @@ def overlay_logo_and_text(
     logo_anchor: str | None = None,
     text_anchor: str | None = None,
     logo_xy: tuple[float, float] | None = None,
+    text_xy: tuple[float, float] | None = None,
+    text_scale: float = 1.0,
 ) -> bytes:
     """Overlay a transparent logo on the best monotone area + text bar.
 
@@ -342,6 +344,11 @@ def overlay_logo_and_text(
     logo, letting the vision step place the logo ANYWHERE on the cleanest spot
     (corner, edge, or open middle), not just a corner. Takes precedence over
     ``logo_anchor``.
+
+    ``text_xy`` — when given, a normalized (0..1) (x, y) for the CENTER of the
+    text card, placing it freely anywhere (manual editor). Takes precedence
+    over ``text_anchor``. ``text_scale`` multiplies the card font size (1.0 =
+    default), letting the editor resize the text bar; clamped to [0.5, 2.5].
 
     ``logo_anchor`` / ``text_anchor`` are corner keywords
     ('top-left'|'top-right'|'bottom-left'|'bottom-right') typically supplied
@@ -455,8 +462,9 @@ def overlay_logo_and_text(
     # legible across very different scenes without us having to hand-tune
     # opacity per image. Sizing trimmed down from the original spec — the
     # earlier card was visually overpowering the product.
-    font_large = _load_font(int(base.width * 0.030), "regular")
-    font_small = _load_font(int(base.width * 0.019), "light")
+    _ts = max(0.5, min(2.5, text_scale or 1.0))
+    font_large = _load_font(int(base.width * 0.030 * _ts), "regular")
+    font_small = _load_font(int(base.width * 0.019 * _ts), "light")
     margin = int(base.width * 0.04)
     pad_x = max(14, int(base.width * 0.014))
     pad_y = max(10, int(base.width * 0.010))
@@ -498,19 +506,30 @@ def overlay_logo_and_text(
     card_w_full = total_w + 2 * pad_x
     card_h_full = total_h + 2 * pad_y
 
-    anchor = text_anchor if text_anchor in _TEXT_ANCHORS else "bottom-left"
-    if anchor == "bottom-left":
-        card_x1 = margin
-        card_y1 = base.height - margin - card_h_full
-    elif anchor == "bottom-right":
-        card_x1 = base.width - margin - card_w_full
-        card_y1 = base.height - margin - card_h_full
-    elif anchor == "top-left":
-        card_x1 = margin
-        card_y1 = margin
-    else:  # top-right
-        card_x1 = base.width - margin - card_w_full
-        card_y1 = margin
+    if text_xy is not None:
+        # Free placement: text_xy is the normalized (0..1) CENTER of the card.
+        # Convert to a top-left pixel coord and clamp so the whole card stays
+        # on-canvas (manual editor path). Takes precedence over text_anchor.
+        tx, ty = text_xy
+        card_x1 = int(tx * base.width - card_w_full / 2)
+        card_y1 = int(ty * base.height - card_h_full / 2)
+        edge = max(4, int(base.width * 0.01))
+        card_x1 = max(edge, min(card_x1, base.width - card_w_full - edge))
+        card_y1 = max(edge, min(card_y1, base.height - card_h_full - edge))
+    else:
+        anchor = text_anchor if text_anchor in _TEXT_ANCHORS else "bottom-left"
+        if anchor == "bottom-left":
+            card_x1 = margin
+            card_y1 = base.height - margin - card_h_full
+        elif anchor == "bottom-right":
+            card_x1 = base.width - margin - card_w_full
+            card_y1 = base.height - margin - card_h_full
+        elif anchor == "top-left":
+            card_x1 = margin
+            card_y1 = margin
+        else:  # top-right
+            card_x1 = base.width - margin - card_w_full
+            card_y1 = margin
 
     card_x2 = card_x1 + card_w_full
     card_y2 = card_y1 + card_h_full

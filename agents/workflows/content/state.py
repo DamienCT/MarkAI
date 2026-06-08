@@ -54,6 +54,8 @@ class ContentState(TypedDict, total=False):
     logo_variant_used: str | None
     logo_xy: tuple[float, float] | None
     text_anchor_used: str | None
+    text_xy: tuple[float, float] | None
+    text_scale: float | None
 
     # Vision-critic review after branding (decides whether to re-render)
     branding_review: dict[str, Any] | None

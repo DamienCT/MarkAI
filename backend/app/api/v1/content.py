@@ -132,6 +132,80 @@ async def regenerate_image(
     return {"status": "queued", "message": "Image regeneration started"}
 
 
+class LogoRebrandRequest(BaseModel):
+    """Manual logo/overlay placement from the visual editor.
+
+    Coordinates are normalized 0..1 CENTER points; scales are width-relative
+    (logo) / font multiplier (text). ``text_xy`` may be null to keep the
+    text at its current/anchor position.
+    """
+
+    logo_xy: list[float]
+    logo_scale: float | None = None
+    text_xy: list[float] | None = None
+    text_scale: float | None = 1.0
+    logo_variant: str | None = None
+
+
+# Manual logo/overlay editing is only allowed while the post is in review.
+_REBRAND_ALLOWED_STATUSES = frozenset({"in_review", "reworking"})
+
+
+@router.post("/{content_id}/rebrand-logo")
+async def rebrand_logo(
+    content_id: uuid.UUID,
+    body: LogoRebrandRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-render the branded image with manually-placed logo + text overlay.
+
+    Publishes a NATS message the agents worker handles by re-compositing from
+    the clean base image (no re-generation), keeping the underlying photo.
+    """
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    content = await content_service.get_content(db, content_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    cal_result = await db.execute(
+        select(CalendarItem).where(CalendarItem.id == content.calendar_item_id)
+    )
+    cal_item = cal_result.scalar_one_or_none()
+    if cal_item is None:
+        raise HTTPException(status_code=404, detail="Calendar item not found")
+    if cal_item.status not in _REBRAND_ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Logo editing is only allowed for in-review content (got '{cal_item.status}')",
+        )
+
+    if len(body.logo_xy) != 2:
+        raise HTTPException(status_code=400, detail="logo_xy must be [x, y]")
+    if body.text_xy is not None and len(body.text_xy) != 2:
+        raise HTTPException(status_code=400, detail="text_xy must be [x, y] or null")
+
+    from app.services import nats_service
+
+    await nats_service.publish(
+        "content.rebrand-logo",
+        {
+            "content_id": str(content_id),
+            "brand_id": str(content.brand_id),
+            "calendar_item_id": str(content.calendar_item_id),
+            "logo_xy": body.logo_xy,
+            "logo_scale": body.logo_scale,
+            "text_xy": body.text_xy,
+            "text_scale": body.text_scale,
+            "logo_variant": body.logo_variant,
+        },
+    )
+
+    return {"status": "queued", "message": "Logo re-render started"}
+
+
 class CaptionRegenerateRequest(BaseModel):
     prompt: str | None = None
 

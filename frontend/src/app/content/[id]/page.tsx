@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ContentEditor } from "@/components/content/ContentEditor";
 import { ChannelPreview } from "@/components/content/ChannelPreview";
+import { LogoEditor, type LogoPlacement } from "@/components/content/LogoEditor";
 
 import { ApprovalHistory } from "@/components/approval/ApprovalHistory";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,6 +45,8 @@ export default function ContentDetailPage() {
   const [regeneratingImage, setRegeneratingImage] = useState(false);
   const [regeneratingCaption, setRegeneratingCaption] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [logoEditMode, setLogoEditMode] = useState(false);
+  const [savingLogo, setSavingLogo] = useState(false);
   const imageUploadInputRef = useRef<HTMLInputElement>(null);
   const [imageCacheBust, setImageCacheBust] = useState("");
   const [scheduleDate, setScheduleDate] = useState("");
@@ -199,6 +202,40 @@ export default function ContentDetailPage() {
     }
   }, [content]);
 
+  const handleSaveLogo = useCallback(async (placement: LogoPlacement) => {
+    if (!content) return;
+    setSavingLogo(true);
+    try {
+      await api.post(`/api/v1/content/${content.id}/rebrand-logo`, placement);
+      toast.success("Re-render du logo lancé…");
+      // Poll until the calendar item leaves "working", then reload the image.
+      const calItemId = content.calendar_item_id;
+      if (calItemId) {
+        const maxAttempts = 40; // ~80s
+        for (let i = 0; i < maxAttempts; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          try {
+            const calItem = await api.get<CalendarItem>(`/api/v1/calendar/${calItemId}`);
+            if (calItem.status !== "working") {
+              const updated = await api.get<Content>(`/api/v1/content/${content.id}`);
+              setContent(updated);
+              setCalendarItem(calItem);
+              setImageCacheBust(`_cb=${Date.now()}`);
+              toast.success("Logo mis à jour");
+              break;
+            }
+          } catch { /* keep polling */ }
+        }
+      }
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Échec du re-render du logo";
+      toast.error(detail);
+    } finally {
+      setSavingLogo(false);
+      setLogoEditMode(false);
+    }
+  }, [content]);
+
   const handleApproval = useCallback(async (action: "approved" | "rejected") => {
     const pendingApproval = approvals.find(a => a.status === "pending");
     if (!pendingApproval) {
@@ -351,6 +388,41 @@ export default function ContentDetailPage() {
     ? `${contentImageUrl}${contentImageUrl.includes("?") ? "&" : "?"}w=600&q=75`
     : undefined;
 
+  // ── Logo / overlay visual editor inputs ────────────────────────
+  const gm = (content.generation_metadata || {}) as Record<string, unknown>;
+  // Editor backdrop is the CLEAN image (no logo/text); fall back to raw.
+  const composedPath = (gm.composed_image || gm.raw_image) as string | undefined;
+  const cleanImageUrl = composedPath
+    ? (composedPath.startsWith("http") ? composedPath : `${API_BASE_URL}/api/v1/files/${composedPath}`) + (imageCacheBust ? `?${imageCacheBust}` : "")
+    : undefined;
+  // All brand logo variants (label → absolute url) for the reverse button.
+  const availableLogos = (() => {
+    const logos = (brand?.brand_guidelines as Record<string, unknown> | undefined)?.logos as Record<string, Record<string, string>> | undefined;
+    const map: Record<string, string> = {};
+    if (logos) {
+      for (const [label, info] of Object.entries(logos)) {
+        if (info?.url) map[label] = fileUrl(info.url);
+      }
+    }
+    return map;
+  })();
+  // Prefer the exact logo variant that was composited; else the avatar logo.
+  const logoEditorUrl = (() => {
+    const variant = gm.logo_variant_used as string | undefined;
+    if (variant && availableLogos[variant]) return availableLogos[variant];
+    return brandAvatarUrl;
+  })();
+  const editorTextLine1 = (gm.hook as string) || content.headline || content.title || caption.split("\n")[0] || "";
+  const editorTextLine2 = `${brandName}${brand?.website_url ? ` — ${brand.website_url}` : ""}`;
+  const initialPlacement = {
+    logo_xy: (gm.logo_xy as [number, number] | undefined) || ([0.85, 0.85] as [number, number]),
+    logo_scale: (gm.logo_scale as number | undefined) || 0.2,
+    text_xy: (gm.text_xy as [number, number] | null | undefined) || null,
+    text_scale: (gm.text_scale as number | undefined) || 1,
+    textAnchor: (gm.text_anchor_used as string | undefined) || null,
+  };
+  const canEditLogo = !!calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && !!cleanImageUrl;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -401,16 +473,47 @@ export default function ContentDetailPage() {
         <TabsContent value="preview" className="mt-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="flex justify-center">
-              <ChannelPreview
-                channel={channel}
-                brandName={brandName}
-                brandHandle={brandHandle}
-                avatarUrl={brandAvatarUrl}
-                caption={caption}
-                hashtags={hashtags}
-                imageUrl={contentThumbUrl || contentImageUrl}
-                cta={content.cta || content.cta_text}
-              />
+              {logoEditMode && cleanImageUrl ? (
+                <div className="w-full">
+                  <LogoEditor
+                    cleanImageUrl={cleanImageUrl}
+                    logoUrl={logoEditorUrl}
+                    logos={availableLogos}
+                    initialVariant={(gm.logo_variant_used as string) || undefined}
+                    textLine1={editorTextLine1}
+                    textLine2={editorTextLine2}
+                    initial={initialPlacement}
+                    saving={savingLogo}
+                    onSave={handleSaveLogo}
+                    onCancel={() => setLogoEditMode(false)}
+                  />
+                </div>
+              ) : (
+                <div className="relative">
+                  <ChannelPreview
+                    channel={channel}
+                    brandName={brandName}
+                    brandHandle={brandHandle}
+                    avatarUrl={brandAvatarUrl}
+                    caption={caption}
+                    hashtags={hashtags}
+                    imageUrl={contentThumbUrl || contentImageUrl}
+                    cta={content.cta || content.cta_text}
+                  />
+                  {canEditLogo && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setLogoEditMode(true)}
+                      className="absolute right-2 top-2 z-10 gap-1.5 shadow-md"
+                      title="Éditer la position/taille du logo et du texte"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" /> Éditer logo
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
             <div className="space-y-4">
               {/* Approval actions */}

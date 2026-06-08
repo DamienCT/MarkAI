@@ -455,6 +455,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
 
         # ── 2. Apply branding (logo + text overlay) ────────────────────
         branded_url = raw_url  # fallback if branding fails
+        chosen_label = ""      # set when a logo variant is picked below
 
         logos_cfg = brand_guidelines.get("logos", {})
         from shared.config import settings as _settings
@@ -595,6 +596,11 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         existing_metadata["raw_image"] = raw_url
         existing_metadata["generated_image_url"] = raw_url
         existing_metadata["branded_image"] = branded_url
+        # Clean base (no logo/text) for the manual logo/overlay editor — here
+        # the overlay was applied onto image_data, which IS raw_url.
+        existing_metadata["composed_image"] = raw_url
+        existing_metadata["logo_variant_used"] = chosen_label
+        existing_metadata["logo_scale"] = scale_for_logo_variant(chosen_label)
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
 
@@ -623,6 +629,285 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         )
 
 
+async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
+    """Re-composite the logo + text overlay at manually-edited positions.
+
+    The user dragged/resized the logo and/or the text card in the editor; we
+    re-render the branded image from the CLEAN base (``composed_image`` — no
+    logo/text) using the supplied normalized positions, so the underlying
+    photo is unchanged. Mirrors the branding half of image regeneration.
+
+    Payload: {content_id, brand_id, calendar_item_id, logo_xy:[x,y],
+    logo_scale, text_xy:[x,y]|None, text_scale}.
+    """
+    import json as _json
+
+    import httpx as _httpx
+
+    from shared.tools.storage import async_upload_file, async_ensure_bucket, async_download_file
+    from shared.image_processing import (
+        overlay_logo_and_text,
+        generate_mockup,
+        render_logo_png,
+        analyze_brightness_at_xy,
+        select_logo_variant,
+        scale_for_logo_variant,
+    )
+
+    content_id = payload.get("content_id", "")
+    brand_id = payload.get("brand_id", "")
+    calendar_item_id = payload.get("calendar_item_id", "")
+    logo_scale = payload.get("logo_scale")
+    text_scale = payload.get("text_scale", 1.0)
+
+    def _xy(v):
+        if isinstance(v, (list, tuple)) and len(v) == 2:
+            try:
+                return (
+                    max(0.0, min(1.0, float(v[0]))),
+                    max(0.0, min(1.0, float(v[1]))),
+                )
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    logo_xy = _xy(payload.get("logo_xy"))
+    text_xy = _xy(payload.get("text_xy"))
+
+    logger.info(
+        "Logo rebrand for content %s (logo_xy=%s text_xy=%s)",
+        content_id, logo_xy, text_xy,
+    )
+
+    # Capture the prior status so we restore it (don't clobber 'reworking').
+    prior_rows = await execute_query(
+        "SELECT status FROM calendar_items WHERE id = :id", {"id": calendar_item_id}
+    )
+    prior_status = (prior_rows[0].get("status") if prior_rows else None) or "in_review"
+    await execute_update(
+        "UPDATE calendar_items SET status = 'working' WHERE id = :id",
+        {"id": calendar_item_id},
+    )
+
+    try:
+        content_rows = await execute_query(
+            "SELECT headline, caption, generation_metadata FROM content WHERE id = :id",
+            {"id": content_id},
+        )
+        if not content_rows:
+            logger.error("Content %s not found for logo rebrand", content_id)
+            return
+        content_row = content_rows[0]
+        headline = content_row.get("headline", "")
+        caption = content_row.get("caption", "")
+        gen_meta = content_row.get("generation_metadata") or {}
+        if isinstance(gen_meta, str):
+            try:
+                gen_meta = _json.loads(gen_meta)
+            except Exception:
+                gen_meta = {}
+        hook = gen_meta.get("hook", headline)
+
+        # Clean base: composed (no logo/text) → raw fallback.
+        base_ref = gen_meta.get("composed_image") or gen_meta.get("raw_image")
+        if not base_ref or not str(base_ref).startswith("content-images/"):
+            logger.error(
+                "No clean base image for content %s — cannot rebrand", content_id
+            )
+            return
+        base_data = await async_download_file(
+            "content-images", str(base_ref).replace("content-images/", "")
+        )
+
+        brand_rows = await execute_query(
+            "SELECT name, slug, website_url, brand_guidelines FROM brands WHERE id = :id",
+            {"id": brand_id},
+        )
+        brand = brand_rows[0] if brand_rows else {}
+        brand_name = brand.get("name", "")
+        website = brand.get("website_url", "")
+        brand_guidelines = brand.get("brand_guidelines") or {}
+        if isinstance(brand_guidelines, str):
+            try:
+                brand_guidelines = _json.loads(brand_guidelines)
+            except (ValueError, TypeError):
+                brand_guidelines = {}
+
+        logos_cfg = brand_guidelines.get("logos", {})
+        from shared.config import settings as _settings
+        api_base = getattr(_settings, "BACKEND_URL", "") or "http://backend:8000"
+        available_logos: dict[str, str] = {}
+        for label, info in logos_cfg.items():
+            if isinstance(info, dict):
+                url = info.get("url", "")
+                if url and url.startswith("/"):
+                    url = f"{api_base}{url}"
+                if url:
+                    available_logos[label] = url
+
+        await async_ensure_bucket("content-images")
+        branded_url = base_ref  # fallback if branding fails
+        chosen_label = gen_meta.get("logo_variant_used") or ""
+
+        if available_logos:
+            # Honor the variant explicitly chosen via the editor's reverse
+            # button; else keep the one chosen at generation, re-picking for
+            # the spot the logo now occupies only if it's gone.
+            requested_variant = payload.get("logo_variant") or ""
+            chosen_label = (
+                requested_variant
+                if requested_variant in available_logos
+                else (gen_meta.get("logo_variant_used") or "")
+            )
+            if chosen_label not in available_logos:
+                if logo_xy:
+                    try:
+                        from PIL import Image as _PILImage
+                        from io import BytesIO as _BytesIO
+                        _img = _PILImage.open(_BytesIO(base_data))
+                        _lw = int(_img.width * float(logo_scale or 0.2))
+                        _lh = int(_lw * 0.5)
+                        _img.close()
+                        b_at, v_at = analyze_brightness_at_xy(
+                            base_data, logo_xy[0], logo_xy[1], _lw, _lh
+                        )
+                        chosen_label = select_logo_variant(
+                            b_at, v_at, list(available_logos.keys())
+                        ) or list(available_logos.keys())[0]
+                    except Exception:
+                        chosen_label = list(available_logos.keys())[0]
+                else:
+                    chosen_label = list(available_logos.keys())[0]
+
+            logo_png = None
+            for try_label in [chosen_label] + [l for l in available_logos if l != chosen_label]:
+                try:
+                    logo_url = available_logos[try_label]
+                    async with _httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.get(logo_url)
+                        resp.raise_for_status()
+                        logo_raw = resp.content
+                    is_svg = logo_raw[:5] == b"<?xml" or logo_raw[:4] == b"<svg" or b"<svg" in logo_raw[:500]
+                    logo_png = render_logo_png(logo_raw) if is_svg else logo_raw
+                    if logo_png:
+                        chosen_label = try_label
+                        break
+                except Exception:
+                    continue
+
+            if logo_png:
+                text_line1 = hook or headline
+                text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
+                try:
+                    branded_bytes = overlay_logo_and_text(
+                        base_data, logo_png,
+                        text_line1=text_line1, text_line2=text_line2,
+                        logo_scale=(float(logo_scale) if logo_scale else scale_for_logo_variant(chosen_label)),
+                        logo_xy=logo_xy,
+                        text_xy=text_xy,
+                        text_scale=float(text_scale or 1.0),
+                        text_anchor=gen_meta.get("text_anchor_used"),
+                    )
+                    branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
+                    await async_upload_file(
+                        "content-images", branded_obj, branded_bytes, "image/png"
+                    )
+                    branded_url = f"content-images/{branded_obj}"
+                    logger.info("Logo rebrand applied for content %s", content_id)
+                except Exception as exc:
+                    logger.warning("Logo rebrand overlay failed: %s", exc)
+
+        # ── Regenerate social mockups from the new branded image ───────
+        mockup_urls: dict[str, str] = {}
+        try:
+            if branded_url.startswith("content-images/"):
+                mockup_base = await async_download_file(
+                    "content-images", branded_url.replace("content-images/", "")
+                )
+            else:
+                mockup_base = base_data
+
+            channels_cfg = brand_guidelines.get("channels", {})
+            social_links = brand_guidelines.get("social_links", {})
+            brand_handle = ""
+            ig_link = social_links.get("instagram", "")
+            if ig_link:
+                brand_handle = ig_link.rstrip("/").rsplit("/", 1)[-1]
+            if not brand_handle:
+                ig_channel = channels_cfg.get("instagram", {})
+                if isinstance(ig_channel, dict) and ig_channel.get("handle"):
+                    brand_handle = ig_channel["handle"].lstrip("@")
+            if not brand_handle:
+                brand_handle = brand.get("slug", brand_name.lower().replace(" ", ""))
+
+            avatar_logo_data = None
+            for avatar_label in ["watermark", "icon", "secondary", "primary"]:
+                logo_info = logos_cfg.get(avatar_label)
+                if isinstance(logo_info, dict) and logo_info.get("url"):
+                    try:
+                        _logo_url = logo_info["url"]
+                        if _logo_url.startswith("/"):
+                            _logo_url = f"{api_base}{_logo_url}"
+                        async with _httpx.AsyncClient(timeout=30) as client:
+                            resp = await client.get(_logo_url)
+                            resp.raise_for_status()
+                            _raw = resp.content
+                        is_svg = _raw[:5] == b"<?xml" or _raw[:4] == b"<svg" or b"<svg" in _raw[:500]
+                        avatar_logo_data = render_logo_png(_raw) if is_svg else _raw
+                        if avatar_logo_data:
+                            break
+                    except Exception:
+                        pass
+
+            mockup_platforms = ["instagram", "facebook", "linkedin", "x"]
+            enabled = [ch for ch, cfg in channels_cfg.items()
+                       if isinstance(cfg, dict) and cfg.get("enabled") and ch in mockup_platforms]
+            if not enabled:
+                enabled = mockup_platforms
+            brand_initial = brand_name[0].upper() if brand_name else "H"
+            for platform in enabled:
+                try:
+                    mockup_bytes = generate_mockup(
+                        mockup_base, caption, platform,
+                        username=brand_handle, display_name=brand_name,
+                        avatar_initial=brand_initial, avatar_logo_data=avatar_logo_data,
+                    )
+                    obj_name = f"{brand_id}/{calendar_item_id}/mockup_{platform}.png"
+                    await async_upload_file("content-images", obj_name, mockup_bytes, "image/png")
+                    mockup_urls[platform] = f"content-images/{obj_name}"
+                except Exception as exc:
+                    logger.warning("Mockup regen failed for %s: %s", platform, exc)
+        except Exception as exc:
+            logger.warning("Mockup regeneration skipped during rebrand: %s", exc)
+
+        # ── Update content metadata with new branded image + placement ──
+        existing_metadata = gen_meta if isinstance(gen_meta, dict) else {}
+        existing_metadata["branded_image"] = branded_url
+        existing_metadata["logo_variant_used"] = chosen_label or existing_metadata.get("logo_variant_used")
+        existing_metadata["logo_xy"] = list(logo_xy) if logo_xy else None
+        existing_metadata["logo_scale"] = float(logo_scale) if logo_scale else None
+        existing_metadata["text_xy"] = list(text_xy) if text_xy else None
+        existing_metadata["text_scale"] = float(text_scale or 1.0)
+        if mockup_urls:
+            existing_metadata["mockup_urls"] = mockup_urls
+        await execute_update(
+            "UPDATE content SET generation_metadata = :metadata WHERE id = :id",
+            {"id": content_id, "metadata": _json.dumps(existing_metadata, default=str)},
+        )
+        logger.info(
+            "Logo rebrand complete for content %s — branded at %s",
+            content_id, branded_url,
+        )
+    except Exception as exc:
+        logger.exception("Logo rebrand failed for content %s: %s", content_id, exc)
+    finally:
+        # Restore the prior status so the item is never stuck in 'working'.
+        await execute_update(
+            "UPDATE calendar_items SET status = :st WHERE id = :id",
+            {"id": calendar_item_id, "st": prior_status},
+        )
+
+
 def _resolve_graph(subject: str):
     """Resolve a NATS subject to the appropriate LangGraph graph."""
     prefix = subject.split(".")[0]
@@ -641,6 +926,16 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             await _handle_image_regeneration(payload)
         except Exception as exc:
             logger.exception("Image regeneration failed: %s", exc)
+        await msg.ack()
+        return
+
+    # ── Special handler: manual logo/overlay re-render (not a workflow) ──
+    if subject == "content.rebrand-logo":
+        try:
+            payload = json.loads(msg.data.decode())
+            await _handle_logo_rebrand(payload)
+        except Exception as exc:
+            logger.exception("Logo rebrand failed: %s", exc)
         await msg.ack()
         return
 

@@ -40,6 +40,7 @@ import {
   Compass,
   LayoutGrid,
   Megaphone,
+  MapPin,
   X,
 } from "lucide-react";
 import { formatKeyValue } from "@/components/ui/safe-render";
@@ -339,6 +340,7 @@ export default function IntelligencePage() {
   const [loading, setLoading] = useState(true);
   const [refreshingTrends, setRefreshingTrends] = useState(false);
   const [trendsSortDir, setTrendsSortDir] = useState<"desc" | "asc">("desc");
+  const [localTrendOnly, setLocalTrendOnly] = useState(false);
   const [trendsSelectMode, setTrendsSelectMode] = useState(false);
   const [selectedTrendIds, setSelectedTrendIds] = useState<Set<string>>(new Set());
   const [deletingTrends, setDeletingTrends] = useState(false);
@@ -476,6 +478,19 @@ export default function IntelligencePage() {
     });
     return copy;
   }, [trends, trendsSortDir]);
+
+  // "Local Trend" filter → Mauritius (geo === "MU") only.
+  const displayedTrends = useMemo(
+    () =>
+      localTrendOnly
+        ? sortedTrends.filter((t) => (t.geo || "").toUpperCase() === "MU")
+        : sortedTrends,
+    [sortedTrends, localTrendOnly]
+  );
+  const localTrendCount = useMemo(
+    () => sortedTrends.filter((t) => (t.geo || "").toUpperCase() === "MU").length,
+    [sortedTrends]
+  );
 
   if (loading) {
     return (
@@ -623,10 +638,28 @@ export default function IntelligencePage() {
               ) : (
                 <>
                   <Button
+                    variant={localTrendOnly ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setLocalTrendOnly((v) => !v)}
+                    title={
+                      localTrendOnly
+                        ? "Filtre Maurice actif — cliquer pour annuler"
+                        : "Afficher uniquement les tendances locales (Maurice)"
+                    }
+                  >
+                    {localTrendOnly ? (
+                      <X className="mr-1.5 h-3.5 w-3.5" />
+                    ) : (
+                      <MapPin className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    Local Trend
+                    {!localTrendOnly && localTrendCount > 0 ? ` (${localTrendCount})` : ""}
+                  </Button>
+                  <Button
                     variant="outline"
                     size="sm"
                     onClick={() => setTrendsSelectMode(true)}
-                    disabled={sortedTrends.length === 0}
+                    disabled={displayedTrends.length === 0}
                   >
                     <CheckSquare className="mr-1.5 h-3.5 w-3.5" />
                     Select
@@ -670,13 +703,15 @@ export default function IntelligencePage() {
           </div>
         </CardHeader>
         <CardContent>
-          {sortedTrends.length === 0 ? (
+          {displayedTrends.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
-              No trending topics yet.
+              {localTrendOnly
+                ? "Aucune tendance locale (Maurice) pour le moment."
+                : "No trending topics yet."}
             </p>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {sortedTrends.map((trend) => (
+              {displayedTrends.map((trend) => (
                 <TrendCard
                   key={trend.id}
                   trend={trend}

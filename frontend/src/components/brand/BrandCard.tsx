@@ -5,7 +5,6 @@ import Link from "next/link";
 import { Building2, MapPin, Instagram, Facebook, Linkedin, Youtube, Music2, Twitter, Globe, MessageSquare } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { apiUrl } from "@/lib/api";
 import type { Brand } from "@/types";
 
@@ -78,12 +77,18 @@ export function BrandCard({ brand }: BrandCardProps) {
         <CardContent className="p-4 space-y-4">
           {/* Header: Avatar + Name + Status */}
           <div className="flex items-start gap-3">
-            <Avatar className="h-12 w-12 shrink-0">
-              <AvatarImage src={brand.logo_url ? apiUrl(brand.logo_url) : undefined} />
-              <AvatarFallback className="bg-primary/10 text-primary font-bold">
+            {brand.logo_url ? (
+              <img
+                src={apiUrl(brand.logo_url)}
+                alt={brand.name}
+                className="h-10 max-w-[120px] rounded-lg object-contain border p-1 shrink-0"
+                loading="lazy"
+              />
+            ) : (
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary font-bold">
                 {initials}
-              </AvatarFallback>
-            </Avatar>
+              </div>
+            )}
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="font-semibold truncate">{brand.name}</h3>
