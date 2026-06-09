@@ -379,8 +379,13 @@ export interface DashboardStats {
   content_in_pipeline: number;
   published_this_week: number;
   scheduled_posts: number;
-  recent_agent_runs: AgentRun[];
-  upcoming_posts: CalendarItem[];
+  active_workflows?: number;
+  workflows_running_pending?: number;
+  workflows_completed?: number;
+  workflows_failed?: number;
+  monthly_goal?: { published: number; target: number };
+  recent_agent_runs?: AgentRun[];
+  upcoming_posts?: CalendarItem[];
 }
 
 export interface AIProvider {

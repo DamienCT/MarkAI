@@ -927,6 +927,40 @@ def _resolve_graph(subject: str):
     return WORKFLOW_MAP.get(prefix)
 
 
+# Image fields the content workflow carries in its state. The actual images are
+# uploaded to MinIO (URLs live in content.generation_metadata); the base64 copy
+# kept here is write-only dead weight that bloated agent_runs.output_payload to
+# >100MB and OOM-killed the backend on serialization. We strip it before storing.
+_STRIPPED_IMAGE_KEYS = {
+    "generated_image",
+    "branded_image",
+    "composed_image",
+    "product_image",
+}
+
+
+def _strip_images(obj: Any) -> Any:
+    """Recursively replace base64 image blobs with a small placeholder.
+
+    Targets known image fields and ``data:`` URIs only — long *text* values
+    (e.g. strategy/research documents that downstream nodes read back) are left
+    untouched, so this is safe for every agent type.
+    """
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            if k in _STRIPPED_IMAGE_KEYS and isinstance(v, str) and len(v) > 200:
+                out[k] = f"[image stripped: {len(v) // 1024} kB]"
+            else:
+                out[k] = _strip_images(v)
+        return out
+    if isinstance(obj, list):
+        return [_strip_images(x) for x in obj]
+    if isinstance(obj, str) and obj.startswith("data:") and len(obj) > 200:
+        return f"[image stripped: {len(obj) // 1024} kB]"
+    return obj
+
+
 async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     """Process an incoming NATS message by dispatching to the correct graph."""
     subject = msg.subject
@@ -1198,6 +1232,9 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
         # Ensure result is JSON-safe before storing (handle UUIDs, datetimes, etc.)
         safe_result = json.loads(json.dumps(result, default=str))
+        # Drop base64 image blobs — they live in MinIO, keeping them here bloats
+        # agent_runs.output_payload (>100MB) and OOM-kills the API on read.
+        safe_result = _strip_images(safe_result)
 
         # Extract total token usage if the workflow tracked it
         tokens_used = None

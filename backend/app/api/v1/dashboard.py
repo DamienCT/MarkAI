@@ -1,4 +1,6 @@
+import calendar
 import json
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
@@ -13,13 +15,37 @@ router = APIRouter()
 _DASHBOARD_CACHE_TTL = 300  # 5 minutes
 
 
+def _weekly_cadence(cadence) -> int:
+    """Sum posts_per_week across a strategy cadence object.
+
+    The cadence is keyed by channel; each value is usually a dict carrying
+    ``posts_per_week`` (sometimes ``frequency``), but may also be a bare number.
+    Anything unparseable contributes 0.
+    """
+    if not isinstance(cadence, dict):
+        return 0
+    total = 0
+    for cfg in cadence.values():
+        if isinstance(cfg, dict):
+            ppw = cfg.get("posts_per_week", cfg.get("frequency", 0))
+        elif isinstance(cfg, (int, float)):
+            ppw = cfg
+        else:
+            ppw = 0
+        try:
+            total += int(ppw)
+        except (ValueError, TypeError):
+            pass
+    return total
+
+
 @router.get("/stats")
 async def dashboard_stats(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Return aggregate dashboard statistics."""
-    cached = await _cache_get("markai:dashboard:stats")
+    cached = await _cache_get("markai:dashboard:stats:v3")
     if cached:
         return json.loads(cached)
 
@@ -33,10 +59,39 @@ async def dashboard_stats(
                 (SELECT count(*) FROM approvals WHERE status = 'pending') AS pending_approvals,
                 (SELECT count(*) FROM calendar_items WHERE status = 'scheduled') AS scheduled_posts,
                 (SELECT count(*) FROM calendar_items WHERE status = 'published' AND published_at >= now() - interval '7 days') AS published_this_week,
-                (SELECT count(*) FROM agent_runs WHERE status = 'running') AS active_workflows
+                (SELECT count(*) FROM agent_runs WHERE status = 'running') AS active_workflows,
+                (SELECT count(*) FROM agent_runs WHERE status IN ('running', 'pending')) AS workflows_running_pending,
+                (SELECT count(*) FROM agent_runs WHERE status = 'completed') AS workflows_completed,
+                (SELECT count(*) FROM agent_runs WHERE status = 'failed') AS workflows_failed,
+                (SELECT count(*) FROM calendar_items WHERE status = 'published' AND published_at >= date_trunc('month', now())) AS published_this_month
         """)
         )
     ).fetchone()
+
+    # Monthly goal (option A): sum each active brand's latest strategy cadence
+    # (posts_per_week per channel), scaled to the number of weeks in this month.
+    cadence_rows = (
+        await db.execute(
+            text("""
+            SELECT (
+                SELECT ar.output_payload -> 'cadence'
+                FROM agent_runs ar
+                WHERE ar.brand_id = b.id
+                  AND ar.agent_type = 'strategy'
+                  AND ar.status = 'completed'
+                ORDER BY ar.created_at DESC
+                LIMIT 1
+            ) AS cadence
+            FROM brands b
+            WHERE b.status = 'active'
+        """)
+        )
+    ).fetchall()
+
+    weekly_target = sum(_weekly_cadence(r[0]) for r in cadence_rows)
+    now = datetime.utcnow()
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    monthly_target = round(weekly_target * days_in_month / 7)
 
     result = {
         # Field names MUST match the frontend DashboardStats interface.
@@ -46,9 +101,18 @@ async def dashboard_stats(
         "scheduled_posts": int(row[3]),
         "published_this_week": int(row[4]),
         "active_workflows": int(row[5]),
+        # Workflow summary for the dashboard's 3 counters.
+        "workflows_running_pending": int(row[6]),
+        "workflows_completed": int(row[7]),
+        "workflows_failed": int(row[8]),
+        # Monthly cadence goal for the dashboard ring.
+        "monthly_goal": {
+            "published": int(row[9]),
+            "target": monthly_target,
+        },
     }
     await _cache_set(
-        "markai:dashboard:stats", json.dumps(result), ttl=_DASHBOARD_CACHE_TTL
+        "markai:dashboard:stats:v3", json.dumps(result), ttl=_DASHBOARD_CACHE_TTL
     )
     return result
 
@@ -64,42 +128,72 @@ async def dashboard_charts(
 ):
     """Chart data for the dashboard.
 
-    - published_per_day: zero-filled daily publish count over the last `days`
-      days (so gaps show as 0 in the chart).
+    - published_per_day: zero-filled daily series in WIDE format — one row per
+      day with a count per channel: {"day": "2026-06-05", "instagram": 2, ...}.
+      Drives one superimposed line per channel.
+    - channels: distinct channels present in the window (line/legend/filter).
     - published_by_channel: posts published in the CURRENT calendar month,
       grouped by channel (donut).
     """
     if days not in _ALLOWED_CHART_DAYS:
         days = 30
 
-    cache_key = f"markai:dashboard:charts:{days}"
+    cache_key = f"markai:dashboard:charts:v2:{days}"
     cached = await _cache_get(cache_key)
     if cached:
         return json.loads(cached)
 
-    # Zero-filled daily series via generate_series LEFT JOINed to actual counts.
-    per_day_rows = (
+    # Ordered day list (zero-filled spine for the chart's x-axis).
+    day_rows = (
         await db.execute(
             text("""
-            SELECT to_char(d.day, 'YYYY-MM-DD') AS day,
-                   COALESCE(c.cnt, 0) AS count
+            SELECT to_char(d.day, 'YYYY-MM-DD') AS day
             FROM generate_series(
                    now()::date - (CAST(:days AS int) - 1) * interval '1 day',
                    now()::date,
                    interval '1 day'
                  ) AS d(day)
-            LEFT JOIN (
-                   SELECT published_at::date AS day, count(*) AS cnt
-                   FROM calendar_items
-                   WHERE status = 'published'
-                     AND published_at >= now()::date - (CAST(:days AS int) - 1) * interval '1 day'
-                   GROUP BY published_at::date
-                 ) c ON c.day = d.day
             ORDER BY d.day
         """),
             {"days": days},
         )
     ).fetchall()
+
+    # Per-day, per-channel publish counts within the window.
+    per_day_channel_rows = (
+        await db.execute(
+            text("""
+            SELECT to_char(published_at::date, 'YYYY-MM-DD') AS day,
+                   channel,
+                   count(*) AS cnt
+            FROM calendar_items
+            WHERE status = 'published'
+              AND published_at >= now()::date - (CAST(:days AS int) - 1) * interval '1 day'
+            GROUP BY published_at::date, channel
+        """),
+            {"days": days},
+        )
+    ).fetchall()
+
+    # Distinct channels in the window, ordered by total volume desc.
+    channels: list[str] = []
+    totals: dict[str, int] = {}
+    for _day, channel, cnt in per_day_channel_rows:
+        totals[channel] = totals.get(channel, 0) + int(cnt)
+    channels = sorted(totals, key=lambda c: totals[c], reverse=True)
+
+    # Pivot into wide rows: {day, <channel>: count, ...} zero-filled per channel.
+    counts_by_day: dict[str, dict[str, int]] = {}
+    for day, channel, cnt in per_day_channel_rows:
+        counts_by_day.setdefault(day, {})[channel] = int(cnt)
+
+    published_per_day = []
+    for (day,) in day_rows:
+        entry: dict = {"day": day}
+        day_counts = counts_by_day.get(day, {})
+        for ch in channels:
+            entry[ch] = day_counts.get(ch, 0)
+        published_per_day.append(entry)
 
     by_channel_rows = (
         await db.execute(
@@ -116,9 +210,8 @@ async def dashboard_charts(
 
     result = {
         "days": days,
-        "published_per_day": [
-            {"day": r[0], "count": int(r[1])} for r in per_day_rows
-        ],
+        "channels": channels,
+        "published_per_day": published_per_day,
         "published_by_channel": [
             {"channel": r[0], "count": int(r[1])} for r in by_channel_rows
         ],

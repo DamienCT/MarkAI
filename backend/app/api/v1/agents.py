@@ -11,6 +11,29 @@ from app.models.agent_run import AgentRun
 
 router = APIRouter()
 
+# Image fields the content workflow stored as base64 in output_payload. The
+# images live in MinIO; legacy rows still carry the base64 copy, which bloats a
+# 50-row response to >100MB and OOM-kills the API. We strip it on read. Targets
+# image keys + data: URIs only — long text (strategy/research docs) is kept.
+_IMAGE_KEYS = {"generated_image", "branded_image", "composed_image", "product_image"}
+
+
+def _slim_payload(obj):
+    """Recursively replace base64 image blobs with a small placeholder."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if k in _IMAGE_KEYS and isinstance(v, str) and len(v) > 200:
+                out[k] = f"[image stripped: {len(v) // 1024} kB]"
+            else:
+                out[k] = _slim_payload(v)
+        return out
+    if isinstance(obj, list):
+        return [_slim_payload(x) for x in obj]
+    if isinstance(obj, str) and obj.startswith("data:") and len(obj) > 200:
+        return f"[image stripped: {len(obj) // 1024} kB]"
+    return obj
+
 
 @router.get("/runs/latest-by-type")
 async def latest_runs_by_type(
@@ -65,8 +88,8 @@ async def latest_runs_by_type(
             "started_at": r.started_at.isoformat() if r.started_at else None,
             "completed_at": r.completed_at.isoformat() if r.completed_at else None,
             "error_message": r.error_message,
-            "output_payload": r.output_payload,
-            "input_payload": r.input_payload,
+            "output_payload": _slim_payload(r.output_payload),
+            "input_payload": _slim_payload(r.input_payload),
             "tokens_used": r.tokens_used,
             "cost_usd": float(r.cost_usd) if r.cost_usd else None,
             "duration_ms": r.duration_ms,
@@ -117,8 +140,8 @@ async def list_active_agent_runs(
             "brand_id": str(run.brand_id) if run.brand_id else None,
             "status": run.status,
             "started_at": run.started_at.isoformat() if run.started_at else None,
-            "input_payload": run.input_payload,
-            "output_payload": run.output_payload,
+            "input_payload": _slim_payload(run.input_payload),
+            "output_payload": _slim_payload(run.output_payload),
             "calendar_item_id": (run.input_payload or {}).get("calendar_item_id"),
             "current_step": (run.output_payload or {}).get("current_step"),
             "step_index": (run.output_payload or {}).get("step_index"),
@@ -161,8 +184,8 @@ async def list_agent_runs(
             "started_at": run.started_at.isoformat() if run.started_at else None,
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
             "error_message": run.error_message,
-            "output_payload": run.output_payload,
-            "input_payload": run.input_payload,
+            "output_payload": _slim_payload(run.output_payload),
+            "input_payload": _slim_payload(run.input_payload),
             "tokens_used": run.tokens_used,
             "cost_usd": float(run.cost_usd) if run.cost_usd else None,
             "duration_ms": run.duration_ms,

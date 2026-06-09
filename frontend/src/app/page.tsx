@@ -7,7 +7,6 @@ import {
   CheckSquare,
   FileText,
   Clock,
-  Loader2,
   ArrowRight,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,8 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   ResponsiveContainer,
-  AreaChart,
-  Area,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -25,15 +24,16 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend,
 } from "recharts";
 import { api } from "@/lib/api";
-import { statusColor } from "@/lib/utils";
-import type { DashboardStats, ActiveAgentRun, CalendarItem } from "@/types";
+import { cn, statusColor } from "@/lib/utils";
+import type { DashboardStats, CalendarItem } from "@/types";
 
 type ChartData = {
   days: number;
-  published_per_day: { day: string; count: number }[];
+  channels: string[];
+  // Wide rows: { day: "2026-06-05", instagram: 2, facebook: 1, ... }
+  published_per_day: Record<string, number | string>[];
   published_by_channel: { channel: string; count: number }[];
 };
 
@@ -48,7 +48,6 @@ const CHANNEL_COLORS: Record<string, string> = {
   tiktok: "#111827",
 };
 const FALLBACK_COLORS = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
-const CHART_COLOR = "#6366f1"; // line/area accent for the published-per-day chart
 function channelColor(channel: string, i: number): string {
   return CHANNEL_COLORS[(channel || "").toLowerCase()] ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 }
@@ -82,13 +81,21 @@ function timeLabel(iso: string | null): string {
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [activeWorkflows, setActiveWorkflows] = useState<ActiveAgentRun[]>([]);
   const [calendarItems, setCalendarItems] = useState<CalendarItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [charts, setCharts] = useState<ChartData | null>(null);
   const [chartDays, setChartDays] = useState(30);
   const [chartsLoading, setChartsLoading] = useState(true);
+  const [hiddenChannels, setHiddenChannels] = useState<Set<string>>(new Set());
+
+  const toggleChannel = (ch: string) =>
+    setHiddenChannels((prev) => {
+      const next = new Set(prev);
+      if (next.has(ch)) next.delete(ch);
+      else next.add(ch);
+      return next;
+    });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -96,14 +103,12 @@ export default function DashboardPage() {
 
     async function fetchDashboard() {
       try {
-        const [dashData, runsData, postsData] = await Promise.allSettled([
+        const [dashData, postsData] = await Promise.allSettled([
           api.get<DashboardStats>("/api/v1/dashboard/stats", undefined, { signal }),
-          api.get<ActiveAgentRun[]>("/api/v1/agents/runs/active", undefined, { signal }),
           api.get<CalendarItem[]>("/api/v1/calendar/upcoming", { limit: 12 }, { signal }),
         ]);
 
         if (dashData.status === "fulfilled") setStats(dashData.value);
-        if (runsData.status === "fulfilled" && Array.isArray(runsData.value)) setActiveWorkflows(runsData.value);
         if (postsData.status === "fulfilled" && Array.isArray(postsData.value)) setCalendarItems(postsData.value);
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
@@ -197,12 +202,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Dashboard Control</h1>
-        <Badge variant="outline" className="text-sm">
-          Published this week: {stats?.published_this_week ?? 0}
-        </Badge>
-      </div>
+      <h1 className="text-3xl font-bold">Dashboard Control</h1>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         {statCards.map((stat) => (
@@ -245,22 +245,41 @@ export default function DashboardPage() {
                   ))}
                 </div>
               </CardHeader>
-              <CardContent>
-                <div className="h-[220px] w-full">
+              <CardContent className="flex-1">
+                {/* Legend doubles as a per-channel filter — click to show/hide */}
+                {(charts?.channels?.length ?? 0) > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {(charts?.channels ?? []).map((ch, i) => {
+                      const hidden = hiddenChannels.has(ch);
+                      return (
+                        <button
+                          key={ch}
+                          type="button"
+                          onClick={() => toggleChannel(ch)}
+                          className={cn(
+                            "flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition",
+                            hidden ? "opacity-40" : "hover:bg-accent"
+                          )}
+                        >
+                          <span
+                            className="h-2.5 w-2.5 rounded-full"
+                            style={{ background: channelColor(ch, i) }}
+                          />
+                          <span className="capitalize">{ch}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="h-[200px] w-full">
                   {chartsLoading && !charts ? (
                     <Skeleton className="h-full w-full" />
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart
+                      <LineChart
                         data={charts?.published_per_day ?? []}
-                        margin={{ top: 5, right: 12, left: -18, bottom: 0 }}
+                        margin={{ top: 5, right: 12, left: 0, bottom: 0 }}
                       >
-                        <defs>
-                          <linearGradient id="pubGradient" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor={CHART_COLOR} stopOpacity={0.35} />
-                            <stop offset="95%" stopColor={CHART_COLOR} stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
                         <XAxis
                           dataKey="day"
@@ -268,19 +287,26 @@ export default function DashboardPage() {
                           tick={{ fontSize: 11 }}
                           minTickGap={24}
                         />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} width={28} />
-                        <Tooltip
-                          labelFormatter={(v) => shortDay(String(v))}
-                          formatter={(value) => [value, "Published"]}
+                        <YAxis
+                          allowDecimals={false}
+                          tick={{ fontSize: 11 }}
+                          width={32}
+                          domain={[0, "auto"]}
                         />
-                        <Area
-                          type="monotone"
-                          dataKey="count"
-                          stroke={CHART_COLOR}
-                          strokeWidth={2}
-                          fill="url(#pubGradient)"
-                        />
-                      </AreaChart>
+                        <Tooltip labelFormatter={(v) => shortDay(String(v))} />
+                        {(charts?.channels ?? []).map((ch, i) => (
+                          <Line
+                            key={ch}
+                            type="monotone"
+                            dataKey={ch}
+                            name={ch}
+                            stroke={channelColor(ch, i)}
+                            strokeWidth={2}
+                            dot={false}
+                            hide={hiddenChannels.has(ch)}
+                          />
+                        ))}
+                      </LineChart>
                     </ResponsiveContainer>
                   )}
                 </div>
@@ -289,98 +315,107 @@ export default function DashboardPage() {
 
             <Card className="lg:col-span-3 flex flex-col">
               <CardHeader className="pb-2">
-                <CardTitle className="text-lg">Published by Channel</CardTitle>
-                <CardDescription>This month</CardDescription>
+                <CardTitle className="text-lg">Monthly Goal</CardTitle>
+                <CardDescription>Published vs target this month</CardDescription>
               </CardHeader>
-              <CardContent className="flex-1">
-                {chartsLoading && !charts ? (
-                  <Skeleton className="h-[220px] w-full" />
-                ) : (charts?.published_by_channel?.length ?? 0) === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-16">
-                    No posts published this month
-                  </p>
-                ) : (
-                  <div className="h-[220px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={charts?.published_by_channel ?? []}
-                          dataKey="count"
-                          nameKey="channel"
-                          innerRadius={42}
-                          outerRadius={72}
-                          paddingAngle={2}
-                        >
-                          {(charts?.published_by_channel ?? []).map((entry, i) => (
-                            <Cell key={entry.channel} fill={channelColor(entry.channel, i)} />
-                          ))}
-                        </Pie>
-                        <Tooltip formatter={(value, name) => [value, name]} />
-                        <Legend
-                          verticalAlign="bottom"
-                          height={24}
-                          iconSize={8}
-                          formatter={(v) => <span className="text-xs capitalize">{v}</span>}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-                )}
+              <CardContent className="flex-1 flex flex-col items-center justify-center">
+                {(() => {
+                  const published = stats?.monthly_goal?.published ?? 0;
+                  const target = stats?.monthly_goal?.target ?? 0;
+                  const pct = target > 0 ? Math.round((published / target) * 100) : 0;
+                  const done = target > 0 ? Math.min(published, target) : 0;
+                  const remaining = Math.max(target - published, 0);
+                  if (target === 0) {
+                    return (
+                      <div className="text-center py-10">
+                        <p className="text-3xl font-bold">{published}</p>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          published this month
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          No strategy cadence set
+                        </p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <>
+                      <div className="relative h-[170px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={[
+                                { name: "done", value: done },
+                                { name: "remaining", value: remaining },
+                              ]}
+                              dataKey="value"
+                              innerRadius={55}
+                              outerRadius={75}
+                              startAngle={90}
+                              endAngle={-270}
+                              stroke="none"
+                            >
+                              <Cell fill="#6366f1" />
+                              <Cell fill="#e5e7eb" />
+                            </Pie>
+                          </PieChart>
+                        </ResponsiveContainer>
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="text-3xl font-bold">{pct}%</span>
+                        </div>
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {published} / {target} published
+                      </p>
+                    </>
+                  );
+                })()}
               </CardContent>
             </Card>
           </div>
 
-          {/* Bottom: Active Workflows (scrolls so the column never exceeds the calendar) */}
+          {/* Bottom: Active Workflows summary — running / completed / failed */}
           <Card className="flex-1 min-h-0 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <div>
                 <CardTitle className="text-lg">Active Workflows</CardTitle>
-                <CardDescription>AI pipelines running right now</CardDescription>
+                <CardDescription>Running, completed, and failed</CardDescription>
               </div>
               <Link href="/system" className="text-sm text-primary hover:underline flex items-center gap-1">
                 View system <ArrowRight className="h-3 w-3" />
               </Link>
             </CardHeader>
-            <CardContent className="flex-1 min-h-0 overflow-y-auto">
-            {activeWorkflows.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">
-                No active workflows right now
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {activeWorkflows.map((run) => {
-                  const total = run.total_steps && run.total_steps > 0 ? run.total_steps : 10;
-                  const idx = run.step_index ?? 0;
-                  const pct = Math.min(100, Math.round((idx / total) * 100));
-                  return (
-                    <div key={run.id} className="rounded-md border p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <Loader2 className="h-4 w-4 text-primary animate-spin shrink-0" />
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium truncate capitalize">
-                              {run.agent_type.replace(/_/g, " ")}
-                            </p>
-                            <p className="text-xs text-muted-foreground truncate">
-                              {run.current_step || "Working..."}
-                            </p>
-                          </div>
-                        </div>
-                        <span className="text-xs text-muted-foreground shrink-0">
-                          {idx}/{total}
-                        </span>
-                      </div>
-                      <div className="mt-2 h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                        <div
-                          className="h-full bg-primary transition-all"
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
+            <CardContent className="flex-1">
+              <div className="grid h-full grid-cols-3 gap-3">
+                {[
+                  {
+                    label: "Running / Pending",
+                    value: stats?.workflows_running_pending ?? 0,
+                    dot: "bg-blue-500",
+                  },
+                  {
+                    label: "Completed",
+                    value: stats?.workflows_completed ?? 0,
+                    dot: "bg-green-500",
+                  },
+                  {
+                    label: "Failed",
+                    value: stats?.workflows_failed ?? 0,
+                    dot: "bg-red-500",
+                  },
+                ].map((c) => (
+                  <div
+                    key={c.label}
+                    className="flex flex-col justify-center rounded-md border p-4"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={cn("h-2.5 w-2.5 rounded-full", c.dot)} />
+                      <span className="text-2xl font-bold">{c.value}</span>
                     </div>
-                  );
-                })}
+                    <p className="mt-1 text-xs text-muted-foreground">{c.label}</p>
+                  </div>
+                ))}
               </div>
-            )}
             </CardContent>
           </Card>
         </div>
