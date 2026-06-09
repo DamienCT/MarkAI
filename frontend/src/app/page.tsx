@@ -15,8 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   ResponsiveContainer,
-  LineChart,
-  Line,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -276,7 +276,7 @@ export default function DashboardPage() {
                     <Skeleton className="h-full w-full" />
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart
+                      <AreaChart
                         data={charts?.published_per_day ?? []}
                         margin={{ top: 5, right: 12, left: 0, bottom: 0 }}
                       >
@@ -295,18 +295,20 @@ export default function DashboardPage() {
                         />
                         <Tooltip labelFormatter={(v) => shortDay(String(v))} />
                         {(charts?.channels ?? []).map((ch, i) => (
-                          <Line
+                          <Area
                             key={ch}
                             type="monotone"
                             dataKey={ch}
                             name={ch}
+                            stackId="1"
                             stroke={channelColor(ch, i)}
-                            strokeWidth={2}
-                            dot={false}
+                            strokeWidth={1.5}
+                            fill={channelColor(ch, i)}
+                            fillOpacity={0.55}
                             hide={hiddenChannels.has(ch)}
                           />
                         ))}
-                      </LineChart>
+                      </AreaChart>
                     </ResponsiveContainer>
                   )}
                 </div>
