@@ -178,7 +178,7 @@ export default function DashboardPage() {
       title: "Pending Approvals",
       value: stats?.pending_approvals ?? 0,
       icon: CheckSquare,
-      href: "/approvals",
+      href: "/content/stage/in_review",
     },
     {
       title: "Content in Pipeline",
@@ -200,14 +200,6 @@ export default function DashboardPage() {
     return acc;
   }, {});
 
-  // Single total-per-day series: sum only the channels not filtered out, so the
-  // chips act as a filter and the area always reflects the visible total.
-  const visibleChannels = (charts?.channels ?? []).filter((c) => !hiddenChannels.has(c));
-  const totalPerDay = (charts?.published_per_day ?? []).map((row) => {
-    let total = 0;
-    for (const ch of visibleChannels) total += Number(row[ch] ?? 0);
-    return { day: String(row.day), total };
-  });
 
   return (
     <div className="space-y-6">
@@ -286,15 +278,9 @@ export default function DashboardPage() {
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart
-                        data={totalPerDay}
+                        data={charts?.published_per_day ?? []}
                         margin={{ top: 5, right: 12, left: 0, bottom: 0 }}
                       >
-                        <defs>
-                          <linearGradient id="totalGradient" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.4} />
-                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
                         <XAxis
                           dataKey="day"
@@ -308,40 +294,22 @@ export default function DashboardPage() {
                           width={32}
                           domain={[0, "auto"]}
                         />
-                        <Tooltip
-                          labelFormatter={(v) => shortDay(String(v))}
-                          formatter={(value) => [value, "Published"]}
-                        />
-                        <Area
-                          type="linear"
-                          dataKey="total"
-                          name="Published"
-                          stroke="#6366f1"
-                          strokeWidth={2}
-                          fill="url(#totalGradient)"
-                          dot={({
-                            cx,
-                            cy,
-                            index,
-                            payload,
-                          }: {
-                            cx?: number;
-                            cy?: number;
-                            index?: number;
-                            payload?: { total?: number };
-                          }) => (
-                            <circle
-                              key={index}
-                              cx={cx}
-                              cy={cy}
-                              r={(payload?.total ?? 0) > 0 ? 3 : 0}
-                              fill="#6366f1"
-                              stroke="#fff"
-                              strokeWidth={1}
-                            />
-                          )}
-                          activeDot={{ r: 4 }}
-                        />
+                        <Tooltip labelFormatter={(v) => shortDay(String(v))} />
+                        {(charts?.channels ?? []).map((ch, i) => (
+                          <Area
+                            key={ch}
+                            type="linear"
+                            dataKey={ch}
+                            name={ch}
+                            stroke={channelColor(ch, i)}
+                            strokeWidth={2}
+                            fill={channelColor(ch, i)}
+                            fillOpacity={0.25}
+                            hide={hiddenChannels.has(ch)}
+                            dot={false}
+                            activeDot={{ r: 4 }}
+                          />
+                        ))}
                       </AreaChart>
                     </ResponsiveContainer>
                   )}
