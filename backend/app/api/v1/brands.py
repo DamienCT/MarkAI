@@ -531,11 +531,32 @@ async def get_brand_overrides(
     strat = await _latest_run_payload(db, brand_id, "strategy")
     plan = await _latest_run_payload(db, brand_id, "planning")
 
+    # Strategy runs come in two key conventions depending on which run is the
+    # latest: the workflow run uses raw state keys (pillars/audiences/cadence/
+    # themes); the store_strategy run uses renamed keys (content_pillars/
+    # target_audiences/posting_cadence/monthly_themes). Read both.
+    def _first(d: dict, *keys):
+        for k in keys:
+            v = d.get(k)
+            if v:
+                return v
+        return None
+
+    raw_pillars = _first(strat, "content_pillars", "pillars") or []
     cur_pillars = [
-        (p.get("name") if isinstance(p, dict) else p)
-        for p in (strat.get("content_pillars") or [])
+        (p.get("name") if isinstance(p, dict) else p) for p in raw_pillars
     ]
     removed = set(saved.get("removed_campaigns") or [])
+
+    # Audiences → normalize to {name, description} (key may be name/segment_name).
+    def _aud_obj(a):
+        if isinstance(a, dict):
+            name = a.get("name") or a.get("segment_name") or a.get("persona_ref") or ""
+            return {"name": name, "description": a.get("description") or ""}
+        return {"name": str(a), "description": ""}
+
+    raw_audiences = saved.get("target_audiences") or _first(strat, "target_audiences", "audiences") or []
+    audiences = [a for a in (_aud_obj(a) for a in raw_audiences) if a["name"]]
 
     # Campaigns as {name, description} objects. Saved user-curated list wins;
     # otherwise derive from the latest plan, minus any removed by name.
@@ -555,9 +576,9 @@ async def get_brand_overrides(
         campaigns = [c for c in campaigns if c["name"]]
 
     return {
-        "cadence": saved.get("cadence") or strat.get("cadence") or {},
+        "cadence": saved.get("cadence") or _first(strat, "cadence", "posting_cadence") or {},
         "content_pillars": saved.get("content_pillars") or [p for p in cur_pillars if p],
-        "target_audiences": saved.get("target_audiences") or (strat.get("target_audiences") or []),
+        "target_audiences": audiences,
         "campaigns": campaigns,
         "removed_campaigns": sorted(removed),
         "positioning": saved.get("positioning") or (
@@ -565,7 +586,7 @@ async def get_brand_overrides(
             else (strat.get("positioning") or {}).get("value_proposition", "")
             if isinstance(strat.get("positioning"), dict) else ""
         ),
-        "monthly_themes": saved.get("monthly_themes") or (strat.get("monthly_themes") or []),
+        "monthly_themes": saved.get("monthly_themes") or _first(strat, "monthly_themes", "themes") or [],
         "content_format": saved.get("content_format") or "posts_only",
         "brand_voice": saved.get("brand_voice") or guidelines.get("tone_of_voice") or "",
         "has_overrides": bool(saved),
