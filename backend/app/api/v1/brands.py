@@ -455,6 +455,164 @@ async def generate_content(
     }
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Document overrides ("Edit Documents") — durable editable levers.
+# Stored under brand.brand_guidelines.overrides (JSONB → no migration) and
+# read with PRIORITY by the planning/content workflows.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class BrandOverrides(BaseModel):
+    """Editable levers that override the auto-generated strategy/plan."""
+
+    cadence: dict | None = None  # {channel: {posts_per_week, best_days}}
+    content_pillars: list[str] | None = None
+    target_audiences: list[dict] | None = None
+    content_format: str | None = None  # "posts_only" | "mixed"
+    brand_voice: str | None = None
+    removed_campaigns: list[str] | None = None
+
+
+async def _latest_run_payload(db: AsyncSession, brand_id: uuid.UUID, agent_type: str) -> dict:
+    """Latest completed agent_run output_payload for a brand/type (dict, never raises)."""
+    import json as _json
+
+    row = (
+        await db.execute(
+            text(
+                "SELECT output_payload FROM agent_runs "
+                "WHERE brand_id = :bid AND agent_type = :t AND status = 'completed' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"bid": str(brand_id), "t": agent_type},
+        )
+    ).fetchone()
+    payload = row[0] if row else None
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except (ValueError, TypeError):
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _guidelines_dict(brand) -> dict:
+    import json as _json
+
+    g = brand.brand_guidelines or {}
+    if isinstance(g, str):
+        try:
+            g = _json.loads(g)
+        except (ValueError, TypeError):
+            g = {}
+    return g if isinstance(g, dict) else {}
+
+
+@router.get("/{brand_id}/overrides")
+async def get_brand_overrides(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the editable levers for the Edit Documents modal — saved overrides
+    merged over the current auto-generated values (for pre-fill)."""
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    guidelines = _guidelines_dict(brand)
+    saved = guidelines.get("overrides") or {}
+
+    strat = await _latest_run_payload(db, brand_id, "strategy")
+    plan = await _latest_run_payload(db, brand_id, "planning")
+
+    cur_pillars = [
+        (p.get("name") if isinstance(p, dict) else p)
+        for p in (strat.get("content_pillars") or [])
+    ]
+    cur_campaigns = [
+        (c.get("name") if isinstance(c, dict) else c)
+        for c in (plan.get("campaigns") or [])
+    ]
+    removed = set(saved.get("removed_campaigns") or [])
+
+    return {
+        "cadence": saved.get("cadence") or strat.get("cadence") or {},
+        "content_pillars": saved.get("content_pillars") or [p for p in cur_pillars if p],
+        "target_audiences": saved.get("target_audiences") or (strat.get("target_audiences") or []),
+        "campaigns": [c for c in cur_campaigns if c and c not in removed],
+        "removed_campaigns": sorted(removed),
+        "content_format": saved.get("content_format") or "posts_only",
+        "brand_voice": saved.get("brand_voice") or guidelines.get("tone_of_voice") or "",
+        "has_overrides": bool(saved),
+    }
+
+
+@router.put("/{brand_id}/overrides")
+async def save_brand_overrides(
+    brand_id: uuid.UUID,
+    body: BrandOverrides,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist edited levers into brand_guidelines.overrides (no re-plan)."""
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    guidelines = _guidelines_dict(brand)
+    overrides = dict(guidelines.get("overrides") or {})
+    data = body.model_dump(exclude_none=True)
+    overrides.update(data)
+    guidelines["overrides"] = overrides
+    brand.brand_guidelines = guidelines
+    flag_modified(brand, "brand_guidelines")
+    await db.commit()
+
+    await audit_service.record_audit(
+        action="update",
+        entity_type="brand",
+        user_id=current_user.id,
+        entity_id=brand_id,
+        new_values={"overrides": sorted(data.keys())},
+        request=request,
+    )
+    return {"status": "saved", "overrides": overrides}
+
+
+@router.post("/{brand_id}/overrides/apply")
+async def apply_brand_overrides(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-run planning so the saved overrides take effect on the calendar.
+
+    Planning preserves anything already moved forward (in_review/published/…);
+    only `planned` items in the window are rebuilt.
+    """
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    from app.services import nats_service
+
+    await nats_service.publish(
+        "planning.trigger",
+        {"brand_id": str(brand_id), "trigger": "manual", "triggered_by": str(current_user.id)},
+    )
+    return {"status": "re-planning", "brand_id": str(brand_id)}
+
+
 class ContextApprovalAction(BaseModel):
     """Request body for the context-approval endpoint."""
 

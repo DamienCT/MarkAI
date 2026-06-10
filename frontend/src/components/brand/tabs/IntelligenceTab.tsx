@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import {
   Search, Target, FileText, Calendar, Zap, Eye,
-  RotateCcw, Loader2, AlertTriangle, Check,
+  RotateCcw, Loader2, AlertTriangle, Check, Pencil,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { EditDocumentsModal } from "@/components/brand/EditDocumentsModal";
 
 // Doc-card cardKey → context_approvals key in brand.brand_guidelines.
 // content_calendar maps to "calendar" because that's how the backend stores it.
@@ -77,6 +78,7 @@ export function IntelligenceTab({
 }: IntelligenceTabProps) {
   const router = useRouter();
   const [eventsUpdatedAt, setEventsUpdatedAt] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -122,10 +124,22 @@ export function IntelligenceTab({
 
   return (
     <div className="mt-6 space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold">Brand Intelligence</h2>
-        <p className="text-sm text-muted-foreground">AI-generated documents and insights for this brand</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold">Brand Intelligence</h2>
+          <p className="text-sm text-muted-foreground">AI-generated documents and insights for this brand</p>
+        </div>
+        {brandId && (
+          <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+            <Pencil className="mr-1.5 h-4 w-4" />
+            Edit Documents
+          </Button>
+        )}
       </div>
+
+      {brandId && (
+        <EditDocumentsModal brandId={brandId} open={editOpen} onClose={() => setEditOpen(false)} />
+      )}
 
       {eventsStale && (
         <div className="flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">

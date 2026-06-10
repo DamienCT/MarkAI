@@ -17,7 +17,7 @@ import { WorkflowMonitor } from "@/components/system/WorkflowMonitor";
 import { QueueDepth } from "@/components/system/QueueDepth";
 import { api } from "@/lib/api";
 import { statusColor } from "@/lib/utils";
-import type { ServiceStatus, AgentRun, SchedulerJob, QueueInfo, Brand } from "@/types";
+import type { ServiceStatus, AgentRun, SchedulerJob, QueueInfo, Brand, DashboardStats } from "@/types";
 import { Activity, ChevronDown, ChevronRight } from "lucide-react";
 import { formatRelativeTime } from "@/lib/utils";
 import { useRequireRole } from "@/lib/hooks";
@@ -29,6 +29,7 @@ export default function SystemPage() {
   const [jobs, setJobs] = useState<SchedulerJob[]>([]);
   const [queues, setQueues] = useState<QueueInfo[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Filters for Agent Runs table
@@ -40,18 +41,20 @@ export default function SystemPage() {
   useEffect(() => {
     async function fetchAll() {
       try {
-        const [svcData, runsData, jobsData, queueData, brandsData] = await Promise.allSettled([
+        const [svcData, runsData, jobsData, queueData, brandsData, statsData] = await Promise.allSettled([
           api.get<ServiceStatus[]>("/api/v1/system/services"),
           api.get<AgentRun[]>("/api/v1/agents/runs", { limit: 50 }),
           api.get<SchedulerJob[]>("/api/v1/system/jobs"),
           api.get<QueueInfo[]>("/api/v1/system/queues"),
           api.get<Brand[]>("/api/v1/brands"),
+          api.get<DashboardStats>("/api/v1/dashboard/stats"),
         ]);
         if (svcData.status === "fulfilled") setServices(svcData.value);
         if (runsData.status === "fulfilled") setRuns(runsData.value);
         if (jobsData.status === "fulfilled") setJobs(jobsData.value);
         if (queueData.status === "fulfilled") setQueues(queueData.value);
         if (brandsData.status === "fulfilled") setBrands(brandsData.value);
+        if (statsData.status === "fulfilled") setStats(statsData.value);
       } catch {
         toast.error("Failed to load system data");
       } finally {
@@ -66,10 +69,16 @@ export default function SystemPage() {
     return acc;
   }, {});
 
-  // Workflow summary counts
-  const runningCount = runs.filter((r) => r.status === "running" || r.status === "pending").length;
-  const completedCount = runs.filter((r) => r.status === "completed").length;
-  const failedCount = runs.filter((r) => r.status === "failed").length;
+  // Workflow summary counts — use the live, all-time totals from /dashboard/stats
+  // so this matches the Dashboard exactly. Fall back to the last-50 runs only
+  // if stats haven't loaded yet.
+  const runningCount =
+    stats?.workflows_running_pending ??
+    runs.filter((r) => r.status === "running" || r.status === "pending").length;
+  const completedCount =
+    stats?.workflows_completed ?? runs.filter((r) => r.status === "completed").length;
+  const failedCount =
+    stats?.workflows_failed ?? runs.filter((r) => r.status === "failed").length;
 
   // Per-brand breakdown
   const brandBreakdown = runs.reduce<Record<string, { running: number; completed: number; failed: number }>>((acc, r) => {

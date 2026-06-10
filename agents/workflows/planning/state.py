@@ -15,6 +15,7 @@ class PlanningState(TypedDict, total=False):
     # Configuration
     scope_weeks: int  # Planning horizon in weeks (default 4, activation uses 2)
     enabled_channels: list[str]  # Channels enabled in brand config
+    content_format: str  # "posts_only" | "mixed" — Edit Documents override
 
     # Loaded data
     strategy: dict[str, Any]

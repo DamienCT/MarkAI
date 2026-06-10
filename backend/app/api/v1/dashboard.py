@@ -44,10 +44,35 @@ async def dashboard_stats(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return aggregate dashboard statistics."""
-    cached = await _cache_get("markai:dashboard:stats:v3")
+    """Return aggregate dashboard statistics.
+
+    Workflow counters are computed LIVE on every call (cheap counts) so the
+    dashboard's Active Workflows matches the System page in real time. The
+    heavier/slower-changing stats are cached for ``_DASHBOARD_CACHE_TTL``.
+    """
+    # ── Live workflow counters (never cached) ─────────────────────────
+    wf = (
+        await db.execute(
+            text("""
+            SELECT
+                (SELECT count(*) FROM agent_runs WHERE status = 'running') AS active_workflows,
+                (SELECT count(*) FROM agent_runs WHERE status IN ('running', 'pending')) AS workflows_running_pending,
+                (SELECT count(*) FROM agent_runs WHERE status = 'completed') AS workflows_completed,
+                (SELECT count(*) FROM agent_runs WHERE status = 'failed') AS workflows_failed
+        """)
+        )
+    ).fetchone()
+    workflow_counts = {
+        "active_workflows": int(wf[0]),
+        "workflows_running_pending": int(wf[1]),
+        "workflows_completed": int(wf[2]),
+        "workflows_failed": int(wf[3]),
+    }
+
+    # ── Cached base stats ─────────────────────────────────────────────
+    cached = await _cache_get("markai:dashboard:stats:v4")
     if cached:
-        return json.loads(cached)
+        return {**json.loads(cached), **workflow_counts}
 
     row = (
         await db.execute(
@@ -59,10 +84,6 @@ async def dashboard_stats(
                 (SELECT count(*) FROM approvals WHERE status = 'pending') AS pending_approvals,
                 (SELECT count(*) FROM calendar_items WHERE status = 'scheduled') AS scheduled_posts,
                 (SELECT count(*) FROM calendar_items WHERE status = 'published' AND published_at >= now() - interval '7 days') AS published_this_week,
-                (SELECT count(*) FROM agent_runs WHERE status = 'running') AS active_workflows,
-                (SELECT count(*) FROM agent_runs WHERE status IN ('running', 'pending')) AS workflows_running_pending,
-                (SELECT count(*) FROM agent_runs WHERE status = 'completed') AS workflows_completed,
-                (SELECT count(*) FROM agent_runs WHERE status = 'failed') AS workflows_failed,
                 (SELECT count(*) FROM calendar_items WHERE status = 'published' AND published_at >= date_trunc('month', now())) AS published_this_month
         """)
         )
@@ -93,28 +114,23 @@ async def dashboard_stats(
     days_in_month = calendar.monthrange(now.year, now.month)[1]
     monthly_target = round(weekly_target * days_in_month / 7)
 
-    result = {
+    base = {
         # Field names MUST match the frontend DashboardStats interface.
         "active_brands": int(row[0]),
         "content_in_pipeline": int(row[1]),
         "pending_approvals": int(row[2]),
         "scheduled_posts": int(row[3]),
         "published_this_week": int(row[4]),
-        "active_workflows": int(row[5]),
-        # Workflow summary for the dashboard's 3 counters.
-        "workflows_running_pending": int(row[6]),
-        "workflows_completed": int(row[7]),
-        "workflows_failed": int(row[8]),
         # Monthly cadence goal for the dashboard ring.
         "monthly_goal": {
-            "published": int(row[9]),
+            "published": int(row[5]),
             "target": monthly_target,
         },
     }
     await _cache_set(
-        "markai:dashboard:stats:v3", json.dumps(result), ttl=_DASHBOARD_CACHE_TTL
+        "markai:dashboard:stats:v4", json.dumps(base), ttl=_DASHBOARD_CACHE_TTL
     )
-    return result
+    return {**base, **workflow_counts}
 
 
 _ALLOWED_CHART_DAYS = (30, 60, 90, 120)

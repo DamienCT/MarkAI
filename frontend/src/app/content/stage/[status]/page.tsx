@@ -160,6 +160,26 @@ export default function StagePage() {
         <div className="flex items-center gap-2">
           {selectMode ? (
             <>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={filtered.length === 0 || deleting}
+                onClick={() =>
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    const allSel =
+                      filtered.length > 0 && filtered.every((i) => prev.has(i.id));
+                    if (allSel) filtered.forEach((i) => next.delete(i.id));
+                    else filtered.forEach((i) => next.add(i.id));
+                    return next;
+                  })
+                }
+              >
+                <CheckSquare className="mr-1.5 h-4 w-4" />
+                {filtered.length > 0 && filtered.every((i) => selectedIds.has(i.id))
+                  ? "Deselect all"
+                  : "Select all"}
+              </Button>
               <span className="text-sm text-muted-foreground">
                 {selectedIds.size} selected
               </span>

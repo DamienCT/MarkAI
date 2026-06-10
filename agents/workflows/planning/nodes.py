@@ -140,14 +140,17 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
 
     # Load enabled channels from brand config
     brand_config = await get_brand_config(brand_id)
-    channels_cfg = (brand_config or {}).get("brand_guidelines", {})
+    guidelines = (brand_config or {}).get("brand_guidelines", {})
     # brand_guidelines may be stored as a JSON string
-    if isinstance(channels_cfg, str):
+    if isinstance(guidelines, str):
         try:
-            channels_cfg = json.loads(channels_cfg)
+            guidelines = json.loads(guidelines)
         except (json.JSONDecodeError, TypeError):
-            channels_cfg = {}
-    channels_cfg = channels_cfg.get("channels", {})
+            guidelines = {}
+    if not isinstance(guidelines, dict):
+        guidelines = {}
+    overrides = guidelines.get("overrides") or {}
+    channels_cfg = guidelines.get("channels", {})
     enabled_channels = [
         ch
         for ch, cfg in channels_cfg.items()
@@ -163,6 +166,31 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
             strategy_data = json.loads(strategy_data)
         except (json.JSONDecodeError, TypeError):
             strategy_data = {}
+
+    # ── Apply "Edit Documents" overrides with PRIORITY over the auto strategy ──
+    # Cadence override: per-channel posts_per_week / best_days set by the user
+    # win over what the strategy generated. Stored in brand_guidelines.overrides.
+    if isinstance(strategy_data, dict) and isinstance(overrides, dict) and overrides.get("cadence"):
+        merged_cadence = dict(strategy_data.get("cadence") or {})
+        for ch, cfg in overrides["cadence"].items():
+            base = dict(merged_cadence.get(ch)) if isinstance(merged_cadence.get(ch), dict) else {}
+            if isinstance(cfg, dict):
+                base.update(cfg)
+                merged_cadence[ch] = base
+        strategy_data["cadence"] = merged_cadence
+        logger.info(
+            "Applied cadence override for brand %s: %s",
+            brand_id, list(overrides["cadence"].keys()),
+        )
+    # Content pillars / target audiences overrides (used downstream for rotation).
+    if isinstance(strategy_data, dict) and isinstance(overrides, dict):
+        if overrides.get("content_pillars"):
+            strategy_data["content_pillars"] = [
+                {"name": p} if isinstance(p, str) else p
+                for p in overrides["content_pillars"]
+            ]
+        if overrides.get("target_audiences"):
+            strategy_data["target_audiences"] = overrides["target_audiences"]
 
     # Load existing calendar items for deduplication context
     try:
@@ -187,6 +215,8 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
         "enabled_channels": enabled_channels,
         "existing_items": existing_items,
         "events": events,
+        # Edit Documents override; defaults to posts-only.
+        "content_format": (overrides.get("content_format") if isinstance(overrides, dict) else None) or "posts_only",
     }
 
 
@@ -368,6 +398,19 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     enabled_channels = state.get("enabled_channels", ["instagram"])
     existing_items = state.get("existing_items", [])
     events = state.get("events", [])
+
+    # Content format (Edit Documents override). "posts_only" = single-image
+    # posts everywhere (default); "mixed" = let the planner vary formats.
+    content_format = state.get("content_format", "posts_only")
+    if content_format == "mixed":
+        _ctype_rule = "- Vary content types (mix post, reel, carousel, story)\n"
+        _ctype_field = 'content_type (post/reel/story/carousel), '
+    else:
+        _ctype_rule = (
+            '- content_type MUST be "post" for EVERY item — single-image posts only '
+            "(NO reels, carousels, stories, videos, or articles)\n"
+        )
+        _ctype_field = 'content_type (always "post"), '
 
     # Calendar items cover the full year (Jan 1 → Dec 31). The batch loop
     # runs all week×channel combinations in parallel (semaphore=8) so the
@@ -653,8 +696,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         + "RULES:\n"
                         "- Each item MUST have a UNIQUE weekly_sub_theme\n"
                         "- Do NOT repeat any theme from the ALREADY SCHEDULED list\n"
-                        "- Vary content types (mix post, reel, carousel, story)\n"
-                        "- Each content_brief must describe a DISTINCT topic\n\n"
+                        + _ctype_rule
+                        + "- Each content_brief must describe a DISTINCT topic\n\n"
                         "EVENT DATE RULES:\n"
                         "- If the strategy mentions a specific event with a date (e.g., 'World Cancer Day (Feb 4)'), "
                         "content referencing that event should ONLY be scheduled on the event date itself or the day before/after\n"
@@ -666,8 +709,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         "campaign_name, scheduled_date (YYYY-MM-DD), "
                         "scheduled_time (HH:MM 24h format), "
                         f"platform (always \"{channel}\"), "
-                        "content_type (post/reel/story/carousel), "
-                        "pillar, theme, weekly_sub_theme, target_audience, "
+                        + _ctype_field
+                        + "pillar, theme, weekly_sub_theme, target_audience, "
                         "content_brief (2-3 sentences), "
                         "product_name (from products list or null), "
                         "visual_direction (1 sentence), "
