@@ -1,3 +1,4 @@
+import logging
 import re
 import uuid
 from typing import Literal
@@ -26,6 +27,8 @@ from app.schemas.competitor import (
 from app.services import audit_service, brand_service, fabric_service, minio_service
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+
+logger = logging.getLogger(__name__)
 
 _limiter = Limiter(key_func=get_remote_address)
 
@@ -476,6 +479,48 @@ class BrandOverrides(BaseModel):
     removed_campaigns: list[str] | None = None
 
 
+class ApplyOverrides(BaseModel):
+    """Optional body for the apply (re-plan) endpoint.
+
+    `months` is a list of "Month YYYY" or "YYYY-MM" strings — when present, the
+    re-plan is TARGETED to only those calendar months (the ones the user
+    changed). Empty/absent → full-horizon re-plan (legacy behavior).
+    """
+
+    months: list[str] | None = None
+
+
+_MONTH_NUM = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+}
+
+
+def _to_year_month(label: str) -> str | None:
+    """Normalize 'August 2026' or '2026-08' → '2026-08'. None if unparseable."""
+    s = (label or "").strip()
+    if not s:
+        return None
+    # Already YYYY-MM(-...) ?
+    parts = s.replace("/", "-").split("-")
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        y, mo = int(parts[0]), int(parts[1])
+        if 1 <= mo <= 12 and y >= 2000:
+            return f"{y:04d}-{mo:02d}"
+    # "Month YYYY" form
+    tokens = s.replace(",", " ").split()
+    month = year = None
+    for t in tokens:
+        tl = t.lower()
+        if tl in _MONTH_NUM:
+            month = _MONTH_NUM[tl]
+        elif t.isdigit() and len(t) == 4:
+            year = int(t)
+    if month and year:
+        return f"{year:04d}-{month:02d}"
+    return None
+
+
 async def _latest_run_payload(db: AsyncSession, brand_id: uuid.UUID, agent_type: str) -> dict:
     """Latest completed agent_run output_payload for a brand/type (dict, never raises)."""
     import json as _json
@@ -673,13 +718,16 @@ async def save_brand_overrides(
 @router.post("/{brand_id}/overrides/apply")
 async def apply_brand_overrides(
     brand_id: uuid.UUID,
+    body: ApplyOverrides | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Re-run planning so the saved overrides take effect on the calendar.
 
     Planning preserves anything already moved forward (in_review/published/…);
-    only `planned` items in the window are rebuilt.
+    only `planned` items are rebuilt. When `body.months` is provided the re-plan
+    is TARGETED to just those months (only their planned items are rebuilt);
+    otherwise the full horizon is re-planned.
     """
     if not role_has_access(current_user.role, "manager"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -687,13 +735,84 @@ async def apply_brand_overrides(
     if brand is None:
         raise HTTPException(status_code=404, detail="Brand not found")
 
+    target_months = []
+    for label in (body.months if body and body.months else []):
+        ym = _to_year_month(label)
+        if ym and ym not in target_months:
+            target_months.append(ym)
+
     from app.services import nats_service
 
-    await nats_service.publish(
-        "planning.trigger",
-        {"brand_id": str(brand_id), "trigger": "manual", "triggered_by": str(current_user.id)},
-    )
-    return {"status": "re-planning", "brand_id": str(brand_id)}
+    msg = {"brand_id": str(brand_id), "trigger": "manual", "triggered_by": str(current_user.id)}
+    if target_months:
+        msg["target_months"] = target_months
+
+    await nats_service.publish("planning.trigger", msg)
+    return {
+        "status": "re-planning",
+        "brand_id": str(brand_id),
+        "target_months": target_months,
+        "scope": "targeted" if target_months else "full",
+    }
+
+
+class ThemeRefineRequest(BaseModel):
+    """Body for the AI theme-refinement endpoint (the 'wand' button)."""
+
+    text: str
+    month: str | None = None
+
+
+@router.post("/{brand_id}/themes/refine")
+async def refine_monthly_theme(
+    brand_id: uuid.UUID,
+    body: ThemeRefineRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reformulate a user's rough monthly-theme note into a crisp, planning-ready
+    theme statement, grounded in the brand's positioning."""
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    raw = (body.text or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Theme text is required")
+
+    from app.api.v1.intelligence import _call_llm
+
+    brand_ctx = f"Brand: {brand.name}."
+    if getattr(brand, "description", None):
+        brand_ctx += f" {brand.description[:500]}"
+    month_ctx = f" The theme is for {body.month}." if body.month else ""
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a content strategist. Rewrite the user's rough monthly content "
+                "theme into ONE concise, vivid theme statement (max ~30 words) that a content "
+                "planner can act on: a clear seasonal/commercial angle and what to emphasize. "
+                "Keep the user's intent. Return ONLY the rewritten theme text — no quotes, "
+                "no preamble, no markdown."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"{brand_ctx}{month_ctx}\n\nRough theme: {raw}",
+        },
+    ]
+    try:
+        refined = (await _call_llm(messages, temperature=0.6)).strip()
+    except Exception as exc:
+        logger.warning("Theme refine failed for brand %s: %s", brand_id, exc)
+        raise HTTPException(status_code=502, detail="AI refinement unavailable, try again")
+
+    refined = refined.strip().strip('"').strip()
+    return {"theme": refined or raw}
 
 
 class ContextApprovalAction(BaseModel):

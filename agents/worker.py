@@ -1016,7 +1016,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     _PAYLOAD_WHITELIST: dict[str, set[str]] = {
         "research": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "triggered_by", "timestamp"},
         "strategy": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "triggered_by", "timestamp"},
-        "planning": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "triggered_by", "timestamp"},
+        "planning": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "target_months", "triggered_by", "timestamp"},
         "content": {"brand_id", "run_id", "trigger", "params", "scope_weeks", "calendar_item_id", "chain_depth", "remaining_queue", "triggered_by", "timestamp"},
         "evaluation": {"brand_id", "run_id", "trigger", "params", "content_id", "triggered_by", "timestamp"},
         "product": {"brand_id", "run_id", "trigger", "params", "triggered_by", "timestamp"},

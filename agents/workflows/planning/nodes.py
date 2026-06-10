@@ -467,6 +467,19 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     start_date_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end_date_dt = start_date_dt + timedelta(weeks=scope_weeks)
 
+    # Targeted re-plan (Edit Documents "Apply"): regenerate ONLY the calendar
+    # months the user changed. "YYYY-MM" strings → {(year, month)}. Empty set =
+    # full horizon (legacy behavior). Only target/purge these months.
+    target_months: set[tuple[int, int]] = set()
+    for m in state.get("target_months") or []:
+        try:
+            y, mo = str(m).split("-")[:2]
+            target_months.add((int(y), int(mo)))
+        except (ValueError, TypeError):
+            continue
+    if target_months:
+        logger.info("Targeted re-plan for brand %s — months=%s", brand_id, sorted(target_months))
+
     # Build cadence string from strategy so the LLM respects weekly post counts.
     # Try structured cadence data first, then fall back to extracting from strategy document.
     cadence = strategy.get("cadence", {})
@@ -677,6 +690,16 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         bend = min(cur + timedelta(days=batch_size_days), end_date_dt)
         batch_windows.append((cur, bend))
         cur = bend
+
+    # Targeted re-plan: keep only windows overlapping a target month (a 7-day
+    # window spans at most two months — check both ends).
+    if target_months:
+        batch_windows = [
+            (s, e)
+            for (s, e) in batch_windows
+            if (s.year, s.month) in target_months
+            or ((e - timedelta(days=1)).year, (e - timedelta(days=1)).month) in target_months
+        ]
 
     for _ in batch_windows:
         for ch in enabled_channels:
@@ -980,15 +1003,39 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             "Skipped %d invalid calendar items for brand %s", skipped, brand_id
         )
 
-    # Purge stale 'planned' items from prior planning runs within the same
-    # window so reruns don't stack duplicates on top. Non-'planned' rows are
-    # preserved — once an item moves into generation or publishing the user
-    # has effectively taken ownership.
-    planning_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    # Targeted re-plan: drop any stray item that landed outside the target
+    # months (e.g. a 7-day batch window straddling a month boundary).
+    if target_months:
+        def _item_ym(it):
+            sa = it.get("scheduled_at")
+            if isinstance(sa, datetime):
+                return (sa.year, sa.month)
+            try:
+                y, mo = str(sa)[:7].split("-")
+                return (int(y), int(mo))
+            except (ValueError, TypeError):
+                return None
+        db_items = [it for it in db_items if _item_ym(it) in target_months]
+
+    # Purge stale 'planned' items so reruns don't stack duplicates. Non-'planned'
+    # rows are preserved — once an item moves into generation or publishing the
+    # user has effectively taken ownership. Targeted re-plan purges ONLY the
+    # changed months; full re-plan purges the whole year-to-horizon window.
     try:
-        deleted = await delete_planned_calendar_items(
-            brand_id, planning_start, max_date
-        )
+        if target_months:
+            deleted = 0
+            for (y, mo) in sorted(target_months):
+                m_start = datetime(y, mo, 1, tzinfo=timezone.utc)
+                if mo == 12:
+                    m_end = datetime(y + 1, 1, 1, tzinfo=timezone.utc) - timedelta(seconds=1)
+                else:
+                    m_end = datetime(y, mo + 1, 1, tzinfo=timezone.utc) - timedelta(seconds=1)
+                deleted += await delete_planned_calendar_items(brand_id, m_start, m_end)
+        else:
+            planning_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+            deleted = await delete_planned_calendar_items(
+                brand_id, planning_start, max_date
+            )
         if deleted:
             logger.info(
                 "Purged %d stale planned calendar items for brand %s before insert",

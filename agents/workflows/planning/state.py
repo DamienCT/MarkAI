@@ -18,6 +18,7 @@ class PlanningState(TypedDict, total=False):
     content_format: str  # "posts_only" | "mixed" — Edit Documents override
     campaign_overrides: list[dict[str, Any]]  # user-curated campaigns (Edit Documents)
     removed_campaigns: list[str]  # campaign names the user removed (Edit Documents)
+    target_months: list[str]  # ["YYYY-MM"] — targeted re-plan; empty = full horizon
 
     # Loaded data
     strategy: dict[str, Any]

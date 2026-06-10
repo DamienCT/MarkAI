@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { X, Trash2, Plus, Loader2, RotateCcw } from "lucide-react";
+import { X, Trash2, Plus, Loader2, RotateCcw, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 
@@ -34,9 +34,84 @@ interface OverridesData {
   brand_voice: string;
 }
 
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// "Month YYYY" labels for the next `count` months (incl. current).
+function upcomingMonths(count = 18): string[] {
+  const out: string[] = [];
+  const d = new Date();
+  d.setDate(1);
+  for (let i = 0; i < count; i++) {
+    out.push(`${MONTHS[d.getMonth()]} ${d.getFullYear()}`);
+    d.setMonth(d.getMonth() + 1);
+  }
+  return out;
+}
+
 function themeLabel(t: Theme): { month: string; text: string } {
   if (typeof t === "string") return { month: "", text: t };
   return { month: t?.month || "", text: t?.theme_name || t?.theme || "" };
+}
+
+// Normalize a month label ("August 2026" or "2026-08") → "YYYY-MM" key.
+function monthKey(label: string): string {
+  const s = (label || "").trim();
+  const dash = s.split("-");
+  if (dash.length >= 2 && /^\d{4}$/.test(dash[0]) && /^\d{1,2}$/.test(dash[1])) {
+    return `${dash[0]}-${dash[1].padStart(2, "0")}`;
+  }
+  let mo = -1, yr = -1;
+  for (const t of s.replace(",", " ").split(/\s+/)) {
+    const idx = MONTHS.findIndex((m) => m.toLowerCase().startsWith(t.toLowerCase()) && t.length >= 3);
+    if (idx >= 0) mo = idx + 1;
+    else if (/^\d{4}$/.test(t)) yr = parseInt(t, 10);
+  }
+  return mo > 0 && yr > 0 ? `${yr}-${String(mo).padStart(2, "0")}` : "";
+}
+
+// "2026-08" → "August 2026"
+function labelFromKey(key: string): string {
+  const [y, m] = key.split("-");
+  const idx = parseInt(m, 10) - 1;
+  return idx >= 0 && idx < 12 ? `${MONTHS[idx]} ${y}` : key;
+}
+
+// Themes are one-per-month for the year (a fixed set). Show a row for every
+// month in the next 12 months UNION any month an existing theme already covers
+// (so nothing is dropped), preserving rich theme objects and adding empty
+// placeholders for gaps — the user edits e.g. "December 2026" directly.
+function expandThemes(themes: Theme[]): Theme[] {
+  const byKey: Record<string, Theme> = {};
+  for (const t of themes) {
+    const k = monthKey(themeLabel(t).month);
+    if (k) byKey[k] = t;
+  }
+  const keys = new Set<string>(upcomingMonths(12).map(monthKey));
+  Object.keys(byKey).forEach((k) => keys.add(k));
+  return [...keys]
+    .filter(Boolean)
+    .sort()
+    .map((k) => {
+      const existing = byKey[k];
+      if (existing) {
+        return typeof existing === "string" ? { month: labelFromKey(k), theme_name: existing } : existing;
+      }
+      return { month: labelFromKey(k), theme_name: "" };
+    });
+}
+
+// Map themes by month-key → text, to diff which months the user changed.
+function themesByMonth(themes: Theme[]): Record<string, string> {
+  const m: Record<string, string> = {};
+  for (const t of themes) {
+    const { month, text } = themeLabel(t);
+    const k = monthKey(month);
+    if (k) m[k] = text || "";
+  }
+  return m;
 }
 
 export function EditDocumentsModal({
@@ -51,6 +126,9 @@ export function EditDocumentsModal({
   const [data, setData] = useState<OverridesData | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [refining, setRefining] = useState<number | null>(null);
+  // Snapshot of the data as loaded, to diff which months the user changed.
+  const initial = useRef<OverridesData | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -67,8 +145,8 @@ export function EditDocumentsModal({
         content_format?: string;
         brand_voice?: string;
       }>(`/api/v1/brands/${brandId}/overrides`)
-      .then((d) =>
-        setData({
+      .then((d) => {
+        const loaded: OverridesData = {
           cadence: d.cadence || {},
           content_pillars: d.content_pillars || [],
           target_audiences: (d.target_audiences || []).map((a) =>
@@ -79,11 +157,13 @@ export function EditDocumentsModal({
           ),
           removed_campaigns: d.removed_campaigns || [],
           positioning: d.positioning || "",
-          monthly_themes: d.monthly_themes || [],
+          monthly_themes: expandThemes(d.monthly_themes || []),
           content_format: d.content_format || "posts_only",
           brand_voice: d.brand_voice || "",
-        })
-      )
+        };
+        initial.current = JSON.parse(JSON.stringify(loaded));
+        setData(loaded);
+      })
       .catch(() => toast.error("Failed to load document settings"))
       .finally(() => setLoading(false));
   }, [open, brandId]);
@@ -148,13 +228,34 @@ export function EditDocumentsModal({
     setData((d) => d && {
       ...d,
       monthly_themes: d.monthly_themes.map((t, j) =>
-        j === i ? (typeof t === "string" ? v : { ...t, theme_name: v }) : t
+        j === i ? (typeof t === "string" ? { month: "", theme_name: v } : { ...t, theme_name: v }) : t
       ),
     });
-  const delTheme = (i: number) =>
-    setData((d) => d && { ...d, monthly_themes: d.monthly_themes.filter((_, j) => j !== i) });
-  const addTheme = () =>
-    setData((d) => d && { ...d, monthly_themes: [...d.monthly_themes, ""] });
+
+  // 🪄 AI: reformulate the user's rough theme text into a planning-ready theme.
+  async function refineTheme(i: number) {
+    if (!data) return;
+    const { month, text } = themeLabel(data.monthly_themes[i]);
+    if (!text.trim()) {
+      toast.error("Write a rough theme first, then refine it");
+      return;
+    }
+    setRefining(i);
+    try {
+      const res = await api.post<{ theme: string }>(
+        `/api/v1/brands/${brandId}/themes/refine`,
+        { text, month }
+      );
+      if (res?.theme) {
+        setTheme(i, res.theme);
+        toast.success("Theme refined");
+      }
+    } catch {
+      toast.error("AI refinement failed");
+    } finally {
+      setRefining(null);
+    }
+  }
 
   const setFormat = (f: string) => setData((d) => d && { ...d, content_format: f });
 
@@ -167,12 +268,37 @@ export function EditDocumentsModal({
       target_audiences: data.target_audiences.filter((a) => (a.name || "").trim()),
       campaigns: data.campaigns.filter((c) => (c.name || "").trim()),
       positioning: data.positioning,
-      monthly_themes: data.monthly_themes,
+      // Only persist months that actually have a theme (drop empty placeholders).
+      monthly_themes: data.monthly_themes.filter((t) => themeLabel(t).text.trim()),
       content_format: data.content_format,
       removed_campaigns: data.removed_campaigns,
     };
     await api.put(`/api/v1/brands/${brandId}/overrides`, body);
     return true;
+  }
+
+  // Which months to target on Apply. null = full re-plan (a global lever like
+  // cadence/pillars/audiences/positioning/campaigns changed — affects every
+  // month). Otherwise the "YYYY-MM" months whose theme text changed.
+  function computeTargetMonths(): string[] | null {
+    const init = initial.current;
+    if (!init || !data) return null;
+    const globals: (keyof OverridesData)[] = [
+      "cadence", "content_pillars", "target_audiences",
+      "campaigns", "removed_campaigns", "positioning", "content_format",
+    ];
+    const globalChanged = globals.some(
+      (f) => JSON.stringify(init[f]) !== JSON.stringify(data[f])
+    );
+    if (globalChanged) return null;
+    const a = themesByMonth(init.monthly_themes);
+    const b = themesByMonth(data.monthly_themes);
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    const changed: string[] = [];
+    keys.forEach((k) => {
+      if ((a[k] || "") !== (b[k] || "")) changed.push(k);
+    });
+    return changed;
   }
 
   async function handleSave() {
@@ -191,9 +317,17 @@ export function EditDocumentsModal({
   async function handleApply() {
     setSaving(true);
     try {
+      const target = computeTargetMonths();
       await persist();
-      await api.post(`/api/v1/brands/${brandId}/overrides/apply`, {});
-      toast.success("Re-planning started — the calendar will update shortly");
+      const body = target && target.length ? { months: target } : {};
+      await api.post(`/api/v1/brands/${brandId}/overrides/apply`, body);
+      if (target && target.length) {
+        toast.success(
+          `Re-planning ${target.length} month${target.length > 1 ? "s" : ""} you changed — the calendar will update shortly`
+        );
+      } else {
+        toast.success("Re-planning all months — the calendar will update shortly");
+      }
       onClose();
     } catch {
       toast.error("Failed to apply changes");
@@ -347,37 +481,42 @@ export function EditDocumentsModal({
                 />
               </section>
 
-              {/* Monthly themes */}
+              {/* Monthly themes — one per month (fixed). Edit the text, or use
+                  the wand to let AI reformulate your note into a clean theme. */}
               <section className="border-b py-4">
-                <p className="mb-3 text-sm font-bold">Monthly themes</p>
+                <p className="mb-1 text-sm font-bold">Monthly themes</p>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  One theme per month. Write your idea on the right month, then hit 🪄 to let AI polish it.
+                </p>
                 {data.monthly_themes.map((t, i) => {
                   const { month, text } = themeLabel(t);
                   return (
                     <div key={i} className="mb-2 flex items-center gap-2 rounded-lg border p-2">
-                      {month && (
-                        <span className="shrink-0 text-xs font-semibold text-muted-foreground w-16 capitalize">{month}</span>
-                      )}
+                      <span className="shrink-0 w-24 text-xs font-semibold text-muted-foreground">
+                        {month || "—"}
+                      </span>
                       <input
                         className="flex-1 bg-transparent text-sm outline-none"
                         value={text}
-                        placeholder="Theme"
+                        placeholder="Theme for this month…"
                         onChange={(e) => setTheme(i, e.target.value)}
                       />
-                      <button className="text-muted-foreground hover:text-destructive" onClick={() => delTheme(i)}>
-                        <Trash2 className="h-4 w-4" />
+                      <button
+                        type="button"
+                        title="Reformulate with AI"
+                        className="shrink-0 rounded-md p-1 text-primary hover:bg-primary/10 disabled:opacity-40"
+                        disabled={refining !== null || !text.trim()}
+                        onClick={() => refineTheme(i)}
+                      >
+                        {refining === i ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Wand2 className="h-4 w-4" />
+                        )}
                       </button>
                     </div>
                   );
                 })}
-                {data.monthly_themes.length === 0 && (
-                  <p className="mb-2 text-xs text-muted-foreground">No themes.</p>
-                )}
-                <button
-                  className="mt-1 w-full rounded-lg border border-dashed border-primary/40 py-2 text-xs font-bold text-primary hover:bg-primary/5"
-                  onClick={addTheme}
-                >
-                  <Plus className="mr-1 inline h-3.5 w-3.5" /> Add theme
-                </button>
               </section>
 
               {/* Campaigns */}
@@ -395,7 +534,7 @@ export function EditDocumentsModal({
                       <input
                         className="w-full bg-transparent text-xs text-muted-foreground outline-none"
                         value={c.description || ""}
-                        placeholder="Short description (the AI fills in the rest)"
+                        placeholder="Short description"
                         onChange={(e) => setCampaignField(i, "description", e.target.value)}
                       />
                     </div>
@@ -413,10 +552,6 @@ export function EditDocumentsModal({
                 >
                   <Plus className="mr-1 inline h-3.5 w-3.5" /> Add campaign
                 </button>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  On re-plan, the AI keeps your campaigns (name + description) and fleshes out the
-                  full plan; deleted ones won&apos;t come back. Already-reviewed/published posts are kept.
-                </p>
               </section>
             </>
           )}
@@ -424,7 +559,9 @@ export function EditDocumentsModal({
 
         {/* footer */}
         <div className="flex items-center justify-end gap-3 border-t bg-muted/30 px-6 py-4 rounded-b-2xl">
-          <span className="mr-auto text-xs text-muted-foreground">Saved as brand overrides, applied on re-plan.</span>
+          <span className="mr-auto text-xs text-muted-foreground">
+            Saved as brand overrides, applied on Apply.
+          </span>
           <Button variant="outline" size="sm" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
@@ -433,7 +570,7 @@ export function EditDocumentsModal({
           </Button>
           <Button size="sm" onClick={handleApply} disabled={saving || loading}>
             {saving ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <RotateCcw className="mr-1.5 h-4 w-4" />}
-            Apply &amp; re-plan
+            Apply
           </Button>
         </div>
       </div>
