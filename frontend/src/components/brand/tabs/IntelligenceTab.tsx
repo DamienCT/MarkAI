@@ -130,7 +130,7 @@ export function IntelligenceTab({
           <p className="text-sm text-muted-foreground">AI-generated documents and insights for this brand</p>
         </div>
         {brandId && (
-          <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+          <Button variant="default" size="sm" onClick={() => setEditOpen(true)}>
             <Pencil className="mr-1.5 h-4 w-4" />
             Edit Documents
           </Button>

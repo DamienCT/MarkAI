@@ -2,7 +2,6 @@
 
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { api, apiUrl } from "@/lib/api";
 import { formatDate, formatDateTime, statusColor } from "@/lib/utils";
@@ -22,7 +21,6 @@ import remarkGfm from "remark-gfm";
 import { SafeValue, formatKeyValue } from "@/components/ui/safe-render";
 import { ContentCalendarStrategy } from "@/components/intelligence/ContentCalendarStrategy";
 import { ReportCharts } from "@/components/intelligence/ReportCharts";
-import { ReportContentEditor, type Json } from "@/components/intelligence/ReportContentEditor";
 import {
   ArrowLeft,
   Clock,
@@ -48,36 +46,12 @@ import {
   BookOpen,
   Megaphone,
   LayoutGrid,
-  Pencil,
-  Save,
-  X,
   Download,
   ChevronDown,
   ChevronUp,
   StickyNote,
   Loader2,
 } from "lucide-react";
-
-// Role hierarchy mirror — edit is allowed for manager+ (same bar as brand
-// creation). Kept local to avoid a redirecting role hook on this view page.
-const ROLE_LEVELS: Record<string, number> = { viewer: 10, editor: 60, manager: 80, admin: 100 };
-
-// Which content keys are editable per report type, and a sensible empty value
-// to seed a key that doesn't exist yet (so the user can add it).
-const EDITABLE_KEYS: Record<string, string[]> = {
-  research: ["gaps", "personas", "competitor_analysis", "recommendations", "notes"],
-  strategy: ["positioning", "content_pillars", "target_audiences", "posting_cadence", "monthly_themes", "recommendations", "notes"],
-  planning: ["campaigns", "calendar_items", "calendar_summary", "recommendations", "notes"],
-  content_calendar: ["strategy_document", "monthly_themes", "recommendations", "notes"],
-  content_calendar_strategy: ["strategy_document", "monthly_themes", "recommendations", "notes"],
-};
-const STRING_KEYS = new Set(["strategy_document", "calendar_summary", "notes"]);
-const OBJECT_KEYS = new Set(["positioning", "posting_cadence"]);
-function defaultForKey(key: string): Json {
-  if (STRING_KEYS.has(key)) return "";
-  if (OBJECT_KEYS.has(key)) return {};
-  return []; // everything else is a list
-}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -307,18 +281,9 @@ export default function ReportPage() {
   const params = useParams();
   const router = useRouter();
   const runId = params.id as string;
-  const { data: session } = useSession();
 
   const [report, setReport] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
-
-  // Edit mode (manager+ only). Draft fields are seeded from the report when
-  // the user clicks Edit and pushed via PATCH on Save (overwrite, no history).
-  const userRole = (session?.user as Record<string, unknown> | undefined)?.role as string | undefined;
-  const canEdit = (ROLE_LEVELS[userRole ?? "viewer"] ?? 0) >= ROLE_LEVELS.manager;
-  const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [editDraft, setEditDraft] = useState<{ [k: string]: Json }>({});
   const [showRawData, setShowRawData] = useState(false);
 
   useEffect(() => {
@@ -340,37 +305,6 @@ export default function ReportPage() {
     }
     if (runId) fetchReport();
   }, [runId]);
-
-  function startEditing() {
-    const out = (report?.output_payload || {}) as Record<string, unknown>;
-    const keys = EDITABLE_KEYS[report?.agent_type || ""] || ["notes"];
-    const draft: { [k: string]: Json } = {};
-    for (const k of keys) {
-      draft[k] = out[k] !== undefined ? (out[k] as Json) : defaultForKey(k);
-    }
-    setEditDraft(draft);
-    setEditing(true);
-  }
-
-  async function saveEdits() {
-    if (!report) return;
-    setSaving(true);
-    try {
-      // Backend overwrites these content keys and auto-regenerates the summary.
-      const updated = await api.patch<{ output_payload: OutputPayload }>(
-        `/api/v1/intelligence/report/${runId}`,
-        { content: editDraft }
-      );
-      setReport({ ...report, output_payload: updated.output_payload });
-      setEditing(false);
-      toast.success("Report updated — summary refreshed");
-    } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to save changes";
-      toast.error(detail);
-    } finally {
-      setSaving(false);
-    }
-  }
 
   // Hand off to the browser's native print engine: it honors @media print
   // rules in globals.css (page breaks, hidden chrome, vector output) and
@@ -482,29 +416,10 @@ export default function ReportPage() {
             {report.brand_id ? "Back to Brand" : "Back to Intelligence"}
           </Button>
           <div className="flex items-center gap-2">
-            {editing ? (
-              <>
-                <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={saving}>
-                  <X className="mr-2 h-4 w-4" /> Cancel
-                </Button>
-                <Button size="sm" onClick={saveEdits} disabled={saving}>
-                  {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                  Save
-                </Button>
-              </>
-            ) : (
-              <>
-                {canEdit && (
-                  <Button variant="outline" size="sm" onClick={startEditing}>
-                    <Pencil className="mr-2 h-4 w-4" /> Edit
-                  </Button>
-                )}
-                <Button variant="outline" size="sm" onClick={downloadPdf}>
-                  <Download className="mr-2 h-4 w-4" />
-                  Download PDF
-                </Button>
-              </>
-            )}
+            <Button variant="outline" size="sm" onClick={downloadPdf}>
+              <Download className="mr-2 h-4 w-4" />
+              Download PDF
+            </Button>
           </div>
         </div>
 
@@ -554,36 +469,10 @@ export default function ReportPage() {
             </CardHeader>
             <CardContent>
               <p className="text-sm leading-relaxed whitespace-pre-line">{summaryPlain}</p>
-              {editing && (
-                <p className="mt-2 text-xs text-muted-foreground italic">
-                  The summary updates automatically when you save your edits.
-                </p>
-              )}
             </CardContent>
           </Card>
         )}
 
-        {/* ── Edit mode: structured content editor ──────────────────── */}
-        {editing && (
-          <Card id="section-editor">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Pencil className="h-5 w-5 text-primary" />
-                Edit report content
-              </CardTitle>
-              <CardDescription>
-                Edit any field, add or remove items. Save to apply — the summary
-                is rewritten automatically from your changes.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ReportContentEditor data={editDraft} onChange={setEditDraft} />
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Everything below is the read-only view, hidden while editing. */}
-        {!editing && (<>
         <Separator />
 
         {/* ── Executive Summary ────────────────────────────────────── */}
@@ -1984,7 +1873,6 @@ export default function ReportPage() {
             )}
           </div>
         )}
-        </>)}
 
         {/* ── Footer ──────────────────────────────────────────────── */}
         <div className="text-center text-xs text-muted-foreground py-4 border-t">

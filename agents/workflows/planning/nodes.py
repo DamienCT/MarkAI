@@ -191,6 +191,19 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
             ]
         if overrides.get("target_audiences"):
             strategy_data["target_audiences"] = overrides["target_audiences"]
+        # Positioning / monthly themes overrides flow to the campaign LLM via
+        # the strategy blob (see _generate_campaigns_inner prompt). Positioning
+        # is merged into value_proposition so the other sub-fields survive.
+        if overrides.get("positioning"):
+            pos = strategy_data.get("positioning")
+            if isinstance(pos, dict):
+                pos = dict(pos)
+                pos["value_proposition"] = overrides["positioning"]
+                strategy_data["positioning"] = pos
+            else:
+                strategy_data["positioning"] = overrides["positioning"]
+        if overrides.get("monthly_themes"):
+            strategy_data["monthly_themes"] = overrides["monthly_themes"]
 
     # Load existing calendar items for deduplication context
     try:
@@ -217,6 +230,8 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
         "events": events,
         # Edit Documents override; defaults to posts-only.
         "content_format": (overrides.get("content_format") if isinstance(overrides, dict) else None) or "posts_only",
+        "campaign_overrides": (overrides.get("campaigns") if isinstance(overrides, dict) else None) or [],
+        "removed_campaigns": (overrides.get("removed_campaigns") if isinstance(overrides, dict) else None) or [],
     }
 
 
@@ -270,6 +285,29 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     )
 
     channels_str = ", ".join(enabled_channels)
+
+    # ── Edit Documents campaign overrides ─────────────────────────────────
+    # User-curated campaigns MUST be included (enriched with full structure);
+    # removed campaign names MUST NOT reappear.
+    campaign_overrides = state.get("campaign_overrides") or []
+    removed_campaigns = state.get("removed_campaigns") or []
+    constraints = ""
+    if campaign_overrides:
+        must_include = "; ".join(
+            f"{c.get('name', '')}" + (f" — {c.get('description', '')}" if c.get("description") else "")
+            for c in campaign_overrides if isinstance(c, dict) and c.get("name")
+        )
+        if must_include:
+            constraints += (
+                " You MUST include these user-defined campaigns, enriching each with the full "
+                f"structure (use the given name/description verbatim as the basis): {must_include}."
+            )
+    if removed_campaigns:
+        constraints += (
+            " You MUST NOT generate any campaign matching these removed names: "
+            f"{', '.join(removed_campaigns)}."
+        )
+
     prompt = [
         {
             "role": "system",
@@ -285,6 +323,7 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
                 "content_format_mix (object with content_type percentages e.g. {reel: 40, carousel: 30, static: 20, story: 10}), "
                 "target_audience (primary persona name from strategy). "
                 "Return a JSON array."
+                + constraints
             ),
         },
         {
@@ -305,6 +344,14 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     )
     if isinstance(campaigns, dict):
         campaigns = next((v for v in campaigns.values() if isinstance(v, list)), [])
+
+    # Safety net: drop any campaign whose name the user removed (LLM may ignore).
+    if removed_campaigns and isinstance(campaigns, list):
+        _removed_lc = {n.strip().lower() for n in removed_campaigns if isinstance(n, str)}
+        campaigns = [
+            c for c in campaigns
+            if not (isinstance(c, dict) and (c.get("name") or "").strip().lower() in _removed_lc)
+        ]
 
     # ── Generate year-long content calendar strategy document ──────────────
     strategy_doc_prompt = [

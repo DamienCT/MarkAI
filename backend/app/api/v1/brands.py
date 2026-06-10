@@ -470,6 +470,9 @@ class BrandOverrides(BaseModel):
     target_audiences: list[dict] | None = None
     content_format: str | None = None  # "posts_only" | "mixed"
     brand_voice: str | None = None
+    positioning: str | None = None  # brand positioning statement
+    monthly_themes: list | None = None  # [{month, theme}] or [str]
+    campaigns: list[dict] | None = None  # user-curated campaigns (name/description)
     removed_campaigns: list[str] | None = None
 
 
@@ -532,18 +535,37 @@ async def get_brand_overrides(
         (p.get("name") if isinstance(p, dict) else p)
         for p in (strat.get("content_pillars") or [])
     ]
-    cur_campaigns = [
-        (c.get("name") if isinstance(c, dict) else c)
-        for c in (plan.get("campaigns") or [])
-    ]
     removed = set(saved.get("removed_campaigns") or [])
+
+    # Campaigns as {name, description} objects. Saved user-curated list wins;
+    # otherwise derive from the latest plan, minus any removed by name.
+    def _camp_obj(c):
+        if isinstance(c, dict):
+            return {"name": c.get("name") or "", "description": c.get("description") or ""}
+        return {"name": str(c), "description": ""}
+
+    if saved.get("campaigns"):
+        campaigns = [_camp_obj(c) for c in saved["campaigns"]]
+    else:
+        campaigns = [
+            _camp_obj(c)
+            for c in (plan.get("campaigns") or [])
+            if (c.get("name") if isinstance(c, dict) else c) not in removed
+        ]
+        campaigns = [c for c in campaigns if c["name"]]
 
     return {
         "cadence": saved.get("cadence") or strat.get("cadence") or {},
         "content_pillars": saved.get("content_pillars") or [p for p in cur_pillars if p],
         "target_audiences": saved.get("target_audiences") or (strat.get("target_audiences") or []),
-        "campaigns": [c for c in cur_campaigns if c and c not in removed],
+        "campaigns": campaigns,
         "removed_campaigns": sorted(removed),
+        "positioning": saved.get("positioning") or (
+            strat["positioning"] if isinstance(strat.get("positioning"), str)
+            else (strat.get("positioning") or {}).get("value_proposition", "")
+            if isinstance(strat.get("positioning"), dict) else ""
+        ),
+        "monthly_themes": saved.get("monthly_themes") or (strat.get("monthly_themes") or []),
         "content_format": saved.get("content_format") or "posts_only",
         "brand_voice": saved.get("brand_voice") or guidelines.get("tone_of_voice") or "",
         "has_overrides": bool(saved),
