@@ -56,20 +56,48 @@ interface TopContent {
   engagement_rate: number;
 }
 
+interface ChannelBreakdown {
+  channel: string;
+  impressions: number;
+  reach: number;
+  likes: number;
+  comments: number;
+  shares: number;
+  clicks: number;
+  engagement_rate: number;
+  posts: number;
+  engagements: number;
+}
+
 const DATE_PRESETS = [
   { label: "7d", value: 7 },
   { label: "30d", value: 30 },
   { label: "90d", value: 90 },
 ] as const;
 
+// Channels with engagement-API integration (others never produce analytics).
+const ANALYTICS_CHANNELS = ["instagram", "facebook", "linkedin"] as const;
+const CHANNEL_META: Record<string, { label: string; color: string }> = {
+  instagram: { label: "Instagram", color: "#E1306C" },
+  facebook: { label: "Facebook", color: "#1877F2" },
+  linkedin: { label: "LinkedIn", color: "#0A66C2" },
+  youtube: { label: "YouTube", color: "#FF0000" },
+  tiktok: { label: "TikTok", color: "#111827" },
+  x: { label: "X (Twitter)", color: "#111827" },
+};
+const channelLabel = (c: string) => CHANNEL_META[c]?.label ?? c;
+const channelColor = (c: string) => CHANNEL_META[c]?.color ?? "#6366f1";
+
 export default function AnalyticsPage() {
   const [brands, setBrands] = useState<Brand[]>([]);
   const [selectedBrandId, setSelectedBrandId] = useState<string>("all");
+  const [selectedChannel, setSelectedChannel] = useState<string>("all");
   const [days, setDays] = useState<number>(30);
   const [timeSeries, setTimeSeries] = useState<AnalyticsTimeSeries[]>([]);
   const [heatmapData, setHeatmapData] = useState<HeatmapData[]>([]);
   const [topContent, setTopContent] = useState<TopContent[]>([]);
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
+  const [byChannel, setByChannel] = useState<ChannelBreakdown[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -89,16 +117,20 @@ export default function AnalyticsPage() {
   const fetchAnalytics = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
-      const params: Record<string, string | number> = { days };
-      if (selectedBrandId !== "all") {
-        params.brand_id = selectedBrandId;
-      }
+      // Base scope (brand + window) shared by all queries.
+      const base: Record<string, string | number> = { days };
+      if (selectedBrandId !== "all") base.brand_id = selectedBrandId;
+      // Channel filter applies to everything except the by-channel breakdown
+      // (which always compares all channels).
+      const params: Record<string, string | number> =
+        selectedChannel !== "all" ? { ...base, channel: selectedChannel } : { ...base };
 
-      const [tsData, hmData, contentData, summaryData] = await Promise.allSettled([
+      const [tsData, hmData, contentData, summaryData, byChannelData] = await Promise.allSettled([
         api.get<AnalyticsTimeSeries[]>("/api/v1/analytics/engagement/timeseries", params, { signal }),
         api.get<HeatmapData[]>("/api/v1/analytics/posting/heatmap", params, { signal }),
         api.get<TopContent[]>("/api/v1/analytics/content/top", { ...params, limit: 10 }, { signal }),
         api.get<AnalyticsSummary>("/api/v1/analytics/summary", params, { signal }),
+        api.get<ChannelBreakdown[]>("/api/v1/analytics/by-channel", base, { signal }),
       ]);
       if (tsData.status === "fulfilled") setTimeSeries(tsData.value);
       else setTimeSeries([]);
@@ -108,12 +140,14 @@ export default function AnalyticsPage() {
       else setTopContent([]);
       if (summaryData.status === "fulfilled") setSummary(summaryData.value);
       else setSummary(null);
+      if (byChannelData.status === "fulfilled") setByChannel(byChannelData.value);
+      else setByChannel([]);
     } catch {
       toast.error("Failed to load analytics data");
     } finally {
       setLoading(false);
     }
-  }, [selectedBrandId, days]);
+  }, [selectedBrandId, selectedChannel, days]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -148,6 +182,19 @@ export default function AnalyticsPage() {
               {brands.map((brand) => (
                 <SelectItem key={brand.id} value={brand.id}>
                   {brand.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={selectedChannel} onValueChange={setSelectedChannel}>
+            <SelectTrigger className="w-[170px]">
+              <SelectValue placeholder="All channels" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All channels</SelectItem>
+              {ANALYTICS_CHANNELS.map((c) => (
+                <SelectItem key={c} value={c}>
+                  {channelLabel(c)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -212,6 +259,62 @@ export default function AnalyticsPage() {
               </CardContent>
             </Card>
           </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>By Channel</CardTitle>
+              <CardDescription>
+                Engagement breakdown across channels (Instagram / Facebook / LinkedIn only)
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {byChannel.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">
+                  No per-channel engagement data yet
+                </p>
+              ) : (
+                (() => {
+                  const totalEng = byChannel.reduce((s, c) => s + c.engagements, 0) || 1;
+                  return (
+                    <div className="space-y-4">
+                      {byChannel.map((c) => {
+                        const share = Math.round((c.engagements / totalEng) * 100);
+                        return (
+                          <div key={c.channel} className="space-y-1.5">
+                            <div className="flex items-center justify-between text-sm">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className="h-2.5 w-2.5 rounded-full"
+                                  style={{ background: channelColor(c.channel) }}
+                                />
+                                <span className="font-semibold">{channelLabel(c.channel)}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  · {c.posts} post{c.posts === 1 ? "" : "s"}
+                                </span>
+                              </div>
+                              <span className="text-xs text-muted-foreground">{share}% of engagement</span>
+                            </div>
+                            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full"
+                                style={{ width: `${share}%`, background: channelColor(c.channel) }}
+                              />
+                            </div>
+                            <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+                              <span>{c.impressions.toLocaleString()} impressions</span>
+                              <span>{c.engagements.toLocaleString()} engagements</span>
+                              <span>{(c.engagement_rate * 100).toFixed(2)}% eng. rate</span>
+                              <span>{c.reach.toLocaleString()} reach</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()
+              )}
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>

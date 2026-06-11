@@ -16,17 +16,38 @@ _ANALYTICS_CACHE_TTL = 300  # 5 minutes
 
 @router.get("/summary")
 async def get_analytics_summary(
+    brand_id: uuid.UUID | None = None,
+    channel: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """High-level analytics summary for the dashboard."""
-    cached = await _cache_get("markai:analytics:summary")
+    """High-level analytics summary, optionally scoped to a brand and/or channel."""
+    cache_key = f"markai:analytics:summary:{brand_id or 'all'}:{channel or 'all'}"
+    cached = await _cache_get(cache_key)
     if cached:
         return json.loads(cached)
 
+    where = []
+    params: dict = {}
+    if brand_id is not None:
+        where.append("brand_id = :brand_id")
+        params["brand_id"] = brand_id
+    if channel is not None:
+        where.append("channel = :channel")
+        params["channel"] = channel
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+    # Published-post count honors the same brand/channel scope.
+    pub_where = ["status = 'published'"]
+    if brand_id is not None:
+        pub_where.append("brand_id = :brand_id")
+    if channel is not None:
+        pub_where.append("channel = :channel")
+    pub_sql = " AND ".join(pub_where)
+
     row = (
         await db.execute(
-            text("""
+            text(f"""
             SELECT
                 COALESCE(SUM(impressions), 0) AS total_impressions,
                 COALESCE(SUM(likes), 0) AS total_likes,
@@ -35,9 +56,10 @@ async def get_analytics_summary(
                 COALESCE(SUM(reach), 0) AS total_reach,
                 COALESCE(SUM(clicks), 0) AS total_clicks,
                 COALESCE(AVG(engagement_rate), 0) AS avg_engagement_rate,
-                (SELECT count(*) FROM calendar_items WHERE status = 'published') AS total_published
-            FROM engagement_metrics
-        """)
+                (SELECT count(*) FROM calendar_items WHERE {pub_sql}) AS total_published
+            FROM engagement_metrics{where_sql}
+        """),
+            params,
         )
     ).fetchone()
 
@@ -51,9 +73,7 @@ async def get_analytics_summary(
         "engagement_rate": round(float(row[6]), 4),
         "total_published_posts": int(row[7]),
     }
-    await _cache_set(
-        "markai:analytics:summary", json.dumps(result), ttl=_ANALYTICS_CACHE_TTL
-    )
+    await _cache_set(cache_key, json.dumps(result), ttl=_ANALYTICS_CACHE_TTL)
     return result
 
 
@@ -61,6 +81,7 @@ async def get_analytics_summary(
 async def get_engagement_timeseries(
     days: int = 30,
     brand_id: uuid.UUID | None = None,
+    channel: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -81,6 +102,9 @@ async def get_engagement_timeseries(
     if brand_id:
         query += " AND brand_id = :brand_id"
         params["brand_id"] = brand_id
+    if channel:
+        query += " AND channel = :channel"
+        params["channel"] = channel
     query += " GROUP BY DATE(fetched_at) ORDER BY date"
     rows = await db.execute(text(query), params)
     return [
@@ -98,22 +122,29 @@ async def get_engagement_timeseries(
 
 @router.get("/posting/heatmap")
 async def get_posting_heatmap(
+    brand_id: uuid.UUID | None = None,
+    channel: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Posting frequency by day-of-week and hour."""
-    rows = await db.execute(
-        text("""
+    query = """
         SELECT
             EXTRACT(DOW FROM scheduled_at) as day,
             EXTRACT(HOUR FROM scheduled_at) as hour,
             COUNT(*) as count
         FROM calendar_items
         WHERE scheduled_at IS NOT NULL AND status IN ('published', 'scheduled')
-        GROUP BY EXTRACT(DOW FROM scheduled_at), EXTRACT(HOUR FROM scheduled_at)
-        ORDER BY day, hour
-    """)
-    )
+    """
+    params: dict = {}
+    if brand_id:
+        query += " AND brand_id = :brand_id"
+        params["brand_id"] = brand_id
+    if channel:
+        query += " AND channel = :channel"
+        params["channel"] = channel
+    query += " GROUP BY EXTRACT(DOW FROM scheduled_at), EXTRACT(HOUR FROM scheduled_at) ORDER BY day, hour"
+    rows = await db.execute(text(query), params)
     return [
         {"day": int(row[0]), "hour": int(row[1]), "count": int(row[2])}
         for row in rows.fetchall()
@@ -123,13 +154,14 @@ async def get_posting_heatmap(
 @router.get("/content/top")
 async def get_top_content(
     limit: int = 20,
+    brand_id: uuid.UUID | None = None,
+    channel: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Top performing content by engagement."""
     limit = min(limit, 200)
-    rows = await db.execute(
-        text("""
+    query = """
             SELECT
                 ci.id, ci.title, ci.channel, ci.status,
                 ci.scheduled_at, ci.published_at,
@@ -141,12 +173,20 @@ async def get_top_content(
             FROM calendar_items ci
             LEFT JOIN engagement_metrics em ON ci.id = em.calendar_item_id
             WHERE ci.status = 'published'
+    """
+    params: dict = {"lim": limit}
+    if brand_id:
+        query += " AND ci.brand_id = :brand_id"
+        params["brand_id"] = brand_id
+    if channel:
+        query += " AND ci.channel = :channel"
+        params["channel"] = channel
+    query += """
             GROUP BY ci.id, ci.title, ci.channel, ci.status, ci.scheduled_at, ci.published_at
             ORDER BY COALESCE(SUM(em.likes), 0) + COALESCE(SUM(em.comments), 0) + COALESCE(SUM(em.shares), 0) DESC
             LIMIT :lim
-        """),
-        {"lim": limit},
-    )
+    """
+    rows = await db.execute(text(query), params)
     return [
         {
             "id": str(row[0]),
@@ -160,6 +200,53 @@ async def get_top_content(
             "shares": int(row[8]),
             "impressions": int(row[9]),
             "engagement_rate": round(float(row[10]), 4),
+        }
+        for row in rows.fetchall()
+    ]
+
+
+@router.get("/by-channel")
+async def get_engagement_by_channel(
+    days: int = 30,
+    brand_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Engagement aggregated per channel — powers the per-channel breakdown
+    (donut + comparative cards). Engagement only exists for IG/FB/LinkedIn."""
+    days = min(max(days, 1), 365)
+    query = """
+        SELECT
+            channel,
+            COALESCE(SUM(impressions), 0) as impressions,
+            COALESCE(SUM(reach), 0) as reach,
+            COALESCE(SUM(likes), 0) as likes,
+            COALESCE(SUM(comments), 0) as comments,
+            COALESCE(SUM(shares), 0) as shares,
+            COALESCE(SUM(clicks), 0) as clicks,
+            COALESCE(AVG(engagement_rate), 0) as engagement_rate,
+            COUNT(DISTINCT content_id) as posts
+        FROM engagement_metrics
+        WHERE fetched_at >= NOW() - MAKE_INTERVAL(days => :days)
+    """
+    params: dict = {"days": days}
+    if brand_id:
+        query += " AND brand_id = :brand_id"
+        params["brand_id"] = brand_id
+    query += " GROUP BY channel ORDER BY impressions DESC"
+    rows = await db.execute(text(query), params)
+    return [
+        {
+            "channel": row[0],
+            "impressions": int(row[1]),
+            "reach": int(row[2]),
+            "likes": int(row[3]),
+            "comments": int(row[4]),
+            "shares": int(row[5]),
+            "clicks": int(row[6]),
+            "engagement_rate": round(float(row[7]), 4),
+            "posts": int(row[8]),
+            "engagements": int(row[3]) + int(row[4]) + int(row[5]),
         }
         for row in rows.fetchall()
     ]
