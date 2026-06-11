@@ -514,12 +514,17 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
     cadence_instruction = "\n".join(cadence_lines) if cadence_lines else "3 posts per week per channel."
 
-    # Load real products for product-aware content planning
+    # Load real products for product-aware content planning. Keep the FULL
+    # active catalog (no [:50] truncation) — each batch is shown a rotating
+    # window of it (see _run_batch) so coverage sweeps the whole catalog over
+    # the horizon instead of repeating only the first few products.
     products = await get_products(brand_id)
-    product_summary = [
+    all_product_summary = [
         {"name": p.get("name"), "sku": p.get("sku"), "vendor": p.get("vendor")}
-        for p in products[:50]
+        for p in products
+        if p.get("name")
     ]
+    _PRODUCT_WINDOW = 15  # products shown to the LLM per batch (fits the prompt budget)
 
     channels_str = ", ".join(enabled_channels)
 
@@ -720,6 +725,20 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
             best_days = channel_best_days.get(channel, "")
             best_times = channel_best_times.get(channel, "")
 
+            # Rotating product window: each batch sees a different slice of the
+            # catalog (advancing by batch_idx), wrapping around. Over all
+            # week×channel batches this sweeps the full catalog, so the planner
+            # isn't stuck recommending only the first products it ever saw.
+            if all_product_summary:
+                _n = len(all_product_summary)
+                _start = (batch_idx * _PRODUCT_WINDOW) % _n
+                batch_products = [
+                    all_product_summary[(_start + k) % _n]
+                    for k in range(min(_PRODUCT_WINDOW, _n))
+                ]
+            else:
+                batch_products = []
+
             # Dedup from DB-existing items only (no cross-batch deps in parallel mode)
             ch_existing = [
                 i for i in existing_items
@@ -797,7 +816,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         f"{week_events_block}\n\n"
                         f"STRATEGY FOR {b_month.upper()} ({channel.upper()}):\n"
                         f"{sanitize_for_prompt(month_strategy, max_length=5000)}\n\n"
-                        f"Available products:\n{sanitize_json_for_prompt(product_summary, max_length=1500)}"
+                        f"Available products:\n{sanitize_json_for_prompt(batch_products, max_length=1500)}"
                     ),
                 },
             ]
