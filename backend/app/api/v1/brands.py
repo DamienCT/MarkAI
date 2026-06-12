@@ -398,11 +398,20 @@ async def generate_content(
             detail=f"Run Context Generation first. Missing: {', '.join(sorted(missing))}",
         )
 
-    # Query calendar items within TODAY + 7 days that need content generation
+    # Query calendar items within TODAY + N days that need content generation.
+    # N comes from the content_generation_days_ahead setting (default 14) — same
+    # window the auto top-up job uses, so the button and the scheduler agree.
     from datetime import datetime, timedelta, timezone
 
+    from app.scheduler import get_app_setting
+
+    try:
+        days_ahead = int(await get_app_setting("content_generation_days_ahead", default=14))
+    except (TypeError, ValueError):
+        days_ahead = 14
+
     now = datetime.now(timezone.utc)
-    horizon = now + timedelta(days=7)
+    horizon = now + timedelta(days=days_ahead)
 
     items_result = await db.execute(
         text(
@@ -421,7 +430,7 @@ async def generate_content(
             "status": "no_items",
             "items_queued": 0,
             "brand_id": str(brand_id),
-            "message": "No calendar items need content generation in the next 7 days.",
+            "message": f"No calendar items need content generation in the next {days_ahead} days.",
         }
 
     # Transition planned items to queued so they appear in Content Studio

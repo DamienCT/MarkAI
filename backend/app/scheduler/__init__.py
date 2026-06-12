@@ -106,6 +106,18 @@ def setup_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Every 6 hours — alert the team before a brand's LinkedIn token expires
+    from app.scheduler.linkedin_token_alert import linkedin_token_expiry_check
+
+    scheduler.add_job(
+        linkedin_token_expiry_check,
+        IntervalTrigger(hours=6),
+        id="linkedin_token_expiry",
+        name="Alert before LinkedIn token expiry",
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+        replace_existing=True,
+    )
+
     # Start the scheduler on the current (running) event loop.
     # This MUST happen inside an async context so get_event_loop()
     # returns the uvicorn loop, not a new detached one.

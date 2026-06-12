@@ -1268,7 +1268,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             and agent_type in ("research", "strategy", "planning")
         ):
             try:
-                from shared.tools.database import create_notification, execute_query
+                from shared.tools.database import execute_query, notify_admins
 
                 _DOC_LABEL = {
                     "research": "Research Report",
@@ -1276,40 +1276,42 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     "planning": "Marketing Plan",
                 }
                 rows = await execute_query(
-                    "SELECT name, created_by FROM brands WHERE id = :bid",
+                    "SELECT name FROM brands WHERE id = :bid",
                     {"bid": brand_id},
                 )
-                if rows and rows[0].get("created_by"):
-                    await create_notification(
-                        user_id=str(rows[0]["created_by"]),
-                        notification_type="context_ready",
-                        title=f"{_DOC_LABEL[agent_type]} ready — {rows[0].get('name') or 'your brand'}",
-                        body="Click to review and approve.",
-                        reference_type="agent_run",
-                        reference_id=str(run_id),
-                    )
+                brand_name = (rows[0].get("name") if rows else None) or "a brand"
 
-                    # Final "all 4 reports ready" notif when the planning
-                    # agent finishes the activation chain — last gate before
-                    # the brand can start generating content.
-                    if agent_type == "planning":
-                        done = await execute_query(
-                            "SELECT DISTINCT agent_type FROM agent_runs "
-                            "WHERE brand_id = :bid "
-                            "  AND agent_type IN ('research','strategy','planning','content_calendar') "
-                            "  AND status = 'completed'",
-                            {"bid": brand_id},
+                # Notify the whole team (admins/managers), not just the owner —
+                # brands with no created_by would otherwise notify nobody.
+                await notify_admins(
+                    notification_type="context_ready",
+                    title=f"{_DOC_LABEL[agent_type]} ready — {brand_name}",
+                    body=f"{brand_name}: click to review and approve.",
+                    reference_type="agent_run",
+                    reference_id=str(run_id),
+                    roles=("admin", "manager", "editor"),
+                )
+
+                # Final "all 4 reports ready" notif when the planning agent
+                # finishes — last gate before content generation can run.
+                if agent_type == "planning":
+                    done = await execute_query(
+                        "SELECT DISTINCT agent_type FROM agent_runs "
+                        "WHERE brand_id = :bid "
+                        "  AND agent_type IN ('research','strategy','planning','content_calendar') "
+                        "  AND status = 'completed'",
+                        {"bid": brand_id},
+                    )
+                    done_types = {r["agent_type"] for r in done}
+                    if done_types >= {"research", "strategy", "planning", "content_calendar"}:
+                        await notify_admins(
+                            notification_type="context_all_ready",
+                            title=f"All 4 context reports ready — {brand_name}",
+                            body=f"{brand_name}: approve them on the brand page to unlock content generation.",
+                            reference_type="brand",
+                            reference_id=str(brand_id),
+                            roles=("admin", "manager", "editor"),
                         )
-                        done_types = {r["agent_type"] for r in done}
-                        if done_types >= {"research", "strategy", "planning", "content_calendar"}:
-                            await create_notification(
-                                user_id=str(rows[0]["created_by"]),
-                                notification_type="context_all_ready",
-                                title=f"All 4 context reports ready — {rows[0].get('name') or 'your brand'}",
-                                body="Approve them on the brand page to unlock content generation.",
-                                reference_type="brand",
-                                reference_id=str(brand_id),
-                            )
             except Exception as notif_exc:
                 logger.debug("context_ready notification skipped: %s", notif_exc)
 

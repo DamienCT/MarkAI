@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # LinkedIn
     LINKEDIN_ACCESS_TOKEN: str = ""
     LINKEDIN_ORG_ID: str = ""
+    # LinkedIn app credentials — used to introspect the access token (get its
+    # real expires_at / status dynamically) and, later, to refresh it.
+    LINKEDIN_CLIENT_ID: str = ""
+    LINKEDIN_CLIENT_SECRET: str = ""
     # YouTube
     YOUTUBE_CLIENT_ID: str = ""
     YOUTUBE_CLIENT_SECRET: str = ""

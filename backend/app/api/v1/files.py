@@ -36,6 +36,7 @@ async def serve_file(
     file_path: str,
     w: Optional[int] = Query(None, ge=16, le=2000, description="Resize width"),
     q: Optional[int] = Query(None, ge=10, le=100, description="JPEG quality"),
+    fmt: Optional[str] = Query(None, description="Force output format, e.g. 'jpg'"),
 ):
     """Proxy a file from MinIO to the browser.
 
@@ -83,26 +84,30 @@ async def serve_file(
     }
     ct = content_types.get(ext, "application/octet-stream")
 
-    # On-the-fly resize for preview thumbnails
-    if w and ext in _RESIZABLE_EXTS:
+    # On-the-fly transform:
+    #   ?w=WIDTH  → resize (preview thumbnail)
+    #   ?fmt=jpg  → convert to JPEG (Instagram's API only accepts JPEG, not PNG)
+    want_jpeg = fmt in ("jpg", "jpeg")
+    if (w or want_jpeg) and ext in _RESIZABLE_EXTS:
         try:
             from PIL import Image
 
             img = Image.open(io.BytesIO(data))
-            ratio = w / img.width
-            new_h = int(img.height * ratio)
-            img = img.resize((w, new_h), Image.LANCZOS)
+            if w:
+                ratio = w / img.width
+                new_h = int(img.height * ratio)
+                img = img.resize((w, new_h), Image.LANCZOS)
 
             buf = io.BytesIO()
-            quality = q or 80
-            if ext in ("jpg", "jpeg") or ext == "png":
-                img.save(buf, format="JPEG", quality=quality)
+            quality = q or (90 if want_jpeg else 80)
+            if want_jpeg or ext in ("jpg", "jpeg") or ext == "png":
+                img.convert("RGB").save(buf, format="JPEG", quality=quality)
                 ct = "image/jpeg"
             elif ext == "webp":
                 img.save(buf, format="WEBP", quality=quality)
             data = buf.getvalue()
         except Exception:
-            pass  # Serve original if resize fails
+            pass  # Serve original if transform fails
 
     return Response(
         content=data,

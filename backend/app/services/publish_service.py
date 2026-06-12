@@ -163,6 +163,10 @@ async def dispatch_to_n8n(
     api_base = settings.PUBLIC_API_URL or settings.FRONTEND_URL
     if minio_path and api_base:
         image_url = f"{api_base}/api/v1/files/{minio_path}"
+        # Instagram's Content Publishing API only accepts JPEG; our pipeline
+        # renders PNG. Serve a JPEG-converted variant for Meta channels.
+        if channel in ("instagram", "facebook"):
+            image_url += "?fmt=jpg"
     else:
         image_url = content.video_url or None
 

@@ -39,6 +39,36 @@ async def create_notification(
     return notif
 
 
+async def notify_admins(
+    db: AsyncSession,
+    notification_type: str,
+    title: str,
+    body: str | None = None,
+    reference_type: str | None = None,
+    reference_id: uuid.UUID | None = None,
+    roles: tuple[str, ...] = ("admin", "manager"),
+) -> int:
+    """Create the same in-app notification for every user with one of `roles`.
+
+    Used for brand-level alerts that should reach the team regardless of who
+    (if anyone) owns the brand — brands with a NULL created_by would otherwise
+    notify nobody. Returns the number of recipients.
+    """
+    result = await db.execute(select(User.id).where(User.role.in_(roles)))
+    ids = [row[0] for row in result.all()]
+    for uid in ids:
+        await create_notification(
+            db=db,
+            user_id=uid,
+            notification_type=notification_type,
+            title=title,
+            body=body,
+            reference_type=reference_type,
+            reference_id=reference_id,
+        )
+    return len(ids)
+
+
 async def send_teams_message(title: str, text: str, color: str = "0076D7") -> None:
     """Send a message to the configured Microsoft Teams webhook."""
     if not settings.TEAMS_WEBHOOK_URL:

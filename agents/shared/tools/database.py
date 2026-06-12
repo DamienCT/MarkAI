@@ -735,6 +735,41 @@ async def create_notification(
         )
 
 
+async def notify_admins(
+    notification_type: str,
+    title: str,
+    body: str | None = None,
+    reference_type: str | None = None,
+    reference_id: str | None = None,
+    roles: tuple[str, ...] = ("admin", "manager"),
+) -> int:
+    """Create the same notification for every admin/manager.
+
+    Brand-level alerts should reach the team regardless of brand ownership —
+    a brand with a NULL created_by would otherwise notify nobody.
+    """
+    try:
+        rows = await execute_query(
+            "SELECT id FROM users WHERE role = ANY(:roles)",
+            {"roles": list(roles)},
+        )
+    except Exception as exc:
+        logger.warning("notify_admins: failed to load recipients: %s", exc)
+        return 0
+    count = 0
+    for r in rows:
+        await create_notification(
+            user_id=str(r["id"]),
+            notification_type=notification_type,
+            title=title,
+            body=body,
+            reference_type=reference_type,
+            reference_id=reference_id,
+        )
+        count += 1
+    return count
+
+
 # ── Recent calendar items helper ─────────────────────────────────────────
 
 

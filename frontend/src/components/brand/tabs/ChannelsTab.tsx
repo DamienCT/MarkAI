@@ -16,6 +16,7 @@ const SENSITIVE_FIELD_KEYS = new Set([
   "api_key",
   "refresh_token",
   "webhook_url",
+  "client_secret",
 ]);
 
 interface ChannelFieldInputProps {

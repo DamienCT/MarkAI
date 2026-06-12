@@ -222,7 +222,9 @@ _SCORING_SYSTEM_PROMPT = (
     "doubt, prefer already_planned=false.\n\n"
     "Return STRICT JSON:\n"
     '{"results": [{"topic": "<exact original topic>", "score": <int 0-100>, '
-    '"reason": "<sentence>", "angle": "<pitch>", "already_planned": <bool>}, ...]}\n\n'
+    '"reason": "<sentence>", "angle": "<pitch>", '
+    '"product": "<exact product name from the BRAND PRODUCTS list, or empty string>", '
+    '"already_planned": <bool>}, ...]}\n\n'
     "Per-field rules:\n"
     "- score 0..100 — 50+ to keep, higher = stronger fit\n"
     "- reason: 1 short sentence explaining the bridge to this brand\n"
@@ -238,6 +240,10 @@ _SCORING_SYSTEM_PROMPT = (
     "(the hero). Describe any companions in GENERIC terms ('charcuterie "
     "spread', 'sharing plates', 'cheese board') — never name a second "
     "brand-product, the image can only have one hero.\n"
+    "- product: the hero product MUST be chosen from the BRAND PRODUCTS list "
+    "below (copy its name EXACTLY) and should also be referenced in the angle. "
+    "If no product in the list fits this trend, return an empty string — do "
+    "NOT invent a product that isn't in the list.\n"
     "- already_planned: true ONLY if a calendar item clearly covers it"
 )
 
@@ -295,6 +301,7 @@ _DOC_CHAR_CAP = 1000
 
 # How far ahead we look when checking calendar matches.
 _CALENDAR_WINDOW_DAYS = 30
+_TREND_PRODUCT_WINDOW = 20  # products shown to the LLM per run (rotating window)
 
 # The four strategy reports we squeeze into the LLM prompt for richer scoring.
 _BRAND_DOC_TYPES = ("research", "strategy", "branding", "planning")
@@ -368,6 +375,33 @@ async def _load_upcoming_calendar(
             "scheduled_at": ci.scheduled_at.isoformat() if ci.scheduled_at else None,
         })
     return items
+
+
+async def _load_active_products(
+    db: AsyncSession, brand_id: Any
+) -> list[dict[str, Any]]:
+    """Active products for the brand — the catalog the trend scorer picks the
+    hero product from. Only included (is_active) products, same as planning."""
+    from app.models.product import Product
+
+    result = await db.execute(
+        select(
+            Product.id, Product.name, Product.sku, Product.category, Product.vendor_name
+        )
+        .where(Product.brand_id == brand_id)
+        .where(Product.is_active.is_(True))
+        .order_by(Product.name.asc())
+    )
+    return [
+        {
+            "id": str(row[0]),
+            "name": row[1],
+            "sku": row[2],
+            "category": row[3],
+            "vendor": row[4],
+        }
+        for row in result.all()
+    ]
 
 
 def _build_brand_context(
@@ -479,9 +513,37 @@ async def score_trends_for_brand(
     calendar = await _load_upcoming_calendar(db, brand.id)
     brand_context = _build_brand_context(brand, docs=docs, calendar=calendar)
 
+    # Real product catalog → the LLM picks the hero product from THIS list
+    # (so trend angles link to an actual SKU). A rotating window keeps the
+    # whole catalog in play over successive daily runs instead of always the
+    # first products.
+    try:
+        products = await _load_active_products(db, brand.id)
+    except Exception as exc:
+        logger.warning("Product load failed for brand %s (continuing): %s", brand.name, exc)
+        products = []
+    prod_by_name = {p["name"].strip().lower(): p for p in products if p.get("name")}
+    if products and len(products) > _TREND_PRODUCT_WINDOW:
+        _n = len(products)
+        _offset = (datetime.now(timezone.utc).toordinal() * _TREND_PRODUCT_WINDOW) % _n
+        window = [products[(_offset + k) % _n] for k in range(_TREND_PRODUCT_WINDOW)]
+    else:
+        window = products
+    products_block = ""
+    if window:
+        products_block = (
+            "\n--- BRAND PRODUCTS (pick the hero from THIS list, exact name) ---\n"
+            + "\n".join(
+                f"- {p['name']}" + (f" [{p['category']}]" if p.get("category") else "")
+                for p in window
+            )
+            + "\n"
+        )
+
     topics_block = "\n".join(f"- {t['topic']}" for t in raw_trends)
     user_msg = (
-        f"{brand_context}\n\n"
+        f"{brand_context}\n"
+        f"{products_block}\n"
         f"TRENDS TO EVALUATE:\n{topics_block}\n\n"
         "Return JSON as specified. Skip trends you reject — only include "
         "trends with a real angle for this brand. Mark already_planned=true "
@@ -524,12 +586,23 @@ async def score_trends_for_brand(
         raw = raw_by_topic.get(topic.lower())
         if not raw:
             continue
+        # Link the hero product (chosen from the catalog window) to a real row.
+        meta = dict(raw.get("metadata") or {})
+        prod_name = str(r.get("product", "")).strip()
+        if prod_name:
+            matched = prod_by_name.get(prod_name.lower())
+            if matched:
+                meta["product_id"] = matched["id"]
+                meta["product_name"] = matched["name"]
+                if matched.get("sku"):
+                    meta["product_sku"] = matched["sku"]
         scored.append({
             **raw,
             "topic": raw["topic"],
             "relevance_score": score,
             "relevance_reason": str(r.get("reason", ""))[:600],
             "llm_angle": str(r.get("angle", ""))[:1200],
+            "metadata": meta,
         })
 
     if skipped_planned:

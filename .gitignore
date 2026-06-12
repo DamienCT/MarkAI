@@ -31,6 +31,11 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
+# Credentials / secrets (never commit)
+*.xlsx
+~$*
+SocialMedia_Credentials.xlsx
+
 # Data
 *.log
 *.sqlite3
