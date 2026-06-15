@@ -400,7 +400,10 @@ CREATE TABLE notifications (
                     CHECK (notification_type IN ('info', 'success', 'warning', 'error',
                                                    'approval_request', 'approval_decision',
                                                    'content_ready', 'publish_success',
-                                                   'publish_failure', 'system')),
+                                                   'publish_failure', 'system',
+                                                   'context_ready', 'context_all_ready',
+                                                   'linkedin_token_expiry', 'runway_alert',
+                                                   'stuck_in_review')),
     channel         VARCHAR(50) NOT NULL DEFAULT 'in_app'
                     CHECK (channel IN ('in_app', 'email', 'slack', 'push')),
     reference_type  VARCHAR(100),
