@@ -958,6 +958,14 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     items = state.get("calendar_items", [])
     strategy_document = state.get("strategy_document", "")
     enabled_channels = state.get("enabled_channels", [])
+    # Targeted re-plan: limit storing/purging to specific months when provided.
+    target_months: set[tuple[int, int]] = set()
+    for m in state.get("target_months") or []:
+        try:
+            y, mo = str(m).split("-")[:2]
+            target_months.add((int(y), int(mo)))
+        except (ValueError, TypeError):
+            continue
     # Store calendar items only up to the planning horizon (scope_weeks),
     # mirroring what generate_calendar_items emitted above. Items beyond the
     # horizon get skipped by store_calendar_items via max_date.
