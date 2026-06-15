@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Callable, Awaitable
 
 import nats
@@ -14,6 +15,12 @@ from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
 from shared.config import settings
 
 logger = logging.getLogger(__name__)
+
+# NATS ack_wait MUST exceed the worker's WORKFLOW_TIMEOUT, otherwise JetStream
+# redelivers a message while its workflow is still running (or just finished),
+# spawning duplicate/looping runs of the same item. Derived from the SAME env
+# var as worker.WORKFLOW_TIMEOUT (+ buffer) so the two can never drift apart.
+_ACK_WAIT_SECONDS = int(os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400")) + 120
 
 
 class NATSConsumer:
@@ -55,7 +62,7 @@ class NATSConsumer:
             durable_name=durable_name,
             deliver_policy=DeliverPolicy.ALL,
             ack_policy=AckPolicy.EXPLICIT,
-            ack_wait=1860,  # 31 minutes — must exceed WORKFLOW_TIMEOUT (30 min)
+            ack_wait=_ACK_WAIT_SECONDS,  # must exceed worker WORKFLOW_TIMEOUT
             max_deliver=5,  # after 5 delivery attempts, message is discarded
         )
         sub = await self.js.subscribe(

@@ -11,7 +11,6 @@ import {
   Globe, ExternalLink, Plus, Pencil, Trash2, Sparkles, Loader2, X, Save,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { WorkflowStatus } from "@/components/brand/WorkflowStatus";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Competitor } from "@/types";
 
@@ -55,7 +54,6 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
-  const [showWorkflowStatus, setShowWorkflowStatus] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   // Fetch local competitor list with IDs
@@ -177,11 +175,22 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
   const handleAutoDiscover = async () => {
     setTriggering(true);
     try {
-      await api.post(`/api/v1/intelligence/trigger/research`, { brand_id: brandId });
-      toast.success("Auto-discover triggered. Competitors will appear after AI analysis completes.");
-      setShowWorkflowStatus(true);
+      await api.post(`/api/v1/intelligence/discover-competitors`, { brand_id: brandId });
+      toast.success("Auto-discover started. New competitors will appear in a moment.");
+      // Discovery is async (web search + LLM, ~10-30s) and does NOT regenerate
+      // any document — just refresh the competitor list a few times.
+      const refetch = async () => {
+        try {
+          const data = await api.get<CompetitorWithId[]>(`/api/v1/brands/${brandId}/competitors`);
+          setCompetitorList(data);
+          onCompetitorsChange?.();
+        } catch {
+          /* ignore transient refetch errors */
+        }
+      };
+      [10000, 20000, 30000].forEach((ms) => setTimeout(refetch, ms));
     } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to trigger auto-discover";
+      const detail = (err as { detail?: string })?.detail || "Failed to start auto-discover";
       toast.error(detail);
     } finally {
       setTriggering(false);
@@ -225,12 +234,6 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
           </div>
         </CardHeader>
         <CardContent>
-          {/* Workflow activity indicator */}
-          {showWorkflowStatus && (
-            <div className="mb-4">
-              <WorkflowStatus brandId={brandId} filterType="research" />
-            </div>
-          )}
           {/* Inline Form */}
           {showForm && (
             <div className="rounded-lg border p-4 mb-4 space-y-4 bg-muted/20">

@@ -986,6 +986,26 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         await msg.ack()
         return
 
+    # ── Special handler: standalone competitor discovery (no doc/agent_run) ──
+    # The "Auto-discover" button: finds competitors via web search + LLM and
+    # upserts them, WITHOUT running research or regenerating any document.
+    if subject == "research.discover-competitors":
+        try:
+            payload = json.loads(msg.data.decode())
+            from workflows.research.discover_competitors import (
+                discover_competitors_standalone,
+            )
+
+            brand_id = payload.get("brand_id")
+            if brand_id:
+                await discover_competitors_standalone(str(brand_id))
+            else:
+                logger.error("discover-competitors message missing brand_id")
+        except Exception as exc:
+            logger.exception("Competitor discovery failed: %s", exc)
+        await msg.ack()
+        return
+
     graph = _resolve_graph(subject)
     if graph is None:
         logger.error("No graph registered for subject %s", subject)
@@ -1111,6 +1131,33 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             logger.warning(
                 "Content skip-forward failed: %s — proceeding normally",
                 content_skip_exc,
+            )
+
+    # ── Guard: never regenerate a content item that's already past generation ──
+    # If a content.generate message is redelivered (e.g. a slow run that exceeded
+    # ack_wait during an image-API storm), the calendar item may already be
+    # in_review/approved/scheduled/published. Regenerating wastes LLM/image calls
+    # and creates duplicate versions — ack and skip instead of looping.
+    if agent_type == "content" and payload.get("calendar_item_id"):
+        try:
+            _existing = await execute_query(
+                "SELECT status FROM calendar_items WHERE id = :id",
+                {"id": payload["calendar_item_id"]},
+            )
+            if _existing:
+                _item_status = _existing[0].get("status")
+                if _item_status in ("in_review", "approved", "scheduled", "published"):
+                    logger.info(
+                        "Skipping content for item %s — already '%s' (no regeneration)",
+                        payload["calendar_item_id"],
+                        _item_status,
+                    )
+                    await msg.ack()
+                    return
+        except Exception as guard_exc:
+            logger.warning(
+                "Content already-generated guard failed: %s — proceeding",
+                guard_exc,
             )
 
     # ── Skip already-completed stages on activation restart ──────

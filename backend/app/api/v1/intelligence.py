@@ -678,6 +678,32 @@ async def trigger_research(
     return {"message": "Research workflow triggered", "brand_id": str(trigger.brand_id)}
 
 
+@router.post("/discover-competitors")
+async def discover_competitors(
+    trigger: WorkflowTrigger,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Discover competitors via AI WITHOUT running research / regenerating docs.
+
+    Publishes a standalone `research.discover-competitors` job handled by the
+    worker's special handler — it only upserts the competitors table.
+    """
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    await nats_service.publish(
+        "research.discover-competitors",
+        {
+            "brand_id": str(trigger.brand_id),
+            "triggered_by": str(current_user.id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    return {"message": "Competitor discovery started", "brand_id": str(trigger.brand_id)}
+
+
 @router.post("/trigger/strategy")
 async def trigger_strategy(
     trigger: WorkflowTrigger,
