@@ -3118,12 +3118,23 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
         "Stored content %s for calendar item %s", content_id, state["calendar_item_id"]
     )
 
-    # Transition calendar item status to 'in_review'
+    # Transition calendar item status to 'in_review'. Also rename the calendar
+    # item to the post's own hook (its angle) so cards in Content Studio are
+    # distinguishable — the theme was a shared label across dozens of posts.
+    # Falls back to leaving the existing title (the theme) when no hook exists.
     if state.get("calendar_item_id"):
-        await execute_update(
-            "UPDATE calendar_items SET status = 'in_review' WHERE id = :id",
-            {"id": state["calendar_item_id"]},
-        )
+        _hook_title = (state.get("hook") or "").strip()
+        if _hook_title:
+            await execute_update(
+                "UPDATE calendar_items SET status = 'in_review', title = :title "
+                "WHERE id = :id",
+                {"id": state["calendar_item_id"], "title": _hook_title[:200]},
+            )
+        else:
+            await execute_update(
+                "UPDATE calendar_items SET status = 'in_review' WHERE id = :id",
+                {"id": state["calendar_item_id"]},
+            )
 
     # Auto-create approval record so it appears in the Approvals page
     try:
