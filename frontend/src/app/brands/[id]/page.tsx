@@ -45,7 +45,7 @@ const CHANNEL_ICON_STYLED: Record<string, { icon: React.ReactNode; color: string
   teams: { icon: <MessageSquare className="h-4 w-4" />, color: "bg-[#6264A7] text-white" },
 };
 
-const CHANNEL_CONFIG_FIELDS: Record<Channel, { key: string; label: string; placeholder: string }[]> = {
+const CHANNEL_CONFIG_FIELDS: Record<Channel, { key: string; label: string; placeholder: string; optional?: boolean }[]> = {
   instagram: [
     { key: "handle", label: "Handle", placeholder: "@yourbrand" },
     { key: "account_id", label: "Business Account ID", placeholder: "ex: 17841405822304914" },
@@ -60,7 +60,7 @@ const CHANNEL_CONFIG_FIELDS: Record<Channel, { key: string; label: string; place
     { key: "access_token", label: "Access Token", placeholder: "LinkedIn access token" },
     { key: "client_id", label: "Client ID", placeholder: "LinkedIn app Client ID" },
     { key: "client_secret", label: "Client Secret", placeholder: "LinkedIn app Client Secret" },
-    { key: "token_expires_at", label: "Token expiry (auto if Client ID/Secret set; else ISO/epoch)", placeholder: "auto via introspection — or 2026-08-02T00:00:00Z" },
+    { key: "token_expires_at", label: "Token expiry", placeholder: "auto via introspection — or 2026-08-02T00:00:00Z", optional: true },
   ],
   youtube: [
     { key: "channel_id", label: "Channel ID", placeholder: "YouTube Channel ID" },
@@ -431,7 +431,7 @@ export default function BrandDetailPage() {
       if (!cfg?.enabled) continue;
       const fields = CHANNEL_CONFIG_FIELDS[ch];
       const hasAllFields = fields.every((f) => {
-        if (f.label.includes("optional")) return true;
+        if (f.optional || f.label.includes("optional")) return true;
         return !!(cfg as Record<string, unknown>)[f.key];
       });
       updatedConfigs[ch] = { ...cfg, configured: hasAllFields };
@@ -945,6 +945,7 @@ export default function BrandDetailPage() {
 
         <TabsContent value="channels">
           <ChannelsTab
+            brandId={brandId}
             channelConfigs={channelConfigs}
             expandedChannel={expandedChannel}
             savingChannels={savingChannels}

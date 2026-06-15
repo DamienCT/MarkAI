@@ -928,6 +928,43 @@ async def get_brand_channels(
     return result
 
 
+@router.get("/{brand_id}/channels/linkedin/token-status")
+async def linkedin_token_status(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Live LinkedIn token expiry/status via introspection (stored field fallback)."""
+    from datetime import datetime, timezone
+
+    from app.scheduler.linkedin_token_alert import _resolve_token_state
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    li = ((brand.brand_guidelines or {}).get("channels") or {}).get("linkedin") or {}
+    if not li.get("enabled"):
+        return {"enabled": False, "expires_at": None, "status": None,
+                "days_left": None, "source": None}
+
+    expiry, status = await _resolve_token_state(li)
+    days_left = (
+        (expiry - datetime.now(timezone.utc)).days if expiry is not None else None
+    )
+    source = (
+        "introspection" if status is not None
+        else ("manual" if li.get("token_expires_at") else None)
+    )
+    return {
+        "enabled": True,
+        "expires_at": expiry.isoformat() if expiry else None,
+        "status": status,
+        "days_left": days_left,
+        "source": source,
+    }
+
+
 @router.put("/{brand_id}/channels")
 async def update_brand_channels(
     brand_id: uuid.UUID,

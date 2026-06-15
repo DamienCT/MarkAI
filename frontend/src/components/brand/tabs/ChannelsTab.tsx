@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   CheckCircle2, AlertTriangle, Settings2, Save, Eye, EyeOff,
 } from "lucide-react";
+import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -68,6 +69,75 @@ function ChannelFieldInput({ field, value, onChange }: ChannelFieldInputProps) {
   );
 }
 
+interface TokenStatus {
+  enabled: boolean;
+  expires_at: string | null;
+  status: string | null;
+  days_left: number | null;
+  source: string | null;
+}
+
+function LinkedinTokenStatus({ brandId }: { brandId: string }) {
+  const [data, setData] = useState<TokenStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  const check = useCallback(async () => {
+    setLoading(true);
+    setError(false);
+    try {
+      const res = await api.get<TokenStatus>(
+        `/api/v1/brands/${brandId}/channels/linkedin/token-status`
+      );
+      setData(res);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [brandId]);
+
+  useEffect(() => {
+    check();
+  }, [check]);
+
+  const soon = data?.days_left != null && data.days_left <= 10;
+
+  return (
+    <div className="pt-2 mt-2 border-t text-xs space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground">Token expiry (live)</span>
+        <button
+          type="button"
+          onClick={check}
+          disabled={loading}
+          className="text-primary hover:underline disabled:opacity-50"
+        >
+          {loading ? "Checking…" : "Refresh"}
+        </button>
+      </div>
+      {loading && <p className="text-muted-foreground">Checking with LinkedIn…</p>}
+      {!loading && error && (
+        <p className="text-red-500">Could not fetch token status.</p>
+      )}
+      {!loading && !error && data && (
+        data.expires_at ? (
+          <p className={soon ? "text-orange-600 dark:text-orange-400 font-medium" : "text-foreground"}>
+            Expires {new Date(data.expires_at).toLocaleString()}
+            {data.days_left != null && ` (${data.days_left}d left)`}
+            {data.status && data.status !== "active" && ` — ${data.status}`}
+            {data.source === "manual" && " · manual"}
+          </p>
+        ) : (
+          <p className="text-muted-foreground">
+            No expiry available — check Client ID / Secret &amp; access token, then Refresh.
+          </p>
+        )
+      )}
+    </div>
+  );
+}
+
 interface ChannelConfig {
   enabled: boolean;
   configured: boolean;
@@ -75,13 +145,14 @@ interface ChannelConfig {
 }
 
 export interface ChannelsTabProps {
+  brandId: string;
   channelConfigs: Record<string, ChannelConfig>;
   expandedChannel: string | null;
   savingChannels: boolean;
   allChannels: Channel[];
   channelIconStyled: Record<string, { icon: React.ReactNode; color: string }>;
   channelDisplayNames: Record<Channel, string>;
-  channelConfigFields: Record<Channel, { key: string; label: string; placeholder: string }[]>;
+  channelConfigFields: Record<Channel, { key: string; label: string; placeholder: string; optional?: boolean }[]>;
   onToggleChannelEnabled: (ch: string, enabled: boolean) => void;
   onUpdateChannelField: (ch: string, key: string, value: string) => void;
   onSetExpandedChannel: (ch: string | null) => void;
@@ -89,6 +160,7 @@ export interface ChannelsTabProps {
 }
 
 export function ChannelsTab({
+  brandId,
   channelConfigs,
   expandedChannel,
   savingChannels,
@@ -164,6 +236,9 @@ export function ChannelsTab({
                           onChange={(value) => onUpdateChannelField(ch, field.key, value)}
                         />
                       ))}
+                      {ch === "linkedin" && isEnabled && (
+                        <LinkedinTokenStatus brandId={brandId} />
+                      )}
                     </div>
                   )}
                 </div>
