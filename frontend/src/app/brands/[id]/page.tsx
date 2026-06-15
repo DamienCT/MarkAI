@@ -60,7 +60,6 @@ const CHANNEL_CONFIG_FIELDS: Record<Channel, { key: string; label: string; place
     { key: "access_token", label: "Access Token", placeholder: "LinkedIn access token" },
     { key: "client_id", label: "Client ID", placeholder: "LinkedIn app Client ID" },
     { key: "client_secret", label: "Client Secret", placeholder: "LinkedIn app Client Secret" },
-    { key: "token_expires_at", label: "Token expiry", placeholder: "auto via introspection — or 2026-08-02T00:00:00Z", optional: true },
   ],
   youtube: [
     { key: "channel_id", label: "Channel ID", placeholder: "YouTube Channel ID" },

@@ -407,6 +407,9 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 f"Include a simple generic unlabeled product container "
                 f"(plain matte box or pouch with NO writing on it) placed naturally in the scene. "
                 f"The product container must be completely blank — it will be digitally replaced. "
+                f"The product container MUST be FULLY visible within the frame, positioned in the "
+                f"central area with clear margin from every edge — never cropped, never touching or "
+                f"running off the edges of the image. "
                 f"{composition_rules}"
                 f"{no_text_rule}"
             )

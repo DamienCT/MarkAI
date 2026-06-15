@@ -1204,15 +1204,18 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
 
         channel = (item.get("channel", "") or "").lower()
 
-        # Platform-specific hashtag limits
-        if channel == "instagram":
-            platform_limit = "Up to 30 hashtags (use 20-25 for optimal reach)"
-        elif channel == "linkedin":
-            platform_limit = "3-5 hashtags only (LinkedIn penalizes excessive hashtags)"
-        elif channel == "x":
-            platform_limit = "2-3 hashtags maximum"
+        # Hashtag count comes from the brand's per-channel caption settings
+        # (the caption/voice profile is the source of truth) — NOT a hardcoded
+        # platform number that ignores what the user configured.
+        _cap = _effective_caption_settings(brand, channel)
+        ht_min = int(_cap.get("hashtags_min") or 0)
+        ht_max = int(_cap.get("hashtags_max") or 0)
+        if ht_max <= 0:
+            platform_limit = "no hashtags at all"
+        elif ht_min == ht_max:
+            platform_limit = f"exactly {ht_max} hashtags"
         else:
-            platform_limit = "5-10 hashtags"
+            platform_limit = f"between {ht_min} and {ht_max} hashtags (never more than {ht_max})"
 
         # Brand name slug for branded hashtag
         brand_name = brand.get("name", "")
@@ -1305,6 +1308,11 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
         # Always ensure the branded hashtag is present.
         if brand_slug and brand_slug.lower() not in seen:
             cleaned_tags.insert(0, brand_slug)
+
+        # Hard cap to the configured maximum — the LLM frequently overshoots, so
+        # the caption profile's hashtag count is ENFORCED here, not just asked for.
+        if len(cleaned_tags) > ht_max:
+            cleaned_tags = cleaned_tags[:ht_max]
 
         return {"hashtags": cleaned_tags}
     except Exception as exc:
@@ -1725,6 +1733,9 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"Include a realistic unlabeled neutral product container with authentic "
             f"material textures (matte plastic or paperboard, slight wear, natural "
             f"shadows, NO writing on it) placed naturally in the scene. "
+            f"The product container MUST be FULLY visible within the frame, positioned "
+            f"in the central area with clear margin from every edge — never cropped, "
+            f"never touching or running off the edges of the image. "
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"

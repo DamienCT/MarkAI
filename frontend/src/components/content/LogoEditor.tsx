@@ -16,7 +16,7 @@
  *  - Escape to cancel
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Move, RefreshCw, Layers } from "lucide-react";
+import { Loader2, Move, RefreshCw, Layers, Grid3x3 } from "lucide-react";
 
 export interface LogoPlacement {
   logo_xy: [number, number];
@@ -101,6 +101,9 @@ export function LogoEditor({
     () => setTextStyle((s) => (s === "glass" ? "solid" : "glass")),
     []
   );
+
+  // Alignment grid (rule-of-thirds), like a photo editor. On by default.
+  const [showGrid, setShowGrid] = useState(true);
 
   // Logo variant (dark = white logo, light = dark logo, …). The reverse button
   // cycles only through these, in this order — watermark/secondary excluded.
@@ -258,6 +261,21 @@ export function LogoEditor({
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={cleanImageUrl} alt="post" className="block w-full" draggable={false} />
 
+        {/* Alignment grid (rule-of-thirds) — non-interactive, sits under the
+            logo/text so it never blocks dragging. */}
+        {showGrid ? (
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              backgroundImage:
+                "linear-gradient(to right, rgba(255,255,255,0.30) 1px, transparent 1px)," +
+                "linear-gradient(to bottom, rgba(255,255,255,0.30) 1px, transparent 1px)",
+              backgroundSize: "33.333% 33.333%",
+              boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.15)",
+            }}
+          />
+        ) : null}
+
         {/* Text card (overlay) */}
         <div
           onPointerDown={startDrag("move-text")}
@@ -343,6 +361,16 @@ export function LogoEditor({
           >
             <Layers className="h-3.5 w-3.5" />
             Overlay: {textStyle}
+          </button>
+          <button
+            type="button"
+            onPointerDown={(e) => { e.stopPropagation(); }}
+            onClick={() => setShowGrid((g) => !g)}
+            className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium shadow ${showGrid ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-white/90 text-black hover:bg-white"}`}
+            title="Toggle alignment grid"
+          >
+            <Grid3x3 className="h-3.5 w-3.5" />
+            Grid: {showGrid ? "on" : "off"}
           </button>
         </div>
 

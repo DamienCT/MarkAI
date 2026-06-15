@@ -106,7 +106,7 @@ function LinkedinTokenStatus({ brandId }: { brandId: string }) {
   return (
     <div className="pt-2 mt-2 border-t text-xs space-y-1">
       <div className="flex items-center justify-between">
-        <span className="text-muted-foreground">Token expiry (live)</span>
+        <span className="text-muted-foreground">Token expiry</span>
         <button
           type="button"
           onClick={check}
