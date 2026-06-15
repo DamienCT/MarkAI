@@ -69,6 +69,7 @@ async def latest_runs_by_type(
             "  COUNT(*) FILTER (WHERE status NOT IN ('planned', 'queued', 'failed', 'working')) AS generated, "
             "  COUNT(*) FILTER (WHERE status = 'failed') AS failed, "
             "  COUNT(*) FILTER (WHERE status IN ('queued', 'working')) AS in_progress, "
+            "  COUNT(*) FILTER (WHERE status = 'working') AS working, "
             "  COUNT(*) AS total "
             "FROM calendar_items "
             "WHERE brand_id = :bid "
@@ -104,6 +105,7 @@ async def latest_runs_by_type(
             "generated": stats_row.generated if stats_row else 0,
             "failed": stats_row.failed if stats_row else 0,
             "in_progress": stats_row.in_progress if stats_row else 0,
+            "working": stats_row.working if stats_row else 0,
             "total": stats_row.total if stats_row else 0,
         },
     }

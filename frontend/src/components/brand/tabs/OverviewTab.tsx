@@ -48,7 +48,7 @@ export interface OverviewTabProps {
   onGenerateContent: () => Promise<void>;
   generatingContent: boolean;
   contentItemsQueued: number;
-  contentStats: { generated: number; failed: number; in_progress: number; total: number };
+  contentStats: { generated: number; failed: number; in_progress: number; total: number; working?: number };
   onFetchPipelineRuns: () => Promise<void>;
   onSetActiveTab: (tab: string) => void;
   onFetchIntelligence: () => void;
@@ -335,7 +335,11 @@ export function OverviewTab({
 
             // Content generation stats from calendar items in 7-day window
             const contentCompleted = contentStats.generated;
-            const contentRunning = contentStats.in_progress > 0;
+            // "Running" = an item is actively being generated (status 'working'),
+            // NOT merely sitting in 'queued'. Items in 'queued' must keep the
+            // Generate Content button ENABLED so they can be processed — otherwise
+            // queued-but-stalled items deadlock the button.
+            const contentRunning = (contentStats.working ?? 0) > 0;
             const contentFailed = contentStats.failed;
             const contentTotal = contentStats.total;
             // 7-day window dates (matches the backend NOW()→NOW()+7d count)
