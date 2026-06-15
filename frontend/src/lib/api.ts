@@ -66,7 +66,7 @@ class ApiClient {
     const headers = await this.getHeaders();
     // Add trailing slash only for collection endpoints (paths ending in a known collection name)
     // Don't add for paths with UUIDs/IDs at the end (path parameter endpoints)
-    const needsSlash = !path.endsWith("/") && !path.includes("?") && /\/(brands|content|products|calendar|campaigns|approvals|prompts|users|notifications|settings|agents|intelligence|providers|learning|system|audit)\/?$/.test(path);
+    const needsSlash = !path.endsWith("/") && !path.includes("?") && /\/(brands|content|products|calendar|campaigns|approvals|prompts|users|notifications|settings|agents|intelligence|providers|learning|system|audit|events)\/?$/.test(path);
     const normalizedPath = needsSlash ? path + "/" : path;
     let url = `${this.baseUrl}${normalizedPath}`;
 

@@ -44,7 +44,6 @@ def _scope_filter(scope: str | None) -> tuple[uuid.UUID | None, bool]:
         return (None, True)
 
 
-@router.get("", response_model=list[EventResponse])
 @router.get("/", response_model=list[EventResponse])
 async def list_events(
     scope: str | None = Query(None, description="'all' | 'global' | <brand_uuid>"),
@@ -86,7 +85,6 @@ async def get_event(
     return event
 
 
-@router.post("", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
 async def create_event(
     data: EventCreate,
