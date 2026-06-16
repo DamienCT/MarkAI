@@ -129,7 +129,7 @@ export default function StagePage() {
   const filtered = useMemo(() => {
     const dateCfg = DATE_FILTERS.find((d) => d.value === dateFilter);
     const cutoff = dateCfg?.days != null ? Date.now() - dateCfg.days * 86_400_000 : null;
-    return items.filter(i => {
+    const result = items.filter(i => {
       if (brandFilter !== "all" && i.brand_id !== brandFilter) return false;
       if (channelFilter !== "all" && i.channel !== channelFilter) return false;
       if (cutoff !== null) {
@@ -147,6 +147,18 @@ export default function StagePage() {
       }
       return true;
     });
+
+    // In Review: order by posting date ascending so the soonest scheduled_at
+    // sits first (top-left) and the grid flows 16 Jun → 17 Jun → 18 Jun left to
+    // right. Items without a posting date go last.
+    if (status === "in_review") {
+      result.sort((a, b) => {
+        const ta = a.scheduled_at ? new Date(a.scheduled_at).getTime() : Infinity;
+        const tb = b.scheduled_at ? new Date(b.scheduled_at).getTime() : Infinity;
+        return ta - tb;
+      });
+    }
+    return result;
   }, [items, brandFilter, channelFilter, dateFilter, originFilter, status, publishDateFilter]);
 
   const label = STATUS_LABELS[status] || status;

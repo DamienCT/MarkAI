@@ -459,7 +459,7 @@ export function ProductsTab({
                   ) : (
                     pagedProducts.map((product) => (
                       <React.Fragment key={product.id}>
-                        <tr className="border-b hover:bg-muted/30">
+                        <tr className="border-b hover:bg-muted/30 [&>td]:align-middle">
                           <td className="px-2 py-3 text-center w-8" onClick={(e) => e.stopPropagation()}>
                             <input type="checkbox" className="rounded-sm border-muted-foreground/40"
                               checked={selectedProductIds.has(product.id)}
@@ -482,32 +482,34 @@ export function ProductsTab({
                               ? `${product.currency || ""}${product.unit_price.toFixed(2)}`
                               : "\u2014"}
                           </td>
-                          <td className="px-4 py-3 text-right">
-                            <button
-                              type="button"
-                              className={`inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-sm transition-colors hover:bg-muted ${
-                                (product.remaining_qty ?? 0) <= 0
-                                  ? "text-red-500 dark:text-red-400 font-medium"
-                                  : (product.remaining_qty ?? 0) <= 10
-                                  ? "text-yellow-600 dark:text-yellow-400 font-medium"
-                                  : ""
-                              }`}
-                              onClick={() => onSetExpandedProductId(
-                                expandedProductId === product.id ? null : product.id
+                          <td className="px-4 py-3 align-middle">
+                            <div className="flex items-center justify-end gap-1">
+                              {product.is_new && (
+                                <Badge variant="secondary" className="text-[10px]">New</Badge>
                               )}
-                              title="Click to see lot/expiry breakdown"
-                            >
-                              {product.remaining_qty ?? 0}
-                              <svg className={`h-3 w-3 transition-transform ${expandedProductId === product.id ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M3 5l3 3 3-3" />
-                              </svg>
-                            </button>
-                            {product.is_new && (
-                              <Badge variant="secondary" className="ml-1 text-[10px]">New</Badge>
-                            )}
-                            {product.is_expiring_soon && (
-                              <Badge variant="destructive" className="ml-1 text-[10px]">Expiring</Badge>
-                            )}
+                              {product.is_expiring_soon && (
+                                <Badge variant="destructive" className="text-[10px]">Expiring</Badge>
+                              )}
+                              <button
+                                type="button"
+                                className={`inline-flex items-center justify-end gap-1 rounded-sm px-2 py-0.5 text-sm tabular-nums transition-colors hover:bg-muted ${
+                                  (product.remaining_qty ?? 0) <= 0
+                                    ? "text-red-500 dark:text-red-400 font-medium"
+                                    : (product.remaining_qty ?? 0) <= 10
+                                    ? "text-yellow-600 dark:text-yellow-400 font-medium"
+                                    : ""
+                                }`}
+                                onClick={() => onSetExpandedProductId(
+                                  expandedProductId === product.id ? null : product.id
+                                )}
+                                title="Click to see lot/expiry breakdown"
+                              >
+                                {product.remaining_qty ?? 0}
+                                <svg className={`h-3 w-3 shrink-0 transition-transform ${expandedProductId === product.id ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M3 5l3 3 3-3" />
+                                </svg>
+                              </button>
+                            </div>
                           </td>
                           <td className="px-4 py-3 text-center">
                             {product.primary_image_url ? (

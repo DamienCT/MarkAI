@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { statusColor, formatDate, formatRelativeTime } from "@/lib/utils";
+import { formatDate, formatRelativeTime } from "@/lib/utils";
 import type { Brand, Content, EngagementMetrics, AgentRun, Channel } from "@/types";
 
 interface ChannelConfig {
@@ -57,7 +57,6 @@ export interface OverviewTabProps {
 
 export function OverviewTab({
   brand,
-  content,
   metrics,
   channelConfigs,
   channelIconStyled,
@@ -523,7 +522,7 @@ export function OverviewTab({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-6">
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Details</CardTitle>
@@ -575,7 +574,7 @@ export function OverviewTab({
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Engagement</CardTitle>
+            <CardTitle className="text-lg">Performance</CardTitle>
           </CardHeader>
           <CardContent>
             {metrics ? (
@@ -612,7 +611,7 @@ export function OverviewTab({
             <CardTitle className="text-lg">Channels</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
               {Object.entries(channelIconStyled).map(([ch, style]) => {
                 const cfg = channelConfigs[ch];
                 const isEnabled = cfg?.enabled;
@@ -621,48 +620,26 @@ export function OverviewTab({
                 if (isEnabled && isConfigured) className = style.color;
                 else if (isEnabled) className = "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-400";
                 return (
-                  <span
-                    key={ch}
-                    className={`flex items-center justify-center h-7 w-7 rounded-md ${className}`}
-                    title={`${channelDisplayNames[ch as Channel]} - ${isEnabled && isConfigured ? "active" : isEnabled ? "needs setup" : "disabled"}`}
-                  >
-                    {style.icon}
-                  </span>
+                  <div key={ch} className="flex flex-col items-center gap-1.5">
+                    <span
+                      className={`flex items-center justify-center h-11 w-11 rounded-lg [&>svg]:h-5 [&>svg]:w-5 ${className}`}
+                      title={`${channelDisplayNames[ch as Channel]} - ${isEnabled && isConfigured ? "active" : isEnabled ? "needs setup" : "disabled"}`}
+                    >
+                      {style.icon}
+                    </span>
+                    <span className={`text-[11px] text-center leading-tight ${isEnabled ? "text-foreground" : "text-muted-foreground/50"}`}>
+                      {channelDisplayNames[ch as Channel]}
+                    </span>
+                  </div>
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground mt-2">
+            <p className="text-xs text-muted-foreground mt-3">
               {enabledChannels.length} channel{enabledChannels.length !== 1 ? "s" : ""} enabled
             </p>
           </CardContent>
         </Card>
       </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Recent Content</CardTitle>
-          <CardDescription>Latest content for this brand</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {content.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-4">No content yet</p>
-          ) : (
-            <div className="space-y-2">
-              {content.slice(0, 5).map((item) => (
-                <div key={item.id} className="flex items-center justify-between rounded-md border p-3">
-                  <div>
-                    <p className="text-sm font-medium">{item.title}</p>
-                    <p className="text-xs text-muted-foreground">{item.platform} - {formatDate(item.created_at)}</p>
-                  </div>
-                  <Badge className={statusColor(item.status || "queued")} variant="outline">
-                    {item.status || "queued"}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

@@ -200,6 +200,12 @@ export default function DashboardPage() {
     return acc;
   }, {});
 
+  // Dashboard widget shows only the next 3 days that have content (skip any
+  // "Unscheduled" group); groups are already in chronological order.
+  const visibleCalendar = Object.entries(groupedCalendar)
+    .filter(([label]) => label !== "Unscheduled")
+    .slice(0, 3);
+
 
   return (
     <div className="space-y-6">
@@ -429,20 +435,20 @@ export default function DashboardPage() {
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <div>
               <CardTitle className="text-lg">Content Calendar</CardTitle>
-              <CardDescription>What&apos;s coming up next</CardDescription>
+              <CardDescription>Next 3 days</CardDescription>
             </div>
             <Link href="/content/calendar" className="text-sm text-primary hover:underline flex items-center gap-1">
               Open calendar <ArrowRight className="h-3 w-3" />
             </Link>
           </CardHeader>
           <CardContent className="flex-1 overflow-y-auto">
-            {calendarItems.length === 0 ? (
+            {visibleCalendar.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">
                 Nothing on the calendar yet
               </p>
             ) : (
               <div className="space-y-4">
-                {Object.entries(groupedCalendar).map(([label, items]) => (
+                {visibleCalendar.map(([label, items]) => (
                   <div key={label}>
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
                       {label}

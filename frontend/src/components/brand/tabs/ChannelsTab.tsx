@@ -198,22 +198,22 @@ export function ChannelsTab({
                       checked={isEnabled}
                       onCheckedChange={(checked) => onToggleChannelEnabled(ch, checked)}
                     />
-                    <div className="flex-1 flex items-center justify-center gap-2">
-                      <span className={`flex items-center justify-center h-6 w-6 rounded-sm ${channelIconStyled[ch]?.color || "bg-muted text-muted-foreground"}`}>
-                        {channelIconStyled[ch]?.icon}
-                      </span>
-                      <span className="text-sm font-medium">{channelDisplayNames[ch]}</span>
+                    <span className={`flex items-center justify-center h-6 w-6 rounded-sm shrink-0 ${channelIconStyled[ch]?.color || "bg-muted text-muted-foreground"}`}>
+                      {channelIconStyled[ch]?.icon}
+                    </span>
+                    <span className="text-sm font-medium flex-1 truncate">{channelDisplayNames[ch]}</span>
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                       {isEnabled && isConfigured && (
                         <CheckCircle2 className="h-4 w-4 text-green-500" />
                       )}
                       {isEnabled && !isConfigured && (
                         <AlertTriangle className="h-4 w-4 text-yellow-500" />
                       )}
-                    </div>
+                    </span>
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 w-7 p-0"
+                      className="h-7 w-7 p-0 shrink-0"
                       onClick={() => onSetExpandedChannel(isExpanded ? null : ch)}
                     >
                       <Settings2 className="h-3.5 w-3.5" />

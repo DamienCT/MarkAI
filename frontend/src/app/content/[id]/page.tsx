@@ -390,6 +390,9 @@ export default function ContentDetailPage() {
   const caption = content.caption || content.body_text || "";
   const hashtags = safeHashtags(content.hashtags);
   const hasPendingApproval = approvals.some(a => a.status === "pending");
+  // Scheduled & published are read-only: no Edit/History tabs, no image or
+  // schedule editing. Scheduled gets a single "Cancel → In Review" action.
+  const isViewOnly = ["scheduled", "published"].includes(calendarItem?.status || "");
   // Resolve image URL from generation_metadata — prefer branded (has logo+text) over raw
   const imagePath = (
     content.generation_metadata?.branded_image ||
@@ -500,12 +503,16 @@ export default function ContentDetailPage() {
           <TabsTrigger value="preview" className="gap-1.5">
             <Eye className="h-3.5 w-3.5" /> Preview
           </TabsTrigger>
-          <TabsTrigger value="edit" className="gap-1.5">
-            <Edit3 className="h-3.5 w-3.5" /> Edit
-          </TabsTrigger>
-          <TabsTrigger value="history" className="gap-1.5">
-            <Clock className="h-3.5 w-3.5" /> History
-          </TabsTrigger>
+          {!isViewOnly && (
+            <TabsTrigger value="edit" className="gap-1.5">
+              <Edit3 className="h-3.5 w-3.5" /> Edit
+            </TabsTrigger>
+          )}
+          {!isViewOnly && (
+            <TabsTrigger value="history" className="gap-1.5">
+              <Clock className="h-3.5 w-3.5" /> History
+            </TabsTrigger>
+          )}
         </TabsList>
 
         {/* Preview Tab */}
@@ -592,8 +599,40 @@ export default function ContentDetailPage() {
                 </Card>
               )}
 
-              {/* Schedule editor — in_review and scheduled (NOT reworking) */}
-              {calendarItem && ["in_review", "scheduled"].includes(calendarItem.status) && (
+              {/* Scheduled — read-only: only action is Cancel (back to In Review) */}
+              {calendarItem && calendarItem.status === "scheduled" && (
+                <Card className="border-blue-500/30 bg-blue-500/5">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-1.5">
+                      <CalendarClock className="h-4 w-4 text-blue-500" />
+                      Scheduled
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {calendarItem.scheduled_at && (
+                      <p className="text-sm text-muted-foreground">
+                        Will publish {new Date(calendarItem.scheduled_at).toLocaleDateString()} at {new Date(calendarItem.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={passingToReview}
+                      onClick={handlePassToReview}
+                      className="w-full"
+                    >
+                      {passingToReview ? (
+                        <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Cancelling...</>
+                      ) : (
+                        <><XCircle className="mr-1.5 h-4 w-4" /> Cancel — move to In Review</>
+                      )}
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Schedule editor — in_review only (NOT reworking/scheduled) */}
+              {calendarItem && calendarItem.status === "in_review" && (
                 <Card className="border-blue-500/30 bg-blue-500/5">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-1.5">
@@ -693,7 +732,7 @@ export default function ContentDetailPage() {
 
               {/* Image regeneration */}
               {(() => {
-                const imageLocked = !!calendarItem && ["published", "failed"].includes(calendarItem.status);
+                const imageLocked = !!calendarItem && ["published", "failed", "scheduled"].includes(calendarItem.status);
                 return (
                   <Card>
                     <CardHeader>
@@ -791,26 +830,30 @@ export default function ContentDetailPage() {
         </TabsContent>
 
         {/* Edit Tab */}
-        <TabsContent value="edit" className="mt-6">
-          <ContentEditor
-            content={content}
-            onSave={handleSave}
-            onRegenerateCaption={handleRegenerateCaption}
-            regeneratingCaption={regeneratingCaption}
-          />
-        </TabsContent>
+        {!isViewOnly && (
+          <TabsContent value="edit" className="mt-6">
+            <ContentEditor
+              content={content}
+              onSave={handleSave}
+              onRegenerateCaption={handleRegenerateCaption}
+              regeneratingCaption={regeneratingCaption}
+            />
+          </TabsContent>
+        )}
 
         {/* History Tab */}
-        <TabsContent value="history" className="mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Approval History</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ApprovalHistory approvals={approvals} />
-            </CardContent>
-          </Card>
-        </TabsContent>
+        {!isViewOnly && (
+          <TabsContent value="history" className="mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Approval History</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ApprovalHistory approvals={approvals} />
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );
