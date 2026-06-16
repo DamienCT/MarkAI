@@ -9,11 +9,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChannelPreview } from "@/components/content/ChannelPreview";
 import { ApprovalActions } from "@/components/approval/ApprovalActions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { X } from "lucide-react";
+import { format } from "date-fns";
 import { api } from "@/lib/api";
-import { getStoredBrandValue } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
 import { formatRelativeTime, statusColor } from "@/lib/utils";
-import type { Approval, Brand } from "@/types";
+import type { Approval } from "@/types";
 
 interface ApprovalWithExtra extends Approval {
   calendar_item_id?: string;
@@ -27,22 +30,12 @@ interface ApprovalWithExtra extends Approval {
 export default function ApprovalsPage() {
   const { hasAccess, loading: roleLoading } = useRequireRole("editor");
   const [approvals, setApprovals] = useState<ApprovalWithExtra[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
   const [loading, setLoading] = useState(true);
-  const [brandFilter, setBrandFilter] = useState<string>("all");
   const [channelFilter, setChannelFilter] = useState<string>("all");
+  const [dateFilter, setDateFilter] = useState<string>("");
 
   useEffect(() => {
-    setBrandFilter(getStoredBrandValue());
     fetchApprovals();
-    api.get<Brand[]>("/api/v1/brands").then(setBrands).catch(() => {});
-
-    const handler = (e: Event) => {
-      const brandId = (e as CustomEvent).detail?.brandId;
-      setBrandFilter(brandId || "all");
-    };
-    window.addEventListener("brand-changed", handler);
-    return () => window.removeEventListener("brand-changed", handler);
   }, []);
 
   async function fetchApprovals() {
@@ -82,11 +75,15 @@ export default function ApprovalsPage() {
   // Filter approvals
   const filtered = useMemo(() => {
     return approvals.filter(a => {
-      if (brandFilter !== "all" && a.content?.brand_id !== brandFilter) return false;
       if (channelFilter !== "all" && a.calendar_item?.channel !== channelFilter) return false;
+      if (dateFilter) {
+        const scheduled = a.calendar_item?.scheduled_at;
+        if (!scheduled) return false;
+        if (format(new Date(scheduled), "yyyy-MM-dd") !== dateFilter) return false;
+      }
       return true;
     });
-  }, [approvals, brandFilter, channelFilter]);
+  }, [approvals, channelFilter, dateFilter]);
 
   return (
     <div className="space-y-6">
@@ -96,17 +93,26 @@ export default function ApprovalsPage() {
           <p className="text-muted-foreground">Review and approve pending content</p>
         </div>
         <div className="flex items-center gap-2">
-          <Select value={brandFilter} onValueChange={setBrandFilter}>
-            <SelectTrigger className="w-[160px]">
-              <SelectValue placeholder="All Brands" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Brands</SelectItem>
-              {brands.map(b => (
-                <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-1">
+            <Input
+              type="date"
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              className="w-[170px]"
+              aria-label="Filter by publish date"
+            />
+            {dateFilter && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0"
+                onClick={() => setDateFilter("")}
+                aria-label="Clear date filter"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
           <Select value={channelFilter} onValueChange={setChannelFilter}>
             <SelectTrigger className="w-[140px]">
               <SelectValue placeholder="All Channels" />
