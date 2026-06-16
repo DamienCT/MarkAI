@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { format } from "date-fns";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/utils";
 import { STATUS_COLORS, CHANNEL_COLORS, CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
@@ -50,6 +52,9 @@ export default function StagePage() {
   const [brandFilter, setBrandFilter] = useState<string>("all");
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("all");
+  // In Review only: filter by exact PUBLISH date (calendar_item.scheduled_at),
+  // not the generation/created date. Empty = all dates.
+  const [publishDateFilter, setPublishDateFilter] = useState<string>("");
   // "all" | "system" | "manual". Items whose `theme` is populated come from
   // the planning agent (it sets theme + weekly_sub_theme); manual New Content
   // creations leave theme null.
@@ -136,9 +141,13 @@ export default function StagePage() {
         if (originFilter === "system" && !fromSystem) return false;
         if (originFilter === "manual" && fromSystem) return false;
       }
+      if (status === "in_review" && publishDateFilter) {
+        if (!i.scheduled_at) return false;
+        if (format(new Date(i.scheduled_at), "yyyy-MM-dd") !== publishDateFilter) return false;
+      }
       return true;
     });
-  }, [items, brandFilter, channelFilter, dateFilter, originFilter]);
+  }, [items, brandFilter, channelFilter, dateFilter, originFilter, status, publishDateFilter]);
 
   const label = STATUS_LABELS[status] || status;
 
@@ -207,17 +216,19 @@ export default function StagePage() {
                 <CheckSquare className="mr-1.5 h-4 w-4" />
                 Select
               </Button>
-              <Select value={brandFilter} onValueChange={setBrandFilter}>
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue placeholder="All Brands" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Brands</SelectItem>
-                  {brands.map(b => (
-                    <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {status !== "in_review" && (
+                <Select value={brandFilter} onValueChange={setBrandFilter}>
+                  <SelectTrigger className="w-[160px]">
+                    <SelectValue placeholder="All Brands" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Brands</SelectItem>
+                    {brands.map(b => (
+                      <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <Select value={channelFilter} onValueChange={setChannelFilter}>
                 <SelectTrigger className="w-[140px]">
                   <SelectValue placeholder="All Channels" />
@@ -229,7 +240,28 @@ export default function StagePage() {
                   ))}
                 </SelectContent>
               </Select>
-              {status !== "working" && (
+              {status === "in_review" ? (
+                <div className="flex items-center gap-1">
+                  <Input
+                    type="date"
+                    value={publishDateFilter}
+                    onChange={(e) => setPublishDateFilter(e.target.value)}
+                    className="w-[170px]"
+                    aria-label="Filter by publish date"
+                  />
+                  {publishDateFilter && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-9 w-9 p-0"
+                      onClick={() => setPublishDateFilter("")}
+                      aria-label="Clear date filter"
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+              ) : status !== "working" && (
                 <Select value={dateFilter} onValueChange={setDateFilter}>
                   <SelectTrigger className="w-[150px]" aria-label="Filter by generation date">
                     <SelectValue />
