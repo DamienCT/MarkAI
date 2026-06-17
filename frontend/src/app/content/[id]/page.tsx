@@ -451,6 +451,9 @@ export default function ContentDetailPage() {
     text_scale: (gm.text_scale as number | undefined) || 1,
     text_style: (gm.text_style as string | undefined) || "glass",
     font_family: (gm.font_family as string | undefined) || undefined,
+    headline_colors: (gm.headline_colors as Record<string, string> | undefined) || undefined,
+    text_stretch_x: (gm.text_stretch_x as number | undefined) ?? undefined,
+    text_stretch_y: (gm.text_stretch_y as number | undefined) ?? undefined,
     textAnchor: (gm.text_anchor_used as string | undefined) || null,
   };
   const canEditLogo = !!calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && !!cleanImageUrl;

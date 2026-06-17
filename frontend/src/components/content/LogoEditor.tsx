@@ -26,6 +26,9 @@ export interface LogoPlacement {
   logo_variant?: string;
   text_style?: string; // "glass" | "solid" | "headline"
   font_family?: string; // headline font (e.g. "Montserrat")
+  headline_colors?: Record<string, string>; // word index -> "#RRGGBB"
+  text_stretch_x?: number; // headline horizontal stretch (1.0 = none)
+  text_stretch_y?: number; // headline vertical stretch (1.0 = none)
 }
 
 // Bundled headline fonts (match agents Dockerfile + image_processing.HEADLINE_FONTS).
@@ -70,13 +73,21 @@ function anchorToXy(anchor?: string | null): [number, number] {
   }
 }
 
-type DragKind = "move-logo" | "resize-logo" | "move-text" | "resize-text";
+type DragKind =
+  | "move-logo"
+  | "resize-logo"
+  | "move-text"
+  | "resize-text"
+  | "resize-text-w"
+  | "resize-text-h";
 interface DragState {
   kind: DragKind;
   startClientX: number;
   startClientY: number;
   startXy: [number, number];
   startScale: number;
+  startStretchX: number;
+  startStretchY: number;
   rectW: number;
   rectH: number;
 }
@@ -129,6 +140,44 @@ export function LogoEditor({
     []
   );
 
+  // Per-word headline colors (index -> "#RRGGBB"). Click a word in the preview
+  // to open the native color picker; only that word changes. White by default.
+  const [headlineColors, setHeadlineColors] = useState<Record<string, string>>(
+    initial.headline_colors && typeof initial.headline_colors === "object"
+      ? { ...initial.headline_colors }
+      : {}
+  );
+  const colorInputRef = useRef<HTMLInputElement | null>(null);
+  const colorWordRef = useRef<number | null>(null);
+  const pickColorForWord = useCallback((idx: number) => {
+    colorWordRef.current = idx;
+    const input = colorInputRef.current;
+    if (!input) return;
+    input.value = headlineColors[String(idx)] || "#ffffff";
+    input.click();
+  }, [headlineColors]);
+  const applyWordColor = useCallback((hex: string) => {
+    const idx = colorWordRef.current;
+    if (idx == null) return;
+    setHeadlineColors((c) => {
+      const next = { ...c };
+      // White = the default, so storing it is the same as clearing the override.
+      if (hex.toLowerCase() === "#ffffff") delete next[String(idx)];
+      else next[String(idx)] = hex;
+      return next;
+    });
+  }, []);
+  const resetColors = useCallback(() => setHeadlineColors({}), []);
+  const headlineWords = (textLine1 || "Titre").split(/\s+/).filter(Boolean);
+
+  // Canva-style independent width/height stretch for the headline box.
+  const [stretchX, setStretchX] = useState<number>(
+    typeof initial.text_stretch_x === "number" ? initial.text_stretch_x : 1
+  );
+  const [stretchY, setStretchY] = useState<number>(
+    typeof initial.text_stretch_y === "number" ? initial.text_stretch_y : 1
+  );
+
   // Alignment grid (rule-of-thirds), like a photo editor. On by default.
   const [showGrid, setShowGrid] = useState(true);
 
@@ -162,6 +211,9 @@ export function LogoEditor({
     text_scale: textScale, logo_variant: variant || undefined,
     text_style: textStyle,
     font_family: isHeadline ? fontFamily : undefined,
+    headline_colors: isHeadline ? headlineColors : undefined,
+    text_stretch_x: isHeadline ? stretchX : undefined,
+    text_stretch_y: isHeadline ? stretchY : undefined,
   };
 
   // So the outside-click saver can bail while a save is already in flight.
@@ -197,6 +249,10 @@ export function LogoEditor({
       setLogoScale(clamp(d.startScale + dx, 0.05, 0.6));
     } else if (d.kind === "resize-text") {
       setTextScale(clamp(d.startScale + dx * 4, 0.5, 2.5));
+    } else if (d.kind === "resize-text-w") {
+      setStretchX(clamp(d.startStretchX + dx * 4, 0.4, 3));
+    } else if (d.kind === "resize-text-h") {
+      setStretchY(clamp(d.startStretchY + dy * 4, 0.4, 3));
     }
   }, []);
 
@@ -225,6 +281,8 @@ export function LogoEditor({
       startClientY: e.clientY,
       startXy: kind.startsWith("move-logo") ? logoXy : textXy,
       startScale: kind.endsWith("logo") ? logoScale : textScale,
+      startStretchX: stretchX,
+      startStretchY: stretchY,
       rectW: r?.width || 1,
       rectH: r?.height || 1,
     };
@@ -268,6 +326,34 @@ export function LogoEditor({
     background: "#2563eb",
     border: "2px solid white",
     cursor: "nwse-resize",
+    touchAction: "none",
+  };
+
+  // Edge handles (headline only): right = width stretch, bottom = height stretch.
+  const edgeHandleRight: React.CSSProperties = {
+    position: "absolute",
+    right: -7,
+    top: "50%",
+    transform: "translateY(-50%)",
+    width: 12,
+    height: 26,
+    borderRadius: 4,
+    background: "#2563eb",
+    border: "2px solid white",
+    cursor: "ew-resize",
+    touchAction: "none",
+  };
+  const edgeHandleBottom: React.CSSProperties = {
+    position: "absolute",
+    bottom: -7,
+    left: "50%",
+    transform: "translateX(-50%)",
+    width: 26,
+    height: 12,
+    borderRadius: 4,
+    background: "#2563eb",
+    border: "2px solid white",
+    cursor: "ns-resize",
     touchAction: "none",
   };
 
@@ -335,15 +421,41 @@ export function LogoEditor({
             lineHeight: 1.15,
             fontWeight: isHeadline ? 800 : 500,
             fontFamily: isHeadline ? `"${fontFamily}", sans-serif` : undefined,
+            transform: isHeadline ? `scaleX(${stretchX}) scaleY(${stretchY})` : undefined,
+            transformOrigin: "center",
           }}>
-            {textLine1 || "Titre"}
+            {isHeadline
+              ? headlineWords.map((w, i) => (
+                  <span
+                    key={i}
+                    onPointerDown={(e) => { e.stopPropagation(); }}
+                    onClick={(e) => { e.stopPropagation(); pickColorForWord(i); }}
+                    title="Click to color this word"
+                    style={{
+                      color: headlineColors[String(i)] || "#ffffff",
+                      cursor: "pointer",
+                      marginRight: "0.28em",
+                    }}
+                  >
+                    {w}
+                  </span>
+                ))
+              : (textLine1 || "Titre")}
           </div>
           {textLine2 && !isHeadline ? (
             <div style={{ fontSize: fontSmallPx, lineHeight: 1.2, opacity: 0.9 }}>
               {textLine2}
             </div>
           ) : null}
-          <div onPointerDown={startDrag("resize-text")} style={handleStyle} />
+          {/* Corner = proportional size. For the headline, two extra edge handles
+              stretch width (right) and height (bottom) independently — Canva-style. */}
+          <div onPointerDown={startDrag("resize-text")} style={handleStyle} title="Resize" />
+          {isHeadline ? (
+            <>
+              <div onPointerDown={startDrag("resize-text-w")} style={edgeHandleRight} title="Stretch width" />
+              <div onPointerDown={startDrag("resize-text-h")} style={edgeHandleBottom} title="Stretch height" />
+            </>
+          ) : null}
         </div>
 
         {/* Logo */}
@@ -409,6 +521,18 @@ export function LogoEditor({
               Font: {fontFamily}
             </button>
           ) : null}
+          {isHeadline && Object.keys(headlineColors).length > 0 ? (
+            <button
+              type="button"
+              onPointerDown={(e) => { e.stopPropagation(); }}
+              onClick={resetColors}
+              className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+              title="Reset all word colors to white"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Reset colors
+            </button>
+          ) : null}
           <button
             type="button"
             onPointerDown={(e) => { e.stopPropagation(); }}
@@ -420,6 +544,16 @@ export function LogoEditor({
             Grid: {showGrid ? "on" : "off"}
           </button>
         </div>
+
+        {/* Hidden native color picker, opened by clicking a headline word. */}
+        <input
+          ref={colorInputRef}
+          type="color"
+          className="pointer-events-none absolute h-0 w-0 opacity-0"
+          onPointerDown={(e) => { e.stopPropagation(); }}
+          onInput={(e) => applyWordColor((e.target as HTMLInputElement).value)}
+          onChange={(e) => applyWordColor((e.target as HTMLInputElement).value)}
+        />
 
         {/* Saving overlay */}
         {saving ? (

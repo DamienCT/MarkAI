@@ -380,6 +380,9 @@ def overlay_logo_and_text(
     text_scale: float = 1.0,
     text_style: str = "glass",
     font_family: str | None = None,
+    headline_colors: dict | None = None,
+    text_stretch_x: float | None = None,
+    text_stretch_y: float | None = None,
 ) -> bytes:
     """Overlay a transparent logo on the best monotone area + text bar.
 
@@ -511,30 +514,56 @@ def overlay_logo_and_text(
         _hs = max(0.5, min(3.0, text_scale or 1.0))
         h_font = _load_headline_font(max(18, int(base.width * 0.060 * _hs)), font_family)
         max_w = int(base.width * 0.86)
+        colors = headline_colors if isinstance(headline_colors, dict) else {}
 
-        def _wrap(text: str, font) -> list[str]:
-            words = (text or "").split()
-            lines: list[str] = []
-            cur = ""
-            for w in words:
-                trial = (cur + " " + w).strip()
-                if not cur or draw.textbbox((0, 0), trial, font=font)[2] <= max_w:
-                    cur = trial
-                else:
-                    lines.append(cur)
-                    cur = w
-            if cur:
+        def _color_for(idx: int) -> tuple:
+            """Per-word color from the editor (index → '#RRGGBB'); white default."""
+            hexv = colors.get(str(idx)) or colors.get(idx)
+            if isinstance(hexv, str):
+                h = hexv.lstrip("#")
+                if len(h) == 6:
+                    try:
+                        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+                    except ValueError:
+                        pass
+            return (255, 255, 255, 255)
+
+        def _adv(s: str) -> float:
+            return draw.textlength(s, font=h_font)
+
+        space_w = _adv(" ")
+        # Words carry their GLOBAL index so per-word colors survive line wrapping.
+        words = list(enumerate((text_line1 or "").split()))
+        lines: list[list[tuple]] = []
+        cur: list[tuple] = []
+        cur_w = 0.0
+        for i, w in words:
+            ww = _adv(w)
+            add = ww if not cur else cur_w + space_w + ww
+            if not cur or add <= max_w:
+                cur.append((i, w))
+                cur_w = add
+            else:
                 lines.append(cur)
-            return lines or [""]
+                cur = [(i, w)]
+                cur_w = ww
+        if cur:
+            lines.append(cur)
+        if not lines:
+            lines = [[(0, "")]]
 
-        lines1 = _wrap(text_line1, h_font)
+        def _line_width(line: list[tuple]) -> float:
+            if not line:
+                return 0.0
+            return sum(_adv(w) for _, w in line) + space_w * (len(line) - 1)
+
         gap = int(h_font.size * 0.18)
-        line_hs = [
-            draw.textbbox((0, 0), ln, font=h_font)[3]
-            - draw.textbbox((0, 0), ln, font=h_font)[1]
-            for ln in lines1
-        ]
-        total_h = sum(line_hs) + gap * (len(lines1) - 1)
+        line_hs = []
+        for line in lines:
+            txt = " ".join(w for _, w in line) or " "
+            bb = draw.textbbox((0, 0), txt, font=h_font)
+            line_hs.append(bb[3] - bb[1])
+        total_h = sum(line_hs) + gap * (len(lines) - 1)
 
         if text_xy is not None:
             cx = int(text_xy[0] * base.width)
@@ -542,23 +571,44 @@ def overlay_logo_and_text(
         else:
             cx = base.width // 2
             cy = int(base.height * 0.15) + total_h // 2
-        edge = int(base.width * 0.03)
-        start_y = max(edge, min(cy - total_h // 2, base.height - total_h - edge))
 
         shadow_off = max(1, int(h_font.size * 0.04))
 
-        def _draw_centered(text: str, font, y: int) -> None:
-            tw = draw.textbbox((0, 0), text, font=font)[2]
-            x = int(cx - tw / 2)
-            x = max(edge, min(x, base.width - tw - edge))
-            # soft drop shadow (not an outline) for legibility
-            draw.text((x + shadow_off, y + shadow_off), text, font=font, fill=(0, 0, 0, 110))
-            draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+        # Draw the whole headline block onto a transparent layer first, then
+        # scale it NON-UNIFORMLY (Canva-style independent width/height stretch)
+        # and paste it centered on text_xy. Per-word colors + the soft drop
+        # shadow are baked in before scaling so they stretch with the text.
+        block_w = max((_line_width(ln) for ln in lines), default=0.0)
+        pad = shadow_off + 2
+        tl_w = max(1, int(round(block_w)) + 2 * pad)
+        tl_h = max(1, int(round(total_h)) + 2 * pad)
+        tlayer = Image.new("RGBA", (tl_w, tl_h), (0, 0, 0, 0))
+        tdraw = ImageDraw.Draw(tlayer)
 
-        y = start_y
-        for ln, lh in zip(lines1, line_hs):
-            _draw_centered(ln, h_font, y)
-            y += lh + gap
+        ty = pad
+        for line, lh in zip(lines, line_hs):
+            lw = _line_width(line)
+            tx = pad + (block_w - lw) / 2
+            for idx, w in line:
+                fill = _color_for(idx)
+                # soft drop shadow (not an outline) for legibility on any backdrop
+                tdraw.text((tx + shadow_off, ty + shadow_off), w, font=h_font, fill=(0, 0, 0, 110))
+                tdraw.text((tx, ty), w, font=h_font, fill=fill)
+                tx += _adv(w) + space_w
+            ty += lh + gap
+
+        sx = max(0.4, min(3.0, float(text_stretch_x))) if text_stretch_x else 1.0
+        sy = max(0.4, min(3.0, float(text_stretch_y))) if text_stretch_y else 1.0
+        if sx != 1.0 or sy != 1.0:
+            tlayer = tlayer.resize(
+                (max(1, int(tl_w * sx)), max(1, int(tl_h * sy))), Image.LANCZOS
+            )
+
+        paste_x = int(cx - tlayer.width / 2)
+        paste_y = int(cy - tlayer.height / 2)
+        paste_x = max(0, min(paste_x, max(0, base.width - tlayer.width)))
+        paste_y = max(0, min(paste_y, max(0, base.height - tlayer.height)))
+        overlay.alpha_composite(tlayer, (paste_x, paste_y))
 
         result = Image.alpha_composite(base, overlay)
         buf = BytesIO()
