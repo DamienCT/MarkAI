@@ -468,7 +468,15 @@ export function ProductsTab({
                           </td>
                           <td className="px-4 py-3">
                             <div>
-                              <p className="font-medium">{product.name}</p>
+                              <div className="flex items-center gap-1.5">
+                                <p className="font-medium">{product.name}</p>
+                                {product.is_new && (
+                                  <Badge variant="secondary" className="text-[10px]">New</Badge>
+                                )}
+                                {product.is_expiring_soon && (
+                                  <Badge variant="destructive" className="text-[10px]">Expiring</Badge>
+                                )}
+                              </div>
                               {product.sku && (
                                 <p className="text-xs text-muted-foreground">SKU: {product.sku}</p>
                               )}
@@ -482,34 +490,26 @@ export function ProductsTab({
                               ? `${product.currency || ""}${product.unit_price.toFixed(2)}`
                               : "\u2014"}
                           </td>
-                          <td className="px-4 py-3 align-middle">
-                            <div className="flex items-center justify-end gap-1">
-                              {product.is_new && (
-                                <Badge variant="secondary" className="text-[10px]">New</Badge>
+                          <td className="px-4 py-3 align-middle text-right">
+                            <button
+                              type="button"
+                              className={`inline-flex items-center justify-end gap-1 rounded-sm px-2 py-0.5 text-sm tabular-nums transition-colors hover:bg-muted ${
+                                (product.remaining_qty ?? 0) <= 0
+                                  ? "text-red-500 dark:text-red-400 font-medium"
+                                  : (product.remaining_qty ?? 0) <= 10
+                                  ? "text-yellow-600 dark:text-yellow-400 font-medium"
+                                  : ""
+                              }`}
+                              onClick={() => onSetExpandedProductId(
+                                expandedProductId === product.id ? null : product.id
                               )}
-                              {product.is_expiring_soon && (
-                                <Badge variant="destructive" className="text-[10px]">Expiring</Badge>
-                              )}
-                              <button
-                                type="button"
-                                className={`inline-flex items-center justify-end gap-1 rounded-sm px-2 py-0.5 text-sm tabular-nums transition-colors hover:bg-muted ${
-                                  (product.remaining_qty ?? 0) <= 0
-                                    ? "text-red-500 dark:text-red-400 font-medium"
-                                    : (product.remaining_qty ?? 0) <= 10
-                                    ? "text-yellow-600 dark:text-yellow-400 font-medium"
-                                    : ""
-                                }`}
-                                onClick={() => onSetExpandedProductId(
-                                  expandedProductId === product.id ? null : product.id
-                                )}
-                                title="Click to see lot/expiry breakdown"
-                              >
-                                {product.remaining_qty ?? 0}
-                                <svg className={`h-3 w-3 shrink-0 transition-transform ${expandedProductId === product.id ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M3 5l3 3 3-3" />
-                                </svg>
-                              </button>
-                            </div>
+                              title="Click to see lot/expiry breakdown"
+                            >
+                              {product.remaining_qty ?? 0}
+                              <svg className={`h-3 w-3 shrink-0 transition-transform ${expandedProductId === product.id ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M3 5l3 3 3-3" />
+                              </svg>
+                            </button>
                           </td>
                           <td className="px-4 py-3 text-center">
                             {product.primary_image_url ? (

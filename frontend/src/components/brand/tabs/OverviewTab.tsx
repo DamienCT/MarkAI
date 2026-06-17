@@ -579,21 +579,21 @@ export function OverviewTab({
           <CardContent>
             {metrics ? (
               <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">Impressions</span>
-                  <span className="text-sm font-medium">{metrics.impressions.toLocaleString()}</span>
+                <div className="rounded-lg border p-4 text-center">
+                  <p className="text-3xl font-bold">{metrics.reach.toLocaleString()}</p>
+                  <p className="text-sm text-muted-foreground">Reach</p>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">Engagement Rate</span>
-                  <span className="text-sm font-medium">{(metrics.engagement_rate * 100).toFixed(2)}%</span>
+                <div className="rounded-lg border p-4 text-center">
+                  <p className="text-3xl font-bold">{metrics.impressions.toLocaleString()}</p>
+                  <p className="text-sm text-muted-foreground">Impressions</p>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">Likes</span>
-                  <span className="text-sm font-medium">{metrics.likes.toLocaleString()}</span>
+                <div className="rounded-lg border p-4 text-center">
+                  <p className="text-3xl font-bold">{(metrics.engagement_rate * 100).toFixed(2)}%</p>
+                  <p className="text-sm text-muted-foreground">Engagement Rate</p>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">Comments</span>
-                  <span className="text-sm font-medium">{metrics.comments.toLocaleString()}</span>
+                <div className="rounded-lg border p-4 text-center">
+                  <p className="text-3xl font-bold">{metrics.shares.toLocaleString()}</p>
+                  <p className="text-sm text-muted-foreground">Shares</p>
                 </div>
               </div>
             ) : (

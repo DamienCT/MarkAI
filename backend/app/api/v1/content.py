@@ -14,6 +14,7 @@ from app.auth.models import User
 from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
 from app.models.calendar_item import CalendarItem
+from app.models.product import Product
 from app.schemas.content import ContentCreate, ContentResponse, ContentUpdate
 from app.services import brand_service, content_service, minio_service
 from app.services.content_service import InvalidStatusTransition
@@ -265,6 +266,18 @@ async def regenerate_caption(
     cal_item = await db.get(CalendarItem, content_obj.calendar_item_id)
     channel = ((cal_item.channel if cal_item else "") or "").lower()
 
+    # Load the product actually linked to this item (product_ids). This is the
+    # SAME product shown in the post image, so the caption must feature it — even
+    # if the brief's prose names a different product (a known planning bug where
+    # the brief mentions a product that doesn't match the linked product_ids).
+    linked_product = None
+    _pids = (getattr(cal_item, "product_ids", None) or []) if cal_item else []
+    if _pids:
+        try:
+            linked_product = await db.get(Product, uuid.UUID(str(_pids[0])))
+        except (ValueError, TypeError):
+            linked_product = None
+
     guidelines = brand.brand_guidelines or {}
     channel_rules = (
         ((guidelines.get("channels") or {}).get(channel) or {}).get("caption") or {}
@@ -343,6 +356,14 @@ async def regenerate_caption(
     system_parts.append("- No em-dashes between clauses.")
     if must_name_product:
         system_parts.append("- Mention the product by name.")
+    if linked_product is not None and (linked_product.name or "").strip():
+        system_parts.append(
+            f'- PRODUCT TO FEATURE (authoritative): this post is about '
+            f'"{_sanitize(linked_product.name)}" — the exact product shown in the '
+            f"post image. If the brief names a different product, that name is "
+            f"wrong: ignore it and write about this product. Any product named in "
+            f"the caption MUST be exactly this one."
+        )
     system_parts.append(
         "Return ONLY the caption body. No markdown headers, no quotes, no "
         "explanations."
@@ -351,6 +372,20 @@ async def regenerate_caption(
     user_parts: list[str] = []
     user_parts.append(f"Post title: {_sanitize(title or '(none)')}")
     user_parts.append(f"Brief: {_sanitize(brief or '(none)')}")
+    if linked_product is not None and (linked_product.name or "").strip():
+        user_parts.append("")
+        user_parts.append(
+            "PRODUCT TO FEATURE (authoritative — overrides any product named in "
+            f"the brief): {_sanitize(linked_product.name)}"
+        )
+        if linked_product.description:
+            user_parts.append(
+                f"Product description: {_sanitize(linked_product.description)}"
+            )
+        if linked_product.category:
+            user_parts.append(
+                f"Product category: {_sanitize(linked_product.category)}"
+            )
     if pillar:
         user_parts.append(f"Pillar: {_sanitize(pillar)}")
     if audience:

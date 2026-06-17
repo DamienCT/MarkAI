@@ -1056,11 +1056,18 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         # Product benefits
         product_section = ""
         if product.get("name"):
+            _pname = sanitize_for_prompt(product.get("name", ""))
             product_section = (
-                f"PRODUCT DETAILS:\n"
-                f"  Name: {sanitize_for_prompt(product.get('name', ''))}\n"
+                f"PRODUCT TO FEATURE — AUTHORITATIVE (this exact product is the one "
+                f"shown in the post image):\n"
+                f"  Name: {_pname}\n"
                 f"  Description: {sanitize_for_prompt(product.get('description', ''))}\n"
-                f"  Category: {sanitize_for_prompt(product.get('category', ''))}\n\n"
+                f"  Category: {sanitize_for_prompt(product.get('category', ''))}\n"
+                f"  RULE: This post features THIS product. If the brief above names "
+                f"a DIFFERENT product, that name is wrong — ignore it and write about "
+                f"this product instead. Any product named in the caption MUST be "
+                f'exactly "{_pname}". Keep the brief\'s angle and theme; only the '
+                f"product identity is fixed here.\n\n"
             )
 
         # Recent captions to avoid
@@ -1109,6 +1116,12 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     "'educational post about eating healthy', write about "
                     "healthy eating, even if the brand is positioned for "
                     "something else commercially.\n\n"
+                    "PRODUCT IDENTITY EXCEPTION: When a 'PRODUCT TO FEATURE' block "
+                    "is provided, that product is authoritative — it is the exact "
+                    "product shown in the post image. Follow the brief for the "
+                    "angle/topic, but the product you name in the caption MUST be "
+                    "the one in 'PRODUCT TO FEATURE'. If the brief mentions a "
+                    "different product name, it is wrong — ignore it.\n\n"
                     f"LENGTH: Stay strictly under {max_words} words (HARD LIMIT). "
                     "Start with the provided hook. End with a short CTA. "
                     f"If your draft exceeds {max_words} words, rewrite tighter "
