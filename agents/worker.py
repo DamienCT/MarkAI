@@ -262,6 +262,12 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
     # "lifestyle" (real-looking generated scene, default) | "ad" (clean studio
     # product advertisement). Drives the base scene prompt below.
     image_format = (payload.get("image_format") or "lifestyle").lower()
+    # AI-chosen headline placement (set below for "ad" posts; None = default).
+    ad_text_xy: tuple[float, float] | None = None
+    ad_text_scale: float = 1.0
+    ad_text_width: float | None = None
+    ad_headline_colors: dict | None = None
+    ad_font_family: str | None = None
 
     logger.info(
         "Regenerating image for content %s (brand %s, format=%s)",
@@ -297,7 +303,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
 
         # Get brand data for branding overlay
         brand_rows = await execute_query(
-            "SELECT name, slug, website_url, brand_guidelines FROM brands WHERE id = :id",
+            "SELECT name, slug, website_url, brand_guidelines, color_palette FROM brands WHERE id = :id",
             {"id": brand_id},
         )
         brand = brand_rows[0] if brand_rows else {}
@@ -311,6 +317,15 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 brand_guidelines = _json.loads(brand_guidelines)
             except (ValueError, TypeError):
                 brand_guidelines = {}
+
+        # Brand colors for headline emphasis (palette column wins over legacy).
+        _palette = brand.get("color_palette") or {}
+        if isinstance(_palette, str):
+            try:
+                _palette = _json.loads(_palette)
+            except (ValueError, TypeError):
+                _palette = {}
+        brand_colors = {**(brand_guidelines.get("colors") or {}), **_palette}
 
         # ── 0. Source product image (preserve product context across regen) ──
         # Look up the calendar item to find associated product, then fetch its
@@ -524,16 +539,37 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 if logo_png:
                     text_line1 = hook or headline
                     text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
-                    # Keep any font the user previously chose; default to Montserrat.
-                    headline_font = gen_meta.get("font_family") or "Montserrat"
+                    # For ad/headline posts, let the AI pick a good spot + size +
+                    # width + colors + font for the big title (clean negative
+                    # space, off the product). Vision first, variance fallback.
+                    if image_format == "ad":
+                        from shared.placement import plan_headline_placement
+                        try:
+                            (ad_text_xy, ad_text_scale, ad_text_width,
+                             ad_headline_colors, ad_font_family) = (
+                                await plan_headline_placement(
+                                    image_data, text_line1, brand_colors
+                                )
+                            )
+                        except Exception as exc:
+                            logger.warning("Headline placement failed, using default: %s", exc)
+                    # User's manual choices win; otherwise use the AI's (first render).
+                    headline_font = gen_meta.get("font_family") or ad_font_family or "Montserrat"
+                    effective_colors = gen_meta.get("headline_colors") or ad_headline_colors
                     branded_bytes = overlay_logo_and_text(
                         image_data, logo_png,
                         text_line1=text_line1, text_line2=text_line2,
                         logo_scale=scale_for_logo_variant(chosen_label),
                         text_style=("headline" if image_format == "ad" else "glass"),
+                        text_xy=ad_text_xy,
+                        text_scale=ad_text_scale,
                         font_family=headline_font,
-                        headline_colors=gen_meta.get("headline_colors"),
-                        text_width=gen_meta.get("text_width"),
+                        headline_colors=effective_colors,
+                        text_width=(
+                            ad_text_width
+                            if ad_text_width is not None
+                            else gen_meta.get("text_width")
+                        ),
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
                     await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")
@@ -628,11 +664,21 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # Persist the text style so the logo/overlay editor re-renders the same
         # look (ad = big headline, lifestyle = glass card) when the user fine-tunes.
         existing_metadata["text_style"] = "headline" if image_format == "ad" else "glass"
-        existing_metadata["font_family"] = gen_meta.get("font_family") or "Montserrat"
-        if gen_meta.get("headline_colors"):
-            existing_metadata["headline_colors"] = gen_meta.get("headline_colors")
+        existing_metadata["font_family"] = (
+            gen_meta.get("font_family") or ad_font_family or "Montserrat"
+        )
+        _colors = gen_meta.get("headline_colors") or ad_headline_colors
+        if _colors:
+            existing_metadata["headline_colors"] = _colors
         if gen_meta.get("text_width") is not None:
             existing_metadata["text_width"] = gen_meta.get("text_width")
+        # Persist the AI-chosen headline placement so the overlay editor opens
+        # on the same spot/size/width (the user can still drag/resize from there).
+        if ad_text_xy is not None:
+            existing_metadata["text_xy"] = list(ad_text_xy)
+            existing_metadata["text_scale"] = float(ad_text_scale)
+        if ad_text_width is not None:
+            existing_metadata["text_width"] = float(ad_text_width)
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
 

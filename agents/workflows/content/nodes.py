@@ -1540,6 +1540,41 @@ async def enhance_image_prompt(state: ContentState) -> dict[str, Any]:
     return {"enhanced_image_prompt": enhanced}
 
 
+async def _decide_image_format() -> str:
+    """Pick "ad" or "lifestyle" for the next post to keep a global ~50/50 mix.
+
+    Looks across ALL brands at how many already-generated posts are ad-style
+    (generation_metadata.text_style == 'headline') vs the rest, and returns the
+    under-represented style. No new column needed — the balance is derived from
+    existing metadata. Falls back to "lifestyle" on any error.
+    """
+    from shared.tools.database import execute_query
+
+    try:
+        rows = await execute_query(
+            "SELECT generation_metadata->>'text_style' AS ts, COUNT(*) AS n "
+            "FROM content WHERE ai_generated = true AND is_current = true "
+            "AND generation_metadata->>'text_style' IS NOT NULL "
+            "GROUP BY 1"
+        )
+        ad = total = 0
+        for r in rows or []:
+            n = int(r["n"])
+            total += n
+            if (r["ts"] or "") == "headline":
+                ad += n
+        if total == 0:
+            return "ad"  # seed the mix with one ad post
+        chosen = "ad" if (ad / total) < 0.5 else "lifestyle"
+        logger.info(
+            "Image format balance: ad=%d/%d → choosing '%s'", ad, total, chosen
+        )
+        return chosen
+    except Exception as exc:
+        logger.warning("Image format balance query failed (%s) — lifestyle", exc)
+        return "lifestyle"
+
+
 async def generate_background(state: ContentState) -> dict[str, Any]:
     """Generate a background/lifestyle image via AI.
 
@@ -1560,6 +1595,11 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
     relevant_audience = state.get("relevant_audience", {})
     month_context = state.get("month_context", "")
     enhanced_prompt = state.get("enhanced_image_prompt")
+
+    # Decide ad vs lifestyle for this post (global ~50/50 mix). An "ad" post
+    # gets a studio-commercial background + a big headline overlay downstream;
+    # "lifestyle" keeps the photorealistic scene + glass card.
+    image_format = await _decide_image_format()
 
     # Extract brand colors from the dedicated color_palette field (preferred)
     # with fallback to brand_guidelines.colors for backwards compat
@@ -1673,7 +1713,40 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         "NO dreamy soft filter, NO bloom effect, NO over-stylized lighting. "
     )
 
-    if enhanced_prompt:
+    if image_format == "ad":
+        # Studio commercial advertisement (poster look) — mirrors the Pub
+        # regeneration path. Clean minimal backdrop with negative space for the
+        # big headline + logo; product placeholder added only if we have a real
+        # product to swap in via Gemini.
+        theme = item.get("theme", "")
+        ad_base = (
+            f"Create a clean, professional PRODUCT ADVERTISEMENT image in a studio "
+            f"commercial style. Theme: {sanitize_for_prompt(theme)}. "
+            f"Premium minimal background: a smooth gradient or subtle textured surface "
+            f"(brushed metal, soft seamless studio backdrop, or a clean colour wash), "
+            f"even commercial lighting, strong product focus and lots of negative space "
+            f"for a short tagline and brand logos. "
+            f"{color_directive}"
+        )
+        if has_product_image and not is_lifestyle_only:
+            prompt_text = (
+                f"{ad_base}"
+                f"Include a simple generic unlabeled product container "
+                f"(plain matte box or pouch with NO writing on it) placed naturally, "
+                f"FULLY visible within the frame, centered with clear margin from every "
+                f"edge — never cropped. The container must be completely blank — it will "
+                f"be digitally replaced later. "
+                f"{composition_rules}"
+                f"{negative_directive}"
+            )
+        else:
+            prompt_text = (
+                f"{ad_base}"
+                f"{composition_rules}"
+                f"{negative_directive}"
+                f"Do NOT include any products. Focus on a clean branded backdrop."
+            )
+    elif enhanced_prompt:
         # The art-director LLM has produced a self-contained scene description.
         # We still append the realism/camera/negative guards so the image model
         # stays on commercial-photography rails regardless of how the LLM phrased
@@ -1776,10 +1849,10 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         image_url = await generate_image(
             prompt_text, size=image_size, channel=channel_lower or None
         )
-        return {"generated_image": image_url}
+        return {"generated_image": image_url, "image_format": image_format}
     except Exception:
         logger.exception("Background image generation failed")
-        return {"generated_image": None}
+        return {"generated_image": None, "image_format": image_format}
 
 
 ALL_CHANNELS = [
@@ -2457,20 +2530,61 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         text_line1 = state.get("hook", theme)
         text_line2 = _clean_website_for_overlay(brand.get("website_url"))
 
-        # Apply overlay using the placement the vision agent chose by looking
-        # at the photo. If the agent didn't return a usable pair, anchors stay
-        # None and the overlay falls back to the legacy heuristic (text
-        # bottom-left, logo on the lowest-variance top corner). Either way the
-        # downstream review_branding node re-verifies and re-runs if needed.
-        branded_bytes = overlay_logo_and_text(
-            image_data,
-            logo_png,
-            text_line1=text_line1,
-            text_line2=text_line2,
-            logo_scale=scale_for_logo_variant(chosen_label),
-            logo_xy=plan_logo_xy,
-            text_anchor=plan_text_anchor,
-        )
+        # Ad posts get the big headline overlay with an AI-chosen position +
+        # size + wrap width (clean negative space, off the product). Lifestyle
+        # posts keep the glass card placed by the vision corner anchor.
+        image_format = state.get("image_format", "lifestyle")
+        ad_text_xy = ad_text_scale = ad_text_width = None
+        ad_headline_colors: dict | None = None
+        ad_font_family = "Montserrat"
+        if image_format == "ad":
+            from shared.placement import plan_headline_placement
+            # Brand palette so the AI can emphasize a key word on-brand.
+            _cp = brand.get("color_palette") or {}
+            if isinstance(_cp, str):
+                try:
+                    _cp = json.loads(_cp)
+                except (json.JSONDecodeError, TypeError):
+                    _cp = {}
+            _brand_colors = {**(brand_guidelines.get("colors") or {}), **_cp}
+            try:
+                (ad_text_xy, ad_text_scale, ad_text_width,
+                 ad_headline_colors, ad_font_family) = (
+                    await plan_headline_placement(image_data, text_line1, _brand_colors)
+                )
+            except Exception as _exc:
+                logger.warning("Headline placement failed, using default: %s", _exc)
+
+        if image_format == "ad":
+            branded_bytes = overlay_logo_and_text(
+                image_data,
+                logo_png,
+                text_line1=text_line1,
+                text_line2=text_line2,
+                logo_scale=scale_for_logo_variant(chosen_label),
+                logo_xy=plan_logo_xy,
+                text_style="headline",
+                text_xy=ad_text_xy,
+                text_scale=ad_text_scale or 1.0,
+                text_width=ad_text_width,
+                headline_colors=ad_headline_colors,
+                font_family=ad_font_family or "Montserrat",
+            )
+        else:
+            # Apply overlay using the placement the vision agent chose by looking
+            # at the photo. If the agent didn't return a usable pair, anchors stay
+            # None and the overlay falls back to the legacy heuristic (text
+            # bottom-left, logo on the lowest-variance top corner). Either way the
+            # downstream review_branding node re-verifies and re-runs if needed.
+            branded_bytes = overlay_logo_and_text(
+                image_data,
+                logo_png,
+                text_line1=text_line1,
+                text_line2=text_line2,
+                logo_scale=scale_for_logo_variant(chosen_label),
+                logo_xy=plan_logo_xy,
+                text_anchor=plan_text_anchor,
+            )
 
         # Upload branded image to MinIO
         brand_id = state["brand_id"]
@@ -2495,6 +2609,12 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             "logo_variant_used": chosen_label,
             "logo_xy": plan_logo_xy,
             "text_anchor_used": plan_text_anchor,
+            "text_style": "headline" if image_format == "ad" else "glass",
+            "text_xy": ad_text_xy,
+            "text_scale": ad_text_scale or 1.0,
+            "text_width": ad_text_width,
+            "headline_colors": ad_headline_colors,
+            "font_family": ad_font_family if image_format == "ad" else None,
         }
 
     except Exception as exc:
@@ -2753,6 +2873,13 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
     await update_agent_run_step(
         state.get("run_id", ""), "review_branding", _STEP_INDEX["review_branding"],
     )
+
+    # Ad posts use the big headline overlay whose position/size/width were already
+    # AI-chosen on clean negative space. The review re-render below is built for
+    # the glass card (text_anchor) and would clobber the headline — so skip it.
+    if state.get("image_format", "lifestyle") == "ad":
+        logger.info("review_branding: skipped for ad/headline post")
+        return {"branding_review": {"ok": True, "reason": "ad headline (AI-placed)"}}
 
     branded_url = state.get("branded_image")
     composed_url = state.get("composed_image")
@@ -3104,6 +3231,9 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
             "text_xy": list(state["text_xy"]) if state.get("text_xy") else None,
             "text_scale": state.get("text_scale", 1.0),
             "text_style": state.get("text_style", "glass"),
+            "text_width": state.get("text_width"),
+            "font_family": state.get("font_family") if state.get("text_style") == "headline" else None,
+            "headline_colors": state.get("headline_colors") or None,
             "branding_review": state.get("branding_review"),
         },
         "status": "in_review",

@@ -46,6 +46,10 @@ class ContentState(TypedDict, total=False):
     is_lifestyle_only: bool
     enhanced_image_prompt: str | None
     generated_image: str | None
+    # "lifestyle" (real-looking scene + glass card) | "ad" (studio commercial
+    # + big headline). Chosen at generation time for a global ~50/50 mix.
+    image_format: str | None
+    text_width: float | None
 
     # Branded image (with logo + text overlay)
     branded_image: str | None
@@ -57,6 +61,8 @@ class ContentState(TypedDict, total=False):
     text_xy: tuple[float, float] | None
     text_scale: float | None
     text_style: str | None
+    headline_colors: dict | None
+    font_family: str | None
 
     # Vision-critic review after branding (decides whether to re-render)
     branding_review: dict[str, Any] | None
