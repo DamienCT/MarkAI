@@ -533,10 +533,6 @@ export function OverviewTab({
               <p className="text-sm">{brand.description || "No description"}</p>
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">BC Company</p>
-              <p className="text-sm">{brand.bc_company || "Not linked"}</p>
-            </div>
-            <div>
               <p className="text-sm text-muted-foreground">Created</p>
               <p className="text-sm">{formatDate(brand.created_at)}</p>
             </div>
@@ -639,19 +635,19 @@ export function OverviewTab({
             </p>
 
             {/* BC Integration — mirrors Edit Brand → Business Central */}
-            <div className="mt-4 pt-3 border-t">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+            <div className="mt-5 pt-4 border-t">
+              <h3 className="text-lg font-semibold leading-none tracking-tight mb-3">
                 BC Integration
-              </p>
+              </h3>
               {brand.bc_company ? (
-                <dl className="text-sm space-y-1">
-                  <div className="flex gap-2">
-                    <dt className="text-muted-foreground">Company:</dt>
-                    <dd className="font-medium">{brand.bc_company}</dd>
+                <dl className="text-sm space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">Company</dt>
+                    <dd className="font-medium text-right">{brand.bc_company}</dd>
                   </div>
-                  <div className="flex gap-2">
-                    <dt className="text-muted-foreground">Locations:</dt>
-                    <dd>
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">Locations</dt>
+                    <dd className="text-right">
                       {brand.bc_locations && brand.bc_locations.length > 0
                         ? brand.bc_locations.join(", ")
                         : "None selected"}
