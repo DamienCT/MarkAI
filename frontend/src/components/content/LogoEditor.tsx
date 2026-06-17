@@ -93,14 +93,19 @@ export function LogoEditor({
     initial.text_xy || anchorToXy(initial.textAnchor)
   );
   const [textScale, setTextScale] = useState<number>(initial.text_scale || 1);
-  // Text card style: "glass" (frosted) or "solid" (sober dark panel).
+  // Text style: "glass" (frosted card) | "solid" (dark panel) | "headline"
+  // (large bold title, no card — the ad/poster look).
   const [textStyle, setTextStyle] = useState<string>(
-    initial.text_style === "solid" ? "solid" : "glass"
+    ["solid", "headline"].includes(initial.text_style || "") ? initial.text_style! : "glass"
   );
   const toggleTextStyle = useCallback(
-    () => setTextStyle((s) => (s === "glass" ? "solid" : "glass")),
+    () =>
+      setTextStyle((s) =>
+        s === "glass" ? "solid" : s === "solid" ? "headline" : "glass"
+      ),
     []
   );
+  const isHeadline = textStyle === "headline";
 
   // Alignment grid (rule-of-thirds), like a photo editor. On by default.
   const [showGrid, setShowGrid] = useState(true);
@@ -289,22 +294,24 @@ export function LogoEditor({
             // box shrinks as `left` grows (the "folds into a square" bug when
             // dragged right). maxWidth still caps it at 72% of the photo.
             width: "max-content",
-            maxWidth: "72%",
-            padding: `${Math.max(6, dims.w * 0.012)}px ${Math.max(10, dims.w * 0.016)}px`,
-            background: textStyle === "solid" ? "rgba(12,14,18,0.88)" : "rgba(10,12,16,0.5)",
-            borderRadius: Math.max(8, dims.w * 0.011),
-            border: textStyle === "solid" ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(255,255,255,0.35)",
+            maxWidth: isHeadline ? "86%" : "72%",
+            textAlign: isHeadline ? "center" : "left",
+            padding: isHeadline ? 0 : `${Math.max(6, dims.w * 0.012)}px ${Math.max(10, dims.w * 0.016)}px`,
+            background: isHeadline ? "transparent" : textStyle === "solid" ? "rgba(12,14,18,0.88)" : "rgba(10,12,16,0.5)",
+            borderRadius: isHeadline ? 0 : Math.max(8, dims.w * 0.011),
+            border: isHeadline ? "none" : textStyle === "solid" ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(255,255,255,0.35)",
             color: "white",
             cursor: "move",
             touchAction: "none",
-            backdropFilter: textStyle === "solid" ? "none" : "blur(2px)",
+            backdropFilter: isHeadline || textStyle === "solid" ? "none" : "blur(2px)",
+            textShadow: isHeadline ? "0 2px 6px rgba(0,0,0,0.6)" : "none",
           }}
         >
-          <div style={{ fontSize: fontLargePx, lineHeight: 1.15, fontWeight: 500 }}>
+          <div style={{ fontSize: isHeadline ? fontLargePx * 2 : fontLargePx, lineHeight: 1.15, fontWeight: isHeadline ? 800 : 500 }}>
             {textLine1 || "Titre"}
           </div>
           {textLine2 ? (
-            <div style={{ fontSize: fontSmallPx, lineHeight: 1.2, opacity: 0.9 }}>
+            <div style={{ fontSize: isHeadline ? fontSmallPx * 1.2 : fontSmallPx, lineHeight: 1.2, opacity: 0.9 }}>
               {textLine2}
             </div>
           ) : null}
@@ -357,7 +364,7 @@ export function LogoEditor({
             onPointerDown={(e) => { e.stopPropagation(); }}
             onClick={toggleTextStyle}
             className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
-            title="Toggle text card style (glass / solid)"
+            title="Cycle text style (glass / solid / headline)"
           >
             <Layers className="h-3.5 w-3.5" />
             Overlay: {textStyle}

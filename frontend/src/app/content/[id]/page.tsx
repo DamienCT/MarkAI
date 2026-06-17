@@ -134,12 +134,14 @@ export default function ContentDetailPage() {
         `${format === "ad" ? "Ad" : "Lifestyle"} image regeneration started — this may take a minute...`
       );
 
-      // Poll for completion: check calendar item status until it leaves "working"
+      // Poll for completion: check calendar item status until it leaves "working".
+      // gpt-image models are slow (~2 min each) and regenerations are processed
+      // sequentially, so poll up to ~5 minutes before giving up.
       const calItemId = content.calendar_item_id;
       if (calItemId) {
-        const maxAttempts = 40; // ~2 minutes
+        const maxAttempts = 60; // ~5 minutes (60 × 5s)
         for (let i = 0; i < maxAttempts; i++) {
-          await new Promise(r => setTimeout(r, 3000));
+          await new Promise(r => setTimeout(r, 5000));
           try {
             const calItem = await api.get<CalendarItem>(`/api/v1/calendar/${calItemId}`);
             if (calItem.status !== "working") {

@@ -461,6 +461,81 @@ def overlay_logo_and_text(
 
         overlay.paste(logo, (lx, ly), logo)
 
+    # --- Headline style: large bold text, NO card (ad / poster look) ---
+    # Reuses text_xy (center) / text_scale so the editor can drag + resize it
+    # exactly like the glass card. Drawn with a dark outline so it stays legible
+    # on any background. Returns early — skips the frosted-card path below.
+    if (text_style or "").lower() == "headline":
+        _hs = max(0.5, min(3.0, text_scale or 1.0))
+        h_font = _load_font(max(18, int(base.width * 0.060 * _hs)), "bold")
+        sub_font = _load_font(max(12, int(base.width * 0.026 * _hs)), "regular")
+        max_w = int(base.width * 0.86)
+
+        def _wrap(text: str, font) -> list[str]:
+            words = (text or "").split()
+            lines: list[str] = []
+            cur = ""
+            for w in words:
+                trial = (cur + " " + w).strip()
+                if not cur or draw.textbbox((0, 0), trial, font=font)[2] <= max_w:
+                    cur = trial
+                else:
+                    lines.append(cur)
+                    cur = w
+            if cur:
+                lines.append(cur)
+            return lines or [""]
+
+        lines1 = _wrap(text_line1, h_font)
+        gap = int(h_font.size * 0.18)
+        line_hs = [
+            draw.textbbox((0, 0), ln, font=h_font)[3]
+            - draw.textbbox((0, 0), ln, font=h_font)[1]
+            for ln in lines1
+        ]
+        block_h = sum(line_hs) + gap * (len(lines1) - 1)
+        sub_h = 0
+        if text_line2:
+            sb = draw.textbbox((0, 0), text_line2, font=sub_font)
+            sub_h = (sb[3] - sb[1]) + int(h_font.size * 0.30)
+        total_h = block_h + sub_h
+
+        if text_xy is not None:
+            cx = int(text_xy[0] * base.width)
+            cy = int(text_xy[1] * base.height)
+        else:
+            cx = base.width // 2
+            cy = int(base.height * 0.15) + total_h // 2
+        edge = int(base.width * 0.03)
+        start_y = max(edge, min(cy - total_h // 2, base.height - total_h - edge))
+
+        outline = max(2, int(h_font.size * 0.06))
+
+        def _draw_centered(text: str, font, y: int, fill, oc, ow: int) -> None:
+            tw = draw.textbbox((0, 0), text, font=font)[2]
+            x = int(cx - tw / 2)
+            x = max(edge, min(x, base.width - tw - edge))
+            for dx in (-ow, 0, ow):
+                for dy in (-ow, 0, ow):
+                    if dx or dy:
+                        draw.text((x + dx, y + dy), text, font=font, fill=oc)
+            draw.text((x, y), text, font=font, fill=fill)
+
+        y = start_y
+        for ln, lh in zip(lines1, line_hs):
+            _draw_centered(ln, h_font, y, (255, 255, 255, 255), (0, 0, 0, 180), outline)
+            y += lh + gap
+        if text_line2:
+            y += int(h_font.size * 0.12)
+            _draw_centered(
+                text_line2, sub_font, y, (255, 255, 255, 235), (0, 0, 0, 150), max(2, outline // 2)
+            )
+
+        result = Image.alpha_composite(base, overlay)
+        buf = BytesIO()
+        result.convert("RGB").save(buf, format="PNG", quality=95)
+        return buf.getvalue()
+
     # --- Text overlay (frosted glass card) ---
     # The card is a blurred crop of the underlying photo + a semi-transparent
     # tint (dark on bright backgrounds, light on dark backgrounds) so it stays

@@ -528,6 +528,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                         image_data, logo_png,
                         text_line1=text_line1, text_line2=text_line2,
                         logo_scale=scale_for_logo_variant(chosen_label),
+                        text_style=("headline" if image_format == "ad" else "glass"),
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
                     await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")
@@ -619,6 +620,9 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         existing_metadata["composed_image"] = raw_url
         existing_metadata["logo_variant_used"] = chosen_label
         existing_metadata["logo_scale"] = scale_for_logo_variant(chosen_label)
+        # Persist the text style so the logo/overlay editor re-renders the same
+        # look (ad = big headline, lifestyle = glass card) when the user fine-tunes.
+        existing_metadata["text_style"] = "headline" if image_format == "ad" else "glass"
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
 
@@ -678,7 +682,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
     logo_scale = payload.get("logo_scale")
     text_scale = payload.get("text_scale", 1.0)
     text_style = (payload.get("text_style") or "glass").lower()
-    if text_style not in ("glass", "solid"):
+    if text_style not in ("glass", "solid", "headline"):
         text_style = "glass"
 
     def _xy(v):
