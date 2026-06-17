@@ -43,6 +43,16 @@ WORKDIR /app
 
 COPY --from=builder /install /usr/local
 
+# Bundle popular display fonts for ad/poster headlines (OFL/Apache licensed,
+# pulled from the Google Fonts repo). One handwritten face (Dancing Script).
+RUN mkdir -p /usr/share/fonts/truetype/markai && cd /usr/share/fonts/truetype/markai && \
+    curl -fsSL -o Montserrat.ttf "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf" && \
+    curl -fsSL -o Poppins.ttf "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf" && \
+    curl -fsSL -o Oswald.ttf "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald%5Bwght%5D.ttf" && \
+    curl -fsSL -o PlayfairDisplay.ttf "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" && \
+    curl -fsSL -o DancingScript.ttf "https://github.com/google/fonts/raw/main/ofl/dancingscript/DancingScript%5Bwght%5D.ttf" && \
+    fc-cache -f
+
 # Install Playwright Chromium and its OS-level dependencies
 RUN playwright install --with-deps chromium
 

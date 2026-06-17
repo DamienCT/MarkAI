@@ -16,7 +16,7 @@
  *  - Escape to cancel
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Move, RefreshCw, Layers, Grid3x3 } from "lucide-react";
+import { Loader2, Move, RefreshCw, Layers, Grid3x3, Type } from "lucide-react";
 
 export interface LogoPlacement {
   logo_xy: [number, number];
@@ -24,8 +24,18 @@ export interface LogoPlacement {
   text_xy: [number, number] | null;
   text_scale: number;
   logo_variant?: string;
-  text_style?: string; // "glass" | "solid"
+  text_style?: string; // "glass" | "solid" | "headline"
+  font_family?: string; // headline font (e.g. "Montserrat")
 }
+
+// Bundled headline fonts (match agents Dockerfile + image_processing.HEADLINE_FONTS).
+export const HEADLINE_FONTS = [
+  "Montserrat",
+  "Poppins",
+  "Oswald",
+  "Playfair Display",
+  "Dancing Script",
+];
 
 interface LogoEditorProps {
   cleanImageUrl: string;
@@ -107,6 +117,18 @@ export function LogoEditor({
   );
   const isHeadline = textStyle === "headline";
 
+  // Headline font (cycled with a button, like the logo variant).
+  const [fontFamily, setFontFamily] = useState<string>(
+    HEADLINE_FONTS.includes(initial.font_family || "") ? initial.font_family! : HEADLINE_FONTS[0]
+  );
+  const cycleFont = useCallback(
+    () => setFontFamily((f) => {
+      const i = HEADLINE_FONTS.indexOf(f);
+      return HEADLINE_FONTS[(i + 1) % HEADLINE_FONTS.length];
+    }),
+    []
+  );
+
   // Alignment grid (rule-of-thirds), like a photo editor. On by default.
   const [showGrid, setShowGrid] = useState(true);
 
@@ -139,6 +161,7 @@ export function LogoEditor({
     logo_xy: logoXy, logo_scale: logoScale, text_xy: textXy,
     text_scale: textScale, logo_variant: variant || undefined,
     text_style: textStyle,
+    font_family: isHeadline ? fontFamily : undefined,
   };
 
   // So the outside-click saver can bail while a save is already in flight.
@@ -307,11 +330,16 @@ export function LogoEditor({
             textShadow: isHeadline ? "0 2px 6px rgba(0,0,0,0.6)" : "none",
           }}
         >
-          <div style={{ fontSize: isHeadline ? fontLargePx * 2 : fontLargePx, lineHeight: 1.15, fontWeight: isHeadline ? 800 : 500 }}>
+          <div style={{
+            fontSize: isHeadline ? fontLargePx * 2 : fontLargePx,
+            lineHeight: 1.15,
+            fontWeight: isHeadline ? 800 : 500,
+            fontFamily: isHeadline ? `"${fontFamily}", sans-serif` : undefined,
+          }}>
             {textLine1 || "Titre"}
           </div>
-          {textLine2 ? (
-            <div style={{ fontSize: isHeadline ? fontSmallPx * 1.2 : fontSmallPx, lineHeight: 1.2, opacity: 0.9 }}>
+          {textLine2 && !isHeadline ? (
+            <div style={{ fontSize: fontSmallPx, lineHeight: 1.2, opacity: 0.9 }}>
               {textLine2}
             </div>
           ) : null}
@@ -369,6 +397,18 @@ export function LogoEditor({
             <Layers className="h-3.5 w-3.5" />
             Overlay: {textStyle}
           </button>
+          {isHeadline ? (
+            <button
+              type="button"
+              onPointerDown={(e) => { e.stopPropagation(); }}
+              onClick={cycleFont}
+              className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+              title="Cycle headline font"
+            >
+              <Type className="h-3.5 w-3.5" />
+              Font: {fontFamily}
+            </button>
+          ) : null}
           <button
             type="button"
             onPointerDown={(e) => { e.stopPropagation(); }}

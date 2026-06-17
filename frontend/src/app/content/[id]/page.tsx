@@ -450,6 +450,7 @@ export default function ContentDetailPage() {
     text_xy: (gm.text_xy as [number, number] | null | undefined) || null,
     text_scale: (gm.text_scale as number | undefined) || 1,
     text_style: (gm.text_style as string | undefined) || "glass",
+    font_family: (gm.font_family as string | undefined) || undefined,
     textAnchor: (gm.text_anchor_used as string | undefined) || null,
   };
   const canEditLogo = !!calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && !!cleanImageUrl;

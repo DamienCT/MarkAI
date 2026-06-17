@@ -55,6 +55,47 @@ def _load_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
+# Display fonts bundled by the agents Dockerfile for ad/poster headlines.
+# Names MUST match the LogoEditor cycle list + the web fonts loaded in the
+# frontend so the editor preview matches the rendered image.
+_FONT_DIR = "/usr/share/fonts/truetype/markai"
+HEADLINE_FONTS = [
+    "Montserrat",
+    "Poppins",
+    "Oswald",
+    "Playfair Display",
+    "Dancing Script",
+]
+_HEADLINE_FONT_FILES = {
+    "Montserrat": f"{_FONT_DIR}/Montserrat.ttf",
+    "Poppins": f"{_FONT_DIR}/Poppins.ttf",
+    "Oswald": f"{_FONT_DIR}/Oswald.ttf",
+    "Playfair Display": f"{_FONT_DIR}/PlayfairDisplay.ttf",
+    "Dancing Script": f"{_FONT_DIR}/DancingScript.ttf",
+}
+
+
+def _load_headline_font(
+    size: int, family: str | None, weight: int = 700
+) -> ImageFont.FreeTypeFont:
+    """Load a bundled display font for the headline; falls back to bold sans.
+
+    Variable fonts get their weight axis set to *weight*; static fonts ignore it.
+    """
+    path = _HEADLINE_FONT_FILES.get((family or "").strip())
+    if path:
+        try:
+            font = ImageFont.truetype(path, size)
+            try:
+                font.set_variation_by_axes([weight])
+            except Exception:
+                pass  # static font or no weight axis — use as-is
+            return font
+        except (OSError, IOError):
+            pass
+    return _load_font(size, "bold")
+
+
 # ── Logo rendering ───────────────────────────────────────────────
 
 
@@ -338,6 +379,7 @@ def overlay_logo_and_text(
     text_xy: tuple[float, float] | None = None,
     text_scale: float = 1.0,
     text_style: str = "glass",
+    font_family: str | None = None,
 ) -> bytes:
     """Overlay a transparent logo on the best monotone area + text bar.
 
@@ -461,14 +503,13 @@ def overlay_logo_and_text(
 
         overlay.paste(logo, (lx, ly), logo)
 
-    # --- Headline style: large bold text, NO card (ad / poster look) ---
+    # --- Headline style: large bold text, NO card, NO outline (ad / poster) ---
     # Reuses text_xy (center) / text_scale so the editor can drag + resize it
-    # exactly like the glass card. Drawn with a dark outline so it stays legible
-    # on any background. Returns early — skips the frosted-card path below.
+    # exactly like the glass card. Only the title is drawn (no brand/website
+    # line) with a soft drop shadow for legibility. Returns early.
     if (text_style or "").lower() == "headline":
         _hs = max(0.5, min(3.0, text_scale or 1.0))
-        h_font = _load_font(max(18, int(base.width * 0.060 * _hs)), "bold")
-        sub_font = _load_font(max(12, int(base.width * 0.026 * _hs)), "regular")
+        h_font = _load_headline_font(max(18, int(base.width * 0.060 * _hs)), font_family)
         max_w = int(base.width * 0.86)
 
         def _wrap(text: str, font) -> list[str]:
@@ -493,12 +534,7 @@ def overlay_logo_and_text(
             - draw.textbbox((0, 0), ln, font=h_font)[1]
             for ln in lines1
         ]
-        block_h = sum(line_hs) + gap * (len(lines1) - 1)
-        sub_h = 0
-        if text_line2:
-            sb = draw.textbbox((0, 0), text_line2, font=sub_font)
-            sub_h = (sb[3] - sb[1]) + int(h_font.size * 0.30)
-        total_h = block_h + sub_h
+        total_h = sum(line_hs) + gap * (len(lines1) - 1)
 
         if text_xy is not None:
             cx = int(text_xy[0] * base.width)
@@ -509,27 +545,20 @@ def overlay_logo_and_text(
         edge = int(base.width * 0.03)
         start_y = max(edge, min(cy - total_h // 2, base.height - total_h - edge))
 
-        outline = max(2, int(h_font.size * 0.06))
+        shadow_off = max(1, int(h_font.size * 0.04))
 
-        def _draw_centered(text: str, font, y: int, fill, oc, ow: int) -> None:
+        def _draw_centered(text: str, font, y: int) -> None:
             tw = draw.textbbox((0, 0), text, font=font)[2]
             x = int(cx - tw / 2)
             x = max(edge, min(x, base.width - tw - edge))
-            for dx in (-ow, 0, ow):
-                for dy in (-ow, 0, ow):
-                    if dx or dy:
-                        draw.text((x + dx, y + dy), text, font=font, fill=oc)
-            draw.text((x, y), text, font=font, fill=fill)
+            # soft drop shadow (not an outline) for legibility
+            draw.text((x + shadow_off, y + shadow_off), text, font=font, fill=(0, 0, 0, 110))
+            draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
 
         y = start_y
         for ln, lh in zip(lines1, line_hs):
-            _draw_centered(ln, h_font, y, (255, 255, 255, 255), (0, 0, 0, 180), outline)
+            _draw_centered(ln, h_font, y)
             y += lh + gap
-        if text_line2:
-            y += int(h_font.size * 0.12)
-            _draw_centered(
-                text_line2, sub_font, y, (255, 255, 255, 235), (0, 0, 0, 150), max(2, outline // 2)
-            )
 
         result = Image.alpha_composite(base, overlay)
         buf = BytesIO()

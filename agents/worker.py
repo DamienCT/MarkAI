@@ -524,11 +524,14 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 if logo_png:
                     text_line1 = hook or headline
                     text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
+                    # Keep any font the user previously chose; default to Montserrat.
+                    headline_font = gen_meta.get("font_family") or "Montserrat"
                     branded_bytes = overlay_logo_and_text(
                         image_data, logo_png,
                         text_line1=text_line1, text_line2=text_line2,
                         logo_scale=scale_for_logo_variant(chosen_label),
                         text_style=("headline" if image_format == "ad" else "glass"),
+                        font_family=headline_font,
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
                     await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")
@@ -623,6 +626,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # Persist the text style so the logo/overlay editor re-renders the same
         # look (ad = big headline, lifestyle = glass card) when the user fine-tunes.
         existing_metadata["text_style"] = "headline" if image_format == "ad" else "glass"
+        existing_metadata["font_family"] = gen_meta.get("font_family") or "Montserrat"
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
 
@@ -684,6 +688,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
     text_style = (payload.get("text_style") or "glass").lower()
     if text_style not in ("glass", "solid", "headline"):
         text_style = "glass"
+    font_family = payload.get("font_family") or None
 
     def _xy(v):
         if isinstance(v, (list, tuple)) and len(v) == 2:
@@ -841,6 +846,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                         text_scale=float(text_scale or 1.0),
                         text_style=text_style,
                         text_anchor=gen_meta.get("text_anchor_used"),
+                        font_family=font_family or gen_meta.get("font_family"),
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
                     await async_upload_file(
@@ -923,6 +929,8 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
         existing_metadata["text_xy"] = list(text_xy) if text_xy else None
         existing_metadata["text_scale"] = float(text_scale or 1.0)
         existing_metadata["text_style"] = text_style
+        if font_family or existing_metadata.get("font_family"):
+            existing_metadata["font_family"] = font_family or existing_metadata.get("font_family")
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
         await execute_update(
