@@ -533,8 +533,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                         text_style=("headline" if image_format == "ad" else "glass"),
                         font_family=headline_font,
                         headline_colors=gen_meta.get("headline_colors"),
-                        text_stretch_x=gen_meta.get("text_stretch_x"),
-                        text_stretch_y=gen_meta.get("text_stretch_y"),
+                        text_width=gen_meta.get("text_width"),
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
                     await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")
@@ -632,10 +631,8 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         existing_metadata["font_family"] = gen_meta.get("font_family") or "Montserrat"
         if gen_meta.get("headline_colors"):
             existing_metadata["headline_colors"] = gen_meta.get("headline_colors")
-        if gen_meta.get("text_stretch_x") is not None:
-            existing_metadata["text_stretch_x"] = gen_meta.get("text_stretch_x")
-        if gen_meta.get("text_stretch_y") is not None:
-            existing_metadata["text_stretch_y"] = gen_meta.get("text_stretch_y")
+        if gen_meta.get("text_width") is not None:
+            existing_metadata["text_width"] = gen_meta.get("text_width")
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
 
@@ -695,21 +692,20 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
     logo_scale = payload.get("logo_scale")
     text_scale = payload.get("text_scale", 1.0)
     text_style = (payload.get("text_style") or "glass").lower()
-    if text_style not in ("glass", "solid", "headline"):
+    if text_style not in ("glass", "solid", "headline", "none"):
         text_style = "glass"
     font_family = payload.get("font_family") or None
     headline_colors = payload.get("headline_colors")
     if not isinstance(headline_colors, dict):
         headline_colors = None
 
-    def _stretch(v):
+    def _wrap_frac(v):
         try:
-            return max(0.4, min(3.0, float(v))) if v is not None else None
+            return max(0.3, min(0.98, float(v))) if v is not None else None
         except (TypeError, ValueError):
             return None
 
-    text_stretch_x = _stretch(payload.get("text_stretch_x"))
-    text_stretch_y = _stretch(payload.get("text_stretch_y"))
+    text_width = _wrap_frac(payload.get("text_width"))
 
     def _xy(v):
         if isinstance(v, (list, tuple)) and len(v) == 2:
@@ -873,15 +869,10 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                             if headline_colors is not None
                             else gen_meta.get("headline_colors")
                         ),
-                        text_stretch_x=(
-                            text_stretch_x
-                            if text_stretch_x is not None
-                            else gen_meta.get("text_stretch_x")
-                        ),
-                        text_stretch_y=(
-                            text_stretch_y
-                            if text_stretch_y is not None
-                            else gen_meta.get("text_stretch_y")
+                        text_width=(
+                            text_width
+                            if text_width is not None
+                            else gen_meta.get("text_width")
                         ),
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
@@ -970,10 +961,8 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
         # Per-word headline colors: an empty dict explicitly clears them.
         if headline_colors is not None:
             existing_metadata["headline_colors"] = headline_colors
-        if text_stretch_x is not None:
-            existing_metadata["text_stretch_x"] = text_stretch_x
-        if text_stretch_y is not None:
-            existing_metadata["text_stretch_y"] = text_stretch_y
+        if text_width is not None:
+            existing_metadata["text_width"] = text_width
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
         await execute_update(

@@ -151,8 +151,7 @@ class LogoRebrandRequest(BaseModel):
     text_style: str | None = None  # "glass" (default) | "solid" | "headline"
     font_family: str | None = None  # headline font (e.g. "Montserrat")
     headline_colors: dict[str, str] | None = None  # word index -> "#RRGGBB"
-    text_stretch_x: float | None = None  # headline horizontal stretch (1.0 = none)
-    text_stretch_y: float | None = None  # headline vertical stretch (1.0 = none)
+    text_width: float | None = None  # headline wrap width as fraction of image width
 
 
 # Manual logo/overlay editing is only allowed while the post is in review.
@@ -218,8 +217,7 @@ async def rebrand_logo(
             "text_style": body.text_style,
             "font_family": body.font_family,
             "headline_colors": body.headline_colors,
-            "text_stretch_x": body.text_stretch_x,
-            "text_stretch_y": body.text_stretch_y,
+            "text_width": body.text_width,
             "prior_status": prior_status,
         },
     )

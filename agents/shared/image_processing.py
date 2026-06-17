@@ -381,8 +381,7 @@ def overlay_logo_and_text(
     text_style: str = "glass",
     font_family: str | None = None,
     headline_colors: dict | None = None,
-    text_stretch_x: float | None = None,
-    text_stretch_y: float | None = None,
+    text_width: float | None = None,
 ) -> bytes:
     """Overlay a transparent logo on the best monotone area + text bar.
 
@@ -506,6 +505,13 @@ def overlay_logo_and_text(
 
         overlay.paste(logo, (lx, ly), logo)
 
+    # --- No overlay: image + logo only (text removed by the editor) ---
+    if (text_style or "").lower() == "none":
+        result = Image.alpha_composite(base, overlay)
+        buf = BytesIO()
+        result.convert("RGB").save(buf, format="PNG", quality=95)
+        return buf.getvalue()
+
     # --- Headline style: large bold text, NO card, NO outline (ad / poster) ---
     # Reuses text_xy (center) / text_scale so the editor can drag + resize it
     # exactly like the glass card. Only the title is drawn (no brand/website
@@ -513,7 +519,17 @@ def overlay_logo_and_text(
     if (text_style or "").lower() == "headline":
         _hs = max(0.5, min(3.0, text_scale or 1.0))
         h_font = _load_headline_font(max(18, int(base.width * 0.060 * _hs)), font_family)
-        max_w = int(base.width * 0.86)
+        # Wrap width as a fraction of image width — the editor's right-edge
+        # handle drives this so the text re-flows onto more/fewer lines. The
+        # editor uses the SAME fraction for its fixed-width preview box, so the
+        # wrap point matches (edit == render). Default 0.86.
+        _wfrac = 0.86
+        try:
+            if text_width is not None:
+                _wfrac = max(0.3, min(0.98, float(text_width)))
+        except (TypeError, ValueError):
+            _wfrac = 0.86
+        max_w = int(base.width * _wfrac)
         colors = headline_colors if isinstance(headline_colors, dict) else {}
 
         def _color_for(idx: int) -> tuple:
@@ -571,44 +587,25 @@ def overlay_logo_and_text(
         else:
             cx = base.width // 2
             cy = int(base.height * 0.15) + total_h // 2
+        edge = int(base.width * 0.03)
+        start_y = max(edge, min(cy - total_h // 2, base.height - total_h - edge))
 
         shadow_off = max(1, int(h_font.size * 0.04))
 
-        # Draw the whole headline block onto a transparent layer first, then
-        # scale it NON-UNIFORMLY (Canva-style independent width/height stretch)
-        # and paste it centered on text_xy. Per-word colors + the soft drop
-        # shadow are baked in before scaling so they stretch with the text.
-        block_w = max((_line_width(ln) for ln in lines), default=0.0)
-        pad = shadow_off + 2
-        tl_w = max(1, int(round(block_w)) + 2 * pad)
-        tl_h = max(1, int(round(total_h)) + 2 * pad)
-        tlayer = Image.new("RGBA", (tl_w, tl_h), (0, 0, 0, 0))
-        tdraw = ImageDraw.Draw(tlayer)
-
-        ty = pad
+        # Draw each wrapped line centered on cx, word-by-word so per-word colors
+        # apply. No distortion — the text simply re-flows at the wrap width.
+        y = start_y
         for line, lh in zip(lines, line_hs):
             lw = _line_width(line)
-            tx = pad + (block_w - lw) / 2
+            x = cx - lw / 2
+            x = max(float(edge), min(x, base.width - lw - edge))
             for idx, w in line:
                 fill = _color_for(idx)
                 # soft drop shadow (not an outline) for legibility on any backdrop
-                tdraw.text((tx + shadow_off, ty + shadow_off), w, font=h_font, fill=(0, 0, 0, 110))
-                tdraw.text((tx, ty), w, font=h_font, fill=fill)
-                tx += _adv(w) + space_w
-            ty += lh + gap
-
-        sx = max(0.4, min(3.0, float(text_stretch_x))) if text_stretch_x else 1.0
-        sy = max(0.4, min(3.0, float(text_stretch_y))) if text_stretch_y else 1.0
-        if sx != 1.0 or sy != 1.0:
-            tlayer = tlayer.resize(
-                (max(1, int(tl_w * sx)), max(1, int(tl_h * sy))), Image.LANCZOS
-            )
-
-        paste_x = int(cx - tlayer.width / 2)
-        paste_y = int(cy - tlayer.height / 2)
-        paste_x = max(0, min(paste_x, max(0, base.width - tlayer.width)))
-        paste_y = max(0, min(paste_y, max(0, base.height - tlayer.height)))
-        overlay.alpha_composite(tlayer, (paste_x, paste_y))
+                draw.text((x + shadow_off, y + shadow_off), w, font=h_font, fill=(0, 0, 0, 110))
+                draw.text((x, y), w, font=h_font, fill=fill)
+                x += _adv(w) + space_w
+            y += lh + gap
 
         result = Image.alpha_composite(base, overlay)
         buf = BytesIO()

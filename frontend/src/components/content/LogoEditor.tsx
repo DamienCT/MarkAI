@@ -27,8 +27,7 @@ export interface LogoPlacement {
   text_style?: string; // "glass" | "solid" | "headline"
   font_family?: string; // headline font (e.g. "Montserrat")
   headline_colors?: Record<string, string>; // word index -> "#RRGGBB"
-  text_stretch_x?: number; // headline horizontal stretch (1.0 = none)
-  text_stretch_y?: number; // headline vertical stretch (1.0 = none)
+  text_width?: number; // headline wrap width as a fraction of image width (0..1)
 }
 
 // Bundled headline fonts (match agents Dockerfile + image_processing.HEADLINE_FONTS).
@@ -78,16 +77,14 @@ type DragKind =
   | "resize-logo"
   | "move-text"
   | "resize-text"
-  | "resize-text-w"
-  | "resize-text-h";
+  | "resize-text-w";
 interface DragState {
   kind: DragKind;
   startClientX: number;
   startClientY: number;
   startXy: [number, number];
   startScale: number;
-  startStretchX: number;
-  startStretchY: number;
+  startWidth: number;
   rectW: number;
   rectH: number;
 }
@@ -117,16 +114,21 @@ export function LogoEditor({
   // Text style: "glass" (frosted card) | "solid" (dark panel) | "headline"
   // (large bold title, no card — the ad/poster look).
   const [textStyle, setTextStyle] = useState<string>(
-    ["solid", "headline"].includes(initial.text_style || "") ? initial.text_style! : "glass"
+    ["solid", "headline", "none"].includes(initial.text_style || "") ? initial.text_style! : "glass"
   );
+  // Cycle: glass → solid → headline → none (no text) → glass …
   const toggleTextStyle = useCallback(
     () =>
       setTextStyle((s) =>
-        s === "glass" ? "solid" : s === "solid" ? "headline" : "glass"
+        s === "glass" ? "solid"
+          : s === "solid" ? "headline"
+          : s === "headline" ? "none"
+          : "glass"
       ),
     []
   );
   const isHeadline = textStyle === "headline";
+  const isNone = textStyle === "none";
 
   // Headline font (cycled with a button, like the logo variant).
   const [fontFamily, setFontFamily] = useState<string>(
@@ -170,12 +172,13 @@ export function LogoEditor({
   const resetColors = useCallback(() => setHeadlineColors({}), []);
   const headlineWords = (textLine1 || "Titre").split(/\s+/).filter(Boolean);
 
-  // Canva-style independent width/height stretch for the headline box.
-  const [stretchX, setStretchX] = useState<number>(
-    typeof initial.text_stretch_x === "number" ? initial.text_stretch_x : 1
-  );
-  const [stretchY, setStretchY] = useState<number>(
-    typeof initial.text_stretch_y === "number" ? initial.text_stretch_y : 1
+  // Canva-style wrap width for the headline box (fraction of image width).
+  // The right-edge handle drags this: wider = fewer line breaks, narrower =
+  // text re-wraps onto more lines. Height auto-adjusts; NO letter distortion.
+  // Default 0.86 mirrors the backend (image_processing max_w) so edit == render.
+  const HEADLINE_WIDTH_DEFAULT = 0.86;
+  const [textWidth, setTextWidth] = useState<number>(
+    typeof initial.text_width === "number" ? initial.text_width : HEADLINE_WIDTH_DEFAULT
   );
 
   // Alignment grid (rule-of-thirds), like a photo editor. On by default.
@@ -212,8 +215,7 @@ export function LogoEditor({
     text_style: textStyle,
     font_family: isHeadline ? fontFamily : undefined,
     headline_colors: isHeadline ? headlineColors : undefined,
-    text_stretch_x: isHeadline ? stretchX : undefined,
-    text_stretch_y: isHeadline ? stretchY : undefined,
+    text_width: isHeadline ? textWidth : undefined,
   };
 
   // So the outside-click saver can bail while a save is already in flight.
@@ -250,9 +252,9 @@ export function LogoEditor({
     } else if (d.kind === "resize-text") {
       setTextScale(clamp(d.startScale + dx * 4, 0.5, 2.5));
     } else if (d.kind === "resize-text-w") {
-      setStretchX(clamp(d.startStretchX + dx * 4, 0.4, 3));
-    } else if (d.kind === "resize-text-h") {
-      setStretchY(clamp(d.startStretchY + dy * 4, 0.4, 3));
+      // Wrap width: dragging right widens the box (×2 → full box from center),
+      // so the text re-wraps onto fewer/more lines instead of distorting.
+      setTextWidth(clamp(d.startWidth + dx * 2, 0.3, 0.97));
     }
   }, []);
 
@@ -281,8 +283,7 @@ export function LogoEditor({
       startClientY: e.clientY,
       startXy: kind.startsWith("move-logo") ? logoXy : textXy,
       startScale: kind.endsWith("logo") ? logoScale : textScale,
-      startStretchX: stretchX,
-      startStretchY: stretchY,
+      startWidth: textWidth,
       rectW: r?.width || 1,
       rectH: r?.height || 1,
     };
@@ -329,7 +330,7 @@ export function LogoEditor({
     touchAction: "none",
   };
 
-  // Edge handles (headline only): right = width stretch, bottom = height stretch.
+  // Edge handle (headline only): right = wrap width (re-wraps the text).
   const edgeHandleRight: React.CSSProperties = {
     position: "absolute",
     right: -7,
@@ -341,19 +342,6 @@ export function LogoEditor({
     background: "#2563eb",
     border: "2px solid white",
     cursor: "ew-resize",
-    touchAction: "none",
-  };
-  const edgeHandleBottom: React.CSSProperties = {
-    position: "absolute",
-    bottom: -7,
-    left: "50%",
-    transform: "translateX(-50%)",
-    width: 26,
-    height: 12,
-    borderRadius: 4,
-    background: "#2563eb",
-    border: "2px solid white",
-    cursor: "ns-resize",
     touchAction: "none",
   };
 
@@ -390,7 +378,8 @@ export function LogoEditor({
           />
         ) : null}
 
-        {/* Text card (overlay) */}
+        {/* Text card (overlay) — hidden entirely when the overlay is removed. */}
+        {isNone ? null : (
         <div
           onPointerDown={startDrag("move-text")}
           style={{
@@ -398,12 +387,12 @@ export function LogoEditor({
             left: `${textXy[0] * 100}%`,
             top: `${textXy[1] * 100}%`,
             transform: "translate(-50%, -50%)",
-            // width:max-content sizes the card to its text regardless of its
-            // left position — without it, an absolutely-positioned auto-width
-            // box shrinks as `left` grows (the "folds into a square" bug when
-            // dragged right). maxWidth still caps it at 72% of the photo.
-            width: "max-content",
-            maxWidth: isHeadline ? "86%" : "72%",
+            // Headline: a FIXED-width box (= the wrap width) so the browser
+            // wraps at the SAME point as the PIL render (edit == rendering).
+            // Other styles: max-content sizes the card to its text (so it
+            // doesn't fold into a square when dragged right), capped at 72%.
+            width: isHeadline ? `${textWidth * 100}%` : "max-content",
+            maxWidth: isHeadline ? `${textWidth * 100}%` : "72%",
             textAlign: isHeadline ? "center" : "left",
             padding: isHeadline ? 0 : `${Math.max(6, dims.w * 0.012)}px ${Math.max(10, dims.w * 0.016)}px`,
             background: isHeadline ? "transparent" : textStyle === "solid" ? "rgba(12,14,18,0.88)" : "rgba(10,12,16,0.5)",
@@ -421,24 +410,23 @@ export function LogoEditor({
             lineHeight: 1.15,
             fontWeight: isHeadline ? 800 : 500,
             fontFamily: isHeadline ? `"${fontFamily}", sans-serif` : undefined,
-            transform: isHeadline ? `scaleX(${stretchX}) scaleY(${stretchY})` : undefined,
-            transformOrigin: "center",
           }}>
             {isHeadline
               ? headlineWords.map((w, i) => (
-                  <span
-                    key={i}
-                    onPointerDown={(e) => { e.stopPropagation(); }}
-                    onClick={(e) => { e.stopPropagation(); pickColorForWord(i); }}
-                    title="Click to color this word"
-                    style={{
-                      color: headlineColors[String(i)] || "#ffffff",
-                      cursor: "pointer",
-                      marginRight: "0.28em",
-                    }}
-                  >
-                    {w}
-                  </span>
+                  <React.Fragment key={i}>
+                    <span
+                      onPointerDown={(e) => { e.stopPropagation(); }}
+                      onClick={(e) => { e.stopPropagation(); pickColorForWord(i); }}
+                      title="Click to color this word"
+                      style={{
+                        color: headlineColors[String(i)] || "#ffffff",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {w}
+                    </span>
+                    {i < headlineWords.length - 1 ? " " : ""}
+                  </React.Fragment>
                 ))
               : (textLine1 || "Titre")}
           </div>
@@ -447,16 +435,15 @@ export function LogoEditor({
               {textLine2}
             </div>
           ) : null}
-          {/* Corner = proportional size. For the headline, two extra edge handles
-              stretch width (right) and height (bottom) independently — Canva-style. */}
-          <div onPointerDown={startDrag("resize-text")} style={handleStyle} title="Resize" />
+          {/* Corner = font size (proportional). For the headline, the right
+              edge handle changes the WRAP WIDTH so the text re-flows onto more
+              or fewer lines (Canva-style) — no distortion. */}
+          <div onPointerDown={startDrag("resize-text")} style={handleStyle} title="Size" />
           {isHeadline ? (
-            <>
-              <div onPointerDown={startDrag("resize-text-w")} style={edgeHandleRight} title="Stretch width" />
-              <div onPointerDown={startDrag("resize-text-h")} style={edgeHandleBottom} title="Stretch height" />
-            </>
+            <div onPointerDown={startDrag("resize-text-w")} style={edgeHandleRight} title="Wrap width" />
           ) : null}
         </div>
+        )}
 
         {/* Logo */}
         {currentLogoUrl ? (
