@@ -637,6 +637,31 @@ export function OverviewTab({
             <p className="text-xs text-muted-foreground mt-3">
               {enabledChannels.length} channel{enabledChannels.length !== 1 ? "s" : ""} enabled
             </p>
+
+            {/* BC Integration — mirrors Edit Brand → Business Central */}
+            <div className="mt-4 pt-3 border-t">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                BC Integration
+              </p>
+              {brand.bc_company ? (
+                <dl className="text-sm space-y-1">
+                  <div className="flex gap-2">
+                    <dt className="text-muted-foreground">Company:</dt>
+                    <dd className="font-medium">{brand.bc_company}</dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="text-muted-foreground">Locations:</dt>
+                    <dd>
+                      {brand.bc_locations && brand.bc_locations.length > 0
+                        ? brand.bc_locations.join(", ")
+                        : "None selected"}
+                    </dd>
+                  </div>
+                </dl>
+              ) : (
+                <p className="text-sm text-muted-foreground">Not linked to Business Central</p>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
