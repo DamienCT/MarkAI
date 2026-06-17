@@ -122,14 +122,17 @@ export default function ContentDetailPage() {
     }
   }, [content, contentId]);
 
-  const handleRegenerateImage = useCallback(async () => {
+  const handleRegenerateImage = useCallback(async (format: "lifestyle" | "ad" = "lifestyle") => {
     if (!content) return;
     setRegeneratingImage(true);
     try {
       await api.post(`/api/v1/content/${content.id}/regenerate-image`, {
         prompt: imagePrompt || undefined,
+        format,
       });
-      toast.success("Image regeneration started — this may take a minute...");
+      toast.success(
+        `${format === "ad" ? "Ad" : "Lifestyle"} image regeneration started — this may take a minute...`
+      );
 
       // Poll for completion: check calendar item status until it leaves "working"
       const calItemId = content.calendar_item_id;
@@ -759,15 +762,26 @@ export default function ContentDetailPage() {
                             rows={2}
                             className="text-xs"
                           />
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={regeneratingImage || uploadingImage}
-                            onClick={handleRegenerateImage}
-                            className="w-full"
-                          >
-                            {regeneratingImage ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Generating...</> : "Regenerate Image"}
-                          </Button>
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={regeneratingImage || uploadingImage}
+                              onClick={() => handleRegenerateImage("ad")}
+                            >
+                              {regeneratingImage ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                              Regenerate Image (Pub)
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={regeneratingImage || uploadingImage}
+                              onClick={() => handleRegenerateImage("lifestyle")}
+                            >
+                              {regeneratingImage ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                              Regenerate Image (Lifestyle)
+                            </Button>
+                          </div>
                           <input
                             ref={imageUploadInputRef}
                             type="file"

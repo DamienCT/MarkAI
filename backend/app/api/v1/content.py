@@ -100,6 +100,7 @@ async def update_content(
 
 class ImageRegenerateRequest(BaseModel):
     prompt: str | None = None
+    format: str | None = None  # "lifestyle" (default) | "ad"
 
 
 @router.post("/{content_id}/regenerate-image")
@@ -127,6 +128,7 @@ async def regenerate_image(
             "brand_id": str(content.brand_id),
             "calendar_item_id": str(content.calendar_item_id),
             "custom_prompt": (body.prompt if body else None),
+            "image_format": ((body.format if body else None) or "lifestyle"),
         },
     )
 

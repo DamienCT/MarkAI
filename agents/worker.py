@@ -259,8 +259,14 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
     brand_id = payload.get("brand_id", "")
     calendar_item_id = payload.get("calendar_item_id", "")
     custom_prompt = payload.get("custom_prompt")
+    # "lifestyle" (real-looking generated scene, default) | "ad" (clean studio
+    # product advertisement). Drives the base scene prompt below.
+    image_format = (payload.get("image_format") or "lifestyle").lower()
 
-    logger.info("Regenerating image for content %s (brand %s)", content_id, brand_id)
+    logger.info(
+        "Regenerating image for content %s (brand %s, format=%s)",
+        content_id, brand_id, image_format,
+    )
 
     # ── Set calendar item status to "working" ──────────────────────────
     await execute_update(
@@ -392,6 +398,15 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     base_prompt = sanitize_for_prompt(custom_prompt, max_length=500)
             else:
                 base_prompt = sanitize_for_prompt(custom_prompt, max_length=4000)
+        elif image_format == "ad":
+            base_prompt = (
+                f"Create a clean, professional PRODUCT ADVERTISEMENT image in a studio "
+                f"commercial style. Tagline concept: {sanitize_for_prompt(headline)}. "
+                f"Premium minimal background: a smooth gradient or subtle textured surface "
+                f"(brushed metal, soft seamless studio backdrop, or a clean colour wash), "
+                f"even commercial lighting, strong product focus and lots of negative space "
+                f"for a short tagline and brand logos."
+            )
         else:
             base_prompt = (
                 f"Create a professional social media lifestyle image. "
