@@ -26,7 +26,6 @@ import {
   ProductsTab,
   EditBrandTab,
   CompetitorsTab,
-  PerformanceTab,
 } from "@/components/brand/tabs";
 
 const ALL_CHANNELS: Channel[] = [
@@ -913,7 +912,6 @@ export default function BrandDetailPage() {
           <TabsTrigger value="products">Products</TabsTrigger>
           <TabsTrigger value="edit">Edit Brand</TabsTrigger>
           <TabsTrigger value="competitors">Competitors</TabsTrigger>
-          <TabsTrigger value="performance">Performance</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -1042,10 +1040,6 @@ export default function BrandDetailPage() {
             brandId={brandId}
             competitors={brand.competitors || []}
           />
-        </TabsContent>
-
-        <TabsContent value="performance">
-          <PerformanceTab metrics={metrics} />
         </TabsContent>
       </Tabs>
 

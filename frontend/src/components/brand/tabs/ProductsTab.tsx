@@ -514,7 +514,7 @@ export function ProductsTab({
                           <td className="px-4 py-3 text-center">
                             {product.primary_image_url ? (
                               <button
-                                className="flex items-center justify-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
+                                className="inline-flex items-center justify-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
                                 onClick={(e) => { e.stopPropagation(); onOpenGallery(product); }}
                               >
                                 <img src={fileUrl(product.primary_image_url)} alt="" className="h-8 w-8 rounded-sm object-cover ring-1 ring-border" loading="lazy" />
@@ -523,7 +523,7 @@ export function ProductsTab({
                                 </span>
                               </button>
                             ) : (
-                              <div className="flex items-center justify-center gap-1">
+                              <div className="inline-flex items-center justify-center gap-1">
                                 <Button
                                   size="sm"
                                   variant="ghost"

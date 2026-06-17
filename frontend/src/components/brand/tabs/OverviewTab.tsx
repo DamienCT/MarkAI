@@ -522,7 +522,7 @@ export function OverviewTab({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-6">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Details</CardTitle>
