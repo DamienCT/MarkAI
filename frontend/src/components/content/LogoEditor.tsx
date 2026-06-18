@@ -12,11 +12,11 @@
  * Interactions (pure pointer events, no external dependency):
  *  - drag an element to move it
  *  - drag its corner handle to resize it
- *  - click ANYWHERE outside the photo to save
- *  - Escape to cancel
+ *  - the Save (✓) / Cancel (✕) buttons commit or discard
+ *  - Escape also cancels
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Move, RefreshCw, Layers, Grid3x3, Type } from "lucide-react";
+import { Loader2, Move, RefreshCw, Layers, Grid3x3, Type, Check, X } from "lucide-react";
 
 export interface LogoPlacement {
   logo_xy: [number, number];
@@ -204,8 +204,8 @@ export function LogoEditor({
     setVariant(variantKeys[(i + 1) % variantKeys.length]);
   }, [variant, variantKeys]);
 
-  // Keep the latest placement in a ref so the outside-click saver reads fresh
-  // values without re-subscribing the listener on every drag tick.
+  // Keep the latest placement in a ref so the Save button reads fresh values
+  // without re-creating its handler on every drag tick.
   const placementRef = useRef<LogoPlacement>({
     logo_xy: logoXy, logo_scale: logoScale, text_xy: textXy, text_scale: textScale,
   });
@@ -217,10 +217,6 @@ export function LogoEditor({
     headline_colors: isHeadline ? headlineColors : undefined,
     text_width: isHeadline ? textWidth : undefined,
   };
-
-  // So the outside-click saver can bail while a save is already in flight.
-  const savingRef = useRef(!!saving);
-  savingRef.current = !!saving;
 
   // Track the rendered photo size for normalized↔pixel math + font sizing.
   useEffect(() => {
@@ -289,29 +285,14 @@ export function LogoEditor({
     };
   };
 
-  // ── Click outside the photo → save ─────────────────────────────
+  // ── Escape → cancel (save/cancel are explicit buttons now) ─────
   useEffect(() => {
-    const onDocPointerDown = (e: PointerEvent) => {
-      if (dragRef.current || savingRef.current) return; // mid-interaction / saving
-      const el = containerRef.current;
-      if (el && !el.contains(e.target as Node)) {
-        onSave(placementRef.current);
-      }
-    };
-    // Defer attaching so the click that opened the editor doesn't save it.
-    const t = window.setTimeout(() => {
-      document.addEventListener("pointerdown", onDocPointerDown, true);
-    }, 0);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
     };
     window.addEventListener("keydown", onKey);
-    return () => {
-      window.clearTimeout(t);
-      document.removeEventListener("pointerdown", onDocPointerDown, true);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onSave, onCancel]);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
 
   const logoWpx = dims.w * logoScale;
   const fontLargePx = Math.max(8, dims.w * FONT_LARGE_FRAC * textScale);
@@ -351,7 +332,28 @@ export function LogoEditor({
         <span className="flex items-center gap-1.5">
           <Move className="h-3.5 w-3.5" /> Drag to move · blue corner to resize
         </span>
-        <span>Click outside the photo to save · Esc to cancel</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            title="Cancel (Esc)"
+            aria-label="Cancel"
+            className="flex h-8 w-8 items-center justify-center rounded-md border bg-white text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50"
+          >
+            <X className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(placementRef.current)}
+            disabled={saving}
+            title="Save"
+            aria-label="Save"
+            className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
 
       <div
@@ -471,8 +473,7 @@ export function LogoEditor({
           </div>
         ) : null}
 
-        {/* Style controls — kept INSIDE the frame so clicks don't trigger
-            the outside-click save. */}
+        {/* Style controls, overlaid on the photo frame. */}
         <div className="absolute left-2 top-2 z-20 flex flex-col items-start gap-1.5">
           {variantKeys.length >= 2 ? (
             <button

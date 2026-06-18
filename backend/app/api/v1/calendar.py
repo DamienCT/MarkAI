@@ -148,6 +148,37 @@ async def update_calendar_item(
     return item
 
 
+async def _recreate_pending_approval_on_return(
+    db: AsyncSession, item_id: uuid.UUID
+) -> None:
+    """When a scheduled post is sent back to review, recreate a pending approval
+    so the Approve/Reject actions reappear.
+
+    Reuses the content_id + reviewer_id from the item's most recent approval
+    (it was approved before, so one exists). No-op if a pending one already
+    exists or there's no prior approval to base it on.
+    """
+    from app.models.approval import Approval
+
+    result = await db.execute(
+        select(Approval)
+        .where(Approval.calendar_item_id == item_id)
+        .order_by(Approval.created_at.desc())
+    )
+    prior = result.scalars().first()
+    if prior is None or prior.status == "pending":
+        return
+    db.add(
+        Approval(
+            content_id=prior.content_id,
+            calendar_item_id=item_id,
+            reviewer_id=prior.reviewer_id,
+            status="pending",
+        )
+    )
+    await db.commit()
+
+
 @router.patch("/{item_id}", response_model=CalendarItemResponse)
 async def patch_calendar_item(
     item_id: uuid.UUID,
@@ -158,9 +189,16 @@ async def patch_calendar_item(
     """Partial update of a calendar item (alias for PUT)."""
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+    existing = await calendar_service.get_calendar_item(db, item_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Calendar item not found")
+    old_status = existing.status
     item = await calendar_service.update_calendar_item(db, item_id, data)
     if item is None:
         raise HTTPException(status_code=404, detail="Calendar item not found")
+    # Returning a scheduled post to review → re-open it for Approve/Reject.
+    if old_status == "scheduled" and item.status == "in_review":
+        await _recreate_pending_approval_on_return(db, item_id)
     return item
 
 

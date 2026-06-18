@@ -322,13 +322,25 @@ export default function ContentDetailPage() {
       toast.success("Moved to In Review");
       const updated = await api.get<CalendarItem>(`/api/v1/calendar/${calendarItem.id}`);
       setCalendarItem(updated);
+      // The backend recreated a pending approval — refresh so Approve/Reject
+      // reappear without a manual page reload.
+      if (content?.id) {
+        const approvalData = await api.get<{ items: Approval[] } | Approval[]>(
+          `/api/v1/approvals`,
+          { content_id: content.id }
+        );
+        const approvalList = Array.isArray(approvalData)
+          ? approvalData
+          : (approvalData as { items: Approval[] }).items || [];
+        setApprovals(approvalList);
+      }
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "Failed to move to In Review";
       toast.error(detail);
     } finally {
       setPassingToReview(false);
     }
-  }, [calendarItem]);
+  }, [calendarItem, content]);
 
   const handleDiscard = useCallback(async () => {
     if (!calendarItem?.id) {

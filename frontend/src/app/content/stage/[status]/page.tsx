@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams, usePathname } from "next/navigation";
 import { toast } from "sonner";
 import { ArrowLeft, CheckSquare, Trash2, X, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +44,8 @@ const CHANNEL_DISPLAY = CHANNEL_DISPLAY_NAMES;
 export default function StagePage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
   const status = params.status as string;
 
   const [items, setItems] = useState<CalendarItem[]>([]);
@@ -53,8 +55,22 @@ export default function StagePage() {
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("all");
   // In Review only: filter by exact PUBLISH date (calendar_item.scheduled_at),
-  // not the generation/created date. Empty = all dates.
-  const [publishDateFilter, setPublishDateFilter] = useState<string>("");
+  // not the generation/created date. Empty = all dates. Initialized from the URL
+  // (?date=YYYY-MM-DD) so it survives navigating into a post and back.
+  const [publishDateFilter, setPublishDateFilter] = useState<string>(
+    () => searchParams.get("date") || ""
+  );
+
+  // Mirror the publish-date filter into the URL so router.back() from a post
+  // restores it (the page re-mounts and re-reads it from the query string).
+  useEffect(() => {
+    const sp = new URLSearchParams(Array.from(searchParams.entries()));
+    if (publishDateFilter) sp.set("date", publishDateFilter);
+    else sp.delete("date");
+    const qs = sp.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publishDateFilter]);
   // "all" | "system" | "manual". Items whose `theme` is populated come from
   // the planning agent (it sets theme + weekly_sub_theme); manual New Content
   // creations leave theme null.
