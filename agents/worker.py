@@ -233,6 +233,38 @@ async def _replace_product_in_image(
     return image_data
 
 
+async def _download_product_asset(ref: str | None) -> bytes | None:
+    """Download a product asset (logo) from a MinIO object name or URL."""
+    if not ref:
+        return None
+    import httpx as _httpx
+    from shared.config import settings as _cfg
+    from shared.tools.storage import async_download_file as _adl
+
+    try:
+        if ref.startswith("http://") or ref.startswith("https://"):
+            async with _httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(ref)
+                r.raise_for_status()
+                return r.content
+        if ref.startswith("/"):
+            async with _httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(f"{_cfg.BACKEND_URL}{ref}")
+                r.raise_for_status()
+                return r.content
+        bucket = getattr(_cfg, "MINIO_BUCKET", "markai-assets")
+        try:
+            return await _adl(bucket, ref)
+        except Exception:
+            async with _httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(f"{_cfg.BACKEND_URL}/api/v1/files/{ref}")
+                r.raise_for_status()
+                return r.content
+    except Exception as exc:
+        logger.warning("Failed to download product asset %s: %s", ref, exc)
+        return None
+
+
 async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
     """Regenerate the image for an existing content piece.
 
@@ -557,6 +589,11 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     # User's manual choices win; otherwise use the AI's (first render).
                     headline_font = gen_meta.get("font_family") or ad_font_family or "Montserrat"
                     effective_colors = gen_meta.get("headline_colors") or ad_headline_colors
+                    # Product (manufacturer) logo — keep it across regenerations.
+                    _pl_obj = gen_meta.get("product_logo_image")
+                    _pl_on = bool(_pl_obj) and gen_meta.get("product_logo_enabled") is not False
+                    _pl_bytes = await _download_product_asset(_pl_obj) if _pl_on else None
+                    _pl_xy = gen_meta.get("product_logo_xy")
                     branded_bytes = overlay_logo_and_text(
                         image_data, logo_png,
                         text_line1=text_line1, text_line2=text_line2,
@@ -573,6 +610,9 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                             if ad_text_width is not None
                             else gen_meta.get("text_width")
                         ),
+                        product_logo_data=_pl_bytes,
+                        product_logo_xy=tuple(_pl_xy) if _pl_xy else None,
+                        product_logo_scale=gen_meta.get("product_logo_scale"),
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
                     await async_upload_file("content-images", branded_obj, branded_bytes, "image/png")
@@ -756,6 +796,10 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
 
     text_width = _wrap_frac(payload.get("text_width"))
 
+    # Product logo manual placement / on-off from the editor.
+    product_logo_enabled = payload.get("product_logo_enabled")
+    product_logo_scale = payload.get("product_logo_scale")
+
     def _xy(v):
         if isinstance(v, (list, tuple)) and len(v) == 2:
             try:
@@ -769,6 +813,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
 
     logo_xy = _xy(payload.get("logo_xy"))
     text_xy = _xy(payload.get("text_xy"))
+    product_logo_xy = _xy(payload.get("product_logo_xy"))
 
     logger.info(
         "Logo rebrand for content %s (logo_xy=%s text_xy=%s)",
@@ -902,6 +947,20 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
             if logo_png:
                 text_line1 = hook or headline
                 text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
+                # Product logo: editor value wins; else keep what's stored.
+                _pl_obj = gen_meta.get("product_logo_image")
+                _pl_on = bool(_pl_obj) and (
+                    product_logo_enabled
+                    if product_logo_enabled is not None
+                    else gen_meta.get("product_logo_enabled") is not False
+                )
+                _pl_bytes = await _download_product_asset(_pl_obj) if _pl_on else None
+                _eff_pl_xy = product_logo_xy if product_logo_xy is not None else _xy(gen_meta.get("product_logo_xy"))
+                _eff_pl_scale = (
+                    product_logo_scale
+                    if product_logo_scale is not None
+                    else gen_meta.get("product_logo_scale")
+                )
                 try:
                     branded_bytes = overlay_logo_and_text(
                         base_data, logo_png,
@@ -923,6 +982,9 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                             if text_width is not None
                             else gen_meta.get("text_width")
                         ),
+                        product_logo_data=_pl_bytes,
+                        product_logo_xy=_eff_pl_xy,
+                        product_logo_scale=_eff_pl_scale,
                     )
                     branded_obj = f"{brand_id}/{calendar_item_id}/branded.png"
                     await async_upload_file(
@@ -1012,6 +1074,13 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
             existing_metadata["headline_colors"] = headline_colors
         if text_width is not None:
             existing_metadata["text_width"] = text_width
+        # Product logo placement / on-off from the editor.
+        if product_logo_enabled is not None:
+            existing_metadata["product_logo_enabled"] = bool(product_logo_enabled)
+        if product_logo_xy is not None:
+            existing_metadata["product_logo_xy"] = list(product_logo_xy)
+        if product_logo_scale is not None:
+            existing_metadata["product_logo_scale"] = float(product_logo_scale)
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
         await execute_update(

@@ -152,6 +152,9 @@ class LogoRebrandRequest(BaseModel):
     font_family: str | None = None  # headline font (e.g. "Montserrat")
     headline_colors: dict[str, str] | None = None  # word index -> "#RRGGBB"
     text_width: float | None = None  # headline wrap width as fraction of image width
+    product_logo_xy: list[float] | None = None  # product logo center (0..1)
+    product_logo_scale: float | None = None  # product logo width as fraction
+    product_logo_enabled: bool | None = None  # show/hide the product logo
 
 
 # Manual logo/overlay editing is only allowed while the post is in review.
@@ -218,6 +221,9 @@ async def rebrand_logo(
             "font_family": body.font_family,
             "headline_colors": body.headline_colors,
             "text_width": body.text_width,
+            "product_logo_xy": body.product_logo_xy,
+            "product_logo_scale": body.product_logo_scale,
+            "product_logo_enabled": body.product_logo_enabled,
             "prior_status": prior_status,
         },
     )

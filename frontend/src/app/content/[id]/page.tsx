@@ -465,8 +465,13 @@ export default function ContentDetailPage() {
     font_family: (gm.font_family as string | undefined) || undefined,
     headline_colors: (gm.headline_colors as Record<string, string> | undefined) || undefined,
     text_width: (gm.text_width as number | undefined) ?? undefined,
+    product_logo_xy: (gm.product_logo_xy as [number, number] | undefined) || undefined,
+    product_logo_scale: (gm.product_logo_scale as number | undefined) ?? undefined,
+    product_logo_enabled: (gm.product_logo_enabled as boolean | undefined) ?? undefined,
     textAnchor: (gm.text_anchor_used as string | undefined) || null,
   };
+  // The product (manufacturer) logo, served from MinIO if the product has one.
+  const productLogoUrl = gm.product_logo_image ? fileUrl(gm.product_logo_image as string) : undefined;
   const canEditLogo = !!calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && !!cleanImageUrl;
 
   // Latest reviewer remark (rejection feedback) for this content, if any.
@@ -544,6 +549,7 @@ export default function ContentDetailPage() {
                   <LogoEditor
                     cleanImageUrl={cleanImageUrl}
                     logoUrl={logoEditorUrl}
+                    productLogoUrl={productLogoUrl}
                     logos={availableLogos}
                     initialVariant={(gm.logo_variant_used as string) || undefined}
                     textLine1={editorTextLine1}

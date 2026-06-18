@@ -389,7 +389,7 @@ export function ProductsTab({
                 onClick={onBatchFetchNoImage}
               >
                 {fetchingImages === "batch" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImageIcon className="mr-2 h-4 w-4" />}
-                {fetchingImages === "batch" ? "Fetching..." : "Fetch Images (No Image)"}
+                {fetchingImages === "batch" ? "Fetching..." : "Fetch (Image + logo) — No Image"}
               </Button>
               {selectedProductIds.size > 0 && (
                 <Button
@@ -399,7 +399,7 @@ export function ProductsTab({
                   onClick={onBatchFetchSelected}
                 >
                   {fetchingImages === "batch-selected" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
-                  Fetch Images ({selectedProductIds.size} selected)
+                  Fetch (Image + logo) ({selectedProductIds.size})
                 </Button>
               )}
               <Button size="sm" variant="outline" onClick={() => onBulkProductActive(true)}>
@@ -444,13 +444,14 @@ export function ProductsTab({
                     <th className="px-4 py-3 text-right font-medium">Price</th>
                     <th className="px-4 py-3 text-right font-medium">Stock</th>
                     <th className="px-4 py-3 text-center font-medium">Images</th>
+                    <th className="px-4 py-3 text-center font-medium">Logo</th>
                     <th className="px-4 py-3 text-center font-medium">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredProducts.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                      <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                         {products.length === 0
                           ? "No products synced yet. Click Sync Products to get started."
                           : "No products match the current filters."}
@@ -552,6 +553,22 @@ export function ProductsTab({
                             )}
                           </td>
                           <td className="px-4 py-3 text-center">
+                            {(() => {
+                              const logoUrl = (product.attributes as Record<string, unknown> | undefined)?.logo_url as string | undefined;
+                              return logoUrl ? (
+                                <img
+                                  src={fileUrl(logoUrl)}
+                                  alt="logo"
+                                  title={`Vendor logo${product.vendor_name ? ` — ${product.vendor_name}` : ""}`}
+                                  className="inline-block h-8 max-w-[64px] rounded-sm bg-white/70 object-contain p-0.5 ring-1 ring-border"
+                                  loading="lazy"
+                                />
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground">{"—"}</span>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-4 py-3 text-center">
                             <div className="flex items-center justify-center gap-2">
                               <Switch
                                 checked={product.is_active}
@@ -576,7 +593,7 @@ export function ProductsTab({
                             </td>
                             <td className="px-4 py-2 text-xs text-right font-medium text-muted-foreground">Lot No.</td>
                             <td className="px-4 py-2 text-xs text-right font-medium text-muted-foreground">Qty / Expiry</td>
-                            <td colSpan={2} />
+                            <td colSpan={3} />
                           </tr>
                         )}
                         {expandedProductId === product.id && (
@@ -595,7 +612,7 @@ export function ProductsTab({
                                   </span>
                                 )}
                               </td>
-                              <td colSpan={2} />
+                              <td colSpan={3} />
                             </tr>
                           ) : (
                             <tr className="bg-muted/10 border-b">
@@ -603,7 +620,7 @@ export function ProductsTab({
                               <td colSpan={2} className="px-4 py-1.5 text-xs text-muted-foreground italic text-right">
                                 No lot tracking — total: {product.remaining_qty ?? 0}
                               </td>
-                              <td colSpan={2} />
+                              <td colSpan={3} />
                             </tr>
                           )
                         )}
@@ -833,7 +850,7 @@ export function ProductsTab({
               }}
             >
               {fetchingImages === galleryProduct?.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
-              Search Web
+              Fetch (Image + logo)
             </Button>
             <Button size="sm" variant="outline" asChild>
               <label className="cursor-pointer">

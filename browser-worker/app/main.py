@@ -100,6 +100,10 @@ class ProductImageResponse(BaseModel):
     source: str | None = None
 
 
+class LogoRequest(BaseModel):
+    vendor_name: str
+
+
 class SocialPageRequest(BaseModel):
     url: HttpUrl
 
@@ -153,6 +157,25 @@ async def capture_product_image(req: ProductImageRequest):
             req.vendor_name,
             req.product_name,
         )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/capture/logo", response_model=ProductImageResponse, dependencies=[Depends(verify_api_key)])
+async def capture_logo(req: LogoRequest):
+    """Find a brand/manufacturer logo via Bing image search (fallback when
+    Brandfetch is unavailable). Biases the query toward a transparent PNG."""
+    vendor = (req.vendor_name or "").strip()
+    if not vendor:
+        return {"image_url": None, "source": None}
+    try:
+        result = await web_search_product_image(
+            get_browser(), f'"{vendor}" logo png transparent'
+        )
+        if not (result and result.get("image_url")):
+            result = await web_search_product_image(get_browser(), f"{vendor} logo")
+        return result
+    except Exception as exc:
+        logger.exception("Logo search failed for %s", vendor)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

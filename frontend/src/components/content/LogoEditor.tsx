@@ -16,7 +16,7 @@
  *  - Escape also cancels
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Move, RefreshCw, Layers, Grid3x3, Type, Check, X } from "lucide-react";
+import { Loader2, Move, RefreshCw, Layers, Grid3x3, Type, Check, X, Tag } from "lucide-react";
 
 export interface LogoPlacement {
   logo_xy: [number, number];
@@ -28,6 +28,9 @@ export interface LogoPlacement {
   font_family?: string; // headline font (e.g. "Montserrat")
   headline_colors?: Record<string, string>; // word index -> "#RRGGBB"
   text_width?: number; // headline wrap width as a fraction of image width (0..1)
+  product_logo_xy?: [number, number]; // product (manufacturer) logo center (0..1)
+  product_logo_scale?: number; // product logo width as a fraction of image width
+  product_logo_enabled?: boolean; // show/hide the product logo
 }
 
 // Bundled headline fonts (match agents Dockerfile + image_processing.HEADLINE_FONTS).
@@ -42,6 +45,8 @@ export const HEADLINE_FONTS = [
 interface LogoEditorProps {
   cleanImageUrl: string;
   logoUrl?: string;
+  /** The product (manufacturer) logo, if the linked product has one. */
+  productLogoUrl?: string;
   textLine1: string;
   textLine2?: string;
   initial: LogoPlacement & { textAnchor?: string | null };
@@ -77,7 +82,9 @@ type DragKind =
   | "resize-logo"
   | "move-text"
   | "resize-text"
-  | "resize-text-w";
+  | "resize-text-w"
+  | "move-product-logo"
+  | "resize-product-logo";
 interface DragState {
   kind: DragKind;
   startClientX: number;
@@ -92,6 +99,7 @@ interface DragState {
 export function LogoEditor({
   cleanImageUrl,
   logoUrl,
+  productLogoUrl,
   textLine1,
   textLine2,
   initial,
@@ -107,6 +115,17 @@ export function LogoEditor({
 
   const [logoXy, setLogoXy] = useState<[number, number]>(initial.logo_xy || [0.85, 0.85]);
   const [logoScale, setLogoScale] = useState<number>(initial.logo_scale || 0.2);
+
+  // Product (manufacturer) logo — a 2nd draggable/resizable logo, on/off.
+  const [productLogoXy, setProductLogoXy] = useState<[number, number]>(
+    initial.product_logo_xy || [0.12, 0.88]
+  );
+  const [productLogoScale, setProductLogoScale] = useState<number>(
+    initial.product_logo_scale || 0.18
+  );
+  const [productLogoEnabled, setProductLogoEnabled] = useState<boolean>(
+    initial.product_logo_enabled !== false && !!productLogoUrl
+  );
   const [textXy, setTextXy] = useState<[number, number]>(
     initial.text_xy || anchorToXy(initial.textAnchor)
   );
@@ -216,6 +235,13 @@ export function LogoEditor({
     font_family: isHeadline ? fontFamily : undefined,
     headline_colors: isHeadline ? headlineColors : undefined,
     text_width: isHeadline ? textWidth : undefined,
+    ...(productLogoUrl
+      ? {
+          product_logo_xy: productLogoXy,
+          product_logo_scale: productLogoScale,
+          product_logo_enabled: productLogoEnabled,
+        }
+      : {}),
   };
 
   // Track the rendered photo size for normalized↔pixel math + font sizing.
@@ -251,6 +277,10 @@ export function LogoEditor({
       // Wrap width: dragging right widens the box (×2 → full box from center),
       // so the text re-wraps onto fewer/more lines instead of distorting.
       setTextWidth(clamp(d.startWidth + dx * 2, 0.3, 0.97));
+    } else if (d.kind === "move-product-logo") {
+      setProductLogoXy([clamp(d.startXy[0] + dx, 0.02, 0.98), clamp(d.startXy[1] + dy, 0.02, 0.98)]);
+    } else if (d.kind === "resize-product-logo") {
+      setProductLogoScale(clamp(d.startScale + dx, 0.05, 0.5));
     }
   }, []);
 
@@ -273,12 +303,20 @@ export function LogoEditor({
     e.preventDefault();
     e.stopPropagation();
     const r = containerRef.current?.getBoundingClientRect();
+    const startXy =
+      kind === "move-logo" ? logoXy
+      : kind === "move-product-logo" ? productLogoXy
+      : textXy;
+    const startScale =
+      kind === "resize-logo" ? logoScale
+      : kind === "resize-product-logo" ? productLogoScale
+      : textScale;
     dragRef.current = {
       kind,
       startClientX: e.clientX,
       startClientY: e.clientY,
-      startXy: kind.startsWith("move-logo") ? logoXy : textXy,
-      startScale: kind.endsWith("logo") ? logoScale : textScale,
+      startXy,
+      startScale,
       startWidth: textWidth,
       rectW: r?.width || 1,
       rectH: r?.height || 1,
@@ -473,6 +511,32 @@ export function LogoEditor({
           </div>
         ) : null}
 
+        {/* Product (manufacturer) logo — draggable + resizable, toggle on/off */}
+        {productLogoUrl && productLogoEnabled ? (
+          <div
+            onPointerDown={startDrag("move-product-logo")}
+            style={{
+              position: "absolute",
+              left: `${productLogoXy[0] * 100}%`,
+              top: `${productLogoXy[1] * 100}%`,
+              transform: "translate(-50%, -50%)",
+              width: dims.w * productLogoScale,
+              cursor: "move",
+              touchAction: "none",
+            }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={productLogoUrl}
+              alt="product logo"
+              className="block w-full"
+              draggable={false}
+              style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.4))" }}
+            />
+            <div onPointerDown={startDrag("resize-product-logo")} style={handleStyle} />
+          </div>
+        ) : null}
+
         {/* Style controls, overlaid on the photo frame. */}
         <div className="absolute left-2 top-2 z-20 flex flex-col items-start gap-1.5">
           {variantKeys.length >= 2 ? (
@@ -497,6 +561,18 @@ export function LogoEditor({
             <Layers className="h-3.5 w-3.5" />
             Overlay: {textStyle}
           </button>
+          {productLogoUrl ? (
+            <button
+              type="button"
+              onPointerDown={(e) => { e.stopPropagation(); }}
+              onClick={() => setProductLogoEnabled((v) => !v)}
+              className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium shadow ${productLogoEnabled ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-white/90 text-black hover:bg-white"}`}
+              title="Show/hide the product (manufacturer) logo"
+            >
+              <Tag className="h-3.5 w-3.5" />
+              Product logo: {productLogoEnabled ? "on" : "off"}
+            </button>
+          ) : null}
           {isHeadline ? (
             <button
               type="button"

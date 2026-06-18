@@ -1378,13 +1378,13 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     if product_ids:
         pid = product_ids[0] if isinstance(product_ids, list) else product_ids
         products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes FROM products "
             "WHERE id = :pid AND is_active = true LIMIT 1",
             {"pid": str(pid)},
         )
     else:
         products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes FROM products "
             "WHERE brand_id = :brand_id AND is_active = true AND ("
             "  bc_item_no = :sku OR LOWER(name) LIKE LOWER(:name_pattern)"
             ") LIMIT 1",
@@ -1400,7 +1400,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     # name shares the most non-trivial words with the free-text.
     if not products and free_text:
         all_products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes FROM products "
             "WHERE brand_id = :brand_id AND is_active = true",
             {"brand_id": brand_id},
         )
@@ -1438,6 +1438,8 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
 
     product = products[0]
     gallery = product.get("image_urls")
+    _attrs = product.get("attributes") if isinstance(product.get("attributes"), dict) else {}
+    product_logo_image = (_attrs or {}).get("logo_url")
 
     # Check if product has images in its gallery
     if isinstance(gallery, list) and gallery:
@@ -1456,6 +1458,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
                 "needs_manual_image": False,
                 "is_lifestyle_only": False,
                 "product_id": str(product.get("id", "")),
+                "product_logo_image": product_logo_image,
             }
 
     # No gallery images — restrict to lifestyle shots
@@ -1468,6 +1471,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
         "needs_manual_image": True,
         "is_lifestyle_only": True,
         "product_id": str(product.get("id", "")),
+        "product_logo_image": product_logo_image,
     }
 
 
@@ -2235,6 +2239,37 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
         }
 
 
+async def _download_product_asset(ref: str | None) -> bytes | None:
+    """Download a product asset (logo/image) from a MinIO object name or URL."""
+    if not ref:
+        return None
+    import httpx as _httpx
+
+    try:
+        if ref.startswith("http://") or ref.startswith("https://"):
+            async with _httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(ref)
+                r.raise_for_status()
+                return r.content
+        from shared.config import settings as _cfg
+        if ref.startswith("/"):
+            async with _httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(f"{_cfg.BACKEND_URL}{ref}")
+                r.raise_for_status()
+                return r.content
+        bucket = getattr(_cfg, "MINIO_BUCKET", "markai-assets")
+        try:
+            return await async_download_file(bucket, ref)
+        except Exception:
+            async with _httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(f"{_cfg.BACKEND_URL}/api/v1/files/{ref}")
+                r.raise_for_status()
+                return r.content
+    except Exception as exc:
+        logger.warning("Failed to download product asset %s: %s", ref, exc)
+        return None
+
+
 async def _replace_product_in_generated_image(
     state: ContentState, image_data: bytes
 ) -> bytes:
@@ -2576,6 +2611,22 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
                 except Exception as _exc:
                     logger.warning("ad logo variant re-pick failed: %s", _exc)
 
+        # Optional product (manufacturer) logo — fetched once, composited on
+        # every style. Enabled by default when the product has a logo.
+        pl_enabled = bool(state.get("product_logo_image")) and (
+            state.get("product_logo_enabled") is not False
+        )
+        pl_bytes = (
+            await _download_product_asset(state.get("product_logo_image"))
+            if pl_enabled else None
+        )
+        _pl_xy = state.get("product_logo_xy")
+        pl_kwargs = {
+            "product_logo_data": pl_bytes,
+            "product_logo_xy": tuple(_pl_xy) if _pl_xy else None,
+            "product_logo_scale": state.get("product_logo_scale"),
+        }
+
         if image_format == "ad":
             branded_bytes = overlay_logo_and_text(
                 image_data,
@@ -2590,6 +2641,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
                 text_width=ad_text_width,
                 headline_colors=ad_headline_colors,
                 font_family=ad_font_family or "Montserrat",
+                **pl_kwargs,
             )
         else:
             # Apply overlay using the placement the vision agent chose by looking
@@ -2605,6 +2657,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
                 logo_scale=scale_for_logo_variant(chosen_label),
                 logo_xy=plan_logo_xy,
                 text_anchor=plan_text_anchor,
+                **pl_kwargs,
             )
 
         # Upload branded image to MinIO
@@ -2636,6 +2689,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             "text_width": ad_text_width,
             "headline_colors": ad_headline_colors,
             "font_family": ad_font_family if image_format == "ad" else None,
+            "product_logo_enabled": pl_enabled,
         }
 
     except Exception as exc:
@@ -3255,6 +3309,11 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
             "text_width": state.get("text_width"),
             "font_family": state.get("font_family") if state.get("text_style") == "headline" else None,
             "headline_colors": state.get("headline_colors") or None,
+            # Product (manufacturer) logo — object + placement for the editor.
+            "product_logo_image": state.get("product_logo_image"),
+            "product_logo_enabled": state.get("product_logo_enabled"),
+            "product_logo_xy": list(state["product_logo_xy"]) if state.get("product_logo_xy") else None,
+            "product_logo_scale": state.get("product_logo_scale"),
             "branding_review": state.get("branding_review"),
         },
         "status": "in_review",

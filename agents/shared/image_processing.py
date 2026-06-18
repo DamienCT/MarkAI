@@ -382,6 +382,9 @@ def overlay_logo_and_text(
     font_family: str | None = None,
     headline_colors: dict | None = None,
     text_width: float | None = None,
+    product_logo_data: bytes | None = None,
+    product_logo_xy: tuple[float, float] | None = None,
+    product_logo_scale: float | None = None,
 ) -> bytes:
     """Overlay a transparent logo on the best monotone area + text bar.
 
@@ -504,6 +507,50 @@ def overlay_logo_and_text(
         overlay.paste(glow, (lx - halo_pad, ly - halo_pad), glow)
 
         overlay.paste(logo, (lx, ly), logo)
+
+    # --- Product / manufacturer logo (optional 2nd logo, e.g. Citterio) ---
+    # Drawn here (before the text branches) so it appears on every text style,
+    # including the early-returning headline / none paths.
+    if product_logo_data:
+        try:
+            plogo = Image.open(BytesIO(product_logo_data)).convert("RGBA")
+            pbbox = plogo.getbbox()
+            if pbbox:
+                plogo = plogo.crop(pbbox)
+            # Web logos are often opaque JPEG/PNG on a white card — key out a
+            # near-pure-white background so they don't paste as a white box.
+            alpha = np.asarray(plogo.split()[3], dtype=np.uint8)
+            if alpha.min() >= 250:  # effectively no transparency
+                rgb = np.asarray(plogo.convert("RGB"), dtype=np.uint8)
+                white = (rgb[..., 0] >= 245) & (rgb[..., 1] >= 245) & (rgb[..., 2] >= 245)
+                if white.any() and not white.all():
+                    new_alpha = np.where(white, 0, 255).astype(np.uint8)
+                    plogo.putalpha(Image.fromarray(new_alpha, mode="L"))
+                    plogo = plogo.crop(plogo.getbbox() or (0, 0, plogo.width, plogo.height))
+
+            pscale = max(0.05, min(0.5, float(product_logo_scale or 0.18)))
+            pw = max(1, int(base.width * pscale))
+            ph = int(plogo.height * (pw / plogo.width)) if plogo.width else 0
+            if pw > 0 and ph > 0:
+                plogo = plogo.resize((pw, ph), Image.LANCZOS)
+                if product_logo_xy is not None:
+                    pcx, pcy = product_logo_xy
+                    px = int(pcx * base.width - pw / 2)
+                    py = int(pcy * base.height - ph / 2)
+                else:
+                    pm = int(base.width * 0.04)  # default: bottom-left
+                    px, py = pm, base.height - ph - pm
+                pedge = max(8, int(base.width * 0.02))
+                px = max(pedge, min(px, base.width - pw - pedge))
+                py = max(pedge, min(py, base.height - ph - pedge))
+                # Soft drop shadow so it reads on any background.
+                pshadow = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+                pshadow.putalpha(plogo.split()[3].point(lambda v: int(v * 0.4)))
+                poff = max(2, int(pw * 0.02))
+                overlay.alpha_composite(pshadow, (px + poff, py + poff))
+                overlay.paste(plogo, (px, py), plogo)
+        except Exception as exc:
+            logger.warning("Product logo overlay failed: %s", exc)
 
     # --- No overlay: image + logo only (text removed by the editor) ---
     if (text_style or "").lower() == "none":
