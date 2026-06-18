@@ -91,6 +91,39 @@ def _preflight_checks(
         )
 
 
+async def _derive_facebook_page_token(token: str, page_id: str) -> str | None:
+    """Exchange a User/System-User token for the Page's OWN access token.
+
+    Posting to ``/{page-id}/feed`` requires a Page access token; a user or
+    system-user token (even with ``pages_manage_posts``) triggers Facebook's
+    deprecated ``publish_actions`` error. The page token is obtained from
+    ``GET /{page-id}?fields=access_token`` using the stored token (which must
+    have the Page assigned + ``pages_manage_posts``). Returns None on failure
+    so the caller falls back to the original token.
+    """
+    if not token or not page_id:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"https://graph.facebook.com/v25.0/{page_id}",
+                params={"fields": "access_token", "access_token": token},
+            )
+            resp.raise_for_status()
+            page_token = resp.json().get("access_token")
+        if page_token:
+            logger.info("Derived Facebook Page token for page %s", page_id)
+            return page_token
+        logger.warning(
+            "No Page token returned for page %s — is the Page assigned to the "
+            "system user with pages_manage_posts?", page_id,
+        )
+        return None
+    except Exception as exc:
+        logger.warning("Could not derive FB Page token for page %s: %s", page_id, exc)
+        return None
+
+
 async def dispatch_to_n8n(
     content: Content,
     calendar_item: CalendarItem,
@@ -183,6 +216,17 @@ async def dispatch_to_n8n(
         "calendar_item_id": str(calendar_item.id),
         **get_platform_credentials(brand, channel),
     }
+
+    # Facebook Page publishing needs a PAGE token, not the stored user/system-
+    # user token. Derive it on the fly so the brand can keep storing its
+    # (non-expiring) system-user token; falls back to the stored token if the
+    # exchange fails.
+    if channel == "facebook" and payload.get("meta_access_token") and payload.get("page_id"):
+        page_token = await _derive_facebook_page_token(
+            payload["meta_access_token"], payload["page_id"]
+        )
+        if page_token:
+            payload["meta_access_token"] = page_token
 
     # Single unified webhook — n8n routes internally by channel field
     n8n_webhook = f"{settings.N8N_WEBHOOK_BASE}/markai/publish"
