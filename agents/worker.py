@@ -268,6 +268,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
     ad_text_width: float | None = None
     ad_headline_colors: dict | None = None
     ad_font_family: str | None = None
+    ad_logo_xy: tuple[float, float] | None = None
 
     logger.info(
         "Regenerating image for content %s (brand %s, format=%s)",
@@ -546,7 +547,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                         from shared.placement import plan_headline_placement
                         try:
                             (ad_text_xy, ad_text_scale, ad_text_width,
-                             ad_headline_colors, ad_font_family) = (
+                             ad_headline_colors, ad_font_family, ad_logo_xy) = (
                                 await plan_headline_placement(
                                     image_data, text_line1, brand_colors
                                 )
@@ -563,6 +564,8 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                         text_style=("headline" if image_format == "ad" else "glass"),
                         text_xy=ad_text_xy,
                         text_scale=ad_text_scale,
+                        # Logo placed clear of the headline (ad only); else heuristic.
+                        logo_xy=(ad_logo_xy if image_format == "ad" else None),
                         font_family=headline_font,
                         headline_colors=effective_colors,
                         text_width=(

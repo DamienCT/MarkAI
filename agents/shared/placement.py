@@ -10,12 +10,14 @@ picks a good spot + size:
      horizontal bands and picks the lowest-variance (cleanest) one.
   3. ``plan_headline_placement`` — tries vision first, falls back to variance.
 
-All return ``(text_xy, text_scale, text_width, headline_colors, font_family)``:
-text_xy is a normalized (x, y) center in 0..1, text_scale multiplies the
-headline font size, text_width is the wrap width as a fraction of image width
-(so the text re-flows to fit the chosen empty area), headline_colors maps a word
-index (as a string) to a "#RRGGBB" color for emphasized words (empty = all
-white), and font_family is one of the bundled headline fonts.
+All return ``(text_xy, text_scale, text_width, headline_colors, font_family,
+logo_xy)``: text_xy is a normalized (x, y) center in 0..1, text_scale multiplies
+the headline font size, text_width is the wrap width as a fraction of image
+width (so the text re-flows to fit the chosen empty area), headline_colors maps
+a word index (as a string) to a "#RRGGBB" color for emphasized words (empty =
+all white), font_family is one of the bundled headline fonts, and logo_xy is a
+normalized (x, y) center for the brand logo placed CLEAR of the headline so the
+two never overlap (None → caller uses its own heuristic).
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ def _norm_hex(v) -> str | None:
 
 def variance_headline_placement(
     image_data: bytes,
-) -> tuple[tuple[float, float], float, float, dict, str]:
+) -> tuple[tuple[float, float], float, float, dict, str, tuple[float, float]]:
     """Pick the cleanest horizontal band for the headline (no LLM).
 
     Scans candidate bands and returns the center of the one with the lowest
@@ -69,12 +71,12 @@ def variance_headline_placement(
         img = Image.open(BytesIO(image_data)).convert("L")
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("variance placement: cannot open image (%s)", exc)
-        return ((0.5, 0.15), _DEFAULT_SCALE, _DEFAULT_WIDTH, {}, _DEFAULT_FONT)
+        return ((0.5, 0.15), _DEFAULT_SCALE, _DEFAULT_WIDTH, {}, _DEFAULT_FONT, (0.85, 0.88))
 
     arr = np.asarray(img, dtype=np.float32)
     h, w = arr.shape
     if h == 0 or w == 0:
-        return ((0.5, 0.15), _DEFAULT_SCALE, _DEFAULT_WIDTH, {}, _DEFAULT_FONT)
+        return ((0.5, 0.15), _DEFAULT_SCALE, _DEFAULT_WIDTH, {}, _DEFAULT_FONT, (0.85, 0.88))
 
     # Sample the central 86% of the width (where the text would sit).
     x0, x1 = int(w * 0.07), int(w * 0.93)
@@ -116,20 +118,24 @@ def variance_headline_placement(
         "variance headline placement: y=%.2f width=%.2f (variance=%.0f)",
         best_y, width_frac, best_var,
     )
+    # Logo goes to a corner in the vertical band OPPOSITE the headline so the
+    # two never overlap (headline is a centered horizontal band).
+    logo_xy = (0.85, 0.88) if best_y < 0.5 else (0.85, 0.12)
+
     # No semantic color/font choice without an LLM — white text, default font.
-    return ((0.5, best_y), _DEFAULT_SCALE, width_frac, {}, _DEFAULT_FONT)
+    return ((0.5, best_y), _DEFAULT_SCALE, width_frac, {}, _DEFAULT_FONT, logo_xy)
 
 
 async def vision_headline_placement(
     image_data: bytes,
     headline_text: str,
     brand_colors: dict | None = None,
-) -> tuple[tuple[float, float], float, float, dict, str] | None:
+) -> tuple[tuple[float, float], float, float, dict, str, tuple[float, float] | None] | None:
     """Ask a vision LLM where a big headline should go, how big, how wide,
-    which word(s) to color, and which font to use.
+    which word(s) to color, which font, and where the logo goes (clear of it).
 
-    Returns ``(text_xy, text_scale, text_width, headline_colors, font_family)``
-    or ``None`` on any failure (caller falls back to the variance heuristic).
+    Returns ``(text_xy, text_scale, text_width, headline_colors, font_family,
+    logo_xy)`` or ``None`` on any failure (caller falls back to variance).
     """
     from shared.llm import chat_completion, parse_llm_json
     from shared.image_processing import HEADLINE_FONTS
@@ -178,12 +184,17 @@ async def vision_headline_placement(
         "'Montserrat' (modern, clean, versatile), 'Poppins' (friendly, rounded, "
         "approachable), 'Oswald' (bold, condensed, high-impact), 'Playfair "
         "Display' (elegant serif, premium/luxury), 'Dancing Script' (handwritten, "
-        "casual/playful). Default 'Montserrat' if unsure.\n\n"
+        "casual/playful). Default 'Montserrat' if unsure.\n"
+        "- logo_xy: the CENTER of the brand logo as x and y fractions 0..1, in a "
+        "clean area in a DIFFERENT part of the image from the headline so the "
+        "logo and headline NEVER overlap (a corner far from the headline is "
+        "ideal). Avoid the hero product, faces, and packaging.\n\n"
         "Return strict JSON only:\n"
         '{"text_xy": {"x": 0.0-1.0, "y": 0.0-1.0}, '
         '"text_size": "s"|"m"|"l", "text_width": 0.3-0.95, '
         '"text_colors": {"<word_index>": "#RRGGBB"}, '
         '"font_family": "Montserrat", '
+        '"logo_xy": {"x": 0.0-1.0, "y": 0.0-1.0}, '
         '"reason": "where the empty area is"}'
     )
     user_text = (
@@ -260,21 +271,35 @@ async def vision_headline_placement(
             font = f
             break
 
+    # Logo position, kept clear of the headline. None → caller's own heuristic.
+    logo_xy: tuple[float, float] | None = None
+    lxy = plan.get("logo_xy")
+    lcx = lcy = None
+    if isinstance(lxy, dict):
+        lcx, lcy = lxy.get("x"), lxy.get("y")
+    elif isinstance(lxy, (list, tuple)) and len(lxy) == 2:
+        lcx, lcy = lxy[0], lxy[1]
+    try:
+        logo_xy = (_clamp(float(lcx), 0.05, 0.95), _clamp(float(lcy), 0.05, 0.95))
+    except (TypeError, ValueError):
+        logo_xy = None
+
     logger.info(
-        "vision headline placement: xy=(%.2f,%.2f) size=%s width=%.2f colors=%s font=%s (%s)",
-        cx, cy, size, width, colors, font, str(plan.get("reason", ""))[:120],
+        "vision headline placement: xy=(%.2f,%.2f) size=%s width=%.2f colors=%s font=%s logo=%s (%s)",
+        cx, cy, size, width, colors, font, logo_xy, str(plan.get("reason", ""))[:120],
     )
-    return ((cx, cy), scale, width, colors, font)
+    return ((cx, cy), scale, width, colors, font, logo_xy)
 
 
 async def plan_headline_placement(
     image_data: bytes,
     headline_text: str,
     brand_colors: dict | None = None,
-) -> tuple[tuple[float, float], float, float, dict, str]:
+) -> tuple[tuple[float, float], float, float, dict, str, tuple[float, float] | None]:
     """Vision first, deterministic variance band as a fallback.
 
-    Always returns ``(text_xy, text_scale, text_width, headline_colors, font_family)``.
+    Always returns ``(text_xy, text_scale, text_width, headline_colors,
+    font_family, logo_xy)``.
     """
     plan = await vision_headline_placement(image_data, headline_text, brand_colors)
     if plan is not None:

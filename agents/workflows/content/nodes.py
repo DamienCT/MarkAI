@@ -2537,6 +2537,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         ad_text_xy = ad_text_scale = ad_text_width = None
         ad_headline_colors: dict | None = None
         ad_font_family = "Montserrat"
+        ad_logo_xy: tuple[float, float] | None = None
         if image_format == "ad":
             from shared.placement import plan_headline_placement
             # Brand palette so the AI can emphasize a key word on-brand.
@@ -2549,11 +2550,31 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             _brand_colors = {**(brand_guidelines.get("colors") or {}), **_cp}
             try:
                 (ad_text_xy, ad_text_scale, ad_text_width,
-                 ad_headline_colors, ad_font_family) = (
+                 ad_headline_colors, ad_font_family, ad_logo_xy) = (
                     await plan_headline_placement(image_data, text_line1, _brand_colors)
                 )
             except Exception as _exc:
                 logger.warning("Headline placement failed, using default: %s", _exc)
+
+            # Coordinate the logo with the headline: use the placement's logo_xy
+            # (clear of the title) and re-pick the contrast variant at that spot.
+            if ad_logo_xy is not None:
+                plan_logo_xy = ad_logo_xy
+                try:
+                    _b, _v = analyze_brightness_at_xy(
+                        image_data, ad_logo_xy[0], ad_logo_xy[1],
+                        approx_logo_w, approx_logo_h,
+                    )
+                    _rv = select_logo_variant(_b, _v, list(available_logos.keys()))
+                    if _rv and _rv != chosen_label and _rv in available_logos:
+                        _raw = await _download_logo_bytes(available_logos[_rv])
+                        _png = _bytes_to_logo_png(_raw) if _raw else None
+                        if _png:
+                            logo_png = _png
+                            chosen_label = _rv
+                            logger.info("ad: re-picked logo variant %s at %s", _rv, ad_logo_xy)
+                except Exception as _exc:
+                    logger.warning("ad logo variant re-pick failed: %s", _exc)
 
         if image_format == "ad":
             branded_bytes = overlay_logo_and_text(
