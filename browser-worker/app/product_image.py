@@ -169,3 +169,43 @@ async def web_search_product_image(browser: Browser, query: str) -> dict:
     if url:
         return {"image_url": url, "source": "bing_images"}
     return {"image_url": None, "source": None}
+
+
+async def web_search_logo(
+    browser: Browser, vendor: str, offset: int = 0
+) -> dict:
+    """Find a manufacturer/vendor logo, returning the candidate at *offset*.
+
+    Validates several Bing candidates up front so the caller can cycle through
+    alternatives ("new search" button) by incrementing *offset* — without an
+    editable query. ``total`` reports how many valid candidates were found so
+    the offset can wrap cleanly.
+    """
+    vendor = (vendor or "").strip()
+    if not vendor:
+        return {"image_url": None, "source": None, "total": 0}
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for query in (f'"{vendor}" logo png transparent', f"{vendor} logo"):
+        for url in await _search_bing_images(browser, query):
+            if url in seen:
+                continue
+            seen.add(url)
+            if await _validate_image_url(url):
+                candidates.append(url)
+            if len(candidates) >= 6:
+                break
+        if len(candidates) >= 6:
+            break
+
+    if not candidates:
+        logger.info("No downloadable logo found for vendor=%r", vendor)
+        return {"image_url": None, "source": None, "total": 0}
+
+    chosen = candidates[offset % len(candidates)]
+    return {
+        "image_url": chosen,
+        "source": "bing_images",
+        "total": len(candidates),
+    }

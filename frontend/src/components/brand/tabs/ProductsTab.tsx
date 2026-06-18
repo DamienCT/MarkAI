@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ShoppingBag, RefreshCw, Loader2, Search, Upload, ImageIcon,
   CheckCircle2, Trash2, ChevronDown, ChevronLeft, ChevronRight,
+  Tag, RotateCw, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -126,6 +127,87 @@ export function ProductsTab({
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [vendorSearch, setVendorSearch] = useState("");
   const [categorySearch, setCategorySearch] = useState("");
+
+  // Vendor logo modal — logos belong to the vendor (manufacturer), keyed by
+  // vendor_name and stored at the brand level. One logo covers all of that
+  // vendor's products at generation time.
+  type VendorLogo = { vendor_name: string; has_logo: boolean; logo_url: string | null };
+  const [vendorLogoOpen, setVendorLogoOpen] = useState(false);
+  const [vendorLogos, setVendorLogos] = useState<VendorLogo[]>([]);
+  const [vendorLogosLoading, setVendorLogosLoading] = useState(false);
+  const [vendorLogoBusy, setVendorLogoBusy] = useState<string | null>(null);
+  const vendorAttempts = useRef<Record<string, number>>({});
+
+  const loadVendorLogos = async () => {
+    setVendorLogosLoading(true);
+    try {
+      const data = await api.get<{ vendors: VendorLogo[] }>(
+        `/api/v1/brands/${brand.id}/vendors`
+      );
+      setVendorLogos(data.vendors || []);
+    } catch {
+      toast.error("Failed to load vendors");
+    } finally {
+      setVendorLogosLoading(false);
+    }
+  };
+
+  const openVendorLogos = () => {
+    setVendorLogoOpen(true);
+    vendorAttempts.current = {};
+    loadVendorLogos();
+  };
+
+  const fetchVendorLogo = async (vendorName: string, retry: boolean) => {
+    const cur = vendorAttempts.current[vendorName] ?? -1;
+    const attempt = retry ? cur + 1 : 0;
+    vendorAttempts.current[vendorName] = attempt;
+    setVendorLogoBusy(vendorName);
+    try {
+      await api.post(`/api/v1/brands/${brand.id}/vendors/fetch-logo`, {
+        vendor_name: vendorName,
+        attempt,
+      });
+      await loadVendorLogos();
+      toast.success(`Logo updated — ${vendorName}`);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "No logo found";
+      toast.error(detail);
+    } finally {
+      setVendorLogoBusy(null);
+    }
+  };
+
+  const uploadVendorLogo = async (vendorName: string, file: File) => {
+    setVendorLogoBusy(vendorName);
+    try {
+      await api.uploadFile(
+        `/api/v1/brands/${brand.id}/vendors/upload-logo?vendor_name=${encodeURIComponent(vendorName)}`,
+        file
+      );
+      await loadVendorLogos();
+      toast.success(`Logo uploaded — ${vendorName}`);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Upload failed";
+      toast.error(detail);
+    } finally {
+      setVendorLogoBusy(null);
+    }
+  };
+
+  const deleteVendorLogo = async (vendorName: string) => {
+    setVendorLogoBusy(vendorName);
+    try {
+      await api.delete(
+        `/api/v1/brands/${brand.id}/vendors/logo?vendor_name=${encodeURIComponent(vendorName)}`
+      );
+      await loadVendorLogos();
+    } catch {
+      toast.error("Failed to remove logo");
+    } finally {
+      setVendorLogoBusy(null);
+    }
+  };
 
   const openSyncDialog = async () => {
     setSyncDialogOpen(true);
@@ -389,7 +471,7 @@ export function ProductsTab({
                 onClick={onBatchFetchNoImage}
               >
                 {fetchingImages === "batch" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImageIcon className="mr-2 h-4 w-4" />}
-                {fetchingImages === "batch" ? "Fetching..." : "Fetch (Image + logo) — No Image"}
+                {fetchingImages === "batch" ? "Fetching..." : "Fetch images — No Image"}
               </Button>
               {selectedProductIds.size > 0 && (
                 <Button
@@ -399,9 +481,13 @@ export function ProductsTab({
                   onClick={onBatchFetchSelected}
                 >
                   {fetchingImages === "batch-selected" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
-                  Fetch (Image + logo) ({selectedProductIds.size})
+                  Fetch images ({selectedProductIds.size})
                 </Button>
               )}
+              <Button size="sm" variant="outline" onClick={openVendorLogos}>
+                <Tag className="mr-2 h-4 w-4" />
+                Fetch logo vendor
+              </Button>
               <Button size="sm" variant="outline" onClick={() => onBulkProductActive(true)}>
                 Include All
               </Button>
@@ -444,14 +530,13 @@ export function ProductsTab({
                     <th className="px-4 py-3 text-right font-medium">Price</th>
                     <th className="px-4 py-3 text-right font-medium">Stock</th>
                     <th className="px-4 py-3 text-center font-medium">Images</th>
-                    <th className="px-4 py-3 text-center font-medium">Logo</th>
                     <th className="px-4 py-3 text-center font-medium">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredProducts.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                      <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
                         {products.length === 0
                           ? "No products synced yet. Click Sync Products to get started."
                           : "No products match the current filters."}
@@ -553,22 +638,6 @@ export function ProductsTab({
                             )}
                           </td>
                           <td className="px-4 py-3 text-center">
-                            {(() => {
-                              const logoUrl = (product.attributes as Record<string, unknown> | undefined)?.logo_url as string | undefined;
-                              return logoUrl ? (
-                                <img
-                                  src={fileUrl(logoUrl)}
-                                  alt="logo"
-                                  title={`Vendor logo${product.vendor_name ? ` — ${product.vendor_name}` : ""}`}
-                                  className="inline-block h-8 max-w-[64px] rounded-sm bg-white/70 object-contain p-0.5 ring-1 ring-border"
-                                  loading="lazy"
-                                />
-                              ) : (
-                                <span className="text-[10px] text-muted-foreground">{"—"}</span>
-                              );
-                            })()}
-                          </td>
-                          <td className="px-4 py-3 text-center">
                             <div className="flex items-center justify-center gap-2">
                               <Switch
                                 checked={product.is_active}
@@ -593,7 +662,7 @@ export function ProductsTab({
                             </td>
                             <td className="px-4 py-2 text-xs text-right font-medium text-muted-foreground">Lot No.</td>
                             <td className="px-4 py-2 text-xs text-right font-medium text-muted-foreground">Qty / Expiry</td>
-                            <td colSpan={3} />
+                            <td colSpan={2} />
                           </tr>
                         )}
                         {expandedProductId === product.id && (
@@ -612,7 +681,7 @@ export function ProductsTab({
                                   </span>
                                 )}
                               </td>
-                              <td colSpan={3} />
+                              <td colSpan={2} />
                             </tr>
                           ) : (
                             <tr className="bg-muted/10 border-b">
@@ -620,7 +689,7 @@ export function ProductsTab({
                               <td colSpan={2} className="px-4 py-1.5 text-xs text-muted-foreground italic text-right">
                                 No lot tracking — total: {product.remaining_qty ?? 0}
                               </td>
-                              <td colSpan={3} />
+                              <td colSpan={2} />
                             </tr>
                           )
                         )}
@@ -850,7 +919,7 @@ export function ProductsTab({
               }}
             >
               {fetchingImages === galleryProduct?.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
-              Fetch (Image + logo)
+              Fetch image
             </Button>
             <Button size="sm" variant="outline" asChild>
               <label className="cursor-pointer">
@@ -869,6 +938,118 @@ export function ProductsTab({
               </label>
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Vendor logo modal — one logo per manufacturer, reused for all its
+          products at generation time. */}
+      <Dialog open={vendorLogoOpen} onOpenChange={setVendorLogoOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogTitle className="flex items-center gap-2">
+            <Tag className="h-4 w-4" /> Vendor logos
+          </DialogTitle>
+          <DialogDescription>
+            Each vendor (manufacturer) gets one logo, reused for every one of its
+            products in generated posts. Fetch it automatically from the web or
+            upload your own.
+          </DialogDescription>
+
+          {vendorLogosLoading ? (
+            <div className="space-y-2 py-2">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+          ) : vendorLogos.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No vendors yet — sync products first.
+            </p>
+          ) : (
+            <div className="divide-y">
+              {vendorLogos.map((v) => {
+                const busy = vendorLogoBusy === v.vendor_name;
+                return (
+                  <div key={v.vendor_name} className="flex items-center gap-3 py-3">
+                    <div className="flex h-12 w-16 shrink-0 items-center justify-center rounded-sm bg-white/70 ring-1 ring-border">
+                      {busy ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                      ) : v.logo_url ? (
+                        <img
+                          src={fileUrl(v.logo_url)}
+                          alt={v.vendor_name}
+                          className="h-11 max-w-[60px] object-contain p-0.5"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground">No logo</span>
+                      )}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium" title={v.vendor_name}>
+                        {v.vendor_name}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {v.has_logo ? "Logo set" : "No logo yet"}
+                      </p>
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {v.has_logo ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => fetchVendorLogo(v.vendor_name, true)}
+                          title="Search again for a different logo"
+                        >
+                          <RotateCw className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => fetchVendorLogo(v.vendor_name, false)}
+                        >
+                          <Search className="mr-1.5 h-3.5 w-3.5" />
+                          Fetch logo
+                        </Button>
+                      )}
+
+                      <Button size="sm" variant="outline" disabled={busy} asChild>
+                        <label className="cursor-pointer">
+                          <Upload className="h-3.5 w-3.5" />
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) uploadVendorLogo(v.vendor_name, file);
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                      </Button>
+
+                      {v.has_logo && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => deleteVendorLogo(v.vendor_name)}
+                          title="Remove logo"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

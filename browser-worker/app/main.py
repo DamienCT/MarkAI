@@ -10,7 +10,11 @@ from pydantic import BaseModel, HttpUrl
 
 from app.capture import extract_page, take_screenshot
 from app.config import settings
-from app.product_image import search_supplier_website, web_search_product_image
+from app.product_image import (
+    search_supplier_website,
+    web_search_logo,
+    web_search_product_image,
+)
 from app.social_scraper import (
     scrape_facebook_page,
     scrape_instagram_profile,
@@ -98,10 +102,12 @@ class ProductImageRequest(BaseModel):
 class ProductImageResponse(BaseModel):
     image_url: str | None = None
     source: str | None = None
+    total: int | None = None
 
 
 class LogoRequest(BaseModel):
     vendor_name: str
+    offset: int = 0
 
 
 class SocialPageRequest(BaseModel):
@@ -162,18 +168,14 @@ async def capture_product_image(req: ProductImageRequest):
 
 @app.post("/capture/logo", response_model=ProductImageResponse, dependencies=[Depends(verify_api_key)])
 async def capture_logo(req: LogoRequest):
-    """Find a brand/manufacturer logo via Bing image search (fallback when
-    Brandfetch is unavailable). Biases the query toward a transparent PNG."""
+    """Find a brand/manufacturer logo via Bing image search. Biases the query
+    toward a transparent PNG. ``offset`` cycles through alternative candidates
+    so the caller can request a different logo without an editable query."""
     vendor = (req.vendor_name or "").strip()
     if not vendor:
-        return {"image_url": None, "source": None}
+        return {"image_url": None, "source": None, "total": 0}
     try:
-        result = await web_search_product_image(
-            get_browser(), f'"{vendor}" logo png transparent'
-        )
-        if not (result and result.get("image_url")):
-            result = await web_search_product_image(get_browser(), f"{vendor} logo")
-        return result
+        return await web_search_logo(get_browser(), vendor, req.offset)
     except Exception as exc:
         logger.exception("Logo search failed for %s", vendor)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

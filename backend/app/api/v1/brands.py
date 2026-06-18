@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
 from app.auth.permissions import role_has_access
+from app.config import settings
 from app.deps import get_current_user, get_db
 from app.models.brand import ALL_CHANNELS, CHANNEL_DISPLAY_NAMES
 from app.models.competitor import Competitor
@@ -1152,6 +1153,269 @@ async def delete_brand_logo(
     brand.brand_guidelines = dict(guidelines)
     if label == "primary":
         brand.logo_url = None
+    flag_modified(brand, "brand_guidelines")
+    await db.commit()
+    await db.refresh(brand)
+    return {"status": "ok"}
+
+
+# ── Vendor (manufacturer) logos ─────────────────────────────────────
+# A logo belongs to a *vendor*, not a product: it is keyed by the product's
+# exact ``vendor_name`` and stored in ``brand_guidelines.vendor_logos`` (JSONB,
+# no migration). One logo therefore covers every product of that manufacturer.
+
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+
+def _vendor_slug(vendor_name: str) -> str:
+    """URL/object-safe slug for a vendor name (used as the MinIO filename)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (vendor_name or "").lower()).strip("-")
+    return (slug or "vendor")[:60]
+
+
+def _ext_for_content_type(ct: str) -> str:
+    ct = (ct or "").lower()
+    if "png" in ct:
+        return "png"
+    if "webp" in ct:
+        return "webp"
+    if "svg" in ct:
+        return "svg"
+    return "jpg"
+
+
+async def _store_vendor_logo(
+    db: AsyncSession,
+    brand,
+    vendor_name: str,
+    image_data: bytes,
+    content_type: str,
+    source_url: str | None,
+) -> dict:
+    """Upload the logo to MinIO and record it under brand_guidelines."""
+    slug = _vendor_slug(vendor_name)
+    ext = _ext_for_content_type(content_type)
+    object_name = f"brands/{brand.id}/vendor-logos/{slug}.{ext}"
+
+    await minio_service.ensure_bucket()
+    await minio_service.upload_file(object_name, image_data, content_type or "image/png")
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    guidelines = dict(brand.brand_guidelines or {})
+    vendor_logos = dict(guidelines.get("vendor_logos", {}))
+    entry = {
+        "object_name": object_name,
+        "url": object_name,  # served via the /files proxy (fileUrl on frontend)
+        "content_type": content_type or "image/png",
+        "slug": slug,
+        "source_url": source_url,
+    }
+    vendor_logos[vendor_name] = entry
+    guidelines["vendor_logos"] = vendor_logos
+    brand.brand_guidelines = guidelines
+    flag_modified(brand, "brand_guidelines")
+    await db.commit()
+    await db.refresh(brand)
+    return entry
+
+
+class VendorLogoFetch(BaseModel):
+    vendor_name: str
+    attempt: int = 0  # increments to cycle through alternative Bing candidates
+
+
+@router.get("/{brand_id}/vendors")
+async def list_brand_vendors(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List the distinct vendors present in the brand's synced products, each
+    with its current logo (if any). New vendors appear automatically after a
+    product sync — the list is derived, never stored."""
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    rows = await db.execute(
+        text(
+            "SELECT DISTINCT vendor_name FROM products "
+            "WHERE brand_id = :bid AND vendor_name IS NOT NULL "
+            "AND vendor_name <> '' ORDER BY vendor_name"
+        ),
+        {"bid": str(brand_id)},
+    )
+    names = [r[0] for r in rows.fetchall()]
+
+    vendor_logos = (brand.brand_guidelines or {}).get("vendor_logos", {})
+    vendors = []
+    for name in names:
+        info = vendor_logos.get(name) or {}
+        vendors.append(
+            {
+                "vendor_name": name,
+                "has_logo": bool(info.get("object_name")),
+                "logo_url": info.get("object_name"),
+            }
+        )
+    return {"vendors": vendors}
+
+
+@router.post("/{brand_id}/vendors/fetch-logo")
+async def fetch_vendor_logo(
+    brand_id: uuid.UUID,
+    body: VendorLogoFetch,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Search Bing (via the browser worker) for the vendor's logo and store it.
+    Pass an incrementing ``attempt`` to cycle through alternative candidates."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    vendor = (body.vendor_name or "").strip()
+    if not vendor:
+        raise HTTPException(status_code=400, detail="vendor_name is required")
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    import httpx
+
+    logo_url: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(
+                f"{settings.BROWSER_WORKER_URL}/capture/logo",
+                json={"vendor_name": vendor, "offset": max(0, body.attempt)},
+                headers={
+                    "X-API-Key": getattr(settings, "BROWSER_WORKER_API_KEY", "")
+                    or "internal"
+                },
+            )
+            resp.raise_for_status()
+            logo_url = (resp.json() or {}).get("image_url")
+    except Exception as exc:
+        logger.warning("Bing logo search failed for '%s': %s", vendor, exc)
+        raise HTTPException(status_code=502, detail="Logo search failed") from exc
+
+    if not logo_url:
+        raise HTTPException(status_code=404, detail="No logo found for this vendor")
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            dl = await client.get(logo_url, headers={"User-Agent": _UA})
+        if dl.status_code != 200 or not dl.content:
+            raise HTTPException(status_code=404, detail="Logo could not be downloaded")
+        ct = dl.headers.get("content-type", "image/png").split(";")[0]
+        if "image" not in ct and "svg" not in ct:
+            raise HTTPException(status_code=415, detail="Result was not an image")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Failed to download logo from %s: %s", logo_url, exc)
+        raise HTTPException(status_code=502, detail="Logo download failed") from exc
+
+    entry = await _store_vendor_logo(db, brand, vendor, dl.content, ct, logo_url)
+    logger.info("Stored vendor logo for '%s' (brand %s)", vendor, brand_id)
+    return {
+        "status": "ok",
+        "vendor_name": vendor,
+        "logo_url": entry["object_name"],
+        "attempt": body.attempt,
+    }
+
+
+@router.post("/{brand_id}/vendors/upload-logo")
+async def upload_vendor_logo(
+    brand_id: uuid.UUID,
+    vendor_name: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually upload a vendor's logo (overrides the Bing search result)."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    vendor = (vendor_name or "").strip()
+    if not vendor:
+        raise HTTPException(status_code=400, detail="vendor_name is required")
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    allowed = {"image/png", "image/jpeg", "image/webp"}
+    if file.content_type not in allowed:
+        raise HTTPException(
+            status_code=400, detail="Only PNG, JPEG, and WebP images are allowed"
+        )
+
+    data = await file.read()
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size must be under 5MB")
+
+    _magic_ok = (
+        (data[:4] == b"\x89PNG" and file.content_type == "image/png")
+        or (data[:3] == b"\xff\xd8\xff" and file.content_type == "image/jpeg")
+        or (
+            data[:4] == b"RIFF"
+            and data[8:12] == b"WEBP"
+            and file.content_type == "image/webp"
+        )
+    )
+    if not _magic_ok:
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not match declared content type",
+        )
+
+    entry = await _store_vendor_logo(
+        db, brand, vendor, data, file.content_type or "image/png", None
+    )
+    return {
+        "status": "ok",
+        "vendor_name": vendor,
+        "logo_url": entry["object_name"],
+    }
+
+
+@router.delete("/{brand_id}/vendors/logo")
+async def delete_vendor_logo(
+    brand_id: uuid.UUID,
+    vendor_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove a vendor's stored logo."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    guidelines = dict(brand.brand_guidelines or {})
+    vendor_logos = dict(guidelines.get("vendor_logos", {}))
+    info = vendor_logos.pop(vendor_name, None)
+    if not info:
+        raise HTTPException(status_code=404, detail="Vendor logo not found")
+
+    try:
+        await minio_service.delete_file(info["object_name"])
+    except Exception:
+        pass
+
+    guidelines["vendor_logos"] = vendor_logos
+    brand.brand_guidelines = guidelines
     flag_modified(brand, "brand_guidelines")
     await db.commit()
     await db.refresh(brand)

@@ -1372,19 +1372,19 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
         }
 
     # Try to find the product in the database and check its image gallery
-    from shared.tools.database import execute_query
+    from shared.tools.database import execute_query, get_brand_config
 
     # First try by product_ids (from calendar item), then fallback to sku/name
     if product_ids:
         pid = product_ids[0] if isinstance(product_ids, list) else product_ids
         products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name FROM products "
             "WHERE id = :pid AND is_active = true LIMIT 1",
             {"pid": str(pid)},
         )
     else:
         products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name FROM products "
             "WHERE brand_id = :brand_id AND is_active = true AND ("
             "  bc_item_no = :sku OR LOWER(name) LIKE LOWER(:name_pattern)"
             ") LIMIT 1",
@@ -1400,7 +1400,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     # name shares the most non-trivial words with the free-text.
     if not products and free_text:
         all_products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name FROM products "
             "WHERE brand_id = :brand_id AND is_active = true",
             {"brand_id": brand_id},
         )
@@ -1438,8 +1438,31 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
 
     product = products[0]
     gallery = product.get("image_urls")
-    _attrs = product.get("attributes") if isinstance(product.get("attributes"), dict) else {}
-    product_logo_image = (_attrs or {}).get("logo_url")
+
+    # Logos live on the *vendor* (manufacturer), not the product: resolve the
+    # product's vendor_name against brand_guidelines.vendor_logos so one logo
+    # covers the whole vendor range. (Stored as a MinIO object name.)
+    product_logo_image = None
+    vendor = (product.get("vendor_name") or "").strip()
+    if vendor:
+        try:
+            cfg = await get_brand_config(brand_id)
+            guidelines = (cfg or {}).get("brand_guidelines") or {}
+            if isinstance(guidelines, str):
+                import json as _json
+
+                try:
+                    guidelines = _json.loads(guidelines)
+                except Exception:
+                    guidelines = {}
+            vendor_logos = guidelines.get("vendor_logos", {}) if isinstance(guidelines, dict) else {}
+            _entry = vendor_logos.get(vendor) if isinstance(vendor_logos, dict) else None
+            if isinstance(_entry, dict):
+                product_logo_image = _entry.get("object_name")
+                if product_logo_image:
+                    logger.info("Using vendor logo for '%s' (vendor=%s)", product_name, vendor)
+        except Exception as exc:
+            logger.warning("Vendor logo lookup failed for '%s': %s", vendor, exc)
 
     # Check if product has images in its gallery
     if isinstance(gallery, list) and gallery:

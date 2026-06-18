@@ -466,80 +466,6 @@ async def _save_image_to_gallery(
     return entry
 
 
-async def _fetch_vendor_logo(product) -> dict | None:
-    """Find a logo for the product's manufacturer (vendor_name) via the browser
-    worker's Bing logo search. Returns ``{"url", "content_type", "image_data"}``
-    or None.
-    """
-    import httpx
-
-    vendor = (product.vendor_name or "").strip()
-    if not vendor:
-        return None
-
-    _UA = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-    )
-
-    logo_url: str | None = None
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            resp = await client.post(
-                f"{settings.BROWSER_WORKER_URL}/capture/logo",
-                json={"vendor_name": vendor},
-                headers={
-                    "X-API-Key": getattr(settings, "BROWSER_WORKER_API_KEY", "")
-                    or "internal"
-                },
-            )
-            resp.raise_for_status()
-            logo_url = (resp.json() or {}).get("image_url")
-    except Exception as exc:
-        logger.warning("Bing logo search failed for '%s': %s", vendor, exc)
-
-    if not logo_url:
-        return None
-
-    # Download the bytes for MinIO.
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.get(logo_url, headers={"User-Agent": _UA})
-        if resp.status_code != 200 or not resp.content:
-            return None
-        ct = resp.headers.get("content-type", "image/png").split(";")[0]
-        if "image" not in ct and "svg" not in ct:
-            return None
-        return {"url": logo_url, "content_type": ct, "image_data": resp.content}
-    except Exception as exc:
-        logger.warning("Failed to download logo from %s: %s", logo_url, exc)
-        return None
-
-
-async def _save_product_logo(db: AsyncSession, product, logo: dict) -> str:
-    """Upload the vendor logo to MinIO and store it in attributes.logo_url
-    (JSONB — no schema change)."""
-    ct = logo["content_type"]
-    ext = (
-        "svg" if "svg" in ct
-        else "png" if "png" in ct
-        else "webp" if "webp" in ct
-        else "jpg"
-    )
-    object_name = f"products/{product.id}/logo.{ext}"
-    await minio_service.ensure_bucket()
-    await minio_service.upload_file(object_name, logo["image_data"], ct)
-
-    attrs = dict(product.attributes) if isinstance(product.attributes, dict) else {}
-    attrs["logo_url"] = object_name
-    attrs["logo_source_url"] = logo["url"]
-    product.attributes = attrs
-    flag_modified(product, "attributes")
-    await db.commit()
-    await db.refresh(product)
-    return object_name
-
-
 @router.post("/{product_id}/fetch-images")
 async def fetch_product_images(
     product_id: uuid.UUID,
@@ -560,22 +486,10 @@ async def fetch_product_images(
         entry = await _save_image_to_gallery(db, product, img)
         logger.info("Fetched 1 web image for product %s (%s)", product_id, product.name)
 
-    # Same procedure also pulls the manufacturer logo ("Fetch (Image + logo)").
-    logo_found = False
-    try:
-        logo = await _fetch_vendor_logo(product)
-        if logo:
-            await _save_product_logo(db, product, logo)
-            logo_found = True
-            logger.info("Fetched vendor logo for product %s (%s)", product_id, product.name)
-    except Exception as exc:
-        logger.warning("Logo fetch failed for product %s: %s", product_id, exc)
-
     return {
         "product_id": str(product_id),
         "images_found": 1 if entry else 0,
         "images": [entry] if entry else [],
-        "logo_found": logo_found,
     }
 
 
@@ -610,21 +524,10 @@ async def batch_fetch_product_images(
         if img:
             await _save_image_to_gallery(db, product, img)
 
-        # Same procedure also pulls the manufacturer logo.
-        logo_found = False
-        try:
-            logo = await _fetch_vendor_logo(product)
-            if logo:
-                await _save_product_logo(db, product, logo)
-                logo_found = True
-        except Exception as exc:
-            logger.warning("Logo fetch failed for product %s: %s", pid, exc)
-
         results.append(
             {
                 "product_id": str(pid),
                 "images_found": 1 if img else 0,
-                "logo_found": logo_found,
             }
         )
 
@@ -648,12 +551,10 @@ async def get_product_image_gallery(
     elif isinstance(product.image_urls, dict):
         gallery = list(product.image_urls.values())
 
-    attrs = product.attributes if isinstance(product.attributes, dict) else {}
     return {
         "product_id": str(product_id),
         "primary_image_url": product.primary_image_url,
         "images": gallery,
-        "logo_url": attrs.get("logo_url"),
     }
 
 
