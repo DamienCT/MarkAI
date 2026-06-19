@@ -203,6 +203,10 @@ export function LogoEditor({
   // Alignment grid (rule-of-thirds), like a photo editor. On by default.
   const [showGrid, setShowGrid] = useState(true);
 
+  // While a drag is in progress, fade the floating controls out of the way so
+  // they don't visually block (and can't intercept) a logo dragged underneath.
+  const [dragging, setDragging] = useState(false);
+
   // Logo variant (dark = white logo, light = dark logo, …). The reverse button
   // cycles only through these, in this order — watermark/secondary excluded.
   const VARIANT_ORDER = ["primary", "dark", "light", "icon"];
@@ -286,6 +290,7 @@ export function LogoEditor({
 
   const endDrag = useCallback(() => {
     dragRef.current = null;
+    setDragging(false);
   }, []);
 
   useEffect(() => {
@@ -321,6 +326,7 @@ export function LogoEditor({
       rectW: r?.width || 1,
       rectH: r?.height || 1,
     };
+    setDragging(true);
   };
 
   // ── Escape → cancel (save/cancel are explicit buttons now) ─────
@@ -538,13 +544,17 @@ export function LogoEditor({
         ) : null}
 
         {/* Style controls, overlaid on the photo frame. */}
-        <div className="absolute left-2 top-2 z-20 flex flex-col items-start gap-1.5">
+        <div
+          className={`absolute left-2 top-2 z-20 flex flex-col items-start gap-1.5 transition-opacity duration-150 ${
+            dragging ? "pointer-events-none opacity-20" : "pointer-events-none"
+          }`}
+        >
           {variantKeys.length >= 2 ? (
             <button
               type="button"
               onPointerDown={(e) => { e.stopPropagation(); }}
               onClick={cycleVariant}
-              className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+              className="pointer-events-auto flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
               title="Reverse logo (light / dark)"
             >
               <RefreshCw className="h-3.5 w-3.5" />
@@ -555,7 +565,7 @@ export function LogoEditor({
             type="button"
             onPointerDown={(e) => { e.stopPropagation(); }}
             onClick={toggleTextStyle}
-            className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+            className="pointer-events-auto flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
             title="Cycle text style (glass / solid / headline)"
           >
             <Layers className="h-3.5 w-3.5" />
@@ -566,7 +576,7 @@ export function LogoEditor({
               type="button"
               onPointerDown={(e) => { e.stopPropagation(); }}
               onClick={() => setProductLogoEnabled((v) => !v)}
-              className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium shadow ${productLogoEnabled ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-white/90 text-black hover:bg-white"}`}
+              className={`pointer-events-auto flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium shadow ${productLogoEnabled ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-white/90 text-black hover:bg-white"}`}
               title="Show/hide the product (manufacturer) logo"
             >
               <Tag className="h-3.5 w-3.5" />
@@ -578,7 +588,7 @@ export function LogoEditor({
               type="button"
               onPointerDown={(e) => { e.stopPropagation(); }}
               onClick={cycleFont}
-              className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+              className="pointer-events-auto flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
               title="Cycle headline font"
             >
               <Type className="h-3.5 w-3.5" />
@@ -590,7 +600,7 @@ export function LogoEditor({
               type="button"
               onPointerDown={(e) => { e.stopPropagation(); }}
               onClick={resetColors}
-              className="flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+              className="pointer-events-auto flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
               title="Reset all word colors to white"
             >
               <RefreshCw className="h-3.5 w-3.5" />
@@ -601,7 +611,7 @@ export function LogoEditor({
             type="button"
             onPointerDown={(e) => { e.stopPropagation(); }}
             onClick={() => setShowGrid((g) => !g)}
-            className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium shadow ${showGrid ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-white/90 text-black hover:bg-white"}`}
+            className={`pointer-events-auto flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium shadow ${showGrid ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-white/90 text-black hover:bg-white"}`}
             title="Toggle alignment grid"
           >
             <Grid3x3 className="h-3.5 w-3.5" />

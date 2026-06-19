@@ -1187,6 +1187,45 @@ def _ext_for_content_type(ct: str) -> str:
     return "jpg"
 
 
+def _clean_logo_bytes(data: bytes, content_type: str) -> tuple[bytes, str]:
+    """Trim a vendor logo to its content so the editor and the rendered post
+    show it at the SAME size: key out a near-white background (web logos are
+    often opaque JPEG/PNG on a white card) and crop to the tight bounding box,
+    returning a transparent PNG. This mirrors what the PIL renderer does at
+    draw time — doing it once at storage keeps the editor's raw <img> and the
+    render identical. SVGs and undecodable images are returned untouched.
+    """
+    if "svg" in (content_type or "").lower():
+        return data, content_type
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageChops
+
+        img = Image.open(BytesIO(data)).convert("RGBA")
+        # Opaque source → key out the near-white background (>=245 on all
+        # channels), but never if the whole image is white.
+        if img.getchannel("A").getextrema()[0] >= 250:
+            r, g, b = img.convert("RGB").split()
+
+            def _thr(c):
+                return c.point(lambda v: 255 if v >= 245 else 0)
+
+            white = ImageChops.multiply(ImageChops.multiply(_thr(r), _thr(g)), _thr(b))
+            lo, hi = white.getextrema()
+            if hi == 255 and lo != 255:
+                img.putalpha(white.point(lambda v: 0 if v >= 128 else 255))
+        bbox = img.getbbox()
+        if bbox:
+            img = img.crop(bbox)
+        out = BytesIO()
+        img.save(out, format="PNG")
+        return out.getvalue(), "image/png"
+    except Exception as exc:
+        logger.warning("Vendor logo cleanup failed, storing as-is: %s", exc)
+        return data, content_type
+
+
 async def _store_vendor_logo(
     db: AsyncSession,
     brand,
@@ -1196,6 +1235,8 @@ async def _store_vendor_logo(
     source_url: str | None,
 ) -> dict:
     """Upload the logo to MinIO and record it under brand_guidelines."""
+    # Trim to content (white-key + crop) so editor and render match in size.
+    image_data, content_type = _clean_logo_bytes(image_data, content_type)
     slug = _vendor_slug(vendor_name)
     ext = _ext_for_content_type(content_type)
     object_name = f"brands/{brand.id}/vendor-logos/{slug}.{ext}"
