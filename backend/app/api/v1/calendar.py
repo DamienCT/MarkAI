@@ -35,13 +35,17 @@ async def upcoming_calendar_items(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return upcoming calendar items with scheduled_at >= now(), ordered ascending."""
+    """Return upcoming calendar items from the start of today onward, ordered
+    ascending. Using start-of-day (not now()) keeps posts already published
+    earlier today visible on the dashboard's "Today" group."""
     limit = min(limit, 200)
-    now = datetime.now(timezone.utc)
+    start_of_today = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     stmt = (
         select(CalendarItem)
         .options(selectinload(CalendarItem.brand))
-        .where(CalendarItem.scheduled_at >= now)
+        .where(CalendarItem.scheduled_at >= start_of_today)
         .order_by(CalendarItem.scheduled_at.asc())
         .limit(limit)
     )

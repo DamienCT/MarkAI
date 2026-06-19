@@ -367,6 +367,10 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         product_image_url: str | None = None
         product_name = ""
         cal_channel = ""
+        # Resolve the vendor (manufacturer) logo from the product's vendor_name
+        # so posts generated BEFORE the vendor-logo feature pick it up on regen,
+        # even though their generation_metadata has no product_logo_image yet.
+        resolved_vendor_logo: str | None = None
         cal_rows = await execute_query(
             "SELECT product_ids, title, channel FROM calendar_items WHERE id = :id",
             {"id": calendar_item_id},
@@ -381,7 +385,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
             if product_ids:
                 pid = product_ids[0] if isinstance(product_ids, list) else product_ids
                 product_rows = await execute_query(
-                    "SELECT id, name, image_urls, primary_image_url FROM products "
+                    "SELECT id, name, image_urls, primary_image_url, vendor_name FROM products "
                     "WHERE id = :pid AND is_active = true LIMIT 1",
                     {"pid": str(pid)},
                 )
@@ -390,6 +394,16 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 product = product_rows[0]
                 if not product_name:
                     product_name = product.get("name", "")
+                _vendor = (product.get("vendor_name") or "").strip()
+                if _vendor:
+                    _vlogos = brand_guidelines.get("vendor_logos", {})
+                    _ventry = _vlogos.get(_vendor) if isinstance(_vlogos, dict) else None
+                    if isinstance(_ventry, dict) and _ventry.get("object_name"):
+                        resolved_vendor_logo = _ventry["object_name"]
+                        logger.info(
+                            "Regen: resolved vendor logo for '%s' (vendor=%s)",
+                            product_name, _vendor,
+                        )
                 gallery = product.get("image_urls")
                 primary = product.get("primary_image_url")
                 if not primary and isinstance(gallery, list) and gallery:
@@ -589,8 +603,10 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     # User's manual choices win; otherwise use the AI's (first render).
                     headline_font = gen_meta.get("font_family") or ad_font_family or "Montserrat"
                     effective_colors = gen_meta.get("headline_colors") or ad_headline_colors
-                    # Product (manufacturer) logo — keep it across regenerations.
-                    _pl_obj = gen_meta.get("product_logo_image")
+                    # Product (manufacturer) logo — keep it across regenerations,
+                    # falling back to the vendor logo for older posts that have
+                    # none stored yet.
+                    _pl_obj = gen_meta.get("product_logo_image") or resolved_vendor_logo
                     _pl_on = bool(_pl_obj) and gen_meta.get("product_logo_enabled") is not False
                     _pl_bytes = await _download_product_asset(_pl_obj) if _pl_on else None
                     _pl_xy = gen_meta.get("product_logo_xy")
@@ -724,6 +740,18 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
             existing_metadata["text_width"] = float(ad_text_width)
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
+        # Persist the product/vendor logo (and any prior placement) so the
+        # logo/overlay editor can show & adjust it after this regeneration —
+        # critical for older posts where it was resolved from the vendor.
+        _persist_pl = gen_meta.get("product_logo_image") or resolved_vendor_logo
+        if _persist_pl:
+            existing_metadata["product_logo_image"] = _persist_pl
+            if gen_meta.get("product_logo_xy") is not None:
+                existing_metadata["product_logo_xy"] = gen_meta.get("product_logo_xy")
+            if gen_meta.get("product_logo_scale") is not None:
+                existing_metadata["product_logo_scale"] = gen_meta.get("product_logo_scale")
+            if gen_meta.get("product_logo_enabled") is not None:
+                existing_metadata["product_logo_enabled"] = gen_meta.get("product_logo_enabled")
 
         await execute_update(
             "UPDATE content SET generation_metadata = :metadata WHERE id = :id",

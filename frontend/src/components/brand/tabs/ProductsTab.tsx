@@ -137,6 +137,10 @@ export function ProductsTab({
   const [vendorLogosLoading, setVendorLogosLoading] = useState(false);
   const [vendorLogoBusy, setVendorLogoBusy] = useState<string | null>(null);
   const vendorAttempts = useRef<Record<string, number>>({});
+  // Bumped on every (re)load so the <img> URL changes after a fetch/upload —
+  // a vendor's logo object name is stable, so without this the browser would
+  // keep showing the previously cached image even after it was replaced.
+  const [logoVersion, setLogoVersion] = useState(0);
 
   const loadVendorLogos = async () => {
     setVendorLogosLoading(true);
@@ -145,6 +149,7 @@ export function ProductsTab({
         `/api/v1/brands/${brand.id}/vendors`
       );
       setVendorLogos(data.vendors || []);
+      setLogoVersion((v) => v + 1);
     } catch {
       toast.error("Failed to load vendors");
     } finally {
@@ -975,7 +980,7 @@ export function ProductsTab({
                         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                       ) : v.logo_url ? (
                         <img
-                          src={fileUrl(v.logo_url)}
+                          src={`${fileUrl(v.logo_url)}?v=${logoVersion}`}
                           alt={v.vendor_name}
                           className="h-11 max-w-[60px] object-contain p-0.5"
                           loading="lazy"

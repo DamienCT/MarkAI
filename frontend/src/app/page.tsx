@@ -455,9 +455,10 @@ export default function DashboardPage() {
                     </p>
                     <div className="space-y-2">
                       {items.map((item) => (
-                        <div
+                        <Link
                           key={item.id}
-                          className="flex items-center justify-between gap-3 rounded-md border p-2.5"
+                          href={`/content/${item.id}`}
+                          className="flex items-center justify-between gap-3 rounded-md border p-2.5 transition-colors hover:bg-accent cursor-pointer"
                         >
                           <div className="flex items-center gap-3 min-w-0">
                             <span className="text-xs font-mono text-muted-foreground w-12 shrink-0">
@@ -471,7 +472,7 @@ export default function DashboardPage() {
                           <Badge className={statusColor(item.status)} variant="outline">
                             {item.status}
                           </Badge>
-                        </div>
+                        </Link>
                       ))}
                     </div>
                   </div>
