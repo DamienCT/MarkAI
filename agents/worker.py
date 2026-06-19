@@ -371,6 +371,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # so posts generated BEFORE the vendor-logo feature pick it up on regen,
         # even though their generation_metadata has no product_logo_image yet.
         resolved_vendor_logo: str | None = None
+        resolved_product_logo_xy: tuple[float, float] | None = None
         cal_rows = await execute_query(
             "SELECT product_ids, title, channel FROM calendar_items WHERE id = :id",
             {"id": calendar_item_id},
@@ -610,6 +611,17 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     _pl_on = bool(_pl_obj) and gen_meta.get("product_logo_enabled") is not False
                     _pl_bytes = await _download_product_asset(_pl_obj) if _pl_on else None
                     _pl_xy = gen_meta.get("product_logo_xy")
+                    # Keep the vendor logo clear of the headline (opposite
+                    # vertical half) and the brand logo (opposite side) when the
+                    # user hasn't placed it — avoids it landing on the title.
+                    if image_format == "ad" and _pl_bytes and not _pl_xy:
+                        _hy = ad_text_xy[1] if ad_text_xy else 0.2
+                        _bx = (ad_logo_xy or (0.85, 0.85))[0]
+                        _pl_xy = (
+                            0.16 if _bx >= 0.5 else 0.84,
+                            0.90 if _hy < 0.5 else 0.12,
+                        )
+                    resolved_product_logo_xy = tuple(_pl_xy) if _pl_xy else None
                     branded_bytes = overlay_logo_and_text(
                         image_data, logo_png,
                         text_line1=text_line1, text_line2=text_line2,
@@ -746,8 +758,11 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         _persist_pl = gen_meta.get("product_logo_image") or resolved_vendor_logo
         if _persist_pl:
             existing_metadata["product_logo_image"] = _persist_pl
-            if gen_meta.get("product_logo_xy") is not None:
-                existing_metadata["product_logo_xy"] = gen_meta.get("product_logo_xy")
+            _pxy = gen_meta.get("product_logo_xy")
+            if _pxy is None and resolved_product_logo_xy is not None:
+                _pxy = list(resolved_product_logo_xy)
+            if _pxy is not None:
+                existing_metadata["product_logo_xy"] = _pxy
             if gen_meta.get("product_logo_scale") is not None:
                 existing_metadata["product_logo_scale"] = gen_meta.get("product_logo_scale")
             if gen_meta.get("product_logo_enabled") is not None:

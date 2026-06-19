@@ -2644,6 +2644,16 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             if pl_enabled else None
         )
         _pl_xy = state.get("product_logo_xy")
+        # In ads, keep the vendor logo clear of the headline (opposite vertical
+        # half) and the brand logo (opposite horizontal side) when the user
+        # hasn't manually placed it — otherwise it can land on the title.
+        if image_format == "ad" and pl_bytes and not _pl_xy:
+            _hy = ad_text_xy[1] if ad_text_xy else 0.2
+            _bx = (plan_logo_xy or (0.85, 0.85))[0]
+            _pl_xy = (
+                0.16 if _bx >= 0.5 else 0.84,
+                0.90 if _hy < 0.5 else 0.12,
+            )
         pl_kwargs = {
             "product_logo_data": pl_bytes,
             "product_logo_xy": tuple(_pl_xy) if _pl_xy else None,
@@ -2713,6 +2723,8 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             "headline_colors": ad_headline_colors,
             "font_family": ad_font_family if image_format == "ad" else None,
             "product_logo_enabled": pl_enabled,
+            "product_logo_xy": list(_pl_xy) if _pl_xy else None,
+            "product_logo_scale": state.get("product_logo_scale"),
         }
 
     except Exception as exc:
