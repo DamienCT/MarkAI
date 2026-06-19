@@ -116,14 +116,22 @@ async def pull_facebook_insights(content: Content, access_token: str) -> dict[st
         except Exception as exc:
             logger.warning("FB fields failed for %s: %s", post_id, exc)
 
-        # Reach / impressions / clicks via insights. Degrade the metric set so
-        # one metric that's invalid on this API version doesn't 400 the whole
-        # request (leaving impressions/reach at 0).
-        for metric in (
-            "post_impressions,post_impressions_unique,post_clicks",
-            "post_impressions,post_impressions_unique",
-            "post_impressions",
-        ):
+        # Reach / impressions / clicks via insights. Meta's "new Pages
+        # experience" deprecated several post metrics (e.g. post_impressions),
+        # and the valid names vary, so try candidates individually and keep
+        # whatever validates — invalid ones (#100) are skipped, not fatal.
+        fb_candidates = [
+            ("impressions", "post_impressions"),
+            ("impressions", "post_impressions_organic"),
+            ("impressions", "post_impressions_unique"),
+            ("reach", "post_impressions_unique"),
+            ("reach", "post_impressions_organic_unique"),
+            ("clicks", "post_clicks"),
+            ("clicks", "post_clicks_unique"),
+        ]
+        for key, metric in fb_candidates:
+            if result.get(key):
+                continue  # already filled this metric from an earlier candidate
             try:
                 resp = await client.get(
                     f"https://graph.facebook.com/{_GRAPH_VERSION}/{post_id}/insights",
@@ -131,22 +139,17 @@ async def pull_facebook_insights(content: Content, access_token: str) -> dict[st
                 )
                 resp.raise_for_status()
                 data = resp.json().get("data", [])
-            except Exception as exc:
-                logger.warning(
-                    "FB insights metric=%s failed for %s: %s", metric, post_id, exc
-                )
-                continue
+            except Exception:
+                continue  # metric not valid on this version — try the next
             for m in data:
                 val = (m.get("values") or [{}])[0].get("value", 0) or 0
                 if isinstance(val, dict):
                     val = sum(val.values())
-                if m["name"] == "post_impressions":
-                    result["impressions"] = val
-                elif m["name"] == "post_impressions_unique":
-                    result["reach"] = val
-                elif m["name"] == "post_clicks":
-                    result["clicks"] = val
-            break
+                if val:
+                    result[key] = val
+                    logger.info(
+                        "FB insights %s via metric=%s = %s", key, metric, val
+                    )
 
     return result
 

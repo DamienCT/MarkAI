@@ -411,8 +411,8 @@ export default function DashboardPage() {
                   View system <ArrowRight className="h-3 w-3" />
                 </Link>
               </CardHeader>
-              <CardContent className="flex-1">
-                <div className="grid grid-cols-3 gap-2">
+              <CardContent className="flex flex-1 items-center">
+                <div className="grid w-full grid-cols-3 gap-2">
                   {[
                     {
                       label: "Running / Pending",
