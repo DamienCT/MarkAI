@@ -1,17 +1,39 @@
 import json
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
+from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
 from app.services.ai_model_service import _cache_get, _cache_set
 
 router = APIRouter()
 
 _ANALYTICS_CACHE_TTL = 300  # 5 minutes
+
+
+@router.post("/refresh")
+async def refresh_engagement(
+    current_user: User = Depends(get_current_user),
+):
+    """Manually trigger an engagement pull from the social platforms — the same
+    job that otherwise runs every 6h. Runs synchronously so the caller can
+    refetch the dashboards as soon as it returns."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from app.scheduler.engagement_puller import pull_all_engagement
+
+    try:
+        await pull_all_engagement()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"Engagement pull failed: {exc}"
+        ) from exc
+    return {"status": "ok"}
 
 
 @router.get("/summary")

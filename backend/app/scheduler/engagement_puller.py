@@ -13,6 +13,7 @@ from app.services.engagement_service import (
     pull_instagram_insights,
     pull_linkedin_insights,
 )
+from app.services.publish_service import _derive_facebook_page_token
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +95,33 @@ async def pull_all_engagement() -> None:
                     token = ch_cfg.get("access_token") or creds.get(
                         "meta_access_token", ""
                     )
-                    metrics = await pull_instagram_insights(content, token)
+                    # IG insights need the connected Page's access token (the
+                    # "new Pages experience" rejects a user/system token). Fall
+                    # back to the facebook channel's page_id if IG has none.
+                    page_id = (
+                        ch_cfg.get("page_id")
+                        or creds.get("facebook_page_id", "")
+                        or (channels_cfg.get("facebook", {}) or {}).get("page_id", "")
+                    )
+                    page_token = (
+                        await _derive_facebook_page_token(token, page_id)
+                        if page_id else None
+                    )
+                    metrics = await pull_instagram_insights(content, page_token or token)
                 elif channel == "facebook":
                     token = ch_cfg.get("access_token") or creds.get(
                         "meta_access_token", ""
                     )
-                    metrics = await pull_facebook_insights(content, token)
+                    page_id = ch_cfg.get("page_id") or creds.get("facebook_page_id", "")
+                    # FB post ids are "{page_id}_{post}" — derive page_id from it
+                    # when not configured.
+                    if not page_id and content.platform_post_id and "_" in content.platform_post_id:
+                        page_id = content.platform_post_id.split("_", 1)[0]
+                    page_token = (
+                        await _derive_facebook_page_token(token, page_id)
+                        if page_id else None
+                    )
+                    metrics = await pull_facebook_insights(content, page_token or token)
                 elif channel == "linkedin":
                     token = ch_cfg.get("access_token") or creds.get(
                         "linkedin_access_token", ""

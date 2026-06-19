@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { RefreshCw, Loader2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -99,6 +100,7 @@ export default function AnalyticsPage() {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [byChannel, setByChannel] = useState<ChannelBreakdown[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -149,6 +151,20 @@ export default function AnalyticsPage() {
     }
   }, [selectedBrandId, selectedChannel, days]);
 
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      // Triggers the same engagement pull as the scheduled job, then reloads.
+      await api.post("/api/v1/analytics/refresh");
+      await fetchAnalytics();
+      toast.success("Analytics refreshed");
+    } catch {
+      toast.error("Refresh failed");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchAnalytics]);
+
   useEffect(() => {
     const controller = new AbortController();
     fetchAnalytics(controller.signal);
@@ -173,6 +189,20 @@ export default function AnalyticsPage() {
           <p className="text-muted-foreground">Performance dashboards and insights</p>
         </div>
         <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Pull the latest engagement from the social platforms now"
+          >
+            {refreshing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-2 h-4 w-4" />
+            )}
+            Refresh
+          </Button>
           <Select value={selectedBrandId} onValueChange={setSelectedBrandId}>
             <SelectTrigger className="w-[200px]">
               <SelectValue placeholder="All Brands" />
