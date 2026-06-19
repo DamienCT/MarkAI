@@ -412,7 +412,7 @@ export default function DashboardPage() {
                 </Link>
               </CardHeader>
               <CardContent className="flex-1">
-                <div className="grid h-full grid-cols-3 gap-3">
+                <div className="grid grid-cols-3 gap-2">
                   {[
                     {
                       label: "Running / Pending",
@@ -432,13 +432,13 @@ export default function DashboardPage() {
                   ].map((c) => (
                     <div
                       key={c.label}
-                      className="flex flex-col justify-center rounded-md border p-4"
+                      className="flex flex-col justify-center rounded-md border p-2.5"
                     >
                       <div className="flex items-center gap-2">
-                        <span className={cn("h-2.5 w-2.5 rounded-full", c.dot)} />
-                        <span className="text-2xl font-bold">{c.value}</span>
+                        <span className={cn("h-2 w-2 rounded-full", c.dot)} />
+                        <span className="text-xl font-bold">{c.value}</span>
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground">{c.label}</p>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">{c.label}</p>
                     </div>
                   ))}
                 </div>
