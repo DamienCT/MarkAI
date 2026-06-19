@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.models import User
 from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
-from app.services.ai_model_service import _cache_get, _cache_set
+from app.services.ai_model_service import (
+    _cache_delete_pattern,
+    _cache_get,
+    _cache_set,
+)
 
 router = APIRouter()
 
@@ -33,6 +37,9 @@ async def refresh_engagement(
         raise HTTPException(
             status_code=502, detail=f"Engagement pull failed: {exc}"
         ) from exc
+    # Invalidate cached summaries so the dashboard reflects the fresh pull
+    # immediately instead of serving the pre-pull (often zero) cache.
+    await _cache_delete_pattern("markai:analytics:*")
     return {"status": "ok"}
 
 

@@ -22,6 +22,21 @@ async def upsert_engagement(
     db, content_id, calendar_item_id, brand_id, channel: str, metrics: dict
 ) -> None:
     """Create a new engagement metric record for the given content."""
+    # Engagement rate = total interactions / reach (fallback impressions) × 100.
+    # Computed here so every platform gets one consistently; the pull functions
+    # don't return it, which left the column NULL (analytics showed 0).
+    engagement_rate = metrics.get("engagement_rate")
+    if engagement_rate is None:
+        interactions = (
+            (metrics.get("likes") or 0)
+            + (metrics.get("comments") or 0)
+            + (metrics.get("shares") or 0)
+            + (metrics.get("saves") or 0)
+        )
+        denom = metrics.get("reach") or metrics.get("impressions") or 0
+        if denom:
+            engagement_rate = round(interactions / denom * 100, 4)
+
     em = EngagementMetric(
         content_id=content_id,
         calendar_item_id=calendar_item_id,
@@ -35,7 +50,7 @@ async def upsert_engagement(
         saves=metrics.get("saves"),
         clicks=metrics.get("clicks"),
         video_views=metrics.get("video_views"),
-        engagement_rate=metrics.get("engagement_rate"),
+        engagement_rate=engagement_rate,
         sentiment_score=metrics.get("sentiment_score"),
         raw_metrics=metrics,
         fetched_at=datetime.now(timezone.utc),

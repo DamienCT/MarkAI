@@ -116,17 +116,27 @@ async def pull_facebook_insights(content: Content, access_token: str) -> dict[st
         except Exception as exc:
             logger.warning("FB fields failed for %s: %s", post_id, exc)
 
-        # Reach / impressions / clicks via insights.
-        try:
-            resp = await client.get(
-                f"https://graph.facebook.com/{_GRAPH_VERSION}/{post_id}/insights",
-                params={
-                    "metric": "post_impressions,post_impressions_unique,post_clicks",
-                    "access_token": access_token,
-                },
-            )
-            resp.raise_for_status()
-            for m in resp.json().get("data", []):
+        # Reach / impressions / clicks via insights. Degrade the metric set so
+        # one metric that's invalid on this API version doesn't 400 the whole
+        # request (leaving impressions/reach at 0).
+        for metric in (
+            "post_impressions,post_impressions_unique,post_clicks",
+            "post_impressions,post_impressions_unique",
+            "post_impressions",
+        ):
+            try:
+                resp = await client.get(
+                    f"https://graph.facebook.com/{_GRAPH_VERSION}/{post_id}/insights",
+                    params={"metric": metric, "access_token": access_token},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+            except Exception as exc:
+                logger.warning(
+                    "FB insights metric=%s failed for %s: %s", metric, post_id, exc
+                )
+                continue
+            for m in data:
                 val = (m.get("values") or [{}])[0].get("value", 0) or 0
                 if isinstance(val, dict):
                     val = sum(val.values())
@@ -136,8 +146,7 @@ async def pull_facebook_insights(content: Content, access_token: str) -> dict[st
                     result["reach"] = val
                 elif m["name"] == "post_clicks":
                     result["clicks"] = val
-        except Exception as exc:
-            logger.warning("FB insights failed for %s: %s", post_id, exc)
+            break
 
     return result
 

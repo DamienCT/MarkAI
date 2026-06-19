@@ -8,6 +8,7 @@ import {
   FileText,
   Clock,
   ArrowRight,
+  TrendingUp,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +36,17 @@ type ChartData = {
   // Wide rows: { day: "2026-06-05", instagram: 2, facebook: 1, ... }
   published_per_day: Record<string, number | string>[];
   published_by_channel: { channel: string; count: number }[];
+};
+
+type TopContent = {
+  id: string;
+  title: string;
+  channel: string;
+  likes: number;
+  comments: number;
+  shares: number;
+  impressions: number;
+  engagement_rate: number;
 };
 
 const CHART_DAY_OPTIONS = [30, 60, 90, 120];
@@ -88,6 +100,7 @@ export default function DashboardPage() {
   const [chartDays, setChartDays] = useState(30);
   const [chartsLoading, setChartsLoading] = useState(true);
   const [hiddenChannels, setHiddenChannels] = useState<Set<string>>(new Set());
+  const [topContent, setTopContent] = useState<TopContent[]>([]);
 
   const toggleChannel = (ch: string) =>
     setHiddenChannels((prev) => {
@@ -103,13 +116,15 @@ export default function DashboardPage() {
 
     async function fetchDashboard() {
       try {
-        const [dashData, postsData] = await Promise.allSettled([
+        const [dashData, postsData, topData] = await Promise.allSettled([
           api.get<DashboardStats>("/api/v1/dashboard/stats", undefined, { signal }),
           api.get<CalendarItem[]>("/api/v1/calendar/upcoming", { limit: 12 }, { signal }),
+          api.get<TopContent[]>("/api/v1/analytics/content/top", { limit: 3 }, { signal }),
         ]);
 
         if (dashData.status === "fulfilled") setStats(dashData.value);
         if (postsData.status === "fulfilled" && Array.isArray(postsData.value)) setCalendarItems(postsData.value);
+        if (topData.status === "fulfilled" && Array.isArray(topData.value)) setTopContent(topData.value);
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         setError("Failed to load dashboard data");
@@ -384,50 +399,97 @@ export default function DashboardPage() {
             </Card>
           </div>
 
-          {/* Bottom: Active Workflows summary — running / completed / failed */}
-          <Card className="flex-1 min-h-0 flex flex-col">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <div>
-                <CardTitle className="text-lg">Active Workflows</CardTitle>
-                <CardDescription>Running, completed, and failed</CardDescription>
-              </div>
-              <Link href="/system" className="text-sm text-primary hover:underline flex items-center gap-1">
-                View system <ArrowRight className="h-3 w-3" />
-              </Link>
-            </CardHeader>
-            <CardContent className="flex-1">
-              <div className="grid h-full grid-cols-3 gap-3">
-                {[
-                  {
-                    label: "Running / Pending",
-                    value: stats?.workflows_running_pending ?? 0,
-                    dot: "bg-blue-500",
-                  },
-                  {
-                    label: "Completed",
-                    value: stats?.workflows_completed ?? 0,
-                    dot: "bg-green-500",
-                  },
-                  {
-                    label: "Failed",
-                    value: stats?.workflows_failed ?? 0,
-                    dot: "bg-red-500",
-                  },
-                ].map((c) => (
-                  <div
-                    key={c.label}
-                    className="flex flex-col justify-center rounded-md border p-4"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className={cn("h-2.5 w-2.5 rounded-full", c.dot)} />
-                      <span className="text-2xl font-bold">{c.value}</span>
+          {/* Bottom row: Active Workflows (left) + Top Performing Content (right) */}
+          <div className="grid flex-1 min-h-0 grid-cols-1 gap-6 lg:grid-cols-2">
+            <Card className="flex flex-col">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <div>
+                  <CardTitle className="text-lg">Active Workflows</CardTitle>
+                  <CardDescription>Running, completed, and failed</CardDescription>
+                </div>
+                <Link href="/system" className="text-sm text-primary hover:underline flex items-center gap-1">
+                  View system <ArrowRight className="h-3 w-3" />
+                </Link>
+              </CardHeader>
+              <CardContent className="flex-1">
+                <div className="grid h-full grid-cols-3 gap-3">
+                  {[
+                    {
+                      label: "Running / Pending",
+                      value: stats?.workflows_running_pending ?? 0,
+                      dot: "bg-blue-500",
+                    },
+                    {
+                      label: "Completed",
+                      value: stats?.workflows_completed ?? 0,
+                      dot: "bg-green-500",
+                    },
+                    {
+                      label: "Failed",
+                      value: stats?.workflows_failed ?? 0,
+                      dot: "bg-red-500",
+                    },
+                  ].map((c) => (
+                    <div
+                      key={c.label}
+                      className="flex flex-col justify-center rounded-md border p-4"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className={cn("h-2.5 w-2.5 rounded-full", c.dot)} />
+                        <span className="text-2xl font-bold">{c.value}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{c.label}</p>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">{c.label}</p>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="flex flex-col">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <div>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <TrendingUp className="h-4 w-4" /> Top Performing Content
+                  </CardTitle>
+                  <CardDescription>Content ranked by engagement</CardDescription>
+                </div>
+                <Link href="/analytics" className="text-sm text-primary hover:underline flex items-center gap-1">
+                  Analytics <ArrowRight className="h-3 w-3" />
+                </Link>
+              </CardHeader>
+              <CardContent className="flex-1">
+                {topContent.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    No performance data yet
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    {topContent.map((item, i) => (
+                      <Link
+                        key={item.id}
+                        href={`/content/${item.id}`}
+                        className="flex items-center justify-between gap-3 rounded-md p-2 transition-colors hover:bg-accent"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="w-5 text-sm font-bold text-muted-foreground">{i + 1}</span>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{item.title || "Untitled"}</p>
+                            <p className="text-xs text-muted-foreground capitalize">{item.channel}</p>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right text-xs text-muted-foreground">
+                          <p className="font-medium text-foreground">
+                            {(item.likes + item.comments + item.shares).toLocaleString()} eng.
+                          </p>
+                          <p>{item.impressions.toLocaleString()} impr.</p>
+                        </div>
+                      </Link>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         </div>
 
         {/* RIGHT COLUMN: Content Calendar — sets the overall column height */}
