@@ -1586,18 +1586,20 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 logger.debug("context_ready notification skipped: %s", notif_exc)
 
         # ── Activation: mark brand as active once the planning pipeline finishes
-        # Fires for any trigger — WHERE status = 'activating' makes it a safe
-        # no-op when the brand is already active (e.g. manual re-plan).
-        if agent_type == "planning" and not workflow_failed and brand_id:
-            try:
-                await execute_update(
-                    "UPDATE brands SET status = 'active', is_active = true "
-                    "WHERE id = :id AND status = 'activating'",
-                    {"id": brand_id},
-                )
-                logger.info("Brand %s activated after planning pipeline", brand_id)
-            except Exception as act_exc:
-                logger.error("Failed to activate brand %s: %s", brand_id, act_exc)
+        if (
+            agent_type == "planning"
+            and payload.get("trigger") == "activation"
+            and not workflow_failed
+        ):
+            if brand_id:
+                try:
+                    await execute_update(
+                        "UPDATE brands SET status = 'active', is_active = true WHERE id = :id",
+                        {"id": brand_id},
+                    )
+                    logger.info("Brand %s activated after planning pipeline", brand_id)
+                except Exception as act_exc:
+                    logger.error("Failed to activate brand %s: %s", brand_id, act_exc)
 
         await msg.ack()
 
