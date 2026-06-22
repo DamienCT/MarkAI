@@ -986,6 +986,38 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
             except (ValueError, TypeError):
                 brand_guidelines = {}
 
+        # Resolve the vendor logo light/dark variants for this post's product so
+        # the editor's manual swap works even on posts generated before variants
+        # existed (their gen_meta has no product_logo_variants).
+        _rb_vendor_light: str | None = None
+        _rb_vendor_dark: str | None = None
+        try:
+            _cal = await execute_query(
+                "SELECT product_ids FROM calendar_items WHERE id = :id",
+                {"id": calendar_item_id},
+            )
+            _pids = (_cal[0].get("product_ids") if _cal else None) or []
+            if _pids:
+                _pid = _pids[0] if isinstance(_pids, list) else _pids
+                _prow = await execute_query(
+                    "SELECT vendor_name FROM products WHERE id = :pid LIMIT 1",
+                    {"pid": str(_pid)},
+                )
+                _vn = ((_prow[0].get("vendor_name") if _prow else "") or "").strip()
+                if _vn:
+                    _vl = brand_guidelines.get("vendor_logos", {})
+                    _ve = _vl.get(_vn) if isinstance(_vl, dict) else None
+                    if isinstance(_ve, dict):
+                        if _ve.get("object_name"):  # legacy flat → light
+                            _rb_vendor_light = _ve["object_name"]
+                        else:
+                            if isinstance(_ve.get("light"), dict):
+                                _rb_vendor_light = _ve["light"].get("object_name")
+                            if isinstance(_ve.get("dark"), dict):
+                                _rb_vendor_dark = _ve["dark"].get("object_name")
+        except Exception as exc:
+            logger.warning("Rebrand vendor variant resolve failed: %s", exc)
+
         logos_cfg = brand_guidelines.get("logos", {})
         from shared.config import settings as _settings
         api_base = getattr(_settings, "BACKEND_URL", "") or "http://backend:8000"
@@ -1055,8 +1087,12 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                 # Vendor light/dark variants — the editor's manual variant pick
                 # (product_logo_variant) overrides the background auto-pick.
                 _pl_vars = gen_meta.get("product_logo_variants") or {}
-                _pl_light_obj = _pl_vars.get("light") or gen_meta.get("product_logo_image")
-                _pl_dark_obj = _pl_vars.get("dark")
+                _pl_light_obj = (
+                    _pl_vars.get("light")
+                    or gen_meta.get("product_logo_image")
+                    or _rb_vendor_light
+                )
+                _pl_dark_obj = _pl_vars.get("dark") or _rb_vendor_dark
                 _pl_override = payload.get("product_logo_variant") or gen_meta.get("product_logo_variant")
                 _pl_on = bool(_pl_light_obj or _pl_dark_obj) and (
                     product_logo_enabled
@@ -1196,6 +1232,15 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
         _pl_variant_choice = payload.get("product_logo_variant")
         if _pl_variant_choice in ("light", "dark"):
             existing_metadata["product_logo_variant"] = _pl_variant_choice
+        # Persist resolved light/dark objects so later edits keep both variants
+        # without re-resolving from the brand (older posts pick these up here).
+        _persist_vars = dict(gen_meta.get("product_logo_variants") or {})
+        if _rb_vendor_light and not _persist_vars.get("light"):
+            _persist_vars["light"] = _rb_vendor_light
+        if _rb_vendor_dark and not _persist_vars.get("dark"):
+            _persist_vars["dark"] = _rb_vendor_dark
+        if _persist_vars:
+            existing_metadata["product_logo_variants"] = _persist_vars
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
         await execute_update(

@@ -473,14 +473,39 @@ export default function ContentDetailPage() {
   };
   // The product (manufacturer) logo, served from MinIO if the product has one.
   const productLogoUrl = gm.product_logo_image ? fileUrl(gm.product_logo_image as string) : undefined;
-  // Light/dark variant URLs for the editor's manual swap button.
-  const _plVars = (gm.product_logo_variants as Record<string, string> | undefined) || undefined;
-  const productLogoUrls = _plVars
-    ? {
-        light: _plVars.light ? fileUrl(_plVars.light) : undefined,
-        dark: _plVars.dark ? fileUrl(_plVars.dark) : undefined,
+  // Light/dark variant URLs for the editor's manual swap button. Prefer the
+  // variants saved on the post; otherwise resolve them from the brand's
+  // vendor_logos by matching the current logo object (so posts generated before
+  // the variants feature still get the swap button).
+  const productLogoUrls = (() => {
+    const metaVars = gm.product_logo_variants as Record<string, string> | undefined;
+    if (metaVars && (metaVars.light || metaVars.dark)) {
+      return {
+        light: metaVars.light ? fileUrl(metaVars.light) : undefined,
+        dark: metaVars.dark ? fileUrl(metaVars.dark) : undefined,
+      };
+    }
+    const vl = (brand?.brand_guidelines as Record<string, unknown> | undefined)
+      ?.vendor_logos as Record<string, Record<string, unknown>> | undefined;
+    const cur = gm.product_logo_image as string | undefined;
+    if (!vl || !cur) return undefined;
+    const curSlug = cur.split("/").pop()?.replace(/-(light|dark)\.[a-z0-9]+$/i, "").replace(/\.[a-z0-9]+$/i, "");
+    for (const entry of Object.values(vl)) {
+      const lightE = (entry?.light as Record<string, string> | undefined) || undefined;
+      const darkE = (entry?.dark as Record<string, string> | undefined) || undefined;
+      const lightObj = lightE?.object_name ?? (entry?.object_name as string | undefined); // legacy flat = light
+      const darkObj = darkE?.object_name;
+      const lightSlug = lightE?.slug ?? (entry?.slug as string | undefined);
+      const darkSlug = darkE?.slug;
+      if (cur === lightObj || cur === darkObj || (curSlug && (curSlug === lightSlug || curSlug === darkSlug))) {
+        return {
+          light: lightObj ? fileUrl(lightObj) : undefined,
+          dark: darkObj ? fileUrl(darkObj) : undefined,
+        };
       }
-    : undefined;
+    }
+    return undefined;
+  })();
   const canEditLogo = !!calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && !!cleanImageUrl;
 
   // Latest reviewer remark (rejection feedback) for this content, if any.
