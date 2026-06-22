@@ -8,6 +8,11 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.135,<0.137",
+    # Pin Starlette to the 0.x line: Starlette 1.x introduced an _IncludedRouter
+    # routing object that prometheus-fastapi-instrumentator 8.0.0 can't resolve
+    # (route.path AttributeError → 500 on every OPTIONS/CORS preflight). FastAPI
+    # 0.136 only requires starlette>=0.46.0, so it happily pulls 1.x without this.
+    "starlette>=0.46.0,<1.0",
     "uvicorn[standard]",
     "sqlalchemy[asyncio]>=2.0.48",
     "asyncpg>=0.31",
