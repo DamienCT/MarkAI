@@ -116,7 +116,7 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a marketing strategist. Based on the brand's target market, define 3-5 target audience segments. IMPORTANT: Cross-reference the research personas below. Each segment must include a 'persona_ref' field naming which research persona it aligns with. Do NOT invent new audiences that contradict the research personas. Each should have: segment_name, persona_ref, description, demographics, platforms, content_preferences, engagement_strategy, best_times. Return a JSON array.",
+                "content": "You are a marketing strategist. Based on the brand's target market, define 3-5 target audience segments. IMPORTANT: Cross-reference the research personas below. Each segment must include a 'persona_ref' field naming which research persona it aligns with. Do NOT invent new audiences that contradict the research personas. Each should have: segment_name, persona_ref, description, demographics, platforms, content_preferences, engagement_strategy, best_times. Return a JSON object with a single key \"audiences\" whose value is an array of the segment objects.",
             },
             {
                 "role": "user",
@@ -135,7 +135,14 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
             result, fallback=[{"segment_name": "Primary", "description": result}]
         )
         if isinstance(audiences, dict):
-            audiences = next((v for v in audiences.values() if isinstance(v, list)), [])
+            # json_object mode can't return a top-level array, so the model wraps
+            # it. Prefer a list-valued key (e.g. {"audiences": [...]}); if it
+            # instead returned one object per segment ({"segment_1": {...}, ...}),
+            # collect the dict values so we don't silently drop everything.
+            audiences = (
+                next((v for v in audiences.values() if isinstance(v, list)), None)
+                or [v for v in audiences.values() if isinstance(v, dict)]
+            )
         return {"audiences": audiences}
     except Exception as exc:
         logger.error("define_audiences failed: %s", exc)

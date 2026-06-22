@@ -322,7 +322,7 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
                 "creative_direction (2-3 sentences describing the visual/tonal approach), "
                 "content_format_mix (object with content_type percentages e.g. {reel: 40, carousel: 30, static: 20, story: 10}), "
                 "target_audience (primary persona name from strategy). "
-                "Return a JSON array."
+                "Return a JSON object with a single key \"campaigns\" whose value is an array of the campaign objects."
                 + constraints
             ),
         },
@@ -343,7 +343,14 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
         result, fallback=[{"name": "General Campaign", "description": result}]
     )
     if isinstance(campaigns, dict):
-        campaigns = next((v for v in campaigns.values() if isinstance(v, list)), [])
+        # json_object mode can't return a top-level array, so the model wraps it.
+        # Prefer a list-valued key (e.g. {"campaigns": [...]}); if it instead
+        # returned one object per campaign ({"campaign_1": {...}, ...}), collect
+        # the dict values so we don't silently drop everything.
+        campaigns = (
+            next((v for v in campaigns.values() if isinstance(v, list)), None)
+            or [v for v in campaigns.values() if isinstance(v, dict)]
+        )
 
     # Safety net: drop any campaign whose name the user removed (LLM may ignore).
     if removed_campaigns and isinstance(campaigns, list):
