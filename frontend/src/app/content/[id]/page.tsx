@@ -468,10 +468,19 @@ export default function ContentDetailPage() {
     product_logo_xy: (gm.product_logo_xy as [number, number] | undefined) || undefined,
     product_logo_scale: (gm.product_logo_scale as number | undefined) ?? undefined,
     product_logo_enabled: (gm.product_logo_enabled as boolean | undefined) ?? undefined,
+    product_logo_variant: (gm.product_logo_variant as string | undefined) || undefined,
     textAnchor: (gm.text_anchor_used as string | undefined) || null,
   };
   // The product (manufacturer) logo, served from MinIO if the product has one.
   const productLogoUrl = gm.product_logo_image ? fileUrl(gm.product_logo_image as string) : undefined;
+  // Light/dark variant URLs for the editor's manual swap button.
+  const _plVars = (gm.product_logo_variants as Record<string, string> | undefined) || undefined;
+  const productLogoUrls = _plVars
+    ? {
+        light: _plVars.light ? fileUrl(_plVars.light) : undefined,
+        dark: _plVars.dark ? fileUrl(_plVars.dark) : undefined,
+      }
+    : undefined;
   const canEditLogo = !!calendarItem && ["in_review", "reworking"].includes(calendarItem.status) && !!cleanImageUrl;
 
   // Latest reviewer remark (rejection feedback) for this content, if any.
@@ -550,6 +559,7 @@ export default function ContentDetailPage() {
                     cleanImageUrl={cleanImageUrl}
                     logoUrl={logoEditorUrl}
                     productLogoUrl={productLogoUrl}
+                    productLogoUrls={productLogoUrls}
                     logos={availableLogos}
                     initialVariant={(gm.logo_variant_used as string) || undefined}
                     textLine1={editorTextLine1}

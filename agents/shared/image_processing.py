@@ -383,6 +383,7 @@ def overlay_logo_and_text(
     headline_colors: dict | None = None,
     text_width: float | None = None,
     product_logo_data: bytes | None = None,
+    product_logo_dark_data: bytes | None = None,
     product_logo_xy: tuple[float, float] | None = None,
     product_logo_scale: float | None = None,
 ) -> bytes:
@@ -511,28 +512,34 @@ def overlay_logo_and_text(
     # --- Product / manufacturer logo (optional 2nd logo, e.g. Citterio) ---
     # Drawn here (before the text branches) so it appears on every text style,
     # including the early-returning headline / none paths.
-    if product_logo_data:
+    if product_logo_data or product_logo_dark_data:
         try:
-            plogo = Image.open(BytesIO(product_logo_data)).convert("RGBA")
-            pbbox = plogo.getbbox()
-            if pbbox:
-                plogo = plogo.crop(pbbox)
-            # Web logos are often opaque JPEG/PNG on a white card — key out a
-            # near-pure-white background so they don't paste as a white box.
-            alpha = np.asarray(plogo.split()[3], dtype=np.uint8)
-            if alpha.min() >= 250:  # effectively no transparency
-                rgb = np.asarray(plogo.convert("RGB"), dtype=np.uint8)
-                white = (rgb[..., 0] >= 245) & (rgb[..., 1] >= 245) & (rgb[..., 2] >= 245)
-                if white.any() and not white.all():
-                    new_alpha = np.where(white, 0, 255).astype(np.uint8)
-                    plogo.putalpha(Image.fromarray(new_alpha, mode="L"))
-                    plogo = plogo.crop(plogo.getbbox() or (0, 0, plogo.width, plogo.height))
+            def _prep_plogo(blob: bytes):
+                """Decode → crop → key out a near-white background → tight crop."""
+                im = Image.open(BytesIO(blob)).convert("RGBA")
+                bb = im.getbbox()
+                if bb:
+                    im = im.crop(bb)
+                # Web logos are often opaque JPEG/PNG on a white card — key out a
+                # near-pure-white background so they don't paste as a white box.
+                a = np.asarray(im.split()[3], dtype=np.uint8)
+                if a.min() >= 250:  # effectively no transparency
+                    rgb = np.asarray(im.convert("RGB"), dtype=np.uint8)
+                    wht = (rgb[..., 0] >= 245) & (rgb[..., 1] >= 245) & (rgb[..., 2] >= 245)
+                    if wht.any() and not wht.all():
+                        im.putalpha(Image.fromarray(np.where(wht, 0, 255).astype(np.uint8), mode="L"))
+                        im = im.crop(im.getbbox() or (0, 0, im.width, im.height))
+                return im
+
+            light_logo = _prep_plogo(product_logo_data) if product_logo_data else None
+            dark_logo = _prep_plogo(product_logo_dark_data) if product_logo_dark_data else None
+            # Aspect ratio for placement comes from whichever we have (≈ identical).
+            ref = light_logo or dark_logo
 
             pscale = max(0.05, min(0.5, float(product_logo_scale or 0.18)))
             pw = max(1, int(base.width * pscale))
-            ph = int(plogo.height * (pw / plogo.width)) if plogo.width else 0
+            ph = int(ref.height * (pw / ref.width)) if ref and ref.width else 0
             if pw > 0 and ph > 0:
-                plogo = plogo.resize((pw, ph), Image.LANCZOS)
                 if product_logo_xy is not None:
                     pcx, pcy = product_logo_xy
                     px = int(pcx * base.width - pw / 2)
@@ -543,6 +550,20 @@ def overlay_logo_and_text(
                 pedge = max(8, int(base.width * 0.02))
                 px = max(pedge, min(px, base.width - pw - pedge))
                 py = max(pedge, min(py, base.height - ph - pedge))
+
+                # Auto-pick the variant for the background ONLY when both exist:
+                # sample the mean luminance under the logo box — dark backdrop →
+                # the "dark" variant (a light/white logo), else the "light" one.
+                if light_logo and dark_logo:
+                    region = np.asarray(
+                        base.convert("RGB").crop((px, py, px + pw, py + ph)),
+                        dtype=np.uint8,
+                    )
+                    plogo = dark_logo if region.mean() < 128 else light_logo
+                else:
+                    plogo = light_logo or dark_logo
+
+                plogo = plogo.resize((pw, ph), Image.LANCZOS)
                 # Soft drop shadow so it reads on any background.
                 pshadow = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
                 pshadow.putalpha(plogo.split()[3].point(lambda v: int(v * 0.4)))
@@ -666,8 +687,14 @@ def overlay_logo_and_text(
     # opacity per image. Sizing trimmed down from the original spec — the
     # earlier card was visually overpowering the product.
     _ts = max(0.5, min(2.5, text_scale or 1.0))
-    font_large = _load_font(int(base.width * 0.030 * _ts), "regular")
-    font_small = _load_font(int(base.width * 0.019 * _ts), "light")
+    if (font_family or "").strip() in _HEADLINE_FONT_FILES:
+        # Honor the editor's chosen font for glass/solid cards too (lighter
+        # weights than a headline so the card stays subtle).
+        font_large = _load_headline_font(int(base.width * 0.030 * _ts), font_family, weight=600)
+        font_small = _load_headline_font(int(base.width * 0.019 * _ts), font_family, weight=400)
+    else:
+        font_large = _load_font(int(base.width * 0.030 * _ts), "regular")
+        font_small = _load_font(int(base.width * 0.019 * _ts), "light")
     margin = int(base.width * 0.04)
     pad_x = max(14, int(base.width * 0.014))
     pad_y = max(10, int(base.width * 0.010))
@@ -691,6 +718,9 @@ def overlay_logo_and_text(
                 hi = mid - 1
         return text[:lo].rstrip() + "\u2026" if lo < len(text) else text
 
+    # Glass & solid cards show only the headline line — the brand/website
+    # subtitle ("link") is intentionally dropped.
+    text_line2 = ""
     text_line1 = _fit_text(text_line1, font_large)
     if text_line2:
         text_line2 = _fit_text(text_line2, font_small)

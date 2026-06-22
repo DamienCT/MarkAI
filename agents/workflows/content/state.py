@@ -64,10 +64,13 @@ class ContentState(TypedDict, total=False):
     headline_colors: dict | None
     font_family: str | None
     # Optional 2nd logo: the product's manufacturer logo (e.g. Citterio).
-    product_logo_image: str | None  # MinIO object name of the logo
+    product_logo_image: str | None  # MinIO object name of the logo (default/light)
+    # Light/dark variants of the vendor logo, keyed "light"/"dark" → object name.
+    product_logo_variants: dict[str, str] | None
     product_logo_xy: tuple[float, float] | None
     product_logo_scale: float | None
     product_logo_enabled: bool | None
+    product_logo_variant: str | None  # manual override chosen in the editor
 
     # Vision-critic review after branding (decides whether to re-render)
     branding_review: dict[str, Any] | None

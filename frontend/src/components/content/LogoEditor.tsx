@@ -31,6 +31,7 @@ export interface LogoPlacement {
   product_logo_xy?: [number, number]; // product (manufacturer) logo center (0..1)
   product_logo_scale?: number; // product logo width as a fraction of image width
   product_logo_enabled?: boolean; // show/hide the product logo
+  product_logo_variant?: string; // "light" | "dark" manual override (else auto)
 }
 
 // Bundled headline fonts (match agents Dockerfile + image_processing.HEADLINE_FONTS).
@@ -47,6 +48,8 @@ interface LogoEditorProps {
   logoUrl?: string;
   /** The product (manufacturer) logo, if the linked product has one. */
   productLogoUrl?: string;
+  /** Light/dark variant URLs of the vendor logo (for the manual swap button). */
+  productLogoUrls?: { light?: string | null; dark?: string | null };
   textLine1: string;
   textLine2?: string;
   initial: LogoPlacement & { textAnchor?: string | null };
@@ -100,6 +103,7 @@ export function LogoEditor({
   cleanImageUrl,
   logoUrl,
   productLogoUrl,
+  productLogoUrls,
   textLine1,
   textLine2,
   initial,
@@ -126,6 +130,27 @@ export function LogoEditor({
   const [productLogoEnabled, setProductLogoEnabled] = useState<boolean>(
     initial.product_logo_enabled !== false && !!productLogoUrl
   );
+  // Vendor logo light/dark variant — cycled manually with a button (like the
+  // brand logo's reverse button). The chosen value overrides the renderer's
+  // background-based auto-pick. Available variants come from productLogoUrls.
+  const plLightUrl = productLogoUrls?.light || productLogoUrl || undefined;
+  const plDarkUrl = productLogoUrls?.dark || undefined;
+  const plHasBoth = !!plLightUrl && !!plDarkUrl;
+  const [productLogoVariant, setProductLogoVariant] = useState<"light" | "dark">(
+    initial.product_logo_variant === "dark"
+      ? "dark"
+      : initial.product_logo_variant === "light"
+        ? "light"
+        : plLightUrl ? "light" : "dark"
+  );
+  const cycleProductLogoVariant = useCallback(
+    () => setProductLogoVariant((v) => (v === "light" ? "dark" : "light")),
+    []
+  );
+  // The variant actually shown in the preview (fall back if one is missing).
+  const effectiveProductLogoUrl =
+    (productLogoVariant === "dark" ? plDarkUrl : plLightUrl) ||
+    plLightUrl || plDarkUrl;
   const [textXy, setTextXy] = useState<[number, number]>(
     initial.text_xy || anchorToXy(initial.textAnchor)
   );
@@ -149,7 +174,8 @@ export function LogoEditor({
   const isHeadline = textStyle === "headline";
   const isNone = textStyle === "none";
 
-  // Headline font (cycled with a button, like the logo variant).
+  // Overlay font (cycled with a button, like the logo variant). Applies to any
+  // text style — glass / solid / headline.
   const [fontFamily, setFontFamily] = useState<string>(
     HEADLINE_FONTS.includes(initial.font_family || "") ? initial.font_family! : HEADLINE_FONTS[0]
   );
@@ -236,7 +262,7 @@ export function LogoEditor({
     logo_xy: logoXy, logo_scale: logoScale, text_xy: textXy,
     text_scale: textScale, logo_variant: variant || undefined,
     text_style: textStyle,
-    font_family: isHeadline ? fontFamily : undefined,
+    font_family: isNone ? undefined : fontFamily,
     headline_colors: isHeadline ? headlineColors : undefined,
     text_width: isHeadline ? textWidth : undefined,
     ...(productLogoUrl
@@ -244,6 +270,8 @@ export function LogoEditor({
           product_logo_xy: productLogoXy,
           product_logo_scale: productLogoScale,
           product_logo_enabled: productLogoEnabled,
+          // Only pin a variant when both exist (else leave auto-pick on).
+          product_logo_variant: plHasBoth ? productLogoVariant : undefined,
         }
       : {}),
   };
@@ -455,7 +483,7 @@ export function LogoEditor({
             fontSize: isHeadline ? fontLargePx * 2 : fontLargePx,
             lineHeight: 1.15,
             fontWeight: isHeadline ? 800 : 500,
-            fontFamily: isHeadline ? `"${fontFamily}", sans-serif` : undefined,
+            fontFamily: `"${fontFamily}", sans-serif`,
           }}>
             {isHeadline
               ? headlineWords.map((w, i) => (
@@ -476,11 +504,8 @@ export function LogoEditor({
                 ))
               : (textLine1 || "Titre")}
           </div>
-          {textLine2 && !isHeadline ? (
-            <div style={{ fontSize: fontSmallPx, lineHeight: 1.2, opacity: 0.9 }}>
-              {textLine2}
-            </div>
-          ) : null}
+          {/* Brand/website subtitle ("link") intentionally removed from the
+              glass & solid overlays — only the headline line is shown. */}
           {/* Corner = font size (proportional). For the headline, the right
               edge handle changes the WRAP WIDTH so the text re-flows onto more
               or fewer lines (Canva-style) — no distortion. */}
@@ -533,7 +558,7 @@ export function LogoEditor({
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={productLogoUrl}
+              src={effectiveProductLogoUrl}
               alt="product logo"
               className="block w-full"
               draggable={false}
@@ -583,13 +608,25 @@ export function LogoEditor({
               Product logo: {productLogoEnabled ? "on" : "off"}
             </button>
           ) : null}
-          {isHeadline ? (
+          {productLogoUrl && productLogoEnabled && plHasBoth ? (
+            <button
+              type="button"
+              onPointerDown={(e) => { e.stopPropagation(); }}
+              onClick={cycleProductLogoVariant}
+              className="pointer-events-auto flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
+              title="Swap the vendor logo variant (light = light bg, dark = dark bg)"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Vendor logo: {productLogoVariant}
+            </button>
+          ) : null}
+          {!isNone ? (
             <button
               type="button"
               onPointerDown={(e) => { e.stopPropagation(); }}
               onClick={cycleFont}
               className="pointer-events-auto flex items-center gap-1.5 rounded-md bg-white/90 px-2 py-1 text-xs font-medium text-black shadow hover:bg-white"
-              title="Cycle headline font"
+              title="Cycle overlay font"
             >
               <Type className="h-3.5 w-3.5" />
               Font: {fontFamily}

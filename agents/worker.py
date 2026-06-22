@@ -265,6 +265,33 @@ async def _download_product_asset(ref: str | None) -> bytes | None:
         return None
 
 
+async def _resolve_pl_variant_bytes(
+    light_obj: str | None,
+    dark_obj: str | None,
+    override: str | None,
+    enabled: bool,
+) -> tuple[bytes | None, bytes | None]:
+    """Return (primary_bytes, dark_bytes) for the vendor logo.
+
+    - With an explicit ``override`` ("light"/"dark") the chosen variant is the
+      sole logo (no auto-pick) → dark_bytes is None.
+    - Otherwise the renderer auto-picks by background: pass light as primary and
+      dark as the alternate (only when BOTH exist). A single version is always
+      used as the primary.
+    """
+    if not enabled:
+        return None, None
+    if override == "dark" and dark_obj:
+        return await _download_product_asset(dark_obj), None
+    if override == "light" and light_obj:
+        return await _download_product_asset(light_obj), None
+    light = await _download_product_asset(light_obj) if light_obj else None
+    dark = await _download_product_asset(dark_obj) if dark_obj else None
+    primary = light or dark
+    alt = dark if (light and dark) else None
+    return primary, alt
+
+
 async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
     """Regenerate the image for an existing content piece.
 
@@ -371,6 +398,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # so posts generated BEFORE the vendor-logo feature pick it up on regen,
         # even though their generation_metadata has no product_logo_image yet.
         resolved_vendor_logo: str | None = None
+        resolved_vendor_logo_dark: str | None = None
         resolved_product_logo_xy: tuple[float, float] | None = None
         cal_rows = await execute_query(
             "SELECT product_ids, title, channel FROM calendar_items WHERE id = :id",
@@ -399,12 +427,24 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 if _vendor:
                     _vlogos = brand_guidelines.get("vendor_logos", {})
                     _ventry = _vlogos.get(_vendor) if isinstance(_vlogos, dict) else None
-                    if isinstance(_ventry, dict) and _ventry.get("object_name"):
-                        resolved_vendor_logo = _ventry["object_name"]
-                        logger.info(
-                            "Regen: resolved vendor logo for '%s' (vendor=%s)",
-                            product_name, _vendor,
-                        )
+                    if isinstance(_ventry, dict):
+                        # Normalize light/dark variants (legacy flat → light).
+                        if _ventry.get("object_name"):
+                            resolved_vendor_logo = _ventry["object_name"]
+                        else:
+                            _l = _ventry.get("light")
+                            _d = _ventry.get("dark")
+                            if isinstance(_l, dict):
+                                resolved_vendor_logo = _l.get("object_name")
+                            if isinstance(_d, dict):
+                                resolved_vendor_logo_dark = _d.get("object_name")
+                        # Always show *a* logo even with a single version.
+                        resolved_vendor_logo = resolved_vendor_logo or resolved_vendor_logo_dark
+                        if resolved_vendor_logo or resolved_vendor_logo_dark:
+                            logger.info(
+                                "Regen: resolved vendor logo for '%s' (vendor=%s)",
+                                product_name, _vendor,
+                            )
                 gallery = product.get("image_urls")
                 primary = product.get("primary_image_url")
                 if not primary and isinstance(gallery, list) and gallery:
@@ -607,9 +647,20 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     # Product (manufacturer) logo — keep it across regenerations,
                     # falling back to the vendor logo for older posts that have
                     # none stored yet.
-                    _pl_obj = gen_meta.get("product_logo_image") or resolved_vendor_logo
-                    _pl_on = bool(_pl_obj) and gen_meta.get("product_logo_enabled") is not False
-                    _pl_bytes = await _download_product_asset(_pl_obj) if _pl_on else None
+                    _pl_vars = gen_meta.get("product_logo_variants") or {}
+                    _pl_light_obj = (
+                        _pl_vars.get("light")
+                        or gen_meta.get("product_logo_image")
+                        or resolved_vendor_logo
+                    )
+                    _pl_dark_obj = _pl_vars.get("dark") or resolved_vendor_logo_dark
+                    _pl_on = bool(_pl_light_obj or _pl_dark_obj) and (
+                        gen_meta.get("product_logo_enabled") is not False
+                    )
+                    _pl_bytes, _pl_dark_bytes = await _resolve_pl_variant_bytes(
+                        _pl_light_obj, _pl_dark_obj,
+                        gen_meta.get("product_logo_variant"), _pl_on,
+                    )
                     _pl_xy = gen_meta.get("product_logo_xy")
                     # Keep the vendor logo clear of the headline (opposite
                     # vertical half) and the brand logo (opposite side) when the
@@ -639,6 +690,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                             else gen_meta.get("text_width")
                         ),
                         product_logo_data=_pl_bytes,
+                        product_logo_dark_data=_pl_dark_bytes,
                         product_logo_xy=tuple(_pl_xy) if _pl_xy else None,
                         product_logo_scale=gen_meta.get("product_logo_scale"),
                     )
@@ -756,8 +808,17 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # logo/overlay editor can show & adjust it after this regeneration —
         # critical for older posts where it was resolved from the vendor.
         _persist_pl = gen_meta.get("product_logo_image") or resolved_vendor_logo
+        # Persist the resolved light/dark variants so the editor + later regens
+        # see both versions (older posts only had a single product_logo_image).
+        _persist_vars = dict(gen_meta.get("product_logo_variants") or {})
+        if resolved_vendor_logo and not _persist_vars.get("light"):
+            _persist_vars["light"] = resolved_vendor_logo
+        if resolved_vendor_logo_dark and not _persist_vars.get("dark"):
+            _persist_vars["dark"] = resolved_vendor_logo_dark
         if _persist_pl:
             existing_metadata["product_logo_image"] = _persist_pl
+            if _persist_vars:
+                existing_metadata["product_logo_variants"] = _persist_vars
             _pxy = gen_meta.get("product_logo_xy")
             if _pxy is None and resolved_product_logo_xy is not None:
                 _pxy = list(resolved_product_logo_xy)
@@ -991,13 +1052,20 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                 text_line1 = hook or headline
                 text_line2 = f"{brand_name}" + (f" — {website}" if website else "")
                 # Product logo: editor value wins; else keep what's stored.
-                _pl_obj = gen_meta.get("product_logo_image")
-                _pl_on = bool(_pl_obj) and (
+                # Vendor light/dark variants — the editor's manual variant pick
+                # (product_logo_variant) overrides the background auto-pick.
+                _pl_vars = gen_meta.get("product_logo_variants") or {}
+                _pl_light_obj = _pl_vars.get("light") or gen_meta.get("product_logo_image")
+                _pl_dark_obj = _pl_vars.get("dark")
+                _pl_override = payload.get("product_logo_variant") or gen_meta.get("product_logo_variant")
+                _pl_on = bool(_pl_light_obj or _pl_dark_obj) and (
                     product_logo_enabled
                     if product_logo_enabled is not None
                     else gen_meta.get("product_logo_enabled") is not False
                 )
-                _pl_bytes = await _download_product_asset(_pl_obj) if _pl_on else None
+                _pl_bytes, _pl_dark_bytes = await _resolve_pl_variant_bytes(
+                    _pl_light_obj, _pl_dark_obj, _pl_override, _pl_on,
+                )
                 _eff_pl_xy = product_logo_xy if product_logo_xy is not None else _xy(gen_meta.get("product_logo_xy"))
                 _eff_pl_scale = (
                     product_logo_scale
@@ -1026,6 +1094,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                             else gen_meta.get("text_width")
                         ),
                         product_logo_data=_pl_bytes,
+                        product_logo_dark_data=_pl_dark_bytes,
                         product_logo_xy=_eff_pl_xy,
                         product_logo_scale=_eff_pl_scale,
                     )
@@ -1117,13 +1186,16 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
             existing_metadata["headline_colors"] = headline_colors
         if text_width is not None:
             existing_metadata["text_width"] = text_width
-        # Product logo placement / on-off from the editor.
+        # Product logo placement / on-off / variant from the editor.
         if product_logo_enabled is not None:
             existing_metadata["product_logo_enabled"] = bool(product_logo_enabled)
         if product_logo_xy is not None:
             existing_metadata["product_logo_xy"] = list(product_logo_xy)
         if product_logo_scale is not None:
             existing_metadata["product_logo_scale"] = float(product_logo_scale)
+        _pl_variant_choice = payload.get("product_logo_variant")
+        if _pl_variant_choice in ("light", "dark"):
+            existing_metadata["product_logo_variant"] = _pl_variant_choice
         if mockup_urls:
             existing_metadata["mockup_urls"] = mockup_urls
         await execute_update(

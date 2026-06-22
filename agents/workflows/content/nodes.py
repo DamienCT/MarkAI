@@ -1443,6 +1443,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     # product's vendor_name against brand_guidelines.vendor_logos so one logo
     # covers the whole vendor range. (Stored as a MinIO object name.)
     product_logo_image = None
+    product_logo_variants: dict[str, str] = {}
     vendor = (product.get("vendor_name") or "").strip()
     if vendor:
         try:
@@ -1457,10 +1458,25 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
                     guidelines = {}
             vendor_logos = guidelines.get("vendor_logos", {}) if isinstance(guidelines, dict) else {}
             _entry = vendor_logos.get(vendor) if isinstance(vendor_logos, dict) else None
+            # Normalize light/dark variants (legacy flat entry → light).
             if isinstance(_entry, dict):
-                product_logo_image = _entry.get("object_name")
-                if product_logo_image:
-                    logger.info("Using vendor logo for '%s' (vendor=%s)", product_name, vendor)
+                if _entry.get("object_name"):  # legacy single → light
+                    product_logo_variants["light"] = _entry["object_name"]
+                else:
+                    for _v in ("light", "dark"):
+                        _sub = _entry.get(_v)
+                        if isinstance(_sub, dict) and _sub.get("object_name"):
+                            product_logo_variants[_v] = _sub["object_name"]
+            # Default object = light if present, else the dark one (always show
+            # *a* logo even when the vendor only has one version).
+            product_logo_image = (
+                product_logo_variants.get("light") or product_logo_variants.get("dark")
+            )
+            if product_logo_image:
+                logger.info(
+                    "Using vendor logo for '%s' (vendor=%s, variants=%s)",
+                    product_name, vendor, list(product_logo_variants.keys()),
+                )
         except Exception as exc:
             logger.warning("Vendor logo lookup failed for '%s': %s", vendor, exc)
 
@@ -1482,6 +1498,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
                 "is_lifestyle_only": False,
                 "product_id": str(product.get("id", "")),
                 "product_logo_image": product_logo_image,
+                "product_logo_variants": product_logo_variants,
             }
 
     # No gallery images — restrict to lifestyle shots
@@ -1495,6 +1512,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
         "is_lifestyle_only": True,
         "product_id": str(product.get("id", "")),
         "product_logo_image": product_logo_image,
+        "product_logo_variants": product_logo_variants,
     }
 
 
@@ -2635,14 +2653,27 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
                     logger.warning("ad logo variant re-pick failed: %s", _exc)
 
         # Optional product (manufacturer) logo — fetched once, composited on
-        # every style. Enabled by default when the product has a logo.
-        pl_enabled = bool(state.get("product_logo_image")) and (
+        # every style. Enabled by default when the product has a logo. The
+        # vendor can have light (white-bg) + dark (dark-bg) variants; download
+        # both so the renderer auto-picks by the local background luminance.
+        _pl_variants = state.get("product_logo_variants") or {}
+        _pl_light_obj = _pl_variants.get("light") or state.get("product_logo_image")
+        _pl_dark_obj = _pl_variants.get("dark")
+        pl_enabled = bool(_pl_light_obj or _pl_dark_obj) and (
             state.get("product_logo_enabled") is not False
         )
-        pl_bytes = (
-            await _download_product_asset(state.get("product_logo_image"))
-            if pl_enabled else None
+        pl_light = (
+            await _download_product_asset(_pl_light_obj)
+            if (pl_enabled and _pl_light_obj) else None
         )
+        pl_dark = (
+            await _download_product_asset(_pl_dark_obj)
+            if (pl_enabled and _pl_dark_obj) else None
+        )
+        # Primary blob = light (or the only one). Dark is passed for auto-pick
+        # only when BOTH exist; with a single version it's always used.
+        pl_bytes = pl_light or pl_dark
+        pl_dark_bytes = pl_dark if (pl_light and pl_dark) else None
         _pl_xy = state.get("product_logo_xy")
         # In ads, keep the vendor logo clear of the headline (opposite vertical
         # half) and the brand logo (opposite horizontal side) when the user
@@ -2656,6 +2687,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             )
         pl_kwargs = {
             "product_logo_data": pl_bytes,
+            "product_logo_dark_data": pl_dark_bytes,
             "product_logo_xy": tuple(_pl_xy) if _pl_xy else None,
             "product_logo_scale": state.get("product_logo_scale"),
         }
@@ -3346,6 +3378,8 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
             "headline_colors": state.get("headline_colors") or None,
             # Product (manufacturer) logo — object + placement for the editor.
             "product_logo_image": state.get("product_logo_image"),
+            "product_logo_variants": state.get("product_logo_variants") or None,
+            "product_logo_variant": state.get("product_logo_variant"),
             "product_logo_enabled": state.get("product_logo_enabled"),
             "product_logo_xy": list(state["product_logo_xy"]) if state.get("product_logo_xy") else None,
             "product_logo_scale": state.get("product_logo_scale"),

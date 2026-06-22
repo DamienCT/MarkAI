@@ -1176,6 +1176,28 @@ def _vendor_slug(vendor_name: str) -> str:
     return (slug or "vendor")[:60]
 
 
+# A vendor can have two logo variants: "light" (primary — for white/light
+# backgrounds) and "dark" (secondary — for dark backgrounds). Stored nested:
+#   vendor_logos[name] = {"light": {entry}, "dark": {entry}}
+# Legacy single-logo entries (a flat {object_name, ...}) are read as "light"
+# so pre-existing logos keep working without a migration.
+_VENDOR_VARIANTS = ("light", "dark")
+
+
+def _vendor_variants(value) -> dict:
+    """Normalize a stored vendor_logos[name] value to {variant: entry}."""
+    if not isinstance(value, dict):
+        return {}
+    if value.get("object_name"):  # legacy flat single → treat as light
+        return {"light": value}
+    out = {}
+    for v in _VENDOR_VARIANTS:
+        entry = value.get(v)
+        if isinstance(entry, dict) and entry.get("object_name"):
+            out[v] = entry
+    return out
+
+
 def _ext_for_content_type(ct: str) -> str:
     ct = (ct or "").lower()
     if "png" in ct:
@@ -1233,13 +1255,19 @@ async def _store_vendor_logo(
     image_data: bytes,
     content_type: str,
     source_url: str | None,
+    variant: str = "light",
 ) -> dict:
-    """Upload the logo to MinIO and record it under brand_guidelines."""
+    """Upload the logo to MinIO and record it under brand_guidelines.
+
+    Stored per variant ("light" / "dark") so the renderer can pick the right
+    one for the background. Migrates any legacy flat entry into the variant map.
+    """
+    variant = variant if variant in _VENDOR_VARIANTS else "light"
     # Trim to content (white-key + crop) so editor and render match in size.
     image_data, content_type = _clean_logo_bytes(image_data, content_type)
     slug = _vendor_slug(vendor_name)
     ext = _ext_for_content_type(content_type)
-    object_name = f"brands/{brand.id}/vendor-logos/{slug}.{ext}"
+    object_name = f"brands/{brand.id}/vendor-logos/{slug}-{variant}.{ext}"
 
     await minio_service.ensure_bucket()
     await minio_service.upload_file(object_name, image_data, content_type or "image/png")
@@ -1255,7 +1283,10 @@ async def _store_vendor_logo(
         "slug": slug,
         "source_url": source_url,
     }
-    vendor_logos[vendor_name] = entry
+    # Normalize the existing value (legacy flat → {"light": ...}) then set ours.
+    variants = _vendor_variants(vendor_logos.get(vendor_name))
+    variants[variant] = entry
+    vendor_logos[vendor_name] = variants
     guidelines["vendor_logos"] = vendor_logos
     brand.brand_guidelines = guidelines
     flag_modified(brand, "brand_guidelines")
@@ -1267,6 +1298,7 @@ async def _store_vendor_logo(
 class VendorLogoFetch(BaseModel):
     vendor_name: str
     attempt: int = 0  # increments to cycle through alternative Bing candidates
+    variant: str = "light"  # "light" (white bg) | "dark" (dark bg)
 
 
 @router.get("/{brand_id}/vendors")
@@ -1295,12 +1327,17 @@ async def list_brand_vendors(
     vendor_logos = (brand.brand_guidelines or {}).get("vendor_logos", {})
     vendors = []
     for name in names:
-        info = vendor_logos.get(name) or {}
+        variants = _vendor_variants(vendor_logos.get(name))
+        light = (variants.get("light") or {}).get("object_name")
+        dark = (variants.get("dark") or {}).get("object_name")
         vendors.append(
             {
                 "vendor_name": name,
-                "has_logo": bool(info.get("object_name")),
-                "logo_url": info.get("object_name"),
+                "has_logo": bool(light or dark),
+                # Back-compat: logo_url is the primary (light) or whichever exists.
+                "logo_url": light or dark,
+                "light_url": light,
+                "dark_url": dark,
             }
         )
     return {"vendors": vendors}
@@ -1362,12 +1399,17 @@ async def fetch_vendor_logo(
         logger.warning("Failed to download logo from %s: %s", logo_url, exc)
         raise HTTPException(status_code=502, detail="Logo download failed") from exc
 
-    entry = await _store_vendor_logo(db, brand, vendor, dl.content, ct, logo_url)
-    logger.info("Stored vendor logo for '%s' (brand %s)", vendor, brand_id)
+    entry = await _store_vendor_logo(
+        db, brand, vendor, dl.content, ct, logo_url, variant=body.variant
+    )
+    logger.info(
+        "Stored vendor logo for '%s' variant=%s (brand %s)", vendor, body.variant, brand_id
+    )
     return {
         "status": "ok",
         "vendor_name": vendor,
         "logo_url": entry["object_name"],
+        "variant": body.variant,
         "attempt": body.attempt,
     }
 
@@ -1376,6 +1418,7 @@ async def fetch_vendor_logo(
 async def upload_vendor_logo(
     brand_id: uuid.UUID,
     vendor_name: str,
+    variant: str = "light",
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -1418,12 +1461,13 @@ async def upload_vendor_logo(
         )
 
     entry = await _store_vendor_logo(
-        db, brand, vendor, data, file.content_type or "image/png", None
+        db, brand, vendor, data, file.content_type or "image/png", None, variant=variant
     )
     return {
         "status": "ok",
         "vendor_name": vendor,
         "logo_url": entry["object_name"],
+        "variant": variant if variant in _VENDOR_VARIANTS else "light",
     }
 
 
@@ -1431,10 +1475,12 @@ async def upload_vendor_logo(
 async def delete_vendor_logo(
     brand_id: uuid.UUID,
     vendor_name: str,
+    variant: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Remove a vendor's stored logo."""
+    """Remove a vendor's stored logo. Pass ``variant`` to remove just one
+    variant ("light"/"dark"); omit it to remove all of the vendor's logos."""
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -1446,15 +1492,29 @@ async def delete_vendor_logo(
 
     guidelines = dict(brand.brand_guidelines or {})
     vendor_logos = dict(guidelines.get("vendor_logos", {}))
-    info = vendor_logos.pop(vendor_name, None)
-    if not info:
+    variants = _vendor_variants(vendor_logos.get(vendor_name))
+    if not variants:
         raise HTTPException(status_code=404, detail="Vendor logo not found")
 
-    try:
-        await minio_service.delete_file(info["object_name"])
-    except Exception:
-        pass
+    to_delete = (
+        [variant] if variant in _VENDOR_VARIANTS else list(variants.keys())
+    )
+    removed_any = False
+    for v in to_delete:
+        entry = variants.pop(v, None)
+        if entry and entry.get("object_name"):
+            removed_any = True
+            try:
+                await minio_service.delete_file(entry["object_name"])
+            except Exception:
+                pass
+    if not removed_any:
+        raise HTTPException(status_code=404, detail="Vendor logo not found")
 
+    if variants:
+        vendor_logos[vendor_name] = variants
+    else:
+        vendor_logos.pop(vendor_name, None)
     guidelines["vendor_logos"] = vendor_logos
     brand.brand_guidelines = guidelines
     flag_modified(brand, "brand_guidelines")

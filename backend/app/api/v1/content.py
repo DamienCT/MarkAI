@@ -155,6 +155,7 @@ class LogoRebrandRequest(BaseModel):
     product_logo_xy: list[float] | None = None  # product logo center (0..1)
     product_logo_scale: float | None = None  # product logo width as fraction
     product_logo_enabled: bool | None = None  # show/hide the product logo
+    product_logo_variant: str | None = None  # "light" | "dark" manual override
 
 
 # Manual logo/overlay editing is only allowed while the post is in review.
@@ -224,6 +225,7 @@ async def rebrand_logo(
             "product_logo_xy": body.product_logo_xy,
             "product_logo_scale": body.product_logo_scale,
             "product_logo_enabled": body.product_logo_enabled,
+            "product_logo_variant": body.product_logo_variant,
             "prior_status": prior_status,
         },
     )

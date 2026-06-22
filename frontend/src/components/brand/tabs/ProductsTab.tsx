@@ -131,7 +131,14 @@ export function ProductsTab({
   // Vendor logo modal — logos belong to the vendor (manufacturer), keyed by
   // vendor_name and stored at the brand level. One logo covers all of that
   // vendor's products at generation time.
-  type VendorLogo = { vendor_name: string; has_logo: boolean; logo_url: string | null };
+  type VendorVariant = "light" | "dark";
+  type VendorLogo = {
+    vendor_name: string;
+    has_logo: boolean;
+    logo_url: string | null;
+    light_url: string | null;
+    dark_url: string | null;
+  };
   const [vendorLogoOpen, setVendorLogoOpen] = useState(false);
   const [vendorLogos, setVendorLogos] = useState<VendorLogo[]>([]);
   const [vendorLogosLoading, setVendorLogosLoading] = useState(false);
@@ -163,18 +170,23 @@ export function ProductsTab({
     loadVendorLogos();
   };
 
-  const fetchVendorLogo = async (vendorName: string, retry: boolean) => {
-    const cur = vendorAttempts.current[vendorName] ?? -1;
+  // Busy key is per vendor+variant so the two slots spin independently.
+  const _busyKey = (vendorName: string, variant: VendorVariant) => `${vendorName}:${variant}`;
+
+  const fetchVendorLogo = async (vendorName: string, variant: VendorVariant, retry: boolean) => {
+    const key = _busyKey(vendorName, variant);
+    const cur = vendorAttempts.current[key] ?? -1;
     const attempt = retry ? cur + 1 : 0;
-    vendorAttempts.current[vendorName] = attempt;
-    setVendorLogoBusy(vendorName);
+    vendorAttempts.current[key] = attempt;
+    setVendorLogoBusy(key);
     try {
       await api.post(`/api/v1/brands/${brand.id}/vendors/fetch-logo`, {
         vendor_name: vendorName,
         attempt,
+        variant,
       });
       await loadVendorLogos();
-      toast.success(`Logo updated — ${vendorName}`);
+      toast.success(`${variant} logo updated — ${vendorName}`);
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "No logo found";
       toast.error(detail);
@@ -183,15 +195,16 @@ export function ProductsTab({
     }
   };
 
-  const uploadVendorLogo = async (vendorName: string, file: File) => {
-    setVendorLogoBusy(vendorName);
+  const uploadVendorLogo = async (vendorName: string, variant: VendorVariant, file: File) => {
+    const key = _busyKey(vendorName, variant);
+    setVendorLogoBusy(key);
     try {
       await api.uploadFile(
-        `/api/v1/brands/${brand.id}/vendors/upload-logo?vendor_name=${encodeURIComponent(vendorName)}`,
+        `/api/v1/brands/${brand.id}/vendors/upload-logo?vendor_name=${encodeURIComponent(vendorName)}&variant=${variant}`,
         file
       );
       await loadVendorLogos();
-      toast.success(`Logo uploaded — ${vendorName}`);
+      toast.success(`${variant} logo uploaded — ${vendorName}`);
     } catch (err: unknown) {
       const detail = (err as { detail?: string })?.detail || "Upload failed";
       toast.error(detail);
@@ -200,11 +213,12 @@ export function ProductsTab({
     }
   };
 
-  const deleteVendorLogo = async (vendorName: string) => {
-    setVendorLogoBusy(vendorName);
+  const deleteVendorLogo = async (vendorName: string, variant: VendorVariant) => {
+    const key = _busyKey(vendorName, variant);
+    setVendorLogoBusy(key);
     try {
       await api.delete(
-        `/api/v1/brands/${brand.id}/vendors/logo?vendor_name=${encodeURIComponent(vendorName)}`
+        `/api/v1/brands/${brand.id}/vendors/logo?vendor_name=${encodeURIComponent(vendorName)}&variant=${variant}`
       );
       await loadVendorLogos();
     } catch {
@@ -954,9 +968,10 @@ export function ProductsTab({
             <Tag className="h-4 w-4" /> Vendor logos
           </DialogTitle>
           <DialogDescription>
-            Each vendor (manufacturer) gets one logo, reused for every one of its
-            products in generated posts. Fetch it automatically from the web or
-            upload your own.
+            Each vendor (manufacturer) can have a <b>Light</b> variant (for
+            light/white backgrounds) and a <b>Dark</b> variant (for dark
+            backgrounds). The renderer auto-picks the right one per post; a
+            vendor with a single variant always uses that one.
           </DialogDescription>
 
           {vendorLogosLoading ? (
@@ -972,83 +987,85 @@ export function ProductsTab({
           ) : (
             <div className="divide-y">
               {vendorLogos.map((v) => {
-                const busy = vendorLogoBusy === v.vendor_name;
+                const slots: { variant: VendorVariant; label: string; sub: string; url: string | null; darkBg: boolean }[] = [
+                  { variant: "light", label: "Light", sub: "light bg", url: v.light_url, darkBg: false },
+                  { variant: "dark", label: "Dark", sub: "dark bg", url: v.dark_url, darkBg: true },
+                ];
                 return (
-                  <div key={v.vendor_name} className="flex items-center gap-3 py-3">
-                    <div className="flex h-12 w-16 shrink-0 items-center justify-center rounded-sm bg-white/70 ring-1 ring-border">
-                      {busy ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                      ) : v.logo_url ? (
-                        <img
-                          src={`${fileUrl(v.logo_url)}?v=${logoVersion}`}
-                          alt={v.vendor_name}
-                          className="h-11 max-w-[60px] object-contain p-0.5"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <span className="text-[10px] text-muted-foreground">No logo</span>
-                      )}
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium" title={v.vendor_name}>
-                        {v.vendor_name}
-                      </p>
-                      <p className="text-[11px] text-muted-foreground">
-                        {v.has_logo ? "Logo set" : "No logo yet"}
-                      </p>
-                    </div>
-
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      {v.has_logo ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => fetchVendorLogo(v.vendor_name, true)}
-                          title="Search again for a different logo"
-                        >
-                          <RotateCw className="h-3.5 w-3.5" />
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => fetchVendorLogo(v.vendor_name, false)}
-                        >
-                          <Search className="mr-1.5 h-3.5 w-3.5" />
-                          Fetch logo
-                        </Button>
-                      )}
-
-                      <Button size="sm" variant="outline" disabled={busy} asChild>
-                        <label className="cursor-pointer">
-                          <Upload className="h-3.5 w-3.5" />
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp"
-                            className="hidden"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) uploadVendorLogo(v.vendor_name, file);
-                              e.target.value = "";
-                            }}
-                          />
-                        </label>
-                      </Button>
-
-                      {v.has_logo && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={busy}
-                          onClick={() => deleteVendorLogo(v.vendor_name)}
-                          title="Remove logo"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
+                  <div key={v.vendor_name} className="py-3">
+                    <p className="truncate text-sm font-medium" title={v.vendor_name}>
+                      {v.vendor_name}
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-3">
+                      {slots.map(({ variant, label, sub, url, darkBg }) => {
+                        const busy = vendorLogoBusy === _busyKey(v.vendor_name, variant);
+                        return (
+                          <div key={variant} className="rounded-md border p-2">
+                            <div className="mb-1.5 flex items-center justify-between">
+                              <span className="text-xs font-medium">
+                                {label} <span className="text-muted-foreground">· {sub}</span>
+                              </span>
+                              {url && (
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => deleteVendorLogo(v.vendor_name, variant)}
+                                  title={`Remove ${label} logo`}
+                                  className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                            <div
+                              className={`flex h-14 items-center justify-center rounded-sm ring-1 ring-border ${darkBg ? "bg-neutral-800" : "bg-white/80"}`}
+                            >
+                              {busy ? (
+                                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                              ) : url ? (
+                                <img
+                                  src={`${fileUrl(url)}?v=${logoVersion}`}
+                                  alt={`${v.vendor_name} ${label}`}
+                                  className="h-12 max-w-[80%] object-contain p-0.5"
+                                  loading="lazy"
+                                />
+                              ) : (
+                                <span className={`text-[10px] ${darkBg ? "text-neutral-400" : "text-muted-foreground"}`}>
+                                  No logo
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1.5 flex items-center gap-1.5">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 flex-1 px-2 text-xs"
+                                disabled={busy}
+                                onClick={() => fetchVendorLogo(v.vendor_name, variant, !!url)}
+                                title={url ? "Search again for a different logo" : "Fetch from the web"}
+                              >
+                                {url ? <RotateCw className="h-3.5 w-3.5" /> : <Search className="mr-1 h-3.5 w-3.5" />}
+                                {url ? "" : "Fetch"}
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2" disabled={busy} asChild>
+                                <label className="cursor-pointer">
+                                  <Upload className="h-3.5 w-3.5" />
+                                  <input
+                                    type="file"
+                                    accept="image/png,image/jpeg,image/webp"
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) uploadVendorLogo(v.vendor_name, variant, file);
+                                      e.target.value = "";
+                                    }}
+                                  />
+                                </label>
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
