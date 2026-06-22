@@ -930,7 +930,7 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
         top_hooks = (
             "\n".join(
                 f"- {sanitize_for_prompt(str(p.get('caption_snippet', ''))[:60])} "
-                f"(engagement: {p.get('engagement_rate', 0):.1%})"
+                f"(engagement: {(p.get('engagement_rate') or 0):.1%})"
                 for p in top_performing[:5]
                 if p.get("caption_snippet")
             )
@@ -1084,7 +1084,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         top_captions = (
             "\n".join(
                 f"- {sanitize_for_prompt(str(p.get('caption_snippet', ''))[:120])} "
-                f"(engagement: {p.get('engagement_rate', 0):.1%})"
+                f"(engagement: {(p.get('engagement_rate') or 0):.1%})"
                 for p in top_performing[:5]
                 if p.get("caption_snippet")
             )
@@ -1238,7 +1238,7 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
         top_hashtags_info = ""
         if top_performing:
             top_hashtags_info = "Top performing content hashtag context:\n" + "\n".join(
-                f"- {sanitize_for_prompt(str(p.get('title', ''))[:50])} (engagement: {p.get('engagement_rate', 0):.1%})"
+                f"- {sanitize_for_prompt(str(p.get('title', ''))[:50])} (engagement: {(p.get('engagement_rate') or 0):.1%})"
                 for p in top_performing[:5]
                 if p.get("title")
             )

@@ -123,7 +123,7 @@ async def _release_stuck_calendar_item(
             "UPDATE calendar_items "
             "SET status = 'failed', "
             "    generation_metadata = COALESCE(generation_metadata, '{}'::jsonb) "
-            "        || jsonb_build_object('last_error', :reason) "
+            "        || jsonb_build_object('last_error', :reason::text) "
             "WHERE id = :id AND status = 'working'",
             {"id": calendar_item_id, "reason": reason},
         )
@@ -1538,7 +1538,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             and agent_type in ("research", "strategy", "planning")
         ):
             try:
-                from shared.tools.database import execute_query, notify_admins
+                from shared.tools.database import notify_admins
 
                 _DOC_LABEL = {
                     "research": "Research Report",
