@@ -53,13 +53,16 @@ export function ContentEditor({
     setSaving(true);
     try {
       await onSave({
-        title,
+        // Backend ContentUpdate expects "headline" and "cta_text"; sending the
+        // legacy "title"/"cta" names made Pydantic drop them silently (200 OK
+        // but no change). Map to the real field names.
+        headline: title,
         caption,
         hashtags: hashtags
           .split(",")
           .map((h) => h.trim())
           .filter(Boolean),
-        cta: cta || undefined,
+        cta_text: cta || undefined,
       });
     } finally {
       setSaving(false);

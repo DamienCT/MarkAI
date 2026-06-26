@@ -1248,6 +1248,58 @@ def _clean_logo_bytes(data: bytes, content_type: str) -> tuple[bytes, str]:
         return data, content_type
 
 
+async def _store_logo(
+    db: AsyncSession,
+    brand,
+    key: str,
+    image_data: bytes,
+    content_type: str,
+    source_url: str | None,
+    *,
+    variant: str,
+    dict_name: str,
+    path_prefix: str,
+) -> dict:
+    """Upload a logo to MinIO and record it under brand_guidelines[dict_name][key].
+
+    Generic over the keying dimension: ``dict_name="vendor_logos"`` keyed by
+    vendor name, or ``dict_name="category_logos"`` keyed by category code. Stored
+    per variant ("light" / "dark") so the renderer can pick the right one for the
+    background. Migrates any legacy flat entry into the variant map.
+    """
+    variant = variant if variant in _VENDOR_VARIANTS else "light"
+    # Trim to content (white-key + crop) so editor and render match in size.
+    image_data, content_type = _clean_logo_bytes(image_data, content_type)
+    slug = _vendor_slug(key)
+    ext = _ext_for_content_type(content_type)
+    object_name = f"brands/{brand.id}/{path_prefix}/{slug}-{variant}.{ext}"
+
+    await minio_service.ensure_bucket()
+    await minio_service.upload_file(object_name, image_data, content_type or "image/png")
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    guidelines = dict(brand.brand_guidelines or {})
+    logos = dict(guidelines.get(dict_name, {}))
+    entry = {
+        "object_name": object_name,
+        "url": object_name,  # served via the /files proxy (fileUrl on frontend)
+        "content_type": content_type or "image/png",
+        "slug": slug,
+        "source_url": source_url,
+    }
+    # Normalize the existing value (legacy flat → {"light": ...}) then set ours.
+    variants = _vendor_variants(logos.get(key))
+    variants[variant] = entry
+    logos[key] = variants
+    guidelines[dict_name] = logos
+    brand.brand_guidelines = guidelines
+    flag_modified(brand, "brand_guidelines")
+    await db.commit()
+    await db.refresh(brand)
+    return entry
+
+
 async def _store_vendor_logo(
     db: AsyncSession,
     brand,
@@ -1257,46 +1309,35 @@ async def _store_vendor_logo(
     source_url: str | None,
     variant: str = "light",
 ) -> dict:
-    """Upload the logo to MinIO and record it under brand_guidelines.
+    return await _store_logo(
+        db, brand, vendor_name, image_data, content_type, source_url,
+        variant=variant, dict_name="vendor_logos", path_prefix="vendor-logos",
+    )
 
-    Stored per variant ("light" / "dark") so the renderer can pick the right
-    one for the background. Migrates any legacy flat entry into the variant map.
-    """
-    variant = variant if variant in _VENDOR_VARIANTS else "light"
-    # Trim to content (white-key + crop) so editor and render match in size.
-    image_data, content_type = _clean_logo_bytes(image_data, content_type)
-    slug = _vendor_slug(vendor_name)
-    ext = _ext_for_content_type(content_type)
-    object_name = f"brands/{brand.id}/vendor-logos/{slug}-{variant}.{ext}"
 
-    await minio_service.ensure_bucket()
-    await minio_service.upload_file(object_name, image_data, content_type or "image/png")
-
-    from sqlalchemy.orm.attributes import flag_modified
-
-    guidelines = dict(brand.brand_guidelines or {})
-    vendor_logos = dict(guidelines.get("vendor_logos", {}))
-    entry = {
-        "object_name": object_name,
-        "url": object_name,  # served via the /files proxy (fileUrl on frontend)
-        "content_type": content_type or "image/png",
-        "slug": slug,
-        "source_url": source_url,
-    }
-    # Normalize the existing value (legacy flat → {"light": ...}) then set ours.
-    variants = _vendor_variants(vendor_logos.get(vendor_name))
-    variants[variant] = entry
-    vendor_logos[vendor_name] = variants
-    guidelines["vendor_logos"] = vendor_logos
-    brand.brand_guidelines = guidelines
-    flag_modified(brand, "brand_guidelines")
-    await db.commit()
-    await db.refresh(brand)
-    return entry
+async def _store_category_logo(
+    db: AsyncSession,
+    brand,
+    category: str,
+    image_data: bytes,
+    content_type: str,
+    source_url: str | None,
+    variant: str = "light",
+) -> dict:
+    return await _store_logo(
+        db, brand, category, image_data, content_type, source_url,
+        variant=variant, dict_name="category_logos", path_prefix="category-logos",
+    )
 
 
 class VendorLogoFetch(BaseModel):
     vendor_name: str
+    attempt: int = 0  # increments to cycle through alternative Bing candidates
+    variant: str = "light"  # "light" (white bg) | "dark" (dark bg)
+
+
+class CategoryLogoFetch(BaseModel):
+    category: str
     attempt: int = 0  # increments to cycle through alternative Bing candidates
     variant: str = "light"  # "light" (white bg) | "dark" (dark bg)
 
@@ -1516,6 +1557,234 @@ async def delete_vendor_logo(
     else:
         vendor_logos.pop(vendor_name, None)
     guidelines["vendor_logos"] = vendor_logos
+    brand.brand_guidelines = guidelines
+    flag_modified(brand, "brand_guidelines")
+    await db.commit()
+    await db.refresh(brand)
+    return {"status": "ok"}
+
+
+# ── Category logos ──────────────────────────────────────────────────
+# Same mechanism as vendor logos, but keyed by the product's category code
+# (itemCategoryCode, e.g. "REUS-WEAR"). Used as a FALLBACK at render time when a
+# product has no vendor logo (e.g. wearables with a blank/blocked vendor).
+# Stored in brand_guidelines.category_logos[category] = {"light":…, "dark":…}.
+
+
+@router.get("/{brand_id}/categories")
+async def list_brand_categories(
+    brand_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List the distinct categories present in the brand's synced products, each
+    with its current logo (if any). Derived from the products table, never stored."""
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    rows = await db.execute(
+        text(
+            "SELECT DISTINCT category FROM products "
+            "WHERE brand_id = :bid AND category IS NOT NULL "
+            "AND category <> '' ORDER BY category"
+        ),
+        {"bid": str(brand_id)},
+    )
+    names = [r[0] for r in rows.fetchall()]
+
+    category_logos = (brand.brand_guidelines or {}).get("category_logos", {})
+    categories = []
+    for name in names:
+        variants = _vendor_variants(category_logos.get(name))
+        light = (variants.get("light") or {}).get("object_name")
+        dark = (variants.get("dark") or {}).get("object_name")
+        categories.append(
+            {
+                "category": name,
+                "has_logo": bool(light or dark),
+                "logo_url": light or dark,
+                "light_url": light,
+                "dark_url": dark,
+            }
+        )
+    return {"categories": categories}
+
+
+@router.post("/{brand_id}/categories/fetch-logo")
+async def fetch_category_logo(
+    brand_id: uuid.UUID,
+    body: CategoryLogoFetch,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Search the web (via the browser worker) for a logo for this category and
+    store it. Pass an incrementing ``attempt`` to cycle through candidates."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    category = (body.category or "").strip()
+    if not category:
+        raise HTTPException(status_code=400, detail="category is required")
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    import httpx
+
+    logo_url: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(
+                f"{settings.BROWSER_WORKER_URL}/capture/logo",
+                json={"vendor_name": category, "offset": max(0, body.attempt)},
+                headers={
+                    "X-API-Key": getattr(settings, "BROWSER_WORKER_API_KEY", "")
+                    or "internal"
+                },
+            )
+            resp.raise_for_status()
+            logo_url = (resp.json() or {}).get("image_url")
+    except Exception as exc:
+        logger.warning("Logo search failed for category '%s': %s", category, exc)
+        raise HTTPException(status_code=502, detail="Logo search failed") from exc
+
+    if not logo_url:
+        raise HTTPException(status_code=404, detail="No logo found for this category")
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            dl = await client.get(logo_url, headers={"User-Agent": _UA})
+        if dl.status_code != 200 or not dl.content:
+            raise HTTPException(status_code=404, detail="Logo could not be downloaded")
+        ct = dl.headers.get("content-type", "image/png").split(";")[0]
+        if "image" not in ct and "svg" not in ct:
+            raise HTTPException(status_code=415, detail="Result was not an image")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Failed to download logo from %s: %s", logo_url, exc)
+        raise HTTPException(status_code=502, detail="Logo download failed") from exc
+
+    entry = await _store_category_logo(
+        db, brand, category, dl.content, ct, logo_url, variant=body.variant
+    )
+    logger.info(
+        "Stored category logo for '%s' variant=%s (brand %s)",
+        category, body.variant, brand_id,
+    )
+    return {
+        "status": "ok",
+        "category": category,
+        "logo_url": entry["object_name"],
+        "variant": body.variant,
+        "attempt": body.attempt,
+    }
+
+
+@router.post("/{brand_id}/categories/upload-logo")
+async def upload_category_logo(
+    brand_id: uuid.UUID,
+    category: str,
+    variant: str = "light",
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually upload a category's logo (overrides any web search result)."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    cat = (category or "").strip()
+    if not cat:
+        raise HTTPException(status_code=400, detail="category is required")
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    allowed = {"image/png", "image/jpeg", "image/webp"}
+    if file.content_type not in allowed:
+        raise HTTPException(
+            status_code=400, detail="Only PNG, JPEG, and WebP images are allowed"
+        )
+
+    data = await file.read()
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size must be under 5MB")
+
+    _magic_ok = (
+        (data[:4] == b"\x89PNG" and file.content_type == "image/png")
+        or (data[:3] == b"\xff\xd8\xff" and file.content_type == "image/jpeg")
+        or (
+            data[:4] == b"RIFF"
+            and data[8:12] == b"WEBP"
+            and file.content_type == "image/webp"
+        )
+    )
+    if not _magic_ok:
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not match declared content type",
+        )
+
+    entry = await _store_category_logo(
+        db, brand, cat, data, file.content_type or "image/png", None, variant=variant
+    )
+    return {
+        "status": "ok",
+        "category": cat,
+        "logo_url": entry["object_name"],
+        "variant": variant if variant in _VENDOR_VARIANTS else "light",
+    }
+
+
+@router.delete("/{brand_id}/categories/logo")
+async def delete_category_logo(
+    brand_id: uuid.UUID,
+    category: str,
+    variant: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove a category's stored logo. Pass ``variant`` to remove just one
+    variant ("light"/"dark"); omit it to remove all of the category's logos."""
+    if not role_has_access(current_user.role, "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    brand = await brand_service.get_brand(db, brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    guidelines = dict(brand.brand_guidelines or {})
+    category_logos = dict(guidelines.get("category_logos", {}))
+    variants = _vendor_variants(category_logos.get(category))
+    if not variants:
+        raise HTTPException(status_code=404, detail="Category logo not found")
+
+    to_delete = (
+        [variant] if variant in _VENDOR_VARIANTS else list(variants.keys())
+    )
+    removed_any = False
+    for v in to_delete:
+        entry = variants.pop(v, None)
+        if entry and entry.get("object_name"):
+            removed_any = True
+            try:
+                await minio_service.delete_file(entry["object_name"])
+            except Exception:
+                pass
+    if not removed_any:
+        raise HTTPException(status_code=404, detail="Category logo not found")
+
+    if variants:
+        category_logos[category] = variants
+    else:
+        category_logos.pop(category, None)
+    guidelines["category_logos"] = category_logos
     brand.brand_guidelines = guidelines
     flag_modified(brand, "brand_guidelines")
     await db.commit()

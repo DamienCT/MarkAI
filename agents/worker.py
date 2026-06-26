@@ -414,7 +414,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
             if product_ids:
                 pid = product_ids[0] if isinstance(product_ids, list) else product_ids
                 product_rows = await execute_query(
-                    "SELECT id, name, image_urls, primary_image_url, vendor_name FROM products "
+                    "SELECT id, name, image_urls, primary_image_url, vendor_name, category FROM products "
                     "WHERE id = :pid AND is_active = true LIMIT 1",
                     {"pid": str(pid)},
                 )
@@ -444,6 +444,28 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                             logger.info(
                                 "Regen: resolved vendor logo for '%s' (vendor=%s)",
                                 product_name, _vendor,
+                            )
+                # Fallback to the product's category logo when the vendor has none
+                # (e.g. wearables with a blank/blocked vendor).
+                _category = (product.get("category") or "").strip()
+                if not resolved_vendor_logo and not resolved_vendor_logo_dark and _category:
+                    _clogos = brand_guidelines.get("category_logos", {})
+                    _centry = _clogos.get(_category) if isinstance(_clogos, dict) else None
+                    if isinstance(_centry, dict):
+                        if _centry.get("object_name"):
+                            resolved_vendor_logo = _centry["object_name"]
+                        else:
+                            _cl = _centry.get("light")
+                            _cd = _centry.get("dark")
+                            if isinstance(_cl, dict):
+                                resolved_vendor_logo = _cl.get("object_name")
+                            if isinstance(_cd, dict):
+                                resolved_vendor_logo_dark = _cd.get("object_name")
+                        resolved_vendor_logo = resolved_vendor_logo or resolved_vendor_logo_dark
+                        if resolved_vendor_logo or resolved_vendor_logo_dark:
+                            logger.info(
+                                "Regen: resolved category logo for '%s' (category=%s)",
+                                product_name, _category,
                             )
                 gallery = product.get("image_urls")
                 primary = product.get("primary_image_url")
@@ -1000,7 +1022,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
             if _pids:
                 _pid = _pids[0] if isinstance(_pids, list) else _pids
                 _prow = await execute_query(
-                    "SELECT vendor_name FROM products WHERE id = :pid LIMIT 1",
+                    "SELECT vendor_name, category FROM products WHERE id = :pid LIMIT 1",
                     {"pid": str(_pid)},
                 )
                 _vn = ((_prow[0].get("vendor_name") if _prow else "") or "").strip()
@@ -1015,6 +1037,19 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                                 _rb_vendor_light = _ve["light"].get("object_name")
                             if isinstance(_ve.get("dark"), dict):
                                 _rb_vendor_dark = _ve["dark"].get("object_name")
+                # Fallback to the category logo when the vendor has none.
+                _cat = ((_prow[0].get("category") if _prow else "") or "").strip()
+                if not _rb_vendor_light and not _rb_vendor_dark and _cat:
+                    _cl = brand_guidelines.get("category_logos", {})
+                    _ce = _cl.get(_cat) if isinstance(_cl, dict) else None
+                    if isinstance(_ce, dict):
+                        if _ce.get("object_name"):  # legacy flat → light
+                            _rb_vendor_light = _ce["object_name"]
+                        else:
+                            if isinstance(_ce.get("light"), dict):
+                                _rb_vendor_light = _ce["light"].get("object_name")
+                            if isinstance(_ce.get("dark"), dict):
+                                _rb_vendor_dark = _ce["dark"].get("object_name")
         except Exception as exc:
             logger.warning("Rebrand vendor variant resolve failed: %s", exc)
 

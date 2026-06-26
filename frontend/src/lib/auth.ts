@@ -101,7 +101,14 @@ export const authOptions: NextAuthOptions = {
       const roleStale = !token.role || !token.roleFetchedAt || now - (token.roleFetchedAt as number) > ROLE_TTL;
       if (roleStale && token.accessToken) {
         try {
-          const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://backend:8000";
+          // This runs server-side (inside the frontend container), so prefer a
+          // runtime-only internal URL. NEXT_PUBLIC_* vars are inlined at build
+          // time and point at the browser host (localhost), which is unreachable
+          // from inside the container — so they can't be used for server fetches.
+          const apiUrl =
+            process.env.INTERNAL_API_URL ||
+            process.env.NEXT_PUBLIC_API_URL ||
+            "http://backend:8000";
           const res = await fetch(`${apiUrl}/api/v1/users/me`, {
             headers: { Authorization: `Bearer ${token.accessToken}` },
           });

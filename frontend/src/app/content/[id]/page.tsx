@@ -485,10 +485,15 @@ export default function ContentDetailPage() {
         dark: metaVars.dark ? fileUrl(metaVars.dark) : undefined,
       };
     }
-    const vl = (brand?.brand_guidelines as Record<string, unknown> | undefined)
-      ?.vendor_logos as Record<string, Record<string, unknown>> | undefined;
+    const gl = brand?.brand_guidelines as Record<string, unknown> | undefined;
+    // Merge vendor + category logos so the swap button also resolves variants
+    // for products whose logo came from the category fallback.
+    const vl = {
+      ...((gl?.vendor_logos as Record<string, Record<string, unknown>>) || {}),
+      ...((gl?.category_logos as Record<string, Record<string, unknown>>) || {}),
+    };
     const cur = gm.product_logo_image as string | undefined;
-    if (!vl || !cur) return undefined;
+    if (!cur || Object.keys(vl).length === 0) return undefined;
     const curSlug = cur.split("/").pop()?.replace(/-(light|dark)\.[a-z0-9]+$/i, "").replace(/\.[a-z0-9]+$/i, "");
     for (const entry of Object.values(vl)) {
       const lightE = (entry?.light as Record<string, string> | undefined) || undefined;

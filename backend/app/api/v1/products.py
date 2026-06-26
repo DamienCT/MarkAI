@@ -67,6 +67,18 @@ async def get_sync_options(
         for c in categories_raw
         if c.get("code")
     ]
+    # The category master table is frequently empty for a company even though
+    # items carry an itemCategoryCode — add every code actually in use so it's
+    # selectable (e.g. REUS-WEAR / DISP-WEAR on RingConn / SiBionics wearables).
+    _seen = {c["code"] for c in categories}
+    try:
+        for code in await fabric_service.get_item_category_codes(brand.bc_company):
+            if code not in _seen:
+                categories.append({"code": code, "description": code})
+                _seen.add(code)
+    except Exception as exc:
+        logger.warning("Failed to load item category codes: %s", exc)
+    categories.sort(key=lambda c: c["code"])
     return {
         "vendors": vendors,
         "categories": categories,

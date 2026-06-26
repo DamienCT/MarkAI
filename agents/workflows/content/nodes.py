@@ -1378,13 +1378,13 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     if product_ids:
         pid = product_ids[0] if isinstance(product_ids, list) else product_ids
         products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category FROM products "
             "WHERE id = :pid AND is_active = true LIMIT 1",
             {"pid": str(pid)},
         )
     else:
         products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category FROM products "
             "WHERE brand_id = :brand_id AND is_active = true AND ("
             "  bc_item_no = :sku OR LOWER(name) LIKE LOWER(:name_pattern)"
             ") LIMIT 1",
@@ -1400,7 +1400,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     # name shares the most non-trivial words with the free-text.
     if not products and free_text:
         all_products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category FROM products "
             "WHERE brand_id = :brand_id AND is_active = true",
             {"brand_id": brand_id},
         )
@@ -1479,6 +1479,49 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
                 )
         except Exception as exc:
             logger.warning("Vendor logo lookup failed for '%s': %s", vendor, exc)
+
+    # Fallback: a product with no vendor logo uses its category's logo
+    # (e.g. wearables whose vendor is blank/blocked in BC).
+    category = (product.get("category") or "").strip()
+    if not product_logo_image and category:
+        try:
+            cfg = await get_brand_config(brand_id)
+            guidelines = (cfg or {}).get("brand_guidelines") or {}
+            if isinstance(guidelines, str):
+                import json as _json
+
+                try:
+                    guidelines = _json.loads(guidelines)
+                except Exception:
+                    guidelines = {}
+            category_logos = (
+                guidelines.get("category_logos", {})
+                if isinstance(guidelines, dict)
+                else {}
+            )
+            _entry = (
+                category_logos.get(category)
+                if isinstance(category_logos, dict)
+                else None
+            )
+            if isinstance(_entry, dict):
+                if _entry.get("object_name"):  # legacy single → light
+                    product_logo_variants["light"] = _entry["object_name"]
+                else:
+                    for _v in ("light", "dark"):
+                        _sub = _entry.get(_v)
+                        if isinstance(_sub, dict) and _sub.get("object_name"):
+                            product_logo_variants[_v] = _sub["object_name"]
+            product_logo_image = (
+                product_logo_variants.get("light") or product_logo_variants.get("dark")
+            )
+            if product_logo_image:
+                logger.info(
+                    "Using category logo for '%s' (category=%s, variants=%s)",
+                    product_name, category, list(product_logo_variants.keys()),
+                )
+        except Exception as exc:
+            logger.warning("Category logo lookup failed for '%s': %s", category, exc)
 
     # Check if product has images in its gallery
     if isinstance(gallery, list) and gallery:

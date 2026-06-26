@@ -199,14 +199,22 @@ async def get_active_stock(
 
     extra_where = ""
     extra_params: list[str] = []
+    # Combine vendor + category with OR (not AND): an item qualifies if it
+    # matches the selected vendors OR the selected categories. AND excluded
+    # category-selected items that have no vendor assigned (e.g. the RingConn /
+    # SiBionics wearables in Barcode.mu have a blank vendorNo). With only one of
+    # the two set, behaviour is unchanged.
+    _filter_clauses: list[str] = []
     if vendor_nos:
         vendor_placeholders = ",".join(["?"] * len(vendor_nos))
-        extra_where += f" AND i.vendorNo IN ({vendor_placeholders})"
+        _filter_clauses.append(f"i.vendorNo IN ({vendor_placeholders})")
         extra_params.extend(vendor_nos)
     if categories:
         cat_placeholders = ",".join(["?"] * len(categories))
-        extra_where += f" AND i.itemCategoryCode IN ({cat_placeholders})"
+        _filter_clauses.append(f"i.itemCategoryCode IN ({cat_placeholders})")
         extra_params.extend(categories)
+    if _filter_clauses:
+        extra_where = " AND (" + " OR ".join(_filter_clauses) + ")"
 
     query = f"""
         SELECT
@@ -243,6 +251,22 @@ async def get_item_categories(company: str) -> list[dict[str, Any]]:
     """Fetch item categories for a company."""
     table = _safe_table_name(settings.BC_TABLE_ITEM_CATEGORIES)
     return await execute_sql(f"SELECT * FROM {table} WHERE Company = ?", (company,))
+
+
+async def get_item_category_codes(company: str) -> list[str]:
+    """Distinct itemCategoryCode actually used by items for a company.
+
+    The category master table (itemmodule_itemcategory) is often empty, but
+    items carry the code directly — use this so every category in use (e.g.
+    REUS-WEAR / DISP-WEAR on the wearables) is selectable for sync filtering.
+    """
+    table = _safe_table_name(settings.BC_TABLE_ITEMS)
+    rows = await execute_sql(
+        f"SELECT DISTINCT itemCategoryCode FROM {table} "
+        f"WHERE Company = ? AND itemCategoryCode <> '' ORDER BY itemCategoryCode",
+        (company,),
+    )
+    return [r["itemCategoryCode"] for r in rows if r.get("itemCategoryCode")]
 
 
 async def get_vendors(company: str) -> list[dict[str, Any]]:
