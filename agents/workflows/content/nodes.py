@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -9,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from shared.llm import chat_completion, generate_image, parse_llm_json
+from shared.llm import chat_completion, generate_image, get_model_for_category, parse_llm_json
 from shared.prompt_enhancer import enhance_image_prompt as enhance_image_prompt_fn
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.database import (
@@ -2419,8 +2420,11 @@ async def _replace_product_in_generated_image(
         input_size = marketing_img.size  # preserve original dimensions (e.g. 1024x1024)
         aspect_hint = aspect_hint_for_size(input_size)
 
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash-image",
+        swap_model = await get_model_for_category("image-edit")
+        # generate_content is synchronous — keep it off the worker event loop
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=swap_model,
             contents=[
                 f"Replace the generic product in Image 1 with the real product from Image 2 ('{product_name}'). "
                 f"Keep everything else exactly the same. Match lighting and perspective. "

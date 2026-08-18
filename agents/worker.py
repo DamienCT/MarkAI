@@ -193,14 +193,19 @@ async def _replace_product_in_image(
             aspect_hint_for_size,
         )
 
+        from shared.llm import get_model_for_category
+
         gemini_client = genai.Client(api_key=_settings.GEMINI_API_KEY)
         marketing_img = PILImage.open(BytesIO(image_data))
         product_img = PILImage.open(BytesIO(product_image_data))
         input_size = marketing_img.size
         aspect_hint = aspect_hint_for_size(input_size)
 
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash-image",
+        swap_model = await get_model_for_category("image-edit")
+        # generate_content is synchronous — keep it off the worker event loop
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=swap_model,
             contents=[
                 f"Replace the generic product in Image 1 with the real product from Image 2 "
                 f"('{product_name or 'product'}'). Keep everything else exactly the same. "

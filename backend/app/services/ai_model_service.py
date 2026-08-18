@@ -28,6 +28,18 @@ _CACHE_TTL = 300
 _memory_cache: dict[str, tuple[str, float]] = {}
 
 
+def _infer_provider(model_id: str) -> str:
+    """Best-effort provider slug from a model name (LiteLLM proxy names are bare)."""
+    mid = model_id.lower()
+    if mid.startswith("claude"):
+        return "anthropic"
+    if mid.startswith(("gemini", "veo", "imagen")):
+        return "google"
+    if mid.startswith(("ltx", "wan", "flux", "local-")):
+        return "local"
+    return "openai"
+
+
 def _categorize_model(model_id: str) -> list[str]:
     """Determine which category slugs a model ID belongs to.
 
@@ -37,8 +49,13 @@ def _categorize_model(model_id: str) -> list[str]:
     mid = model_id.lower()
 
     # Image generation
-    if re.match(r"^(dall-e-|gpt-image-|chatgpt-image-)", mid):
+    if re.match(r"^(dall-e-|gpt-image-|chatgpt-image-)", mid) or re.search(
+        r"(flash-image|pro-image|imagen-)", mid
+    ):
         categories.append("image")
+        # Gemini image models also do instruction-based editing (product swap)
+        if "gemini" in mid:
+            categories.append("image-edit")
 
     # Embeddings
     if re.match(r"^text-embedding-", mid):
@@ -53,7 +70,7 @@ def _categorize_model(model_id: str) -> list[str]:
         categories.append("stt")
 
     # Video
-    if re.match(r"^(sora-|video-)", mid):
+    if re.match(r"^(sora-|video-|veo-|ltx-|wan)", mid):
         categories.append("video")
 
     # Moderation
@@ -65,8 +82,11 @@ def _categorize_model(model_id: str) -> list[str]:
         if not categories:
             categories.append("text")
 
-    # Detect chat-capable models (gpt-4+, gpt-5+, chatgpt-*, o-series, computer-use, search, deep-research)
-    is_chat_model = bool(re.match(r"^(gpt-[45]|chatgpt-|o[134](-|$))", mid))
+    # Detect chat-capable models (gpt-N, chatgpt-*, o-series, claude, gemini text)
+    is_chat_model = bool(
+        re.match(r"^(gpt-\d|chatgpt-|o\d+(-|$)|claude-|gemini-\d)", mid)
+        and not re.search(r"(image|imagen|veo|embedding|tts|transcribe)", mid)
+    )
     is_mini = bool(re.search(r"(mini|nano)", mid))
 
     # All chat-capable models get all three text categories:
@@ -218,9 +238,34 @@ async def discover_models() -> dict[str, int]:
         raise
 
     api_models = api_data.get("data", [])
+
+    # Also pull the LiteLLM proxy catalog: it lists every configured model_name
+    # (Gemini, Anthropic, local GPU entries, ...) so non-OpenAI providers join
+    # the registry without provider-specific discovery adapters.
+    if settings.LITELLM_BASE_URL:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                headers = {}
+                if settings.LITELLM_MASTER_KEY:
+                    headers["Authorization"] = f"Bearer {settings.LITELLM_MASTER_KEY}"
+                resp = await client.get(
+                    settings.LITELLM_BASE_URL.rstrip("/") + "/v1/models",
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                proxy_models = resp.json().get("data", [])
+            known = {m["id"] for m in api_models}
+            for pm in proxy_models:
+                pid = pm.get("id", "")
+                if not pid or "*" in pid or pid in known:
+                    continue
+                api_models.append({"id": pid, "owned_by": "litellm-proxy"})
+        except Exception as exc:
+            logger.warning("LiteLLM proxy model listing failed: %s", exc)
+
     api_model_ids = {m["id"] for m in api_models}
 
-    logger.info("OpenAI API returned %d models", len(api_models))
+    logger.info("Discovery sources returned %d models", len(api_models))
 
     discovered = 0
     updated = 0
@@ -231,10 +276,8 @@ async def discover_models() -> dict[str, int]:
         cat_result = await db.execute(select(AIModelCategory))
         categories = {c.slug: c for c in cat_result.scalars().all()}
 
-        # Load existing models
-        existing_result = await db.execute(
-            select(AIModel).where(AIModel.provider == "openai")
-        )
+        # Load existing models (all providers — the proxy catalog spans them)
+        existing_result = await db.execute(select(AIModel))
         existing_models = {m.model_id: m for m in existing_result.scalars().all()}
 
         # Process each model from the API
@@ -284,7 +327,7 @@ async def discover_models() -> dict[str, int]:
                 display_name = model_id
 
                 new_model = AIModel(
-                    provider="openai",
+                    provider=_infer_provider(model_id),
                     model_id=model_id,
                     display_name=display_name,
                     category_id=primary_category_id,
@@ -376,13 +419,15 @@ async def get_active_model(category_slug: str) -> str:
 
     # Fallback defaults (only used when no selection exists)
     defaults = {
-        "text": "gpt-5.4",
-        "text-fast": "gpt-5.4-mini",
-        "image": "gpt-image-1.5",
+        "text": "gpt-5.6-sol",
+        "text-fast": "gpt-5.6-luna",
+        "image": "gemini-3.1-flash-image",
+        "image-edit": "gemini-3.1-flash-image",
+        "video": "veo-3.1-fast-generate-preview",
         "embedding": "text-embedding-3-small",
-        "vision": "gpt-5.4",
+        "vision": "gpt-5.6-sol",
     }
-    fallback = defaults.get(category_slug, "gpt-5.4")
+    fallback = defaults.get(category_slug, "gpt-5.6-sol")
     await _cache_set(cache_key, fallback)
     return fallback
 

@@ -22,6 +22,9 @@ from app.models.adaptation import Adaptation  # noqa: F401
 from app.models.competitor import Competitor  # noqa: F401
 from app.models.product import Product  # noqa: F401
 from app.models.ai_model import AIModelCategory, AIModel, AIModelSelection  # noqa: F401
+from app.models.event import Event  # noqa: F401
+from app.models.trending_topic import TrendingTopic  # noqa: F401
+from app.models.channel_model_fallback import ChannelModelFallback  # noqa: F401
 
 config = context.config
 

@@ -3,8 +3,21 @@ set -euo pipefail
 
 # ── MARKAI VPS Redeploy Script ──────────────────────────────────────
 # Run this ON the VPS: bash /var/www/markai/scripts/vps-redeploy.sh
+# Flags:
+#   --force-wipe   wipe DB volumes (requires a fresh verified backup)
+#   --skip-backup  skip the pre-deploy pg_dump (NOT recommended)
 
 cd /var/www/markai
+
+FORCE_WIPE=false
+SKIP_BACKUP=false
+for arg in "$@"; do
+  case "$arg" in
+    --force-wipe)  FORCE_WIPE=true ;;
+    --skip-backup) SKIP_BACKUP=true ;;
+    *) echo "Unknown flag: ${arg} (supported: --force-wipe, --skip-backup)"; exit 1 ;;
+  esac
+done
 
 echo "=== Step 1: Pull latest code ==="
 git pull ado main
@@ -62,51 +75,85 @@ else
 fi
 
 echo ""
-echo "=== Step 3: Stop everything ==="
-docker compose -f docker-compose.yml -f docker-compose.vps.yml down
-
-echo "=== Step 4: Database backup & optional volume wipe ==="
-# Always create a pg_dump backup before any destructive operation
+echo "=== Step 3: Database backup (while the stack is still running) ==="
+# Always create a verified pg_dump backup BEFORE any destructive operation.
+# The dump is taken from the live postgres container — it must be running.
 BACKUP_DIR="/var/www/markai/backups"
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="${BACKUP_DIR}/pgdump_$(date +%Y%m%d_%H%M%S).sql.gz"
+BACKUP_OK=false
 
-# Start a temporary postgres container to dump data from the existing volume
-if docker volume inspect markai_pgdata &>/dev/null; then
-  echo "  Backing up PostgreSQL to ${BACKUP_FILE}..."
-  docker run --rm \
-    -v markai_pgdata:/var/lib/postgresql/data:ro \
-    -v "${BACKUP_DIR}:/backup" \
-    -e POSTGRES_PASSWORD=backup \
-    postgres:16-alpine \
-    bash -c "pg_dump -U ${POSTGRES_USER:-markai} -d ${POSTGRES_DB:-markai} -h /var/run/postgresql 2>/dev/null | gzip > /backup/$(basename $BACKUP_FILE)" \
-    || echo "  WARNING: pg_dump failed (volume may be empty on first deploy)"
-  echo "  Backup complete: ${BACKUP_FILE}"
+verify_backup() {
+  # Valid gzip + non-empty + pg_dump completion marker at the end of the dump
+  local file="$1"
+  gzip -t "$file" 2>/dev/null || return 1
+  local bytes
+  bytes=$(gzip -dc "$file" 2>/dev/null | wc -c) || return 1
+  [[ "$bytes" -gt 0 ]] || return 1
+  local tail_lines
+  tail_lines=$(gzip -dc "$file" 2>/dev/null | tail -n 5) || return 1
+  [[ "$tail_lines" == *"PostgreSQL database dump complete"* ]] || return 1
+}
+
+if [[ "$SKIP_BACKUP" == true ]]; then
+  echo "  --skip-backup flag detected: skipping database backup (NOT recommended)."
+elif ! docker volume inspect markai_pgdata &>/dev/null; then
+  echo "  No existing pgdata volume — nothing to back up (first deploy)."
+elif ! docker ps --format '{{.Names}}' | grep '^markai-postgres$' >/dev/null; then
+  echo "  ERROR: markai-postgres is not running — cannot take a live backup."
+  echo "  Start the stack first, or pass --skip-backup to deploy without one."
+  exit 1
 else
-  echo "  No existing pgdata volume — skipping backup."
+  echo "  Backing up PostgreSQL to ${BACKUP_FILE}..."
+  if docker compose -f docker-compose.yml -f docker-compose.vps.yml exec -T postgres \
+       sh -c 'pg_dump -U "${POSTGRES_USER:-markai}" -d "${POSTGRES_DB:-markai}"' \
+       | gzip > "$BACKUP_FILE" \
+     && verify_backup "$BACKUP_FILE"; then
+    BACKUP_OK=true
+    echo "  Backup verified: ${BACKUP_FILE} ($(du -h "$BACKUP_FILE" | cut -f1))"
+    # Rotation: keep the newest 14 backups, delete older ones
+    ls -1t "${BACKUP_DIR}"/pgdump_*.sql.gz | tail -n +15 | xargs -r rm -f
+  else
+    rm -f "$BACKUP_FILE"
+    echo "  ERROR: backup failed verification — aborting deploy (nothing was stopped or wiped)."
+    echo "  Pass --skip-backup to deploy without a backup (NOT recommended)."
+    exit 1
+  fi
 fi
 
-if [[ "${1:-}" == "--force-wipe" ]]; then
+# --force-wipe is destructive: hard-refuse unless this run produced a verified backup
+if [[ "$FORCE_WIPE" == true ]] && docker volume inspect markai_pgdata &>/dev/null && [[ "$BACKUP_OK" != true ]]; then
+  echo "  ERROR: --force-wipe refused — no verified backup from this run."
+  echo "  Wiping volumes without a fresh verified backup would lose data permanently."
+  exit 1
+fi
+
+echo ""
+echo "=== Step 4: Stop everything ==="
+docker compose -f docker-compose.yml -f docker-compose.vps.yml down
+
+echo "=== Step 5: Optional volume wipe ==="
+if [[ "$FORCE_WIPE" == true ]]; then
   echo "  --force-wipe flag detected: wiping DB volumes..."
   docker volume rm markai_pgdata markai_qdrant_data 2>/dev/null || true
 else
   echo "  Using migrations/restart (pass --force-wipe to wipe volumes)."
 fi
 
-echo "=== Step 5: Rebuild all services ==="
+echo "=== Step 6: Rebuild all services ==="
 docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend frontend agents browser-worker notifications
 
-echo "=== Step 6: Start everything ==="
+echo "=== Step 7: Start everything ==="
 docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
 
-echo "=== Step 7: Wait for services ==="
+echo "=== Step 8: Wait for services ==="
 echo "Waiting 30s for services to start..."
 sleep 30
 
-echo "=== Step 8: Service status ==="
+echo "=== Step 9: Service status ==="
 docker compose -f docker-compose.yml -f docker-compose.vps.yml ps
 
-echo "=== Step 9: Health checks ==="
+echo "=== Step 10: Health checks ==="
 echo "Backend health:"
 curl -sf http://localhost:8000/health || echo "FAILED"
 
@@ -115,7 +162,7 @@ echo "Backend metrics:"
 curl -sf http://localhost:8000/metrics 2>/dev/null | head -3 || echo "FAILED"
 
 echo ""
-echo "=== Step 10: Recent logs (last 20 lines each) ==="
+echo "=== Step 11: Recent logs (last 20 lines each) ==="
 echo "--- backend ---"
 docker compose -f docker-compose.yml -f docker-compose.vps.yml logs --tail=20 backend
 

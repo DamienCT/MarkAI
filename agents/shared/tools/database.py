@@ -368,7 +368,7 @@ async def upsert_product(product: dict[str, Any]) -> str:
                 "vendor_no, unit_price, bc_company, bc_location, remaining_qty, is_active) "
                 "VALUES (:brand_id, :bc_item_no, :name, :description, :category, "
                 ":vendor_no, :unit_price, :bc_company, :bc_location, :remaining_qty, false) "
-                "ON CONFLICT (brand_id, bc_item_no) DO UPDATE SET "
+                "ON CONFLICT (brand_id, bc_item_no) WHERE bc_item_no IS NOT NULL DO UPDATE SET "
                 "name = EXCLUDED.name, description = EXCLUDED.description, "
                 "remaining_qty = EXCLUDED.remaining_qty, updated_at = NOW() "
                 "RETURNING id"

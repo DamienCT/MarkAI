@@ -1,10 +1,11 @@
 """Tests for the file proxy endpoint — bucket routing, path traversal, thumbnails."""
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from httpx import ASGITransport, AsyncClient
 
+from app.api.v1.files import parse_range_header
 from app.main import app
 
 
@@ -22,7 +23,9 @@ async def test_path_traversal_blocked():
     """Paths with .. or backslash should return 403."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        resp = await client.get("/api/v1/files/../etc/passwd")
+        # URL-encoded so the traversal survives httpx's client-side path
+        # normalization and actually reaches the route's own check.
+        resp = await client.get("/api/v1/files/%2e%2e%2fetc%2fpasswd")
         assert resp.status_code == 403
 
         resp = await client.get("/api/v1/files/products\\..\\secret")
@@ -137,8 +140,11 @@ async def test_thumbnail_resize(mock_download):
         resp = await client.get("/api/v1/files/content-images/test.png?w=50&q=70")
 
     assert resp.status_code == 200
-    # Resized image should be smaller than original
-    assert len(resp.content) < len(buf.getvalue())
+    # w=50 snaps up to the nearest allowed width (64). Assert the actual
+    # pixel width — byte size is unreliable: a tiny flat PNG can re-encode
+    # to a LARGER JPEG.
+    resized = Image.open(io.BytesIO(resp.content))
+    assert resized.size[0] == 64
     # Should be served as JPEG (resize converts PNG to JPEG)
     assert resp.headers["content-type"] == "image/jpeg"
 
@@ -155,3 +161,159 @@ async def test_no_resize_without_param(mock_download):
         resp = await client.get("/api/v1/files/content-images/test.png")
 
     assert resp.content == original
+
+
+@pytest.mark.anyio
+async def test_resize_width_rejects_absurd_values():
+    """?w= beyond the allowed maximum should be rejected by validation."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resp = await client.get("/api/v1/files/content-images/test.png?w=99999")
+
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Range header parsing (pure function — no MinIO needed)
+# ---------------------------------------------------------------------------
+
+
+def test_range_full_range():
+    assert parse_range_header("bytes=0-499", 1000) == (0, 499)
+
+
+def test_range_open_ended():
+    assert parse_range_header("bytes=500-", 1000) == (500, 999)
+
+
+def test_range_suffix():
+    """bytes=-N means the last N bytes of the file."""
+    assert parse_range_header("bytes=-200", 1000) == (800, 999)
+
+
+def test_range_suffix_larger_than_file():
+    """A suffix longer than the file should clamp to the whole file."""
+    assert parse_range_header("bytes=-5000", 1000) == (0, 999)
+
+
+def test_range_end_clamped_to_file_size():
+    assert parse_range_header("bytes=0-99999", 1000) == (0, 999)
+
+
+def test_range_start_beyond_eof_unsatisfiable():
+    assert parse_range_header("bytes=1000-", 1000) is None
+    assert parse_range_header("bytes=5000-6000", 1000) is None
+
+
+def test_range_inverted_is_invalid():
+    assert parse_range_header("bytes=500-100", 1000) is None
+
+
+def test_range_malformed():
+    assert parse_range_header("bytes=", 1000) is None
+    assert parse_range_header("bytes=-", 1000) is None
+    assert parse_range_header("bytes=abc-def", 1000) is None
+    assert parse_range_header("seconds=0-10", 1000) is None
+    assert parse_range_header("0-499", 1000) is None
+
+
+def test_range_multi_range_unsupported():
+    assert parse_range_header("bytes=0-100,200-300", 1000) is None
+
+
+def test_range_empty_file():
+    assert parse_range_header("bytes=0-", 0) is None
+
+
+def test_range_whitespace_tolerated():
+    assert parse_range_header("  bytes=0-499  ", 1000) == (0, 499)
+
+
+# ---------------------------------------------------------------------------
+# Video streaming with Range support
+# ---------------------------------------------------------------------------
+
+_VIDEO_BYTES = b"abcdefghijklmnopqrstuvwxyz"
+
+
+class _FakeMinioResponse:
+    """Mimics the urllib3 response returned by Minio.get_object."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def stream(self, chunk_size):
+        for i in range(0, len(self._data), chunk_size):
+            yield self._data[i : i + chunk_size]
+
+    def close(self):
+        pass
+
+    def release_conn(self):
+        pass
+
+
+def _fake_minio_client(data: bytes) -> MagicMock:
+    client = MagicMock()
+    client.stat_object.return_value = MagicMock(size=len(data))
+
+    def fake_get_object(bucket, object_name, offset=0, length=0):
+        end = offset + length if length else len(data)
+        return _FakeMinioResponse(data[offset:end])
+
+    client.get_object.side_effect = fake_get_object
+    return client
+
+
+@pytest.mark.anyio
+@patch("app.services.minio_service.get_client")
+async def test_video_full_request_streams_with_accept_ranges(mock_get_client):
+    """Non-Range video request should 200 with Accept-Ranges advertised."""
+    mock_get_client.return_value = _fake_minio_client(_VIDEO_BYTES)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resp = await client.get("/api/v1/files/content-images/demo/clip.mp4")
+
+    assert resp.status_code == 200
+    assert resp.content == _VIDEO_BYTES
+    assert resp.headers["content-type"] == "video/mp4"
+    assert resp.headers["accept-ranges"] == "bytes"
+    assert resp.headers["content-length"] == str(len(_VIDEO_BYTES))
+
+
+@pytest.mark.anyio
+@patch("app.services.minio_service.get_client")
+async def test_video_range_request_returns_206(mock_get_client):
+    """Range request should get 206 with Content-Range and only the slice."""
+    mock_get_client.return_value = _fake_minio_client(_VIDEO_BYTES)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resp = await client.get(
+            "/api/v1/files/content-images/demo/clip.mp4",
+            headers={"Range": "bytes=2-5"},
+        )
+
+    assert resp.status_code == 206
+    assert resp.content == _VIDEO_BYTES[2:6]
+    assert resp.headers["content-range"] == f"bytes 2-5/{len(_VIDEO_BYTES)}"
+    assert resp.headers["accept-ranges"] == "bytes"
+    assert resp.headers["content-length"] == "4"
+
+
+@pytest.mark.anyio
+@patch("app.services.minio_service.get_client")
+async def test_video_unsatisfiable_range_returns_416(mock_get_client):
+    """A Range past EOF should get 416 with Content-Range: bytes */size."""
+    mock_get_client.return_value = _fake_minio_client(_VIDEO_BYTES)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resp = await client.get(
+            "/api/v1/files/content-images/demo/clip.mp4",
+            headers={"Range": "bytes=999-"},
+        )
+
+    assert resp.status_code == 416
+    assert resp.headers["content-range"] == f"bytes */{len(_VIDEO_BYTES)}"

@@ -106,6 +106,18 @@ def setup_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Every 30 minutes — free brands deadlocked by crashed 'running' agent runs
+    from app.scheduler.stale_run_reaper import reap_stale_agent_runs
+
+    scheduler.add_job(
+        reap_stale_agent_runs,
+        IntervalTrigger(minutes=30),
+        id="stale_run_reaper",
+        name="Reap agent runs stuck in running",
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
+        replace_existing=True,
+    )
+
     # Every 6 hours — alert the team before a brand's LinkedIn token expires
     from app.scheduler.linkedin_token_alert import linkedin_token_expiry_check
 

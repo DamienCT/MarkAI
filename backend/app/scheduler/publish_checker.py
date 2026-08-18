@@ -81,8 +81,19 @@ async def check_due_content() -> None:
 
             try:
                 # Keep status as "scheduled" during dispatch — n8n callback
-                # will set it to "published" or "failed" directly.
-                await dispatch_to_n8n(content, calendar_item, brand)
+                # will set it to "published" or "failed" directly. Channels
+                # WITHOUT a callback (teams posts directly, website_blog is
+                # manual) must transition here or they re-dispatch every tick
+                # (Teams used to re-post the same message every 5 minutes).
+                dispatch_result = await dispatch_to_n8n(content, calendar_item, brand)
+                result_status = (dispatch_result or {}).get("status")
+                if result_status == "published":
+                    calendar_item.status = "published"
+                    calendar_item.published_at = datetime.now(timezone.utc)
+                elif result_status == "ready_to_publish":
+                    # Manual channel — park it back in review so it stops
+                    # being picked up as due.
+                    calendar_item.status = "in_review"
 
                 log = ScheduledJobLog(
                     job_name="publish_dispatch",

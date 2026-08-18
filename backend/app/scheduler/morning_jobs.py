@@ -71,16 +71,27 @@ async def run_morning_jobs() -> None:
         logger.error("Engagement pull failed in morning jobs: %s", e)
         await notify_failure("morning_jobs.engagement_pull", None, e)
 
-    # 3. Emit evaluation trigger to NATS
+    # 3. Emit evaluation trigger to NATS — one per active brand (the agents
+    # worker requires brand_id; a brandless trigger can never create a run).
     try:
-        await nats_service.publish(
-            "evaluation.trigger",
-            {
-                "triggered_by": "morning_jobs",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
+        async with async_session_factory() as session:
+            result = await session.execute(
+                text("SELECT id FROM brands WHERE status = 'active'")
+            )
+            active_brand_ids = [str(row[0]) for row in result.all()]
+
+        for brand_id in active_brand_ids:
+            await nats_service.publish(
+                "evaluation.trigger",
+                {
+                    "brand_id": brand_id,
+                    "triggered_by": "morning_jobs",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        logger.info(
+            "Emitted evaluation.trigger for %d active brand(s)", len(active_brand_ids)
         )
-        logger.info("Emitted evaluation.trigger to NATS")
     except Exception as e:
         logger.error("NATS evaluation trigger failed: %s", e)
         await notify_failure("morning_jobs.evaluation_trigger", None, e)

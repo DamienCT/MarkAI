@@ -9,7 +9,7 @@ from typing import Any
 from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.browser import extract_page
-from shared.tools.database import get_products, upsert_product
+from shared.tools.database import get_brand, get_products, upsert_product
 from shared.tools.fabric import execute_sql
 from shared.tools.web_search import web_search
 from workflows.content.image_sourcing import source_product_image
@@ -23,15 +23,32 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
     """Group products by vendor and use LLM to identify distinct brands."""
     products = await get_products(state["brand_id"])
     if not products:
-        # Try loading from Fabric / BC
+        # Try loading from Fabric / BC — scoped to the brand's BC company.
+        # The lakehouse tables hold every BC company's rows, so an unfiltered
+        # query would leak other brands' items (mirrors the Company = ?
+        # filtering used by backend fabric_service).
         try:
+            brand = await get_brand(state["brand_id"])
+            bc_company = (brand or {}).get("bc_company")
+            if not bc_company:
+                logger.warning(
+                    "Brand %s has no bc_company set — skipping Fabric fallback",
+                    state["brand_id"],
+                )
+                return {
+                    "errors": [*(state.get("errors") or []), "No products found"],
+                    "status": "failed",
+                }
             await execute_sql(
-                "SELECT DISTINCT vendorNo FROM itemmodule_item WHERE blocked = 0"
+                "SELECT DISTINCT vendorNo FROM itemmodule_item "
+                "WHERE Company = ? AND blocked = 0",
+                (bc_company,),
             )
             # Also fetch products
             raw_products = await execute_sql(
                 "SELECT TOP 500 no, description, vendorNo FROM itemmodule_item "
-                "WHERE blocked = 0 ORDER BY no"
+                "WHERE Company = ? AND blocked = 0 ORDER BY no",
+                (bc_company,),
             )
             products = [
                 {

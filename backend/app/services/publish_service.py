@@ -179,10 +179,19 @@ async def dispatch_to_n8n(
     # ── All other channels: dispatch to n8n ─────────────────────────
     _preflight_checks(content, calendar_item, brand)
 
-    # Build caption from platform metadata or fallback to main caption
+    # Build caption/hashtags from the pipeline's per-channel adaptations
+    # (generation_metadata.platform_adaptations, written by the content
+    # workflow), falling back to legacy platform_metadata, then the primary
+    # caption. Until now the adaptations were generated but never published.
+    gen_adaptations = (content.generation_metadata or {}).get("platform_adaptations") or {}
     platform_meta = content.platform_metadata or {}
-    channel_data = platform_meta.get(channel, {})
-    caption = channel_data.get("caption", content.caption or content.body_text or "")
+    channel_data = gen_adaptations.get(channel) or platform_meta.get(channel) or {}
+    if not isinstance(channel_data, dict):
+        channel_data = {}
+    caption = channel_data.get("caption") or content.caption or content.body_text or ""
+    adapted_hashtags = channel_data.get("hashtags")
+    if not isinstance(adapted_hashtags, list) or not adapted_hashtags:
+        adapted_hashtags = content.hashtags or []
 
     # Get image URL — stored in generation_metadata by the content pipeline.
     # Prefer branded (has logo + text overlay) → raw background → legacy key.
@@ -209,7 +218,7 @@ async def dispatch_to_n8n(
         "caption": caption,
         "headline": content.headline,
         "image_url": image_url,
-        "hashtags": content.hashtags or [],
+        "hashtags": adapted_hashtags,
         "cta_text": content.cta_text,
         "cta_url": content.cta_url,
         "brand_name": brand.name,

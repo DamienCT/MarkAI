@@ -177,7 +177,7 @@ async def sync_brand_products(
             },
         }
 
-        await upsert_from_bc(db, item_no, product_data)
+        await upsert_from_bc(db, item_no, product_data, brand_id=brand.id)
         synced_item_nos.add(item_no)
         synced += 1
 

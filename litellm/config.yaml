@@ -1,8 +1,33 @@
 # LiteLLM Proxy Configuration
 # Routes all requests through LiteLLM for model management, caching, and observability.
-# Swap models here to change providers (OpenAI, Azure, Ollama, etc.) without touching app code.
+# This file is the SINGLE source of provider truth: apps request bare model names
+# (the model_name below) and the proxy maps them to providers — OpenAI, Gemini,
+# Anthropic, or a local GPU server — without touching app code.
 
 model_list:
+  # ── OpenAI text (GPT-5.6 family, GA July 2026) ──────────────────
+  - model_name: gpt-5.6-sol
+    litellm_params:
+      model: openai/gpt-5.6-sol
+      api_key: os.environ/OPENAI_API_KEY
+      rpm: 60
+      tpm: 200000
+
+  - model_name: gpt-5.6-terra
+    litellm_params:
+      model: openai/gpt-5.6-terra
+      api_key: os.environ/OPENAI_API_KEY
+      rpm: 120
+      tpm: 400000
+
+  - model_name: gpt-5.6-luna
+    litellm_params:
+      model: openai/gpt-5.6-luna
+      api_key: os.environ/OPENAI_API_KEY
+      rpm: 240
+      tpm: 800000
+
+  # Previous generation kept for transition; remove after cutover.
   - model_name: gpt-5.4
     litellm_params:
       model: openai/gpt-5.4
@@ -17,13 +42,74 @@ model_list:
       rpm: 120
       tpm: 400000
 
-  - model_name: text-embedding-3-small
+  # ── Anthropic Claude 5 (requires ANTHROPIC_API_KEY in .env) ─────
+  - model_name: claude-opus-5
     litellm_params:
-      model: openai/text-embedding-3-small
-      api_key: os.environ/OPENAI_API_KEY
-      rpm: 200
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      rpm: 60
+      tpm: 200000
 
-  # Image generation
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      rpm: 120
+      tpm: 400000
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      rpm: 240
+      tpm: 800000
+
+  # ── Google Gemini text ──────────────────────────────────────────
+  - model_name: gemini-3.7-flash
+    litellm_params:
+      model: gemini/gemini-3.7-flash
+      api_key: os.environ/GEMINI_API_KEY
+      rpm: 240
+      tpm: 800000
+
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: gemini/gemini-3.1-pro-preview
+      api_key: os.environ/GEMINI_API_KEY
+      rpm: 60
+
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+  # ── Image generation / editing ──────────────────────────────────
+  # Nano Banana 2 — default for branded product images AND product-swap edits.
+  - model_name: gemini-3.1-flash-image
+    litellm_params:
+      model: gemini/gemini-3.1-flash-image
+      api_key: os.environ/GEMINI_API_KEY
+      rpm: 30
+
+  # Nano Banana Pro — hero assets.
+  - model_name: gemini-3-pro-image
+    litellm_params:
+      model: gemini/gemini-3-pro-image
+      api_key: os.environ/GEMINI_API_KEY
+      rpm: 15
+
+  - model_name: gpt-image-2
+    litellm_params:
+      model: openai/gpt-image-2
+      api_key: os.environ/OPENAI_API_KEY
+      rpm: 30
+
+  # Previous generation kept for transition.
   - model_name: gpt-image-1.5
     litellm_params:
       model: openai/gpt-image-1.5
@@ -36,29 +122,26 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
       rpm: 30
 
-  - model_name: gpt-image-1-mini
+  # ── Video generation (cloud) ────────────────────────────────────
+  # Sora removed: OpenAI Videos API shuts down 2026-09-24. Veo 3.1 is the
+  # cloud path; the local RTX 4090 Video Forge is reached via the video
+  # provider adapters (not the proxy) because video jobs are long-running.
+  - model_name: veo-3.1-fast-generate-preview
     litellm_params:
-      model: openai/gpt-image-1-mini
-      api_key: os.environ/OPENAI_API_KEY
-      rpm: 30
+      model: gemini/veo-3.1-fast-generate-preview
+      api_key: os.environ/GEMINI_API_KEY
 
-  - model_name: chatgpt-image-latest
+  - model_name: veo-3.1-generate-preview
     litellm_params:
-      model: openai/chatgpt-image-latest
-      api_key: os.environ/OPENAI_API_KEY
-      rpm: 30
+      model: gemini/veo-3.1-generate-preview
+      api_key: os.environ/GEMINI_API_KEY
 
-  - model_name: dall-e-3
+  # ── Embeddings ──────────────────────────────────────────────────
+  - model_name: text-embedding-3-small
     litellm_params:
-      model: openai/dall-e-3
+      model: openai/text-embedding-3-small
       api_key: os.environ/OPENAI_API_KEY
-      rpm: 30
-
-  - model_name: dall-e-2
-    litellm_params:
-      model: openai/dall-e-2
-      api_key: os.environ/OPENAI_API_KEY
-      rpm: 30
+      rpm: 200
 
   - model_name: text-embedding-3-large
     litellm_params:
@@ -66,33 +149,29 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
       rpm: 200
 
-  # Video generation
-  - model_name: sora-2
+  # ── Provider wildcards (passthrough for models not listed above) ─
+  - model_name: "openai/*"
     litellm_params:
-      model: openai/sora-2
+      model: "openai/*"
       api_key: os.environ/OPENAI_API_KEY
 
-  - model_name: sora-2-pro
+  - model_name: "gemini/*"
     litellm_params:
-      model: openai/sora-2-pro
-      api_key: os.environ/OPENAI_API_KEY
-
-  # Gemini models
-  - model_name: gemini-2.5-flash
-    litellm_params:
-      model: gemini/gemini-2.5-flash
+      model: "gemini/*"
       api_key: os.environ/GEMINI_API_KEY
 
-  - model_name: gemini-2.5-pro
+  - model_name: "anthropic/*"
     litellm_params:
-      model: gemini/gemini-2.5-pro
-      api_key: os.environ/GEMINI_API_KEY
+      model: "anthropic/*"
+      api_key: os.environ/ANTHROPIC_API_KEY
 
-  # Add on-prem / other providers here, e.g.:
-  # - model_name: llama-3
+  # Local GPU server (Video Forge box) — OpenAI-compatible endpoint.
+  # Uncomment when serving local image/text models from the 4090:
+  # - model_name: local-flux-schnell
   #   litellm_params:
-  #     model: ollama/llama3
-  #     api_base: http://ollama:11434
+  #     model: openai/flux-schnell
+  #     api_base: os.environ/VIDEO_FORGE_OPENAI_URL
+  #     api_key: os.environ/VIDEO_FORGE_API_KEY
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
@@ -104,6 +183,8 @@ litellm_settings:
     host: os.environ/VALKEY_HOST
     port: os.environ/VALKEY_PORT
     password: os.environ/VALKEY_PASSWORD
+    # TTL so "regenerate" requests can't be served a stale identical completion forever.
+    ttl: 3600
   num_retries: 3
   request_timeout: 600
   set_verbose: false

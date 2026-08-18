@@ -71,7 +71,8 @@
       "name": "IG Create Container",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [940, 200]
+      "position": [940, 200],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -90,7 +91,8 @@
       "name": "IG Publish",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1160, 200]
+      "position": [1160, 200],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -110,7 +112,8 @@
       "name": "FB Publish",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [940, 400]
+      "position": [940, 400],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -128,13 +131,20 @@
         "contentType": "json",
         "specifyBody": "json",
         "jsonBody": "={\n  \"author\": \"urn:li:organization:{{ $json.linkedin_org_id }}\",\n  \"commentary\": {{ JSON.stringify($json.full_text) }},\n  \"visibility\": \"PUBLIC\",\n  \"distribution\": { \"feedDistribution\": \"MAIN_FEED\" },\n  \"lifecycleState\": \"PUBLISHED\"\n}",
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
       },
       "id": "c1a1a1a1-0001-4000-8000-000000000007",
       "name": "LinkedIn Publish",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [940, 600]
+      "position": [940, 600],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -149,7 +159,7 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"published\",\n  \"platform_post_id\": \"{{ $json.id || 'unknown' }}\",\n  \"published_at\": \"{{ new Date().toISOString() }}\"\n}",
+        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"published\",\n  \"platform_post_id\": \"{{ $json.id || ($json.headers && $json.headers['x-restli-id']) || 'unknown' }}\",\n  \"published_at\": \"{{ new Date().toISOString() }}\"\n}",
         "options": {}
       },
       "id": "c1a1a1a1-0001-4000-8000-000000000008",
@@ -159,11 +169,47 @@
       "position": [1380, 400]
     },
     {
-      "parameters": {},
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set Variables').item.json.callback_url }}/api/v1/webhooks/publish-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"failed\",\n  \"error_message\": {{ JSON.stringify(($json.error && ($json.error.message || $json.error.description)) || 'Publish failed') }}\n}",
+        "options": {}
+      },
+      "id": "c1a1a1a1-0001-4000-8000-000000000010",
+      "name": "Callback Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1380, 700]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set Variables').item.json.callback_url }}/api/v1/webhooks/publish-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"failed\",\n  \"error_message\": \"channel_not_implemented\"\n}",
+        "options": {}
+      },
       "id": "c1a1a1a1-0001-4000-8000-000000000009",
-      "name": "Not Implemented",
-      "type": "n8n-nodes-base.noOp",
-      "typeVersion": 1,
+      "name": "Callback Not Implemented",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
       "position": [940, 800]
     }
   ],
@@ -179,20 +225,32 @@
         [{ "node": "IG Create Container", "type": "main", "index": 0 }],
         [{ "node": "FB Publish", "type": "main", "index": 0 }],
         [{ "node": "LinkedIn Publish", "type": "main", "index": 0 }],
-        [{ "node": "Not Implemented", "type": "main", "index": 0 }]
+        [{ "node": "Callback Not Implemented", "type": "main", "index": 0 }]
       ]
     },
     "IG Create Container": {
-      "main": [[{ "node": "IG Publish", "type": "main", "index": 0 }]]
+      "main": [
+        [{ "node": "IG Publish", "type": "main", "index": 0 }],
+        [{ "node": "Callback Failed", "type": "main", "index": 0 }]
+      ]
     },
     "IG Publish": {
-      "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]]
+      "main": [
+        [{ "node": "Callback Success", "type": "main", "index": 0 }],
+        [{ "node": "Callback Failed", "type": "main", "index": 0 }]
+      ]
     },
     "FB Publish": {
-      "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]]
+      "main": [
+        [{ "node": "Callback Success", "type": "main", "index": 0 }],
+        [{ "node": "Callback Failed", "type": "main", "index": 0 }]
+      ]
     },
     "LinkedIn Publish": {
-      "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]]
+      "main": [
+        [{ "node": "Callback Success", "type": "main", "index": 0 }],
+        [{ "node": "Callback Failed", "type": "main", "index": 0 }]
+      ]
     }
   },
   "settings": {

@@ -48,10 +48,12 @@ RUN adduser --system --uid 1001 appuser
 COPY alembic.ini .
 COPY alembic/ alembic/
 COPY app/ app/
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN chown -R appuser /app
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh && chown -R appuser /app
 USER appuser
 
 EXPOSE 8000
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

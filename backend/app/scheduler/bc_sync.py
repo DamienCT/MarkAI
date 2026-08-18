@@ -195,7 +195,7 @@ async def _sync_bc_products_impl() -> None:
                 }
 
                 try:
-                    await upsert_from_bc(db, item_no, product_data)
+                    await upsert_from_bc(db, item_no, product_data, brand_id=brand.id)
                     synced_item_nos.add(item_no)
                 except Exception as e:
                     logger.warning("Failed to upsert product %s: %s", item_no, e)

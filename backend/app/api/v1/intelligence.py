@@ -67,7 +67,9 @@ async def _call_llm(
                 headers = {"Content-Type": "application/json"}
                 if settings.LITELLM_MASTER_KEY:
                     headers["Authorization"] = f"Bearer {settings.LITELLM_MASTER_KEY}"
-                body_litellm = {**body, "model": f"openai/{model_id}"}
+                # model_id is the LiteLLM proxy model_name — the proxy config
+                # owns the provider mapping (openai/gemini/anthropic/local).
+                body_litellm = {**body, "model": model_id}
                 resp = await client.post(
                     settings.LITELLM_BASE_URL.rstrip("/") + "/v1/chat/completions",
                     headers=headers,
@@ -81,7 +83,8 @@ async def _call_llm(
                     litellm_exc,
                 )
 
-        # Direct OpenAI fallback
+        # Direct OpenAI fallback — the active model may not be an OpenAI one,
+        # so pin a known-good OpenAI model for this emergency path.
         if not settings.OPENAI_API_KEY:
             raise ValueError(
                 "No LLM available: LiteLLM failed and OPENAI_API_KEY not set"
@@ -93,7 +96,7 @@ async def _call_llm(
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
             },
-            json=body,
+            json={**body, "model": "gpt-5.6-luna"},
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]

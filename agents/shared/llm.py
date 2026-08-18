@@ -1,14 +1,18 @@
 """LiteLLM client wrapper.  All LLM calls route through the LiteLLM proxy.
 
 Never import openai directly — every request goes via LITELLM_BASE_URL.
-Models are resolved dynamically from the backend's active model selections.
-The real OpenAI model ID is passed with "openai/" prefix so LiteLLM routes
-it correctly without needing hardcoded model_list entries.
+Models are resolved dynamically from the backend's active model selections
+and passed as bare LiteLLM model_names; the proxy's config owns the
+provider mapping (OpenAI, Gemini, Anthropic, local GPU), so switching
+providers is config-only. Image generation is the exception: it calls the
+provider APIs directly (OpenAI images endpoint / Gemini generate_content)
+because the pinned proxy doesn't reliably route image payloads.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -103,11 +107,13 @@ _CACHE_TTL = 300  # 5 minutes
 
 # Fallback defaults used when the backend API is unreachable
 _FALLBACK_MODELS: dict[str, str] = {
-    "text": "gpt-5.4",
-    "text-fast": "gpt-5.4-mini",
-    "image": "gpt-image-1.5",
+    "text": "gpt-5.6-sol",
+    "text-fast": "gpt-5.6-luna",
+    "image": "gemini-3.1-flash-image",
+    "image-edit": "gemini-3.1-flash-image",
+    "video": "veo-3.1-fast-generate-preview",
     "embedding": "text-embedding-3-small",
-    "vision": "gpt-5.4",
+    "vision": "gpt-5.6-sol",
 }
 
 
@@ -124,7 +130,10 @@ async def get_model_for_category(category: str) -> str:
     Results are cached for 5 minutes. Falls back to sensible defaults
     if the backend is unreachable.
 
-    Returns the full LiteLLM model string, e.g. "openai/gpt-5.4".
+    Returns the model name as registered in the LiteLLM proxy's model_list
+    (e.g. "gpt-5.6-sol", "claude-sonnet-5", "gemini-3.7-flash"). The proxy
+    config owns the provider mapping, so any provider — including a local
+    GPU server — is reachable without code changes here.
     """
     now = time.time()
 
@@ -132,7 +141,7 @@ async def get_model_for_category(category: str) -> str:
     if category in _model_cache:
         model_id, expiry = _model_cache[category]
         if now < expiry:
-            return f"openai/{model_id}"
+            return model_id
 
     # Fetch from backend API
     try:
@@ -153,17 +162,17 @@ async def get_model_for_category(category: str) -> str:
             _model_cache[slug] = (model_id, now + _CACHE_TTL)
 
         if category in active_models:
-            return f"openai/{active_models[category]}"
+            return active_models[category]
     except Exception:
         # Backend unreachable — use cached value if available (even if expired)
         if category in _model_cache:
             model_id, _ = _model_cache[category]
-            return f"openai/{model_id}"
+            return model_id
 
     # Ultimate fallback
-    fallback = _FALLBACK_MODELS.get(category, "gpt-5.4")
+    fallback = _FALLBACK_MODELS.get(category, _FALLBACK_MODELS["text"])
     _model_cache[category] = (fallback, now + _CACHE_TTL)
-    return f"openai/{fallback}"
+    return fallback
 
 
 def strip_markdown_fences(text: str) -> str:
@@ -430,6 +439,49 @@ def _size_for_model(model: str, requested_size: str) -> str:
     return requested_size
 
 
+_GEMINI_ASPECT_RATIOS = {"square": "1:1", "landscape": "3:2", "portrait": "2:3"}
+
+
+def _is_gemini_image_model(model: str) -> bool:
+    return model.startswith("gemini") and "image" in model
+
+
+async def _generate_image_gemini(model: str, prompt: str, size: str) -> str:
+    """Generate an image with a Gemini image model; returns a data URI."""
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
+        raise RuntimeError("GEMINI_API_KEY not set — required for Gemini image generation")
+
+    from google import genai
+    from google.genai import types as gtypes
+
+    aspect = _GEMINI_ASPECT_RATIOS[_aspect_of(size)]
+    client = genai.Client(api_key=gemini_key)
+
+    def _call():
+        try:
+            config = gtypes.GenerateContentConfig(
+                response_modalities=["TEXT", "IMAGE"],
+                image_config=gtypes.ImageConfig(aspect_ratio=aspect),
+            )
+        except (AttributeError, TypeError):
+            # Older google-genai without ImageConfig — aspect goes in the prompt.
+            config = gtypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
+        return client.models.generate_content(
+            model=model,
+            contents=[f"{prompt}\n\nGenerate the image with a {aspect} aspect ratio."],
+            config=config,
+        )
+
+    response = await asyncio.to_thread(_call)
+    for candidate in response.candidates or []:
+        for part in candidate.content.parts or []:
+            if part.inline_data is not None:
+                b64 = base64.b64encode(part.inline_data.data).decode()
+                return f"data:image/png;base64,{b64}"
+    raise ValueError(f"Gemini image model {model} returned no image data")
+
+
 async def _get_channel_fallback_model(channel: str, category: str) -> str | None:
     """Look up the configured fallback model for (channel, category) in the
     channel_model_fallbacks table. Returns the model_id if a row exists and
@@ -515,6 +567,13 @@ async def generate_image(
         # back — those are flaky, not a permanent rejection.
         for sub_attempt in range(_IMAGE_SUBATTEMPTS):
             try:
+                if _is_gemini_image_model(attempt_model):
+                    logger.info(
+                        "Generating image with model=%s size=%s via Gemini API (try %d/%d)",
+                        attempt_model, model_size, sub_attempt + 1, _IMAGE_SUBATTEMPTS,
+                    )
+                    return await _generate_image_gemini(attempt_model, prompt, model_size)
+
                 logger.info(
                     "Generating image with model=%s size=%s via direct OpenAI API (try %d/%d)",
                     attempt_model, model_size, sub_attempt + 1, _IMAGE_SUBATTEMPTS,

@@ -138,7 +138,7 @@ CREATE TABLE calendar_items (
     scheduled_at    TIMESTAMPTZ,
     published_at    TIMESTAMPTZ,
     status          VARCHAR(50) NOT NULL DEFAULT 'queued'
-                    CHECK (status IN ('queued', 'working', 'in_review', 'reworking',
+                    CHECK (status IN ('planned', 'queued', 'working', 'rendering', 'in_review', 'reworking',
                                        'approved', 'scheduled', 'publishing', 'published', 'failed')),
     assigned_to     UUID REFERENCES users(id),
     pillar          VARCHAR(100),
@@ -254,7 +254,7 @@ CREATE TABLE agent_runs (
     trigger         VARCHAR(100) NOT NULL
                     CHECK (trigger IN ('scheduled', 'manual', 'event', 'webhook', 'activation')),
     status          VARCHAR(50) NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+                    CHECK (status IN ('pending', 'running', 'paused_for_review', 'completed', 'failed', 'cancelled')),
     input_payload   JSONB DEFAULT '{}',
     output_payload  JSONB DEFAULT '{}',
     error_message   TEXT,
@@ -292,6 +292,9 @@ CREATE TABLE engagement_metrics (
     saves               INTEGER DEFAULT 0,
     clicks              INTEGER DEFAULT 0,
     video_views         INTEGER DEFAULT 0,
+    watch_time_seconds  INTEGER,
+    avg_view_duration_s NUMERIC(8,2),
+    completion_rate     NUMERIC(5,4),
     engagement_rate     NUMERIC(8,4),
     sentiment_score     NUMERIC(5,4),
     raw_metrics         JSONB DEFAULT '{}',
@@ -403,7 +406,7 @@ CREATE TABLE notifications (
                                                    'publish_failure', 'system',
                                                    'context_ready', 'context_all_ready',
                                                    'linkedin_token_expiry', 'runway_alert',
-                                                   'stuck_in_review')),
+                                                   'stuck_in_review', 'video_ready', 'render_failed')),
     channel         VARCHAR(50) NOT NULL DEFAULT 'in_app'
                     CHECK (channel IN ('in_app', 'email', 'slack', 'push')),
     reference_type  VARCHAR(100),
@@ -466,6 +469,10 @@ INSERT INTO ai_model_categories (slug, display_name, description) VALUES
     ('text',       'Text / Chat',            'Language models for text generation, chat, reasoning'),
     ('text-fast',  'Text / Chat (Fast)',      'Faster, cheaper language models for simple tasks'),
     ('image',      'Image Generation',        'Models for generating images from text prompts'),
+    ('image-edit', 'Image Editing',           'Models for editing images (product swap, inpainting)'),
+    ('video',      'Video Generation',        'Models for generating short-form video (local or cloud)'),
+    ('tts',        'Text to Speech',          'Voice synthesis models for voiceovers'),
+    ('stt',        'Speech to Text',          'Transcription models for subtitles and captions'),
     ('embedding',  'Text Embedding',          'Models for generating vector embeddings'),
     ('vision',     'Vision / Image Analysis', 'Models for analyzing and understanding images');
 
@@ -490,6 +497,119 @@ INSERT INTO app_settings (key, value) VALUES
     ('default_channels', '["instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "website_blog", "teams"]'),
     ('notification_channels', '["teams", "portal"]'),
     ('content_generation_days_ahead', '7');
+
+-- ── Events (significant days calendar) ──────────────────────────
+CREATE TABLE events (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id        UUID REFERENCES brands(id) ON DELETE CASCADE,
+    title           VARCHAR(255) NOT NULL,
+    description     TEXT,
+    start_date      DATE NOT NULL,
+    end_date        DATE,
+    is_annual       BOOLEAN NOT NULL DEFAULT TRUE,
+    category        VARCHAR(64),
+    source          VARCHAR(32) NOT NULL DEFAULT 'manual',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── Trending Topics (per-brand LLM-scored trends) ───────────────
+CREATE TABLE trending_topics (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    topic           VARCHAR(255) NOT NULL,
+    source          VARCHAR(50) NOT NULL DEFAULT 'google',
+    source_url      TEXT,
+    raw_metric      VARCHAR(50),
+    velocity        VARCHAR(20) NOT NULL DEFAULT 'stable',
+    relevance_score INTEGER NOT NULL DEFAULT 0,
+    relevance_reason TEXT,
+    llm_angle       TEXT,
+    metadata        JSONB NOT NULL DEFAULT '{}',
+    discovered_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    CONSTRAINT trending_topics_brand_topic_uniq UNIQUE (brand_id, topic)
+);
+
+CREATE INDEX trending_topics_brand_idx ON trending_topics (brand_id);
+CREATE INDEX trending_topics_active_idx ON trending_topics (expires_at, relevance_score DESC, discovered_at DESC);
+
+-- ── Per-channel model fallbacks ─────────────────────────────────
+CREATE TABLE channel_model_fallbacks (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel         VARCHAR(50) NOT NULL,
+    category        VARCHAR(50) NOT NULL,
+    model_id        VARCHAR(255) NOT NULL,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT channel_model_fallbacks_uniq UNIQUE (channel, category)
+);
+
+CREATE INDEX channel_model_fallbacks_lookup_idx ON channel_model_fallbacks (category, channel) WHERE is_active = TRUE;
+
+-- ── Video Jobs (provider-agnostic video generation queue) ───────
+CREATE TABLE video_jobs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    calendar_item_id UUID REFERENCES calendar_items(id) ON DELETE CASCADE,
+    content_id      UUID REFERENCES content(id) ON DELETE SET NULL,
+    provider        VARCHAR(50) NOT NULL,
+    model           VARCHAR(255) NOT NULL,
+    mode            VARCHAR(20) NOT NULL DEFAULT 'i2v'
+                    CHECK (mode IN ('i2v', 't2v', 'flf2v', 'extend')),
+    prompt          TEXT NOT NULL,
+    source_image_object VARCHAR(1024),
+    params          JSONB NOT NULL DEFAULT '{}',
+    status          VARCHAR(30) NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ('queued', 'submitted', 'running', 'succeeded', 'failed', 'cancelled')),
+    progress        SMALLINT NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+    attempt         SMALLINT NOT NULL DEFAULT 0,
+    provider_job_id VARCHAR(255),
+    idempotency_key VARCHAR(128),
+    output_object   VARCHAR(1024),
+    thumbnail_object VARCHAR(1024),
+    duration_s      NUMERIC(6,2),
+    error_message   TEXT,
+    cost_usd        NUMERIC(10,4) DEFAULT 0,
+    generation_ledger JSONB NOT NULL DEFAULT '[]',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at      TIMESTAMPTZ,
+    completed_at    TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_video_jobs_brand_id ON video_jobs (brand_id);
+CREATE INDEX idx_video_jobs_calendar_item ON video_jobs (calendar_item_id);
+CREATE INDEX idx_video_jobs_active ON video_jobs (status, created_at) WHERE status IN ('queued', 'submitted', 'running');
+CREATE UNIQUE INDEX idx_video_jobs_idempotency ON video_jobs (idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+-- ── Media Assets (typed registry of generated/uploaded media) ───
+CREATE TABLE media_assets (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    calendar_item_id UUID REFERENCES calendar_items(id) ON DELETE CASCADE,
+    content_id      UUID REFERENCES content(id) ON DELETE CASCADE,
+    kind            VARCHAR(20) NOT NULL CHECK (kind IN ('image', 'video', 'audio', 'thumbnail')),
+    role            VARCHAR(50) NOT NULL,
+    bucket          VARCHAR(100) NOT NULL,
+    object_name     VARCHAR(1024) NOT NULL,
+    mime_type       VARCHAR(100) NOT NULL,
+    width           INTEGER,
+    height          INTEGER,
+    duration_s      NUMERIC(8,2),
+    size_bytes      BIGINT,
+    provider        VARCHAR(50),
+    model           VARCHAR(255),
+    prompt          TEXT,
+    cost_usd        NUMERIC(10,4),
+    metadata        JSONB NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_media_assets_brand_id ON media_assets (brand_id);
+CREATE INDEX idx_media_assets_calendar_item ON media_assets (calendar_item_id);
+CREATE INDEX idx_media_assets_content ON media_assets (content_id);
+CREATE INDEX idx_media_assets_kind_role ON media_assets (kind, role);
 
 -- ── Updated-at trigger function ─────────────────────────────────
 CREATE OR REPLACE FUNCTION update_updated_at_column()

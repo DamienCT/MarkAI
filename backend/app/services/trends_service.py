@@ -272,7 +272,7 @@ async def _call_llm_json(messages: list[dict], temperature: float = 0.5) -> dict
                 resp = await client.post(
                     settings.LITELLM_BASE_URL.rstrip("/") + "/v1/chat/completions",
                     headers=headers,
-                    json={**body, "model": f"openai/{model_id}"},
+                    json={**body, "model": model_id},
                 )
                 resp.raise_for_status()
                 content = resp.json()["choices"][0]["message"]["content"]
@@ -280,7 +280,8 @@ async def _call_llm_json(messages: list[dict], temperature: float = 0.5) -> dict
             except Exception as litellm_exc:
                 logger.debug("LiteLLM failed, falling back to OpenAI: %s", litellm_exc)
 
-        # Direct OpenAI fallback
+        # Direct OpenAI fallback — the active model may not be an OpenAI one,
+        # so pin a known-good OpenAI model for this emergency path.
         if not settings.OPENAI_API_KEY:
             raise RuntimeError("LiteLLM unreachable and OPENAI_API_KEY not set")
 
@@ -290,7 +291,7 @@ async def _call_llm_json(messages: list[dict], temperature: float = 0.5) -> dict
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
             },
-            json=body,
+            json={**body, "model": "gpt-5.6-luna"},
         )
         resp.raise_for_status()
         return json.loads(resp.json()["choices"][0]["message"]["content"])
