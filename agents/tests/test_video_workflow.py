@@ -157,7 +157,7 @@ class TestNormalizeShotPlan:
             {"index": i, "duration_s": 1.0, "scene": _scene()} for i in range(10)
         ]
         normalized = _normalize_shot_plan(plan)
-        assert len(normalized["shots"]) <= 6
+        assert len(normalized["shots"]) <= video_nodes.MAX_SHOTS
 
 
 class TestPromptHelpers:
