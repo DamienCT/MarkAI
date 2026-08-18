@@ -20,7 +20,12 @@ for arg in "$@"; do
 done
 
 echo "=== Step 1: Pull latest code ==="
-git pull ado main
+# Both remotes carry the same main (dual-push convention); prefer ado but fall
+# back to origin (GitHub) when its credential has expired.
+if ! git pull ado main; then
+    echo "WARN: ado pull failed (credential expired?) — falling back to origin"
+    git pull origin main
+fi
 
 echo "=== Step 2: Generate and add missing env vars ==="
 ENV_FILE=".env"
