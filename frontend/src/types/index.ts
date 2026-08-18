@@ -115,6 +115,8 @@ export interface Content {
   media_urls?: string[];
   image_urls?: Record<string, unknown> | string[];
   thumbnail_url?: string;
+  /** MinIO object path of the rendered reel video (e.g. videos/{brand}/{item}/final.mp4) */
+  video_url?: string;
   scheduled_at?: string;
   published_at?: string;
   engagement_metrics?: EngagementMetrics;
@@ -135,6 +137,7 @@ export type ContentStatus =
   | "working"
   | "in_review"
   | "reworking"
+  | "rendering"
   | "approved"
   | "scheduled"
   | "publishing"

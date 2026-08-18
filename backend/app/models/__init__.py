@@ -14,6 +14,8 @@ from app.models.event import Event
 from app.models.trending_topic import TrendingTopic
 from app.models.ai_model import AIModelCategory, AIModel, AIModelSelection
 from app.models.channel_model_fallback import ChannelModelFallback
+from app.models.video_job import VideoJob
+from app.models.media_asset import MediaAsset
 
 __all__ = [
     "Base",
@@ -34,4 +36,6 @@ __all__ = [
     "AIModel",
     "AIModelSelection",
     "ChannelModelFallback",
+    "VideoJob",
+    "MediaAsset",
 ]

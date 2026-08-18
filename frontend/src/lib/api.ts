@@ -185,6 +185,14 @@ export function apiUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
 }
 
+/** Kick off video generation for a reel's content item.
+ *  POST /api/v1/content/{id}/generate-video — the backend flips the calendar
+ *  item to "rendering" and queues a video.render job for the pipeline.
+ */
+export function generateVideo(contentId: string): Promise<{ status?: string }> {
+  return api.post<{ status?: string }>(`/api/v1/content/${contentId}/generate-video`, {});
+}
+
 /** Resolve a MinIO object path to a proxied file URL via the backend.
  *  e.g. "products/abc/image.png" → "https://api.../api/v1/files/products/abc/image.png"
  *  Also rewrites legacy presigned URLs (http://minio:9000/bucket/path) to use the proxy.

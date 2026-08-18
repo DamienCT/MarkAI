@@ -25,6 +25,8 @@ from app.models.ai_model import AIModelCategory, AIModel, AIModelSelection  # no
 from app.models.event import Event  # noqa: F401
 from app.models.trending_topic import TrendingTopic  # noqa: F401
 from app.models.channel_model_fallback import ChannelModelFallback  # noqa: F401
+from app.models.video_job import VideoJob  # noqa: F401
+from app.models.media_asset import MediaAsset  # noqa: F401
 
 config = context.config
 

@@ -95,6 +95,11 @@ async def list_approvals(
                 "caption": item.content.caption,
                 "hashtags": hashtags or [],
                 "cta_text": item.content.cta_text,
+                # Media fields the approval cards resolve previews from:
+                # branded/raw image paths live in generation_metadata, reels
+                # additionally carry the rendered video's object path.
+                "generation_metadata": item.content.generation_metadata,
+                "video_url": item.content.video_url,
             }
         if item.calendar_item:
             d["calendar_item"] = {

@@ -40,6 +40,7 @@ const ROW1_COLUMNS: { id: string; label: string; color: string }[] = [
   { id: "planned", label: "Planned", color: "bg-slate-50 dark:bg-slate-900" },
   { id: "queued", label: "Queued", color: "bg-sky-50 dark:bg-sky-950" },
   { id: "working", label: "Working", color: "bg-indigo-50 dark:bg-indigo-950" },
+  { id: "rendering", label: "Rendering", color: "bg-fuchsia-50 dark:bg-fuchsia-950" },
   { id: "in_review", label: "In Review", color: "bg-amber-50 dark:bg-amber-950" },
   { id: "reworking", label: "Reworking", color: "bg-orange-50 dark:bg-orange-950" },
 ];
@@ -90,7 +91,7 @@ function CompactItem({
         </span>
         {isNew && <NewPill />}
         {currentStep && (
-          <PipelineProgressDots currentStep={currentStep} size="xs" />
+          <PipelineProgressDots currentStep={currentStep} size="xs" itemType={item.item_type} />
         )}
         {!currentStep && item.scheduled_at && (
           <span className="text-[10px] text-muted-foreground shrink-0">
@@ -164,19 +165,19 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
   const router = useRouter();
   const { isOpened } = useOpenedContent();
 
-  // Fetch active content runs for progress dots on working items
+  // Fetch active runs for progress dots on working (content) and
+  // rendering (video) items
   const hasWorkingItems = useMemo(
-    () => items.some((i) => i.status === "working"),
+    () => items.some((i) => i.status === "working" || i.status === "rendering"),
     [items]
   );
 
   const fetchActiveRuns = useCallback(async () => {
     if (!hasWorkingItems) return;
     try {
-      const runs = await api.get<ActiveAgentRun[]>(
-        "/api/v1/agents/runs/active",
-        { agent_type: "content" }
-      );
+      // No agent_type filter — covers both content and video (reel) runs;
+      // items are matched by calendar_item_id.
+      const runs = await api.get<ActiveAgentRun[]>("/api/v1/agents/runs/active");
       setActiveRuns(Array.isArray(runs) ? runs : []);
     } catch {
       // Non-critical
@@ -282,7 +283,7 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
                     <CompactItem
                       key={item.id}
                       item={item}
-                      currentStep={column.id === "working" ? runStepMap[item.id] : undefined}
+                      currentStep={column.id === "working" || column.id === "rendering" ? runStepMap[item.id] : undefined}
                       isNew={!isOpened(item.id)}
                     />
                   ))}
@@ -313,7 +314,7 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
         {/* Row 1: Content Pipeline */}
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Content Pipeline</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
             {ROW1_COLUMNS.map(renderColumn)}
           </div>
         </div>

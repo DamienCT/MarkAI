@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import {
   Heart, MessageCircle, Send, Bookmark, Share2,
-  ThumbsUp, MoreHorizontal, Globe, Repeat2, X,
+  ThumbsUp, MoreHorizontal, Globe, Repeat2, X, Youtube,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { sanitizeImageUrl } from "@/lib/utils";
@@ -90,11 +90,29 @@ interface PreviewProps {
   caption: string;
   hashtags: string[];
   imageUrl?: string;
+  /** Rendered reel video — when set, the media slot shows a player instead of the image. */
+  videoUrl?: string;
   avatarUrl?: string;
   cta?: string;
   compact?: boolean;
   /** Optional control overlaid on the post image (revealed on hover). */
   imageOverlay?: React.ReactNode;
+}
+
+/** Video rendered in a preview's media slot (reels). Reels are 9:16 portrait;
+ *  the keyframe image doubles as the poster so the frame isn't black before
+ *  playback starts. */
+function MediaVideo({ src, poster, className }: { src: string; poster?: string; className?: string }) {
+  return (
+    <video
+      src={src}
+      poster={poster ? sanitizeImageUrl(poster) || undefined : undefined}
+      controls
+      playsInline
+      preload="metadata"
+      className={className || "w-full aspect-[9/16] object-cover bg-black"}
+    />
+  );
 }
 
 function AvatarCircle({ name, size = "h-9 w-9", avatarUrl }: { name: string; size?: string; avatarUrl?: string }) {
@@ -136,7 +154,7 @@ function HashtagsDisplay({ hashtags }: { hashtags: string[] }) {
   );
 }
 
-export function InstagramPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
+export function InstagramPreview({ brandName, brandHandle, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
@@ -148,8 +166,10 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
         </div>
         <MoreHorizontal className="h-5 w-5 text-muted-foreground" />
       </div>
-      {/* Image */}
-      {imageUrl && sanitizeImageUrl(imageUrl) ? (
+      {/* Media — reel video (9:16) when rendered, otherwise the post image */}
+      {videoUrl ? (
+        <MediaVideo src={videoUrl} poster={imageUrl} />
+      ) : imageUrl && sanitizeImageUrl(imageUrl) ? (
         <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-square object-cover" overlay={imageOverlay} />
       ) : (
         <ImagePlaceholder />
@@ -178,7 +198,7 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
   );
 }
 
-export function FacebookPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
+export function FacebookPreview({ brandName, brandHandle, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
@@ -197,10 +217,13 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
         <p className={`text-sm whitespace-pre-wrap ${compact ? "line-clamp-3" : ""}`}>{caption}</p>
         <HashtagsDisplay hashtags={hashtags} />
       </div>
-      {/* Image — aspect matches the actual generated landscape (1536x1024 = 3:2).
+      {/* Media — reel video (9:16) when rendered; otherwise the image whose
+          aspect matches the actual generated landscape (1536x1024 = 3:2).
           A previous 16:9 mask center-cropped 80px top/bottom and clipped the
           text card whose anchor sits 4% above the image bottom. */}
-      {imageUrl && sanitizeImageUrl(imageUrl) ? (
+      {videoUrl ? (
+        <MediaVideo src={videoUrl} poster={imageUrl} />
+      ) : imageUrl && sanitizeImageUrl(imageUrl) ? (
         <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[3/2] object-cover" overlay={imageOverlay} />
       ) : (
         <div className="w-full aspect-[3/2] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
@@ -229,7 +252,7 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
   );
 }
 
-export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
+export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
@@ -246,10 +269,13 @@ export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, ima
         <p className={`text-sm leading-relaxed whitespace-pre-wrap ${compact ? "line-clamp-4" : ""}`}>{caption}</p>
         <HashtagsDisplay hashtags={hashtags} />
       </div>
-      {/* Image — match the actual generated landscape ratio (1536x1024 = 3:2).
-          LinkedIn's link-preview spec is 1.91:1 but our images are generated
-          at 3:2; cropping to 1.91:1 here clips the bottom of the text card. */}
-      {imageUrl && sanitizeImageUrl(imageUrl) ? (
+      {/* Media — reel video (9:16) when rendered; otherwise the image matching
+          the actual generated landscape ratio (1536x1024 = 3:2). LinkedIn's
+          link-preview spec is 1.91:1 but our images are generated at 3:2;
+          cropping to 1.91:1 here clips the bottom of the text card. */}
+      {videoUrl ? (
+        <MediaVideo src={videoUrl} poster={imageUrl} />
+      ) : imageUrl && sanitizeImageUrl(imageUrl) ? (
         <ClickableImage src={sanitizeImageUrl(imageUrl)} alt="Post" className="w-full aspect-[3/2] object-cover" overlay={imageOverlay} />
       ) : (
         <div className="w-full aspect-[3/2] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
@@ -281,7 +307,7 @@ export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, ima
   );
 }
 
-export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
+export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   const handle = brandHandle.startsWith("@") ? brandHandle : `@${brandHandle}`;
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
@@ -295,8 +321,10 @@ export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, 
           </div>
           <p className={`text-sm mt-1 whitespace-pre-wrap ${compact ? "line-clamp-4" : ""}`}>{caption}</p>
           <HashtagsDisplay hashtags={hashtags} />
-          {/* Image */}
-          {imageUrl ? (
+          {/* Media — reel video (9:16) when rendered, otherwise the image */}
+          {videoUrl ? (
+            <MediaVideo src={videoUrl} poster={imageUrl} className="w-full rounded-xl mt-2 border aspect-[9/16] object-cover bg-black" />
+          ) : imageUrl ? (
             <ClickableImage src={imageUrl} alt="Post" className="w-full rounded-xl mt-2 border aspect-[16/9] object-cover" overlay={imageOverlay} />
           ) : (
             <div className="w-full rounded-xl mt-2 border aspect-[16/9] bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
@@ -327,6 +355,50 @@ export function XPreview({ brandName, brandHandle, caption, hashtags, imageUrl, 
   );
 }
 
+/** YouTube Shorts-style frame: dark chrome, 9:16 video, channel + caption
+ *  overlaid on the player like the real Shorts UI. Used for youtube reels. */
+export function YouTubeShortsPreview({ brandName, brandHandle, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact }: PreviewProps) {
+  return (
+    <div className="bg-black rounded-xl border shadow-sm max-w-[300px] mx-auto overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2">
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-white">
+          <Youtube className="h-4 w-4 text-red-500" /> Shorts
+        </p>
+        <MoreHorizontal className="h-5 w-5 text-white/70" />
+      </div>
+      {/* Video */}
+      <div className="relative">
+        {videoUrl ? (
+          <MediaVideo src={videoUrl} poster={imageUrl} />
+        ) : (
+          <div className="w-full aspect-[9/16] bg-gradient-to-br from-zinc-800 to-zinc-900 flex items-center justify-center">
+            <Globe className="h-10 w-10 opacity-20 text-white" />
+          </div>
+        )}
+        {/* Overlay: channel + caption bottom-left, action rail on the right.
+            pointer-events-none keeps the native <video> controls clickable;
+            bottom offset clears the controls bar. */}
+        <div className="absolute inset-x-0 bottom-14 flex items-end justify-between px-3 pointer-events-none">
+          <div className="min-w-0 pr-2 text-white drop-shadow">
+            <div className="flex items-center gap-1.5 mb-1">
+              <AvatarCircle name={brandName} size="h-6 w-6" avatarUrl={avatarUrl} />
+              <span className="text-xs font-semibold truncate">@{brandHandle}</span>
+            </div>
+            <p className={`text-xs whitespace-pre-wrap ${compact ? "line-clamp-2" : "line-clamp-3"}`}>{caption}</p>
+            <HashtagsDisplay hashtags={hashtags} />
+          </div>
+          <div className="flex flex-col items-center gap-3 text-white shrink-0">
+            <ThumbsUp className="h-5 w-5" />
+            <MessageCircle className="h-5 w-5" />
+            <Share2 className="h-5 w-5" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Auto-selects the right preview based on channel */
 export function ChannelPreview({
   channel,
@@ -342,7 +414,8 @@ export function ChannelPreview({
     case "x":
       return <XPreview {...props} />;
     case "youtube":
-      return <FacebookPreview {...props} />; // YouTube uses a similar layout
+      // Reels get the Shorts frame; regular posts keep the FB-style layout
+      return props.videoUrl ? <YouTubeShortsPreview {...props} /> : <FacebookPreview {...props} />;
     default:
       return <InstagramPreview {...props} />; // Default to Instagram-style
   }

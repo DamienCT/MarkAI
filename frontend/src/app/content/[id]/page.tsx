@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, CalendarClock, MessageSquare, Upload } from "lucide-react";
+import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, CalendarClock, MessageSquare, Upload, Film } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -15,7 +15,7 @@ import { ApprovalHistory } from "@/components/approval/ApprovalHistory";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { api, API_BASE_URL, fileUrl } from "@/lib/api";
+import { api, API_BASE_URL, fileUrl, generateVideo } from "@/lib/api";
 import { useOpenedContent } from "@/lib/opened-content";
 import type { Content, Approval, CalendarItem, Brand } from "@/types";
 
@@ -44,6 +44,7 @@ export default function ContentDetailPage() {
   const [imagePrompt, setImagePrompt] = useState("");
   const [regeneratingImage, setRegeneratingImage] = useState(false);
   const [regeneratingCaption, setRegeneratingCaption] = useState(false);
+  const [generatingVideo, setGeneratingVideo] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [logoEditMode, setLogoEditMode] = useState(false);
   const [savingLogo, setSavingLogo] = useState(false);
@@ -181,6 +182,67 @@ export default function ContentDetailPage() {
       setRegeneratingCaption(false);
     }
   }, [content]);
+
+  const handleGenerateVideo = useCallback(async () => {
+    if (!content) return;
+    setGeneratingVideo(true);
+    try {
+      await generateVideo(content.id);
+      toast.success("Video generation started — this may take a few minutes...");
+      // The backend flips the calendar item to "rendering" in the same request;
+      // mirror it locally so the progress banner + poll loop (effect below)
+      // take over immediately.
+      setCalendarItem((prev) => (prev ? { ...prev, status: "rendering" } : prev));
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to start video generation";
+      toast.error(detail);
+    } finally {
+      setGeneratingVideo(false);
+    }
+  }, [content]);
+
+  // While a reel render is in flight, poll the calendar item until it settles,
+  // then reload the content so the finished video appears — same pattern as
+  // the regenerate-image wait-loop, but hung on the status so a page reload
+  // mid-render picks the poll back up. The backend flips the item through
+  // queued → working → rendering before landing in in_review/failed, so all
+  // three count as in-flight — completing on the first non-"rendering" tick
+  // would fire at t=5s while the item is still merely queued.
+  useEffect(() => {
+    const inFlight = (s?: string) => ["queued", "working", "rendering"].includes(s || "");
+    const reel = calendarItem?.item_type === "reel" || content?.content_type === "reel";
+    if (!calendarItem || !reel || !inFlight(calendarItem.status)) return;
+    const calItemId = calendarItem.id;
+    let cancelled = false;
+    (async () => {
+      const maxAttempts = 120; // ~10 minutes (120 × 5s) — video renders are slow
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        if (cancelled) return;
+        try {
+          const calItem = await api.get<CalendarItem>(`/api/v1/calendar/${calItemId}`);
+          if (cancelled) return;
+          if (!inFlight(calItem.status)) {
+            setCalendarItem(calItem);
+            // store_video creates a NEW content row (the old one is flipped
+            // to is_current=false) — refetch by calendar item, not by the
+            // stale content id, so video_url actually lands in state.
+            try {
+              const updated = await api.get<Content>(`/api/v1/content/by-calendar-item/${calItemId}`);
+              if (cancelled) return;
+              setContent(updated);
+              setImageCacheBust(`_cb=${Date.now()}`);
+            } catch { /* keep the old row if the refetch fails */ }
+            if (calItem.status === "failed") toast.error("Video render failed");
+            else toast.success("Video rendered");
+            return;
+          }
+        } catch { /* keep polling */ }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarItem?.status, calendarItem?.id, calendarItem?.item_type, content?.content_type]);
 
   const handleUploadImage = useCallback(async (file: File) => {
     if (!content) return;
@@ -429,6 +491,17 @@ export default function ContentDetailPage() {
   const contentThumbUrl = contentImageUrl
     ? `${contentImageUrl}${contentImageUrl.includes("?") ? "&" : "?"}w=600&q=75`
     : undefined;
+  // ── Video (reels) ──────────────────────────────────────────────
+  // Media resolution branches on item_type/content_type + video_url: reels
+  // render the video player (with the keyframe image as poster) instead of
+  // the image once the render lands.
+  const isReel = calendarItem?.item_type === "reel" || content.content_type === "reel";
+  // A reel render is in flight from the moment it's queued (queued → working
+  // → rendering) — mirror the poll effect above so the banner tracks it all.
+  const isRendering = ["queued", "working", "rendering"].includes(calendarItem?.status || "");
+  const contentVideoUrl = content.video_url
+    ? fileUrl(content.video_url) + (imageVersion ? `?${imageVersion}` : "")
+    : undefined;
 
   // ── Logo / overlay visual editor inputs ────────────────────────
   const gm = (content.generation_metadata || {}) as Record<string, unknown>;
@@ -610,6 +683,7 @@ export default function ContentDetailPage() {
                     caption={caption}
                     hashtags={hashtags}
                     imageUrl={contentThumbUrl || contentImageUrl}
+                    videoUrl={contentVideoUrl}
                     cta={content.cta || content.cta_text}
                     imageOverlay={canEditLogo ? (
                       <Button
@@ -795,6 +869,59 @@ export default function ContentDetailPage() {
                   </Button>
                 </div>
               )}
+
+              {/* Video generation — reels only */}
+              {isReel && (() => {
+                // Mirror the backend's _VIDEO_TRIGGER_ALLOWED_STATUSES
+                // (content.py): a render may be (re)triggered only from
+                // planned/queued/in_review/failed — notably INCLUDING failed
+                // (retry) and excluding approved/scheduled/published. While a
+                // render is in flight, keep the disabled spinner button
+                // instead of the locked note.
+                const videoLocked =
+                  !!calendarItem &&
+                  !isRendering &&
+                  !["planned", "queued", "in_review", "failed"].includes(calendarItem.status);
+                return (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base">Video</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {isRendering ? (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Rendering video — this may take a few minutes...
+                        </p>
+                      ) : content.video_url ? (
+                        <p className="text-xs text-green-600">Video rendered</p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">No video rendered yet</p>
+                      )}
+                      {videoLocked ? (
+                        <p className="text-xs text-muted-foreground">
+                          Video editing is disabled for {calendarItem?.status} content.
+                        </p>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={generatingVideo || isRendering}
+                          onClick={handleGenerateVideo}
+                          className="w-full"
+                        >
+                          {generatingVideo || isRendering ? (
+                            <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                          ) : (
+                            <Film className="mr-1.5 h-3 w-3" />
+                          )}
+                          {content.video_url ? "Regenerate Video" : "Generate Video"}
+                        </Button>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })()}
 
               {/* Image regeneration */}
               {(() => {

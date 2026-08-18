@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     # ── Google Gemini (product image replacement) ────────────────────────
     GEMINI_API_KEY: str = ""
 
+    # ── Video generation (Forge local GPU / fal.ai / Google Veo) ─────────
+    VIDEO_FORGE_URL: str = "http://host.docker.internal:9100"
+    VIDEO_FORGE_API_KEY: str = ""
+    FAL_API_KEY: str = ""
+    # Verified fal endpoint (fal.ai/models/fal-ai/ltx-2.3/image-to-video):
+    # LTX-2.3 — portrait 9:16 + native audio.
+    FAL_VIDEO_MODEL: str = "fal-ai/ltx-2.3/image-to-video"
+    VEO_MODEL: str = "veo-3.1-fast-generate-preview"
+    VIDEO_RENDER_TIMEOUT_S: int = 2400
+    FAL_COST_PER_S: float = 0.06
+    VEO_COST_PER_S: float = 0.15
+
     # ── Social API Tokens ────────────────────────────────────────────────
     META_ACCESS_TOKEN: str = ""  # Shared token for Instagram + Facebook Graph API
     LINKEDIN_ACCESS_TOKEN: str = ""

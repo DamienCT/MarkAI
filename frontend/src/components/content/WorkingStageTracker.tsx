@@ -9,7 +9,13 @@ import { api } from "@/lib/api";
 import { CHANNEL_COLORS, CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
 import type { CalendarItem, ActiveAgentRun } from "@/types";
 
-const CONTENT_PIPELINE_STEPS = [
+interface PipelineStep {
+  key: string;
+  label: string;
+  short: string;
+}
+
+const CONTENT_PIPELINE_STEPS: readonly PipelineStep[] = [
   { key: "load_context", label: "Context", short: "Ctx" },
   { key: "enrich_user_brief", label: "Enrich", short: "Enr" },
   { key: "generate_hook", label: "Hook", short: "Hook" },
@@ -22,11 +28,30 @@ const CONTENT_PIPELINE_STEPS = [
   { key: "adapt_platforms", label: "Adapt", short: "Adapt" },
   { key: "generate_mockups", label: "Mockups", short: "Mock" },
   { key: "store_content", label: "Save", short: "Save" },
-] as const;
+];
 
-function getStepIndex(stepKey?: string): number {
+// Video (reel) pipeline — keys MUST match VIDEO_PIPELINE_STEPS in
+// agents/workflows/video/nodes.py (written to agent_runs current_step).
+const VIDEO_PIPELINE_STEPS: readonly PipelineStep[] = [
+  { key: "load_context", label: "Context", short: "Ctx" },
+  { key: "enrich_user_brief", label: "Enrich", short: "Enr" },
+  { key: "source_product_image", label: "Product", short: "Prod" },
+  { key: "plan_shots", label: "Shot Plan", short: "Plan" },
+  { key: "make_keyframe", label: "Keyframe", short: "Key" },
+  { key: "render_video", label: "Render", short: "Rend" },
+  { key: "store_video", label: "Save", short: "Save" },
+];
+
+function stepsForItemType(itemType?: string): readonly PipelineStep[] {
+  return itemType === "reel" ? VIDEO_PIPELINE_STEPS : CONTENT_PIPELINE_STEPS;
+}
+
+function getStepIndex(
+  stepKey?: string,
+  steps: readonly PipelineStep[] = CONTENT_PIPELINE_STEPS
+): number {
   if (!stepKey) return -1;
-  const idx = CONTENT_PIPELINE_STEPS.findIndex((s) => s.key === stepKey);
+  const idx = steps.findIndex((s) => s.key === stepKey);
   return idx;
 }
 
@@ -54,17 +79,20 @@ interface TrackedItem {
 export function PipelineProgressDots({
   currentStep,
   size = "sm",
+  itemType,
 }: {
   currentStep?: string;
   size?: "sm" | "xs";
+  itemType?: string;
 }) {
-  const stepIdx = getStepIndex(currentStep);
+  const steps = stepsForItemType(itemType);
+  const stepIdx = getStepIndex(currentStep, steps);
   const dotSize = size === "xs" ? "w-1.5 h-1.5" : "w-2 h-2";
   const gap = size === "xs" ? "gap-0.5" : "gap-1";
 
   return (
     <div className={`flex items-center ${gap}`}>
-      {CONTENT_PIPELINE_STEPS.map((step, i) => {
+      {steps.map((step, i) => {
         let colorClass: string;
         if (i < stepIdx) {
           colorClass = "bg-indigo-500";
@@ -99,10 +127,9 @@ export function WorkingStageTracker({
 
   const fetchActiveRuns = useCallback(async () => {
     try {
-      const runs = await api.get<ActiveAgentRun[]>(
-        "/api/v1/agents/runs/active",
-        { agent_type: "content" }
-      );
+      // No agent_type filter — the tracker follows both content and video
+      // (reel) runs; items are matched by calendar_item_id below.
+      const runs = await api.get<ActiveAgentRun[]>("/api/v1/agents/runs/active");
       setActiveRuns(Array.isArray(runs) ? runs : []);
     } catch {
       // Silently fail — tracker is non-critical
@@ -131,7 +158,9 @@ export function WorkingStageTracker({
           status: "running",
           created_at: "",
         } as ActiveAgentRun),
-        currentStepIndex: run ? getStepIndex(run.current_step) : -1,
+        currentStepIndex: run
+          ? getStepIndex(run.current_step, stepsForItemType(item.item_type))
+          : -1,
       };
     })
     .sort((a, b) => b.currentStepIndex - a.currentStepIndex);
@@ -162,7 +191,9 @@ export function WorkingStageTracker({
         </h3>
       </div>
 
-      {trackedItems.map(({ calendarItem, run, currentStepIndex }) => (
+      {trackedItems.map(({ calendarItem, run, currentStepIndex }) => {
+        const steps = stepsForItemType(calendarItem.item_type);
+        return (
         <Link
           key={calendarItem.id}
           href={`/content/${calendarItem.id}`}
@@ -195,7 +226,7 @@ export function WorkingStageTracker({
             {/* Step progress bar */}
             <div className="mb-2">
               <div className="flex items-center gap-1">
-                {CONTENT_PIPELINE_STEPS.map((step, i) => {
+                {steps.map((step, i) => {
                   const isCompleted = i < currentStepIndex;
                   const isCurrent = i === currentStepIndex;
                   const isPending = i > currentStepIndex;
@@ -232,7 +263,7 @@ export function WorkingStageTracker({
                         </div>
                       </div>
                       {/* Connector line */}
-                      {i < CONTENT_PIPELINE_STEPS.length - 1 && (
+                      {i < steps.length - 1 && (
                         <div
                           className={`h-0.5 flex-1 transition-colors ${
                             i < currentStepIndex
@@ -248,7 +279,7 @@ export function WorkingStageTracker({
 
               {/* Step labels */}
               <div className="flex items-center mt-1.5">
-                {CONTENT_PIPELINE_STEPS.map((step, i) => {
+                {steps.map((step, i) => {
                   const isCurrent = i === currentStepIndex;
                   return (
                     <React.Fragment key={step.key}>
@@ -266,7 +297,7 @@ export function WorkingStageTracker({
                           {step.short}
                         </span>
                       </div>
-                      {i < CONTENT_PIPELINE_STEPS.length - 1 && (
+                      {i < steps.length - 1 && (
                         <div className="flex-1" />
                       )}
                     </React.Fragment>
@@ -280,10 +311,10 @@ export function WorkingStageTracker({
               <span>
                 {currentStepIndex >= 0 ? (
                   <>
-                    Step {currentStepIndex + 1}/{CONTENT_PIPELINE_STEPS.length}
+                    Step {currentStepIndex + 1}/{steps.length}
                     {" — "}
                     <span className="text-indigo-600 dark:text-indigo-400 font-medium">
-                      {CONTENT_PIPELINE_STEPS[currentStepIndex]?.label}
+                      {steps[currentStepIndex]?.label}
                     </span>
                   </>
                 ) : (
@@ -299,7 +330,8 @@ export function WorkingStageTracker({
             </div>
           </Card>
         </Link>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -336,6 +336,10 @@ services:
       - .env
     environment:
       NATS_AUTH_TOKEN: ${NATS_AUTH_TOKEN:?NATS_AUTH_TOKEN required}
+    # Reach the local GPU Video Forge through the host (reverse SSH tunnel
+    # binds on the VPS host; host-gateway resolves to the docker bridge IP).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     logging:
       driver: json-file
       options:

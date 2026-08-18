@@ -72,6 +72,7 @@ const STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }>
   working:     { bg: "bg-indigo-200 dark:bg-indigo-800", text: "text-indigo-900 dark:text-indigo-100", label: "Working" },
   in_review:   { bg: "bg-amber-200 dark:bg-amber-800",   text: "text-amber-900 dark:text-amber-100", label: "In Review" },
   reworking:   { bg: "bg-orange-200 dark:bg-orange-800",  text: "text-orange-900 dark:text-orange-100", label: "Reworking" },
+  rendering:   { bg: "bg-fuchsia-200 dark:bg-fuchsia-800", text: "text-fuchsia-900 dark:text-fuchsia-100", label: "Rendering" },
   scheduled:   { bg: "bg-blue-200 dark:bg-blue-800",     text: "text-blue-900 dark:text-blue-100",   label: "Scheduled" },
   published:   { bg: "bg-green-200 dark:bg-green-800",    text: "text-green-900 dark:text-green-100", label: "Published" },
   failed:      { bg: "bg-red-200 dark:bg-red-800",        text: "text-red-900 dark:text-red-100",     label: "Failed" },
@@ -168,6 +169,11 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
               CHANNEL_COLORS[item.channel] || "bg-gray-200 text-gray-700"
             )}>
               {CHANNEL_PREFIX[item.channel] || item.channel.slice(0, 2)}
+            </span>
+          )}
+          {item.item_type === "reel" && (
+            <span className="inline-flex items-center rounded px-1 py-px text-[9px] font-bold uppercase shrink-0 bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900 dark:text-fuchsia-300">
+              Reel
             </span>
           )}
           {formatItemTime(item) && (

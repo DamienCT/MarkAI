@@ -1,6 +1,7 @@
 import logging
 import os as _os
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
@@ -15,6 +16,7 @@ from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
 from app.models.calendar_item import CalendarItem
 from app.models.product import Product
+from app.models.video_job import VideoJob
 from app.schemas.content import ContentCreate, ContentResponse, ContentUpdate
 from app.services import brand_service, content_service, minio_service
 from app.services.content_service import InvalidStatusTransition
@@ -133,6 +135,115 @@ async def regenerate_image(
     )
 
     return {"status": "queued", "message": "Image regeneration started"}
+
+
+class VideoGenerateRequest(BaseModel):
+    # Provider cascade tiers (agents/shared/video.py):
+    # draft/standard → [forge, fal]; hero → [veo, fal, forge]. Default "standard".
+    quality_tier: Literal["draft", "standard", "hero"] | None = None
+
+
+# Statuses a manual render may be triggered from. Anything mid-flight
+# (working/rendering/publishing) or terminal-published is off limits.
+_VIDEO_TRIGGER_ALLOWED_STATUSES = frozenset(
+    {"planned", "queued", "in_review", "failed"}
+)
+
+
+@router.post("/{content_id}/generate-video", status_code=status.HTTP_202_ACCEPTED)
+async def generate_video(
+    content_id: uuid.UUID,
+    body: VideoGenerateRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Queue a video render for this content's calendar item.
+
+    Publishes to the dedicated VIDEO stream; the agents worker picks the
+    request up, drives the provider chain, and flips the item through
+    rendering → in_review as the job progresses.
+    """
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    content = await content_service.get_content(db, content_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    cal_result = await db.execute(
+        select(CalendarItem).where(CalendarItem.id == content.calendar_item_id)
+    )
+    cal_item = cal_result.scalar_one_or_none()
+    if cal_item is None:
+        raise HTTPException(status_code=404, detail="Calendar item not found")
+    if cal_item.status not in _VIDEO_TRIGGER_ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video generation is not allowed from status '{cal_item.status}'",
+        )
+
+    # Flip to 'queued' synchronously BEFORE publishing so the UI's status
+    # poll reflects the pending render immediately; the worker moves the
+    # item to 'rendering' when the job actually starts.
+    cal_item.status = "queued"
+    await db.commit()
+
+    from app.services import nats_service
+
+    await nats_service.publish(
+        "video.render",
+        {
+            "calendar_item_id": str(content.calendar_item_id),
+            "brand_id": str(content.brand_id),
+            "trigger": "manual",
+            "quality_tier": ((body.quality_tier if body else None) or "standard"),
+        },
+    )
+
+    return {"status": "queued", "message": "Video render queued"}
+
+
+@router.get("/{content_id}/video-jobs")
+async def list_video_jobs(
+    content_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List recent video render jobs for this content's calendar item.
+
+    Powers the UI render tracker — most recent first, capped at 10.
+    """
+    content = await content_service.get_content(db, content_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    result = await db.execute(
+        select(VideoJob)
+        .where(VideoJob.calendar_item_id == content.calendar_item_id)
+        .order_by(VideoJob.created_at.desc())
+        .limit(10)
+    )
+    jobs = result.scalars().all()
+    return [
+        {
+            "id": str(job.id),
+            "provider": job.provider,
+            "model": job.model,
+            "mode": job.mode,
+            "status": job.status,
+            "progress": job.progress,
+            "attempt": job.attempt,
+            "output_object": job.output_object,
+            "thumbnail_object": job.thumbnail_object,
+            "duration_s": float(job.duration_s) if job.duration_s is not None else None,
+            "error_message": job.error_message,
+            "cost_usd": float(job.cost_usd) if job.cost_usd is not None else None,
+            "created_at": job.created_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+        }
+        for job in jobs
+    ]
 
 
 class LogoRebrandRequest(BaseModel):

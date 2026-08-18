@@ -51,6 +51,7 @@ export default function ContentStudioPage() {
   // Form state
   const [formBrandId, setFormBrandId] = useState("");
   const [formChannels, setFormChannels] = useState<Channel[]>([]);
+  const [formItemType, setFormItemType] = useState<"post" | "reel">("post");
   const [formTitle, setFormTitle] = useState("");
   const [formDescription, setFormDescription] = useState("");
   const [formScheduledAt, setFormScheduledAt] = useState("");
@@ -201,6 +202,7 @@ export default function ContentStudioPage() {
   const resetForm = () => {
     setFormBrandId("");
     setFormChannels([]);
+    setFormItemType("post");
     setFormTitle("");
     setFormDescription("");
     setFormScheduledAt("");
@@ -227,7 +229,7 @@ export default function ContentStudioPage() {
         api.post<CalendarItem>("/api/v1/calendar", {
           brand_id: formBrandId,
           channel,
-          item_type: "post",
+          item_type: formItemType,
           title: formTitle.trim(),
           description: formDescription.trim() || null,
           scheduled_at: formScheduledAt || null,
@@ -367,6 +369,29 @@ export default function ContentStudioPage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            {/* Type (post vs reel) */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Type</label>
+              <div className="flex gap-2">
+                {(["post", "reel"] as const).map((t) => (
+                  <Button
+                    key={t}
+                    type="button"
+                    size="sm"
+                    variant={formItemType === t ? "default" : "outline"}
+                    onClick={() => setFormItemType(t)}
+                  >
+                    {t === "post" ? "Post" : "Reel"}
+                  </Button>
+                ))}
+              </div>
+              {formItemType === "reel" && (
+                <p className="text-xs text-muted-foreground">
+                  Reels generate a short vertical video (9:16) instead of a static image.
+                </p>
+              )}
             </div>
 
             {/* Channels (multi-select via toggle buttons) */}

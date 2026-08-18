@@ -11,8 +11,8 @@ import type { CalendarItem } from "@/types";
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "Queued", working: "Working", in_review: "In Review",
-  reworking: "Reworking", approved: "Approved", scheduled: "Scheduled",
-  published: "Published", failed: "Failed",
+  reworking: "Reworking", rendering: "Rendering", approved: "Approved",
+  scheduled: "Scheduled", published: "Published", failed: "Failed",
 };
 
 interface ContentCardProps {
@@ -31,11 +31,18 @@ export function ContentCard({ item }: ContentCardProps) {
             <Badge className={STATUS_COLORS[item.status] || ""} variant="outline">
               {STATUS_LABELS[item.status] || item.status}
             </Badge>
-            {item.channel && (
-              <Badge variant="outline" className="capitalize text-xs">
-                {item.channel}
-              </Badge>
-            )}
+            <div className="flex items-center gap-1">
+              {item.item_type === "reel" && (
+                <Badge variant="outline" className="text-[10px] bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900 dark:text-fuchsia-300">
+                  Reel
+                </Badge>
+              )}
+              {item.channel && (
+                <Badge variant="outline" className="capitalize text-xs">
+                  {item.channel}
+                </Badge>
+              )}
+            </div>
           </div>
           <h3 className="font-medium text-sm line-clamp-2">{item.title || "Untitled"}</h3>
           {item.brand_name && (

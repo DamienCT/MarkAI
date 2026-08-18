@@ -26,7 +26,15 @@ from sqlalchemy.exc import IntegrityError
 WORKFLOW_TIMEOUT = int(
     os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400")
 )  # 90 min default (full-year calendar = 200+ LLM calls)
+from shared.config import settings as _settings  # noqa: E402
 from shared.nats_consumer import NATSConsumer  # noqa: E402
+
+# Video renders walk a cascade of up to 3 providers, each bounded by
+# VIDEO_RENDER_TIMEOUT_S — budget the video workflow timeout for the worst
+# case (hero tier: 3 × 2400s = 7200s > the 5400s default) so asyncio.wait_for
+# cannot cancel the cascade mid-flight. nats_consumer._ACK_WAIT_SECONDS uses
+# the SAME formula (+ buffer) so JetStream never redelivers a live run.
+VIDEO_WORKFLOW_TIMEOUT = max(WORKFLOW_TIMEOUT, 3 * _settings.VIDEO_RENDER_TIMEOUT_S + 600)
 from shared.tools.database import (  # noqa: E402
     create_agent_run,
     complete_agent_run,
@@ -43,6 +51,7 @@ from workflows.content.graph import content_graph  # noqa: E402
 from workflows.evaluation.graph import evaluation_graph  # noqa: E402
 from workflows.product_intel.graph import product_intel_graph  # noqa: E402
 from workflows.adaptation.graph import adaptation_graph  # noqa: E402
+from workflows.video.graph import video_graph  # noqa: E402
 
 
 def _setup_json_logging() -> None:
@@ -84,20 +93,26 @@ WORKFLOW_MAP = {
     "evaluation": evaluation_graph,
     "product": product_intel_graph,
     "adaptation": adaptation_graph,
+    "video": video_graph,
 }
 
 # Stream name that contains all workflow subjects
 STREAM_NAME = "WORKFLOWS"
 
-# Subjects to subscribe to with their durable consumer names
+# Dedicated stream for video render jobs (created by the backend's
+# nats_service; ensured here too so worker startup order doesn't matter)
+VIDEO_STREAM_NAME = "VIDEO"
+
+# Subjects to subscribe to with their durable consumer names and stream
 SUBSCRIPTIONS = [
-    ("research.>", "research-worker"),
-    ("strategy.>", "strategy-worker"),
-    ("content.>", "content-worker"),
-    ("evaluation.>", "evaluation-worker"),
-    ("product.>", "product-worker"),
-    ("planning.>", "planning-worker"),
-    ("adaptation.>", "adaptation-worker"),
+    ("research.>", "research-worker", STREAM_NAME),
+    ("strategy.>", "strategy-worker", STREAM_NAME),
+    ("content.>", "content-worker", STREAM_NAME),
+    ("evaluation.>", "evaluation-worker", STREAM_NAME),
+    ("product.>", "product-worker", STREAM_NAME),
+    ("planning.>", "planning-worker", STREAM_NAME),
+    ("adaptation.>", "adaptation-worker", STREAM_NAME),
+    ("video.render", "video-worker", VIDEO_STREAM_NAME),
 ]
 
 # Module-level reference to the consumer, set during main()
@@ -107,13 +122,20 @@ _consumer: NATSConsumer | None = None
 async def _release_stuck_calendar_item(
     agent_type: str, payload: dict[str, Any], reason: str
 ) -> None:
-    """Move a calendar_item out of 'working' when its content workflow fails.
+    """Move a calendar_item out of its in-flight status when its workflow dies.
 
-    Without this, an item set to 'working' by content/nodes.py stays stuck
-    forever if the graph dies (timeout, exception, internal failure) and
-    blocks the UI from showing it correctly.
+    Without this, an item set to 'working' by content/nodes.py — or to
+    'working'/'rendering' by the video pipeline — stays stuck forever if the
+    graph dies (timeout, exception, internal failure) and blocks the UI from
+    showing it correctly.
     """
-    if agent_type != "content":
+    if agent_type == "content":
+        stuck_filter = "status = 'working'"
+    elif agent_type == "video":
+        # load_video_context moves the item queued → working → rendering;
+        # a dead run can strand it in either intermediate state.
+        stuck_filter = "status IN ('working', 'rendering')"
+    else:
         return
     calendar_item_id = payload.get("calendar_item_id")
     if not calendar_item_id:
@@ -124,12 +146,13 @@ async def _release_stuck_calendar_item(
             "SET status = 'failed', "
             "    generation_metadata = COALESCE(generation_metadata, '{}'::jsonb) "
             "        || jsonb_build_object('last_error', :reason::text) "
-            "WHERE id = :id AND status = 'working'",
+            f"WHERE id = :id AND {stuck_filter}",
             {"id": calendar_item_id, "reason": reason},
         )
         logger.info(
-            "Released stuck calendar_item %s (status=working → failed): %s",
+            "Released stuck calendar_item %s (%s → failed): %s",
             calendar_item_id,
+            stuck_filter,
             reason,
         )
     except Exception as rel_exc:
@@ -1421,6 +1444,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         "evaluation": {"brand_id", "run_id", "trigger", "params", "content_id", "triggered_by", "timestamp"},
         "product": {"brand_id", "run_id", "trigger", "params", "triggered_by", "timestamp"},
         "adaptation": {"brand_id", "run_id", "trigger", "params", "chain_depth", "triggered_by", "timestamp"},
+        "video": {"brand_id", "run_id", "trigger", "params", "calendar_item_id", "quality_tier", "triggered_by", "timestamp"},
     }
     # "auto_approve" is intentionally excluded from all whitelists
 
@@ -1540,6 +1564,63 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 guard_exc,
             )
 
+    # ── Reels take the video pipeline, not the static-image chain ──────
+    # The planner deterministically creates item_type='reel' calendar items;
+    # running them through the content workflow would pay for a static image
+    # nobody ships. Divert the item to video.render (the video worker flips
+    # it queued → working → rendering → in_review) and keep the sequential
+    # content chain moving over the remaining queue.
+    if (
+        agent_type == "content"
+        and payload.get("calendar_item_id")
+        and _consumer is not None
+    ):
+        try:
+            _item_rows = await execute_query(
+                "SELECT item_type FROM calendar_items WHERE id = :id",
+                {"id": payload["calendar_item_id"]},
+            )
+            if _item_rows and _item_rows[0].get("item_type") == "reel":
+                await _consumer.js.publish(
+                    "video.render",
+                    json.dumps(
+                        {
+                            "brand_id": brand_id,
+                            "calendar_item_id": str(payload["calendar_item_id"]),
+                            "trigger": payload.get("trigger", "event"),
+                        }
+                    ).encode(),
+                )
+                logger.info(
+                    "Diverted reel item %s to video.render",
+                    payload["calendar_item_id"],
+                )
+                remaining = payload.get("remaining_queue") or []
+                if remaining:
+                    next_msg: dict[str, Any] = {
+                        "brand_id": brand_id,
+                        "calendar_item_id": remaining[0],
+                        "trigger": payload.get("trigger", "event"),
+                        "chain_depth": payload.get("chain_depth", 0) + 1,
+                        "remaining_queue": remaining[1:],
+                    }
+                    if payload.get("scope_weeks") is not None:
+                        next_msg["scope_weeks"] = payload["scope_weeks"]
+                    await _consumer.js.publish(
+                        "content.generate", json.dumps(next_msg).encode()
+                    )
+                    logger.info(
+                        "Sequential content: queued next item %s (%d remaining) after reel divert",
+                        remaining[0],
+                        len(remaining) - 1,
+                    )
+                await msg.ack()
+                return
+        except Exception as reel_exc:
+            logger.warning(
+                "Reel divert check failed: %s — proceeding as content", reel_exc
+            )
+
     # ── Skip already-completed stages on activation restart ──────
     # If this is an activation trigger and this stage already completed,
     # skip directly to the next uncompleted stage instead of re-running.
@@ -1629,6 +1710,18 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             input_payload=safe_payload,
         )
     except IntegrityError as ie:
+        if agent_type == "video":
+            # A video run for this brand is already in flight. Unlike content
+            # there is no remaining_queue chaining to pick this item back up,
+            # so ack-dropping would strand the second reel in 'queued' forever
+            # — retry later instead (max_deliver bounds the attempts).
+            logger.info(
+                "Video render for brand %s already running — retrying item %s later",
+                brand_id,
+                payload.get("calendar_item_id"),
+            )
+            await msg.nak(delay=300)
+            return
         logger.warning(
             "Skipping duplicate %s workflow for brand %s — already running (unique constraint). Detail: %s",
             agent_type,
@@ -1647,6 +1740,9 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         run_id,
     )
 
+    # Video gets the provider-cascade budget; everything else the default.
+    timeout_s = VIDEO_WORKFLOW_TIMEOUT if agent_type == "video" else WORKFLOW_TIMEOUT
+
     try:
         config: dict[str, Any] = {}
         if hasattr(graph, "checkpointer") and graph.checkpointer is not None:
@@ -1654,7 +1750,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
 
         result = await asyncio.wait_for(
             graph.ainvoke(initial_state, config=config if config else None),
-            timeout=WORKFLOW_TIMEOUT,
+            timeout=timeout_s,
         )
 
         # Ensure result is JSON-safe before storing (handle UUIDs, datetimes, etc.)
@@ -2011,7 +2107,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             await complete_agent_run(
                 run_id,
                 status="failed",
-                error_message=f"Timed out after {WORKFLOW_TIMEOUT}s",
+                error_message=f"Timed out after {timeout_s}s",
             )
         await _release_stuck_calendar_item(agent_type, payload, "timeout")
         await msg.nak(delay=60)
@@ -2078,6 +2174,21 @@ async def _ensure_stream(consumer: NATSConsumer) -> None:
         )
         logger.info("Created stream %s", STREAM_NAME)
 
+    # ── VIDEO stream (video.render consumer binds to it) ────────────────
+    # Normally created by the backend's nats_service on startup; ensured
+    # here too (same config) so the worker never crash-loops on a race.
+    try:
+        await consumer.js.find_stream_name_by_subject("video.>")
+        logger.info("Stream %s already exists", VIDEO_STREAM_NAME)
+    except Exception:
+        await consumer.js.add_stream(
+            name=VIDEO_STREAM_NAME,
+            subjects=["video.>"],
+            retention="limits",
+            max_age=86400 * 7,  # 7 days — renders older than a week are dead
+        )
+        logger.info("Created stream %s", VIDEO_STREAM_NAME)
+
 
 async def main() -> None:
     """Start the worker, subscribe to all workflow subjects, and wait for shutdown."""
@@ -2107,11 +2218,11 @@ async def main() -> None:
     await consumer.connect()
     await _ensure_stream(consumer)
 
-    for subject, durable in SUBSCRIPTIONS:
+    for subject, durable, stream in SUBSCRIPTIONS:
         await consumer.subscribe(
             subject=subject,
             durable_name=durable,
-            stream=STREAM_NAME,
+            stream=stream,
             handler=_handle_message,
         )
 

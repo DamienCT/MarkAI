@@ -30,6 +30,7 @@ RUN apt-get update && \
         unixodbc \
         imagemagick \
         librsvg2-bin \
+        ffmpeg \
         fonts-dejavu-core \
         procps \
         curl \

@@ -29,6 +29,7 @@ export const STATUS_COLORS: Record<string, string> = {
   working: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200",
   in_review: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
   reworking: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
+  rendering: "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900 dark:text-fuchsia-200",
   approved: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200",
   scheduled: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
   publishing: "bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200",

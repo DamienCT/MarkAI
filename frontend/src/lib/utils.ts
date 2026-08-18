@@ -38,6 +38,7 @@ export function statusColor(status: string): string {
     working: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300",
     in_review: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300",
     reworking: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300",
+    rendering: "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900 dark:text-fuchsia-300",
     approved: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-300",
     scheduled: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-300",
     publishing: "bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-300",

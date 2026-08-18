@@ -21,6 +21,7 @@ CalendarItemStatus = Literal[
     "planned",
     "queued",
     "working",
+    "rendering",
     "in_review",
     "reworking",
     "approved",

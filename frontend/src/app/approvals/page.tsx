@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
 import { format } from "date-fns";
-import { api } from "@/lib/api";
+import { api, fileUrl } from "@/lib/api";
 import { useRequireRole } from "@/lib/hooks";
 import { formatRelativeTime, statusColor } from "@/lib/utils";
 import type { Approval } from "@/types";
@@ -150,6 +150,12 @@ export default function ApprovalsPage() {
             const caption = approval.content?.caption || "";
             const hashtags = Array.isArray(approval.content?.hashtags) ? approval.content.hashtags : [];
             const brandName = approval.content?.brand_name || "Brand";
+            // Resolve the generated media — prefer branded (logo+text) over raw,
+            // same priority as the content detail page.
+            const gm = (approval.content?.generation_metadata || {}) as Record<string, unknown>;
+            const imagePath = (gm.branded_image || gm.raw_image || gm.generated_image_url || "") as string;
+            const imageUrl = imagePath ? fileUrl(imagePath) : undefined;
+            const videoUrl = approval.content?.video_url ? fileUrl(approval.content.video_url) : undefined;
 
             return (
               <Card key={approval.id} className="overflow-hidden">
@@ -170,13 +176,16 @@ export default function ApprovalsPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="relative max-h-[300px] overflow-hidden rounded-lg">
+                  {/* Reels get a taller window so the 9:16 player + controls stay usable */}
+                  <div className={`relative ${videoUrl ? "max-h-[460px]" : "max-h-[300px]"} overflow-hidden rounded-lg`}>
                     <ChannelPreview
                       channel={channel}
                       brandName={brandName}
                       brandHandle={brandName.toLowerCase().replace(/\s+/g, "")}
                       caption={caption}
                       hashtags={hashtags}
+                      imageUrl={imageUrl}
+                      videoUrl={videoUrl}
                       compact
                     />
                     <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-card to-transparent pointer-events-none" />

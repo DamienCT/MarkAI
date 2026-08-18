@@ -16,11 +16,19 @@ from shared.config import settings
 
 logger = logging.getLogger(__name__)
 
-# NATS ack_wait MUST exceed the worker's WORKFLOW_TIMEOUT, otherwise JetStream
-# redelivers a message while its workflow is still running (or just finished),
-# spawning duplicate/looping runs of the same item. Derived from the SAME env
-# var as worker.WORKFLOW_TIMEOUT (+ buffer) so the two can never drift apart.
-_ACK_WAIT_SECONDS = int(os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400")) + 120
+# NATS ack_wait MUST exceed the worker's LONGEST workflow timeout, otherwise
+# JetStream redelivers a message while its workflow is still running (or just
+# finished), spawning duplicate/looping runs of the same item. Derived from the
+# SAME env var as worker.WORKFLOW_TIMEOUT — and the SAME video-cascade budget
+# as worker.VIDEO_WORKFLOW_TIMEOUT (3 providers × VIDEO_RENDER_TIMEOUT_S +
+# margin) — plus a buffer, so the values can never drift apart.
+_ACK_WAIT_SECONDS = (
+    max(
+        int(os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400")),
+        3 * settings.VIDEO_RENDER_TIMEOUT_S + 600,
+    )
+    + 120
+)
 
 
 class NATSConsumer:

@@ -228,8 +228,8 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
         "enabled_channels": enabled_channels,
         "existing_items": existing_items,
         "events": events,
-        # Edit Documents override; defaults to posts-only.
-        "content_format": (overrides.get("content_format") if isinstance(overrides, dict) else None) or "posts_only",
+        # Edit Documents override; defaults to mixed (posts + reels).
+        "content_format": (overrides.get("content_format") if isinstance(overrides, dict) else None) or "mixed",
         "campaign_overrides": (overrides.get("campaigns") if isinstance(overrides, dict) else None) or [],
         "removed_campaigns": (overrides.get("removed_campaigns") if isinstance(overrides, dict) else None) or [],
     }
@@ -453,12 +453,16 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     existing_items = state.get("existing_items", [])
     events = state.get("events", [])
 
-    # Content format (Edit Documents override). "posts_only" = single-image
-    # posts everywhere (default); "mixed" = let the planner vary formats.
-    content_format = state.get("content_format", "posts_only")
+    # Content format (Edit Documents override). "mixed" = posts + reels
+    # (default); "posts_only" = single-image posts everywhere. The final
+    # item_type layout is assigned deterministically in store_calendar.
+    content_format = state.get("content_format", "mixed")
     if content_format == "mixed":
-        _ctype_rule = "- Vary content types (mix post, reel, carousel, story)\n"
-        _ctype_field = 'content_type (post/reel/story/carousel), '
+        _ctype_rule = (
+            '- Vary content types: mostly "post" (single image), some "reel" '
+            "(short vertical video)\n"
+        )
+        _ctype_field = 'content_type (post/reel), '
     else:
         _ctype_rule = (
             '- content_type MUST be "post" for EVERY item — single-image posts only '
@@ -959,6 +963,48 @@ async def assign_products(state: PlanningState) -> dict[str, Any]:
         }
 
 
+# Channels that get deterministic reel slots when content_format == "mixed".
+_REEL_MIX_CHANNELS = frozenset({"instagram", "facebook"})
+# Which slot in each channel-week becomes a reel (index % 4 == _REEL_SLOT).
+_REEL_SLOT = 2
+
+
+def _assign_item_types(db_items: list[dict[str, Any]], content_format: str) -> None:
+    """Deterministically assign content_type before insert (video pipeline).
+
+    - youtube is video-only: every item becomes a 'reel' regardless of format;
+    - "mixed" brands: every 4th instagram/facebook item per channel-week is a
+      'reel' (index % 4 == _REEL_SLOT — no randomness, so re-plans reproduce
+      the same layout), everything else is a 'post';
+    - "posts_only" brands keep single-image 'post' everywhere else.
+    """
+
+    def _week_key(item: dict[str, Any]) -> tuple[int, int]:
+        sa = item.get("scheduled_at")
+        if not isinstance(sa, datetime):
+            try:
+                sa = datetime.strptime(str(sa)[:10], "%Y-%m-%d")
+            except (ValueError, TypeError):
+                return (0, 0)
+        iso = sa.isocalendar()
+        return (iso[0], iso[1])
+
+    buckets: dict[tuple, list[dict[str, Any]]] = {}
+    for item in db_items:
+        channel = item.get("channel", "")
+        if channel == "youtube":
+            item["content_type"] = "reel"
+        elif content_format == "mixed" and channel in _REEL_MIX_CHANNELS:
+            buckets.setdefault((channel, *_week_key(item)), []).append(item)
+        else:
+            item["content_type"] = "post"
+
+    for bucket in buckets.values():
+        bucket.sort(key=lambda it: str(it.get("scheduled_at")))
+        for idx, item in enumerate(bucket):
+            item["content_type"] = "reel" if idx % 4 == _REEL_SLOT else "post"
+
+
 async def store_calendar(state: PlanningState) -> dict[str, Any]:
     """Persist calendar items and strategy document to the database."""
     brand_id = state["brand_id"]
@@ -1050,6 +1096,10 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             except (ValueError, TypeError):
                 return None
         db_items = [it for it in db_items if _item_ym(it) in target_months]
+
+    # Deterministic post/reel layout (applied after month filtering so slot
+    # indices are stable for the exact set of items being stored).
+    _assign_item_types(db_items, state.get("content_format", "mixed"))
 
     # Purge stale 'planned' items so reruns don't stack duplicates. Non-'planned'
     # rows are preserved — once an item moves into generation or publishing the
