@@ -266,7 +266,7 @@ async def generate_themes(state: StrategyState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a content strategist. Based on the brand's target market, generate monthly themes for ALL 12 months starting from the current date. Each month should have: month (month name and year), theme_name (overarching theme), description, sub_themes (array of 4 weekly sub-themes, each with: week as 'W1'/'W2'/'W3'/'W4', focus as sub-theme name, pillar as which content pillar this week emphasizes, primary_audience as which persona to prioritize this week), key_dates (array of notable dates in this month taken ONLY from the significant-events list in the user message — copy the exact date strings from that list; if the list has no events in a month, key_dates MUST be an empty array; NEVER add holidays, festivals, or awareness days from memory. Each key_date has: date as the exact date string from the events list, event as the event title from the list, content_angle as specific angle for this date, format as recommended content format, audience as target persona), pillar_rotation (how pillars rotate across the 4 weeks), key_campaigns, pillar_focus. Themes, sub-themes and campaigns must comply with the brand NEVER-guardrails in the brand block and reference only the enabled platforms listed there. Return a JSON array.",
+                "content": "You are a content strategist. Based on the brand's target market, generate monthly themes for ALL 12 months starting from the current date. Each month should have: month (month name and year), theme_name (overarching theme), description, sub_themes (array of 4 weekly sub-themes, each with: week as 'W1'/'W2'/'W3'/'W4', focus as sub-theme name, pillar as which content pillar this week emphasizes, primary_audience as which persona to prioritize this week), key_dates (array of notable dates in this month taken ONLY from the significant-events list in the user message — copy the exact date strings from that list; if the list has no events in a month, key_dates MUST be an empty array; NEVER add holidays, festivals, or awareness days from memory. Each key_date has: date as the exact date string from the events list, event as the event title from the list, content_angle as specific angle for this date, format as recommended content format, audience as target persona), pillar_rotation (how pillars rotate across the 4 weeks), key_campaigns, pillar_focus. Themes, sub-themes and campaigns must comply with the brand NEVER-guardrails in the brand block and reference only the enabled platforms listed there. Return a JSON object with a single key \"themes\" whose value is the array of 12 month objects.",
             },
             {
                 "role": "user",
@@ -283,7 +283,7 @@ async def generate_themes(state: StrategyState) -> dict[str, Any]:
         result = await chat_completion(
             prompt,
             temperature=0.65,
-            max_tokens=8192,
+            max_tokens=16384,
             response_format={"type": "json_object"},
         )
         themes = parse_llm_json(
@@ -300,7 +300,17 @@ async def generate_themes(state: StrategyState) -> dict[str, Any]:
             ],
         )
         if isinstance(themes, dict):
-            themes = next((v for v in themes.values() if isinstance(v, list)), [])
+            # json_object mode can't return a top-level array, so the model
+            # wraps it ({"themes": [...]}); if it instead returned one object
+            # per month, collect the dict values so nothing is dropped.
+            themes = (
+                next((v for v in themes.values() if isinstance(v, list)), None)
+                or [v for v in themes.values() if isinstance(v, dict)]
+            )
+        if not themes:
+            logger.warning(
+                "generate_themes produced no themes for brand %s", state["brand_id"]
+            )
         return {"themes": themes}
     except Exception as exc:
         logger.error("generate_themes failed: %s", exc)
