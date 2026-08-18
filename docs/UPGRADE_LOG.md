@@ -68,3 +68,44 @@ Also shipped alongside this cycle (separate commit `54897e0`): direct in-backend
 for IG/FB Reels, YouTube Shorts, LinkedIn video — that workflow's review caught 2 critical
 integration breaks (registry pointing at nonexistent modules; YouTube/LinkedIn missing the
 dispatch seam) before they reached production.
+
+---
+
+## Cycle 2 — Regenerated context re-QA (2026-08-18/19)
+
+**Scope:** the Naturespan context regenerated on the fixed pipeline (strategy `13 themes`,
+full-horizon replan, 624 items), same 3-reviewer + adversarial-verify setup as cycle 1.
+
+**Result: all 8 cycle-1 defect classes confirmed FIXED** by every reviewer independently —
+premium pillars (no affordability angle), all 24 dated key_dates matching the verified events
+table exactly, the Sept 1 openings carried by a dedicated 20%-weight pillar + countdown
+(Aug 23–31, all channels) + opening-week coverage, product-level certification phrasing
+throughout, retailer identity restored, IG/FB/YouTube only, dense verified proof points,
+and every one of 624 items scheduled 06:30–21:00 Mauritius local. 0 findings refuted.
+
+**Remaining findings and dispositions:**
+- *Stale pre-opening framing on 19 post-opening items* (high) — fixed by SQL: de-anticipated
+  phrasing; Aug-2027 "Countdown…" cluster retitled to anniversary framing. Generator-side
+  temporal check (no anticipatory language after an event's date) queued for cycle 3.
+- *Guardrail-9 drift* ("20+ years expertise **through ACCORD BIO**", medium) — fixed by SQL in
+  8 stored payloads; correct phrasing lives in the (now accented) guidelines the content
+  generator reads.
+- *"Mauritius Health Week" flagged as fabricated* — FALSE ALARM: it is a legacy **manual global**
+  events row (2026-05-11→27, annual) the reviewers' brand-filtered query missed; the planner
+  obeyed its date rules. Authenticity of the event itself is a user question (possibly a
+  Chemtech-organized initiative).
+- *campaigns output truncated/unparseable* (critical, planning `campaigns.json`) — real
+  generator defect (campaigns wrapped as escaped JSON in one record + token truncation; June/
+  July 2027 campaigns missing). Does not affect the 2-week window. **Cycle-3 backlog**: chunked
+  campaign generation + parse-and-count validation gate.
+- *French diacritics stripped* (medium ×3) — root cause: the onboarding guidelines were written
+  accent-free and the grounding block propagated that. Fixed at the source: brand description,
+  tone_of_voice, and all guidelines strings re-accented in the DB; future generations inherit.
+- Other non-blocking (cycle-3 backlog): proof-point repetition damping (+69% stat 28×/year),
+  generator meta-language leaking into 106 briefs, theme-title reuse (350/624), provisional
+  2027 holiday-date contingency handling.
+
+**Approved & launched:** all four context docs approved (`first_approval_completed=true`);
+25-item Aug 18 → Sep 1 batch queued and generating sequentially (posts + reels; reels render
+on the local RTX 4090 via LTX-2.5 — see D:\markai-video-forge, live as of this cycle:
+3s 1080×1920 H.264+AAC in 24s wall).
