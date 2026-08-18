@@ -1,0 +1,8 @@
+# Shell scripts must stay LF — they run inside Linux containers and on the VPS;
+# a CRLF checkout on Windows breaks `sh` with invisible \r errors.
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf
+
+# SQL and YAML consumed by Linux services
+*.sql text eol=lf
+litellm/config.yaml text eol=lf
