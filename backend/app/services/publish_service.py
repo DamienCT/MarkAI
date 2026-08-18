@@ -1,12 +1,22 @@
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import settings
 from app.models.brand import Brand
 from app.models.calendar_item import CalendarItem
 from app.models.content import Content
+from app.services import minio_service
+from app.services.publishers.base import (
+    MediaBundle,
+    PublishOutcome,
+    resolve_caption_and_hashtags,
+)
+from app.services.publishers.registry import get_publisher
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +53,11 @@ def get_platform_credentials(brand: Brand, channel: str) -> dict[str, Any]:
         return {
             "channel_id": ch_cfg.get("channel_id", ""),
             "api_key": ch_cfg.get("api_key", ""),
+            # Per-brand OAuth for direct uploads; the publisher falls back to
+            # the global settings.YOUTUBE_* values when these are empty.
+            "client_id": ch_cfg.get("client_id", ""),
+            "client_secret": ch_cfg.get("client_secret", ""),
+            "refresh_token": ch_cfg.get("refresh_token", ""),
         }
     elif channel == "tiktok":
         return {
@@ -124,6 +139,67 @@ async def _derive_facebook_page_token(token: str, page_id: str) -> str | None:
         return None
 
 
+def resolve_channel_copy(content: Content, channel: str) -> tuple[str, list[str]]:
+    """Resolve the caption and hashtags to publish for one channel.
+
+    Per-channel adaptations from ``generation_metadata.platform_adaptations``
+    win, then legacy ``platform_metadata``, then the primary caption /
+    body_text. Delegates to the publishers' shared helper so the direct and
+    n8n paths can never drift apart.
+    """
+    return resolve_caption_and_hashtags(content, channel)
+
+
+def resolve_media(
+    content: Content, calendar_item: CalendarItem, *, image_only: bool = False
+) -> MediaBundle:
+    """Pick the media asset to publish for a calendar item.
+
+    Video items (item_type ``reel``/``video`` with a rendered master at
+    ``content.video_url``) publish the video; everything else publishes the
+    branded image from ``generation_metadata`` (branded → raw → legacy key).
+    ``public_url`` is the externally reachable file-proxy URL; ``bytes_loader``
+    streams the raw object out of MinIO for platforms we push bytes to.
+
+    ``image_only=True`` skips the video branch and always resolves the image
+    — the n8n webhook payload is image-only, so its dispatch keeps sending
+    the branded image even for video items.
+    """
+    api_base = settings.PUBLIC_API_URL or settings.FRONTEND_URL
+
+    if not image_only and content.video_url and calendar_item.item_type in ("reel", "video"):
+        video_path = content.video_url
+        return MediaBundle(
+            kind="video",
+            public_url=f"{api_base}/api/v1/files/{video_path}" if api_base else None,
+            bytes_loader=lambda: minio_service.download_file(video_path),
+            mime="video/mp4",
+        )
+
+    gen_meta = content.generation_metadata or {}
+    # Prefer branded (has logo + text overlay) → raw background → legacy key.
+    image_path = (
+        gen_meta.get("branded_image")
+        or gen_meta.get("raw_image")
+        or gen_meta.get("generated_image_url")
+    )
+    public_url = None
+    if image_path and api_base:
+        public_url = f"{api_base}/api/v1/files/{image_path}"
+        # Instagram's Content Publishing API only accepts JPEG; our pipeline
+        # renders PNG. Serve a JPEG-converted variant for Meta channels.
+        if calendar_item.channel in ("instagram", "facebook"):
+            public_url += "?fmt=jpg"
+    return MediaBundle(
+        kind="image",
+        public_url=public_url,
+        bytes_loader=(
+            (lambda: minio_service.download_file(image_path)) if image_path else None
+        ),
+        mime="image/png",
+    )
+
+
 async def dispatch_to_n8n(
     content: Content,
     calendar_item: CalendarItem,
@@ -179,38 +255,13 @@ async def dispatch_to_n8n(
     # ── All other channels: dispatch to n8n ─────────────────────────
     _preflight_checks(content, calendar_item, brand)
 
-    # Build caption/hashtags from the pipeline's per-channel adaptations
-    # (generation_metadata.platform_adaptations, written by the content
-    # workflow), falling back to legacy platform_metadata, then the primary
-    # caption. Until now the adaptations were generated but never published.
-    gen_adaptations = (content.generation_metadata or {}).get("platform_adaptations") or {}
-    platform_meta = content.platform_metadata or {}
-    channel_data = gen_adaptations.get(channel) or platform_meta.get(channel) or {}
-    if not isinstance(channel_data, dict):
-        channel_data = {}
-    caption = channel_data.get("caption") or content.caption or content.body_text or ""
-    adapted_hashtags = channel_data.get("hashtags")
-    if not isinstance(adapted_hashtags, list) or not adapted_hashtags:
-        adapted_hashtags = content.hashtags or []
-
-    # Get image URL — stored in generation_metadata by the content pipeline.
-    # Prefer branded (has logo + text overlay) → raw background → legacy key.
-    gen_meta = content.generation_metadata or {}
-    minio_path = (
-        gen_meta.get("branded_image")
-        or gen_meta.get("raw_image")
-        or gen_meta.get("generated_image_url")
-    )
-    # Convert MinIO internal path to public API URL
-    api_base = settings.PUBLIC_API_URL or settings.FRONTEND_URL
-    if minio_path and api_base:
-        image_url = f"{api_base}/api/v1/files/{minio_path}"
-        # Instagram's Content Publishing API only accepts JPEG; our pipeline
-        # renders PNG. Serve a JPEG-converted variant for Meta channels.
-        if channel in ("instagram", "facebook"):
-            image_url += "?fmt=jpg"
-    else:
-        image_url = content.video_url or None
+    # Caption/hashtags from the pipeline's per-channel adaptations. Media:
+    # the n8n webhook is image-only, so resolve the branded image even for
+    # video items (the pre-direct-publish behavior), falling back to the raw
+    # video_url only when no image/API base is available.
+    caption, adapted_hashtags = resolve_channel_copy(content, channel)
+    media = resolve_media(content, calendar_item, image_only=True)
+    image_url = media.public_url or content.video_url or None
 
     payload = {
         "content_id": str(content.id),
@@ -244,3 +295,112 @@ async def dispatch_to_n8n(
         resp = await client.post(n8n_webhook, json=payload)
         resp.raise_for_status()
         return resp.json()
+
+
+async def record_publish_result(
+    db: AsyncSession,
+    content: Content,
+    calendar_item: CalendarItem,
+    channel: str,
+    outcome: PublishOutcome,
+) -> None:
+    """Write a publish result back to the calendar item and content row.
+
+    Mirrors what the n8n callback (``/api/v1/webhooks/publish-result``) does:
+    published → calendar item ``published`` + ``published_at`` and the
+    platform post id on the content; failed → calendar item ``failed`` with
+    the error stored in ``generation_metadata.publish_error``. The direct
+    path additionally records ``platform_metadata[channel]`` so multi-channel
+    post ids don't overwrite each other.
+    """
+    now = datetime.now(timezone.utc)
+
+    if outcome.status == "published":
+        if not outcome.platform_post_id:
+            logger.warning(
+                "Publish outcome for content %s missing platform_post_id", content.id
+            )
+        content.platform_post_id = outcome.platform_post_id
+        calendar_item.status = "published"
+        calendar_item.published_at = now
+
+        # Merge (not replace) so legacy per-channel adaptation data stored in
+        # platform_metadata[channel] survives the publish write-back.
+        platform_meta = dict(content.platform_metadata or {})
+        channel_meta = platform_meta.get(channel)
+        channel_meta = dict(channel_meta) if isinstance(channel_meta, dict) else {}
+        channel_meta.update(
+            {"post_id": outcome.platform_post_id, "published_at": now.isoformat()}
+        )
+        platform_meta[channel] = channel_meta
+        content.platform_metadata = platform_meta
+        flag_modified(content, "platform_metadata")
+
+        logger.info(
+            "Content %s published to %s, platform_post_id=%s",
+            content.id,
+            channel,
+            outcome.platform_post_id,
+        )
+    else:
+        calendar_item.status = "failed"
+        gen_meta = dict(content.generation_metadata or {})
+        gen_meta["publish_error"] = outcome.error
+        content.generation_metadata = gen_meta
+        flag_modified(content, "generation_metadata")
+
+        logger.warning(
+            "Content %s publish to %s failed: %s", content.id, channel, outcome.error
+        )
+
+    await db.commit()
+
+
+async def publish_direct(
+    db: AsyncSession,
+    content: Content,
+    calendar_item: CalendarItem,
+    brand: Brand,
+) -> PublishOutcome:
+    """Publish a calendar item straight to its platform (no n8n hop).
+
+    Picks the publisher from the registry (media-kind aware), resolves the
+    brand's channel credentials, runs the platform flow and writes the result
+    back to the calendar item / content row. Callers route to
+    ``dispatch_to_n8n`` instead when ``get_publisher`` returns None for the
+    channel/media combination.
+    """
+    channel = calendar_item.channel
+    media = resolve_media(content, calendar_item)
+    publisher = get_publisher(channel, media.kind)
+
+    if publisher is None:
+        outcome = PublishOutcome(
+            platform_post_id=None,
+            status="failed",
+            error=(
+                f"No direct publisher for channel '{channel}' "
+                f"with media kind '{media.kind}'"
+            ),
+        )
+    else:
+        creds = get_platform_credentials(brand, channel)
+        # Facebook Page publishing needs the Page's OWN token, not the stored
+        # user/system-user token — ``FacebookPublisher`` derives it itself
+        # (exactly once), so the raw credentials are passed through here.
+        try:
+            outcome = await publisher.publish(
+                content, calendar_item, brand, creds, media
+            )
+        except Exception as exc:
+            # Publishers map their known errors to failed outcomes; this is
+            # the safety net for anything unexpected (bugs, MinIO errors, …).
+            logger.exception(
+                "Direct publish of content %s to %s crashed", content.id, channel
+            )
+            outcome = PublishOutcome(
+                platform_post_id=None, status="failed", error=str(exc)
+            )
+
+    await record_publish_result(db, content, calendar_item, channel, outcome)
+    return outcome
