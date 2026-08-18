@@ -7,10 +7,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
+from shared.brand_context import DEFAULT_BRAND_TIMEZONE
 from shared.config import settings
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ async def get_brand_config(brand_id: str) -> dict[str, Any] | None:
     async with async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT id, brand_guidelines, tone_of_voice, target_audience, website_url FROM brands WHERE id = :id"
+                "SELECT id, name, slug, description, brand_guidelines, tone_of_voice, target_audience, website_url FROM brands WHERE id = :id"
             ),
             {"id": brand_id},
         )
@@ -435,7 +437,23 @@ async def store_calendar_items(
     items: list[dict[str, Any]],
     max_date: datetime | None = None,
     enabled_channels: list[str] | None = None,
+    *,
+    tz_name: str = DEFAULT_BRAND_TIMEZONE,
 ) -> list[str]:
+    # NAIVE scheduled_at values are brand-local wall times (upstream prompts
+    # express "best times" in the brand's timezone) — localize to tz_name and
+    # store as UTC. Already-aware datetimes keep their offset (converted to
+    # UTC). Never stamp naive values with tzinfo=UTC: that shifted every
+    # "20:00" post to midnight Mauritius.
+    try:
+        brand_tz = ZoneInfo(tz_name)
+    except Exception as tz_exc:
+        logger.warning(
+            "Unknown timezone %r (%s) — falling back to UTC for calendar items",
+            tz_name,
+            tz_exc,
+        )
+        brand_tz = timezone.utc
     ids: list[str] = []
     async with async_session_factory() as session:
         for item in items:
@@ -477,15 +495,20 @@ async def store_calendar_items(
                         from datetime import date as _date
 
                         d = _date.fromisoformat(scheduled_at_raw[:10])
-                        scheduled_at_val = datetime(
-                            d.year, d.month, d.day, tzinfo=timezone.utc
-                        )
+                        # Naive on purpose — localized to brand_tz below.
+                        scheduled_at_val = datetime(d.year, d.month, d.day)
                     except Exception:
                         scheduled_at_val = datetime.now(timezone.utc)
             elif isinstance(scheduled_at_raw, datetime):
                 scheduled_at_val = scheduled_at_raw
             else:
                 scheduled_at_val = datetime.now(timezone.utc)
+
+            # Localize: naive = brand-local wall time; aware = keep its offset.
+            # Either way the stored value is UTC.
+            if scheduled_at_val.tzinfo is None:
+                scheduled_at_val = scheduled_at_val.replace(tzinfo=brand_tz)
+            scheduled_at_val = scheduled_at_val.astimezone(timezone.utc)
 
             # Hard enforcement: skip items scheduled beyond the max_date boundary
             if max_date is not None:

@@ -25,6 +25,9 @@ dependencies = [
     "numpy>=2.0",
     "tenacity>=9.0",
     "python-json-logger>=3.0",
+    # IANA tz database for zoneinfo — python:3.13-slim images may lack the OS
+    # tzdata package; the pip package is stdlib zoneinfo's built-in fallback.
+    "tzdata>=2025.1",
 ]
 
 [build-system]

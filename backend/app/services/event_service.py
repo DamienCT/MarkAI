@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from datetime import date, timedelta
 from typing import Sequence
@@ -11,6 +12,70 @@ from app.models.event import Event
 from app.schemas.event import EventCreate, EventUpdate
 
 logger = logging.getLogger(__name__)
+
+# Movable (lunar/religious-calendar) holidays shift ~11 days per year, so
+# projecting a stored date annually is inherently wrong. Titles matching this
+# pattern are forced to is_annual=False regardless of what the LLM claimed.
+_MOVABLE_HOLIDAY_RE = re.compile(
+    r"\b(?:"
+    r"diwali|divali|deepavali"
+    r"|eid"
+    r"|ganesh"
+    r"|chinese\s+new\s+year|spring\s+festival"
+    r"|thaipoosam|cavadee"
+    r"|shivaratri|shivaratree"
+    r"|ougadi|ugadi"
+    r"|easter"
+    r"|ash\s+wednesday"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Weekday-relative observances (4th Friday of November, last Sunday of May,
+# 3rd Sunday of June, …) land on a different month/day every year, so annual
+# month/day projection is just as wrong for them as for lunar holidays.
+_WEEKDAY_RELATIVE_RE = re.compile(
+    r"\b(?:"
+    r"black\s+friday"
+    r"|cyber\s+monday"
+    r"|mother'?s\s+day"
+    r"|father'?s\s+day"
+    r"|thanksgiving"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Spelling variants of the same holiday must collapse to one token so dedup
+# catches an LLM respelling of an existing row (e.g. a stored 'Divali' row vs
+# an LLM 'Diwali' response at the same date).
+_TITLE_CANONICAL: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:divali|deepavali)\b", re.IGNORECASE), "diwali"),
+    (re.compile(r"\bshivaratree\b", re.IGNORECASE), "shivaratri"),
+    (re.compile(r"\bougadi\b", re.IGNORECASE), "ugadi"),
+)
+
+
+def _dedup_title(title: str) -> str:
+    """Normalize a title for the dedup key: lowercase + canonical spellings."""
+    out = (title or "").strip().lower()
+    for pattern, canonical in _TITLE_CANONICAL:
+        out = pattern.sub(canonical, out)
+    return out
+
+
+def coerce_is_annual(title: str, claimed_is_annual: bool) -> bool:
+    """Force is_annual=False for known movable holidays.
+
+    Covers lunar/religious-calendar holidays AND weekday-relative observances
+    (Black Friday, Mother's Day, …). A movable holiday stored as annual gets
+    its date re-projected to future years where it is guaranteed wrong (a
+    published wrong holiday date is an unrecoverable brand failure); a
+    non-annual row simply expires instead.
+    """
+    t = title or ""
+    if _MOVABLE_HOLIDAY_RE.search(t) or _WEEKDAY_RELATIVE_RE.search(t):
+        return False
+    return claimed_is_annual
 
 
 async def list_events(
@@ -193,19 +258,41 @@ async def detect_events_via_llm(
 
     brand_context = "\n".join(brand_context_parts) or "No brand context provided."
 
+    today = date.today()
     system = (
         "You are a marketing calendar expert. Produce a list of significant "
-        "dates and observances for the next " + str(horizon_months) + " months "
-        "that would be relevant for a brand's content marketing. Include: "
-        "Mauritius public holidays, internationally recognised awareness days "
-        "(health, cause-related, cultural), industry-specific dates if an "
-        "industry is given, and major commercial moments (Black Friday, "
-        "Mother's Day, etc.). Return STRICT JSON with a single key 'events' "
-        "whose value is an array. Each event must have: title (string), "
-        "description (one short sentence, max 200 chars), start_date "
-        "(YYYY-MM-DD, use the next occurrence from today), end_date (YYYY-MM-DD "
-        "or null for single-day), is_annual (boolean — true for recurring "
-        "yearly observances), category (one of: holiday, awareness, industry, "
+        f"dates and observances for the NEXT {horizon_months} months starting "
+        f"today ({today.isoformat()}) that would be relevant for a brand's "
+        "content marketing. Include: Mauritius public holidays, "
+        "internationally recognised awareness days (health, cause-related, "
+        "cultural), industry-specific dates if an industry is given, and "
+        "major commercial moments (Black Friday, Mother's Day, etc.).\n\n"
+        "DATE ACCURACY RULES (critical — a wrong published holiday date is an "
+        "unrecoverable brand failure, a missing event is not):\n"
+        f"- Every start_date must fall within the {horizon_months} months "
+        f"after {today.isoformat()}, with the YEAR explicitly correct for that "
+        "occurrence. An observance that already passed this year must carry "
+        "NEXT year's date — never a past date, never a date from memory of a "
+        "different year.\n"
+        "- is_annual=true ONLY for fixed-date observances that fall on the "
+        "same month/day every year (e.g. Christmas, Labour Day, World Health "
+        "Day, Valentine's Day).\n"
+        "- is_annual=false for movable holidays computed from lunar or "
+        "religious calendars (e.g. Diwali/Divali, Eid, Ganesh Chaturthi, "
+        "Chinese New Year, Thaipoosam Cavadee, Maha Shivaratree, Ougadi, "
+        "Easter, Ash Wednesday) AND for weekday-relative observances whose "
+        "month/day changes every year (e.g. Black Friday, Cyber Monday, "
+        "Thanksgiving, Mother's Day, Father's Day).\n"
+        "- OMIT any movable holiday whose exact local date within the horizon "
+        "you are not CERTAIN of. Omission is recoverable; a wrong date is "
+        "not.\n"
+        "- NEVER emit an estimated or approximate date as if it were "
+        "confirmed.\n\n"
+        "Return STRICT JSON with a single key 'events' whose value is an "
+        "array. Each event must have: title (string), description (one short "
+        "sentence, max 200 chars), start_date (YYYY-MM-DD), end_date "
+        "(YYYY-MM-DD or null for single-day), is_annual (boolean, per the "
+        "rules above), category (one of: holiday, awareness, industry, "
         "local, custom)."
     )
     user = f"Context:\n{brand_context}\n\nReturn 15-30 events."
@@ -226,11 +313,11 @@ async def detect_events_via_llm(
     if not isinstance(events_raw, list):
         return []
 
-    # Load existing events for dedup on (lower(title), month-day, brand_id)
+    # Load existing events for dedup on (normalized title, month-day, brand_id)
     existing = await list_events(db, brand_id=brand_id, include_global=(brand_id is None))
     seen: set[tuple[str, str, uuid.UUID | None]] = set()
     for e in existing:
-        seen.add((e.title.strip().lower(), e.start_date.strftime("%m-%d"), e.brand_id))
+        seen.add((_dedup_title(e.title), e.start_date.strftime("%m-%d"), e.brand_id))
 
     created: list[Event] = []
     for item in events_raw:
@@ -245,7 +332,7 @@ async def detect_events_via_llm(
         except (ValueError, TypeError):
             continue
 
-        key = (title.lower(), start.strftime("%m-%d"), brand_id)
+        key = (_dedup_title(title), start.strftime("%m-%d"), brand_id)
         if key in seen:
             continue
         seen.add(key)
@@ -268,7 +355,9 @@ async def detect_events_via_llm(
             description=(item.get("description") or "")[:500] or None,
             start_date=start,
             end_date=end,
-            is_annual=bool(item.get("is_annual", True)),
+            # Movable holidays are forced non-annual regardless of the LLM's
+            # claim — annual projection of a lunar-calendar date is always wrong.
+            is_annual=coerce_is_annual(title, bool(item.get("is_annual", True))),
             category=category,
             source="ai_detected",
         )

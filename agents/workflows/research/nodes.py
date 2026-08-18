@@ -130,7 +130,7 @@ async def analyze_social(state: ResearchState) -> dict[str, Any]:
         analysis_prompt = [
             {
                 "role": "system",
-                "content": "You are a social media analyst. Analyze the following social media data and provide insights on content performance, audience engagement patterns, posting frequency, and content themes. Include in your analysis: engagement_rate (current average engagement rate as a percentage), benchmark_comparison (how this compares to industry averages), top_content_types (ranked list of content types by engagement, e.g. Reel > Carousel > Static), peak_times (best posting times per platform with data-backed reasoning), content_gaps (what competitors post about that this brand doesn't), hashtag_analysis (top 10 hashtags by reach from recent posts), and 5 specific, actionable recommendations.",
+                "content": "You are a social media analyst. Analyze the following social media data and provide insights on content performance, audience engagement patterns, posting frequency, and content themes. Include in your analysis: engagement_rate (current average engagement rate as a percentage), benchmark_comparison (how this compares to industry averages), top_content_types (ranked list of content types by engagement, e.g. Reel > Carousel > Static), peak_times (best posting times per platform with data-backed reasoning), content_gaps (what competitors post about that this brand doesn't), hashtag_analysis (top 10 hashtags by reach from recent posts), and 5 specific, actionable recommendations. HARD RULE: only cite metrics that actually appear in the provided profile/engagement data — never estimate or invent figures (site visits, conversion rates, reach, engagement rates, follower counts). If the data is empty or missing a metric, state explicitly that it was not available instead of estimating.",
             },
             {
                 "role": "user",
@@ -516,6 +516,13 @@ async def store_results(state: ResearchState) -> dict[str, Any]:
             "competitor_analysis": state.get("competitor_analysis", []),
             "social_analysis": state.get("social_analysis", {}),
         },
+        extra_rules=(
+            "- HARD RULE: only cite metrics, analytics, or performance data "
+            "that literally appear in the report data above. NEVER fabricate "
+            "or estimate figures such as site visits, conversion rates, "
+            "engagement rates, or follower counts. If the data contains no "
+            "analytics, state plainly that no analytics were available yet."
+        ),
     )
 
     # Store competitors discovered during research

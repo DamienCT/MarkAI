@@ -21,6 +21,8 @@ class PlanningState(TypedDict, total=False):
     target_months: list[str]  # ["YYYY-MM"] — targeted re-plan; empty = full horizon
 
     # Loaded data
+    brand_context: str  # Brand identity + guardrails prompt block (shared.brand_context)
+    brand_timezone: str  # IANA timezone the brand's posting times are expressed in
     strategy: dict[str, Any]
     events: list[dict[str, Any]]  # Significant dates (holidays, awareness weeks, etc.) over next 12 months
     existing_items: list[dict[str, Any]]  # Recent calendar items for deduplication

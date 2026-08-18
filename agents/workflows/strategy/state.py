@@ -14,6 +14,7 @@ class StrategyState(TypedDict, total=False):
 
     # Loaded data
     research_data: dict[str, Any]
+    brand_config: dict[str, Any]
 
     # Generated strategy components
     positioning: dict[str, Any]

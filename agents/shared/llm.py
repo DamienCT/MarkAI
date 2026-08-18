@@ -318,14 +318,15 @@ _REPORT_TYPE_LABELS: dict[str, str] = {
 
 
 async def generate_executive_summary_plain(
-    report_type: str, payload: dict[str, Any]
+    report_type: str, payload: dict[str, Any], extra_rules: str = ""
 ) -> str:
     """Produce a 3-4 sentence plain-English summary of a report.
 
     Written for non-marketing readers (IT, finance, ops): no jargon, and any
     specialized marketing term that must appear is defined inline in the same
     sentence. Returns "" on failure so callers can degrade gracefully — the
-    frontend hides the summary block when this is empty.
+    frontend hides the summary block when this is empty. Callers may pass
+    extra_rules to append report-specific hard constraints to the system prompt.
     """
     label = _REPORT_TYPE_LABELS.get(report_type, "report")
     try:
@@ -350,7 +351,8 @@ async def generate_executive_summary_plain(
                 "in the same sentence in parentheses.\n"
                 "- No bullet points, no headings, no markdown. Just sentences.\n"
                 "- Concrete and specific. Use real numbers from the data.\n"
-                "Return ONLY the summary text."
+                + (f"{extra_rules}\n" if extra_rules else "")
+                + "Return ONLY the summary text."
             ),
         },
         {

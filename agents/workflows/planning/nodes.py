@@ -10,6 +10,11 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, field_validator
 
+from shared.brand_context import (
+    DEFAULT_BRAND_TIMEZONE,
+    build_brand_context_block,
+    get_brand_timezone,
+)
 from shared.llm import (
     chat_completion,
     generate_executive_summary_plain,
@@ -115,7 +120,10 @@ class CalendarItemValidator(BaseModel):
 def _format_events_for_prompt(events: list[dict[str, Any]]) -> str:
     """Render the events list as a compact markdown bullet list for LLM prompts."""
     if not events:
-        return "(no significant events registered — use only universally-known dates)"
+        return (
+            "(no significant events registered — do not reference or date any "
+            "holiday, festival, or observance)"
+        )
     lines = []
     for ev in events:
         start = ev.get("start", "")
@@ -228,6 +236,12 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
         "enabled_channels": enabled_channels,
         "existing_items": existing_items,
         "events": events,
+        # Brand identity + hard guardrails — injected into every planning LLM
+        # prompt so generated campaigns/items stay grounded in the real brand.
+        "brand_context": build_brand_context_block(brand_config),
+        # IANA tz the brand's "best times" are expressed in (store_calendar
+        # converts brand-local wall times to UTC at insert time).
+        "brand_timezone": get_brand_timezone(brand_config),
         # Edit Documents override; defaults to mixed (posts + reels).
         "content_format": (overrides.get("content_format") if isinstance(overrides, dict) else None) or "mixed",
         "campaign_overrides": (overrides.get("campaigns") if isinstance(overrides, dict) else None) or [],
@@ -257,6 +271,7 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     enabled_channels = state.get("enabled_channels", ["instagram"])
     events = state.get("events", [])
     events_block = _format_events_for_prompt(events)
+    brand_context = state.get("brand_context", "")
     start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime(
         "%Y-%m-%d"
@@ -329,6 +344,7 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
         {
             "role": "user",
             "content": (
+                f"{brand_context}\n\n"
                 f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}\n\n"
                 f"Significant Events Calendar (anchor campaigns to these dates where relevant):\n"
                 f"{events_block}\n\n"
@@ -404,6 +420,7 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
         {
             "role": "user",
             "content": (
+                f"{brand_context}\n\n"
                 f"Brand: {sanitize_for_prompt(brand.get('name', '') or '')}\n"
                 f"Positioning: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=3000)}\n"
                 f"Pillars: {sanitize_json_for_prompt(strategy.get('pillars', []), max_length=3000)}\n"
@@ -452,6 +469,31 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     enabled_channels = state.get("enabled_channels", ["instagram"])
     existing_items = state.get("existing_items", [])
     events = state.get("events", [])
+    brand_context = state.get("brand_context", "")
+
+    # Brand tz for rendering stored UTC timestamps as brand-local dates in the
+    # dedup hint (a 20:00-local post is stored as 16:00Z; naive [:10] slicing
+    # would list 00:00–04:00 brand-local posts under the previous day).
+    try:
+        from zoneinfo import ZoneInfo
+
+        brand_tz = ZoneInfo(state.get("brand_timezone") or DEFAULT_BRAND_TIMEZONE)
+    except Exception:
+        brand_tz = timezone.utc
+
+    def _local_date(value: Any) -> str:
+        """Render a stored scheduled timestamp as a brand-local YYYY-MM-DD."""
+        dt = value
+        if isinstance(dt, str):
+            try:
+                dt = datetime.fromisoformat(dt)
+            except ValueError:
+                return dt[:10]
+        if not isinstance(dt, datetime):
+            return str(dt or "")[:10]
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(brand_tz).strftime("%Y-%m-%d")
 
     # Content format (Edit Documents override). "mixed" = posts + reels
     # (default); "posts_only" = single-image posts everywhere. The final
@@ -756,7 +798,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                 if (i.get("platform") or i.get("channel", "")) == channel
             ]
             dedup_lines = [
-                f"{str(i.get('scheduled_at') or i.get('scheduled_date', ''))[:10]} | "
+                f"{_local_date(i.get('scheduled_at') or i.get('scheduled_date'))} | "
                 f"{i.get('pillar', '')} | {i.get('theme') or i.get('title', '')} | "
                 f"{i.get('weekly_sub_theme', '')}"
                 for i in ch_existing[-30:]
@@ -797,7 +839,13 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         "- Each item MUST have a UNIQUE weekly_sub_theme\n"
                         "- Do NOT repeat any theme from the ALREADY SCHEDULED list\n"
                         + _ctype_rule
-                        + "- Each content_brief must describe a DISTINCT topic\n\n"
+                        + "- Each content_brief must describe a DISTINCT topic\n"
+                        "- Every item's theme/content_brief must be SPECIFIC to this "
+                        "brand — its actual products, certifications, suppliers, and "
+                        "shop (see the BRAND block in the user message) — NOT generic "
+                        "wellness/lifestyle filler that could fit any brand\n"
+                        "- NEVER violate the brand's NEVER-guardrails: no item may "
+                        "reference, script, or imply anything those guardrails forbid\n\n"
                         "EVENT DATE RULES:\n"
                         "- If the strategy mentions a specific event with a date (e.g., 'World Cancer Day (Feb 4)'), "
                         "content referencing that event should ONLY be scheduled on the event date itself or the day before/after\n"
@@ -821,6 +869,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                 {
                     "role": "user",
                     "content": (
+                        f"{brand_context}\n\n"
                         f"{dedup}"
                         f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=2000)}\n\n"
                         f"SIGNIFICANT EVENTS THIS WEEK (schedule on the event date, do NOT invent others):\n"
@@ -1019,10 +1068,26 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             target_months.add((int(y), int(mo)))
         except (ValueError, TypeError):
             continue
+    # Brand timezone: upstream prompts express "best times" as brand-local
+    # wall times, so parsed datetimes stay NAIVE here and store_calendar_items
+    # localizes them to this tz before converting to UTC for storage.
+    tz_name = state.get("brand_timezone") or DEFAULT_BRAND_TIMEZONE
+    try:
+        from zoneinfo import ZoneInfo
+
+        brand_tz = ZoneInfo(tz_name)
+    except Exception as tz_exc:
+        logger.warning(
+            "Unknown brand timezone %r (%s) — falling back to UTC", tz_name, tz_exc
+        )
+        brand_tz = timezone.utc
     # Store calendar items only up to the planning horizon (scope_weeks),
     # mirroring what generate_calendar_items emitted above. Items beyond the
-    # horizon get skipped by store_calendar_items via max_date.
-    now = datetime.now(timezone.utc)
+    # horizon get skipped by store_calendar_items via max_date. Derived from
+    # brand-local "now" so the horizon and purge windows line up with the
+    # UTC-shifted rows store_calendar_items writes (and now.year below is the
+    # brand-local year, not the UTC one, around New Year's Eve).
+    now = datetime.now(brand_tz)
     scope_weeks = max(1, int(state.get("scope_weeks", 52) or 52))
     max_date = (
         now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1042,8 +1107,12 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             )
             skipped += 1
             continue
-        # Combine scheduled_date + scheduled_time into a full datetime
-        # validated.scheduled_date is a string like "2026-01-01"
+        # Combine scheduled_date + scheduled_time into a full datetime.
+        # validated.scheduled_date is a string like "2026-01-01". Kept NAIVE
+        # on purpose: these are brand-local wall times ("best times" from the
+        # strategy) — store_calendar_items localizes them via tz_name and
+        # converts to UTC. Stamping tzinfo=UTC here shifted every post by the
+        # brand's UTC offset (20:00 local stored as 20:00 UTC = midnight MU).
         scheduled_time_str = item.get("scheduled_time", "")
         try:
             date_str = str(validated.scheduled_date)[:10]
@@ -1051,9 +1120,9 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
                 time_str = scheduled_time_str.strip()[:5]  # "18:00"
                 scheduled_dt = datetime.strptime(
                     f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
-                ).replace(tzinfo=timezone.utc)
+                )
             else:
-                scheduled_dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                scheduled_dt = datetime.strptime(date_str, "%Y-%m-%d")
         except (ValueError, TypeError):
             # Fallback: use the raw string (store_calendar_items handles parsing)
             scheduled_dt = validated.scheduled_date
@@ -1107,16 +1176,19 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
     # changed months; full re-plan purges the whole year-to-horizon window.
     try:
         if target_months:
+            # Month boundaries in the BRAND timezone — stored rows are UTC
+            # conversions of brand-local wall times, so a brand-local month
+            # spills past the UTC month boundary by the brand's UTC offset.
             deleted = 0
             for (y, mo) in sorted(target_months):
-                m_start = datetime(y, mo, 1, tzinfo=timezone.utc)
+                m_start = datetime(y, mo, 1, tzinfo=brand_tz)
                 if mo == 12:
-                    m_end = datetime(y + 1, 1, 1, tzinfo=timezone.utc) - timedelta(seconds=1)
+                    m_end = datetime(y + 1, 1, 1, tzinfo=brand_tz) - timedelta(seconds=1)
                 else:
-                    m_end = datetime(y, mo + 1, 1, tzinfo=timezone.utc) - timedelta(seconds=1)
+                    m_end = datetime(y, mo + 1, 1, tzinfo=brand_tz) - timedelta(seconds=1)
                 deleted += await delete_planned_calendar_items(brand_id, m_start, m_end)
         else:
-            planning_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+            planning_start = datetime(now.year, 1, 1, tzinfo=brand_tz)
             deleted = await delete_planned_calendar_items(
                 brand_id, planning_start, max_date
             )
@@ -1134,7 +1206,7 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
         )
 
     ids = await store_calendar_items(
-        db_items, max_date=max_date, enabled_channels=enabled_channels
+        db_items, max_date=max_date, enabled_channels=enabled_channels, tz_name=tz_name
     )
     logger.info("Stored %d calendar items for brand %s", len(ids), brand_id)
 

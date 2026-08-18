@@ -8,24 +8,61 @@ from typing import Any
 
 from langgraph.types import interrupt
 
+from shared.brand_context import build_brand_context_block, get_enabled_channels
 from shared.llm import (
     chat_completion,
     generate_executive_summary_plain,
     parse_llm_json,
 )
 from shared.sanitize import sanitize_json_for_prompt
-from shared.tools.database import get_brand_config, get_latest_research, store_strategy
+from shared.tools.database import (
+    get_brand_config,
+    get_events_for_research,
+    get_latest_research,
+    store_strategy,
+)
 
 from workflows.strategy.state import StrategyState
 
 logger = logging.getLogger(__name__)
 
 
+def _brand_ctx(state: StrategyState) -> str:
+    """Render the shared brand grounding block from the loaded brand config."""
+    return build_brand_context_block(state.get("brand_config"))
+
+
+def _format_events_for_prompt(events: list[dict[str, Any]]) -> str:
+    """Render the events list as a compact markdown bullet list for LLM prompts.
+
+    Mirrors workflows/planning/nodes.py so strategy and planning documents
+    show identical renderings for non-empty lists; the empty-case instruction
+    is agent-specific (key_dates is a schema field here vs prose in planning).
+    """
+    if not events:
+        return (
+            "(no significant events registered — every month's key_dates must "
+            "be an empty array)"
+        )
+    lines = []
+    for ev in events:
+        start = ev.get("start", "")
+        end = ev.get("end")
+        title = ev.get("title", "")
+        category = ev.get("category") or "event"
+        scope = ev.get("scope", "global")
+        date_str = f"{start} → {end}" if end else start
+        lines.append(f"- {date_str}: {title} ({category}, {scope})")
+    return "\n".join(lines)
+
+
 async def load_research(state: StrategyState) -> dict[str, Any]:
-    """Load the latest research results for this brand from the database."""
+    """Load the latest research results and brand config for this brand."""
+    brand_config = await get_brand_config(state["brand_id"]) or {}
     research = await get_latest_research(state["brand_id"])
     if not research:
         return {
+            "brand_config": brand_config,
             "errors": [*(state.get("errors") or []), "No research data found"],
             "status": "failed",
         }
@@ -36,7 +73,7 @@ async def load_research(state: StrategyState) -> dict[str, Any]:
             research_data = json.loads(research_data)
         except (json.JSONDecodeError, TypeError):
             research_data = {"raw": research_data}
-    return {"research_data": research_data}
+    return {"research_data": research_data, "brand_config": brand_config}
 
 
 async def generate_positioning(state: StrategyState) -> dict[str, Any]:
@@ -50,7 +87,10 @@ async def generate_positioning(state: StrategyState) -> dict[str, Any]:
             },
             {
                 "role": "user",
-                "content": f"Research data:\n{sanitize_json_for_prompt(research, max_length=8000)}",
+                "content": (
+                    f"{_brand_ctx(state)}\n\n"
+                    f"Research data:\n{sanitize_json_for_prompt(research, max_length=8000)}"
+                ),
             },
         ]
         result = await chat_completion(
@@ -75,11 +115,12 @@ async def define_pillars(state: StrategyState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a content strategist. Based on the brand's target market, define 4-6 content pillars for this brand. Each pillar should have: name, description, content_types, percentage_of_content, example_topics, audience_alignment (array of persona names this pillar primarily serves), seasonal_emphasis (which months/quarters this pillar gets more weight), platform_fit (which platforms are best for this pillar's content), visual_style (visual direction for this pillar — colors, mood, photography style), pillar_rationale (why this pillar matters for this brand's strategic goals). Return a JSON array.",
+                "content": "You are a content strategist. Based on the brand's target market, define 4-6 content pillars for this brand. Each pillar should have: name, description, content_types, percentage_of_content, example_topics, audience_alignment (array of persona names this pillar primarily serves), seasonal_emphasis (which months/quarters this pillar gets more weight), platform_fit (which platforms are best for this pillar's content), visual_style (visual direction for this pillar — colors, mood, photography style), pillar_rationale (why this pillar matters for this brand's strategic goals). Every pillar must comply with the brand NEVER-guardrails in the brand block, and platform_fit may only reference the enabled platforms listed there. Return a JSON array.",
             },
             {
                 "role": "user",
                 "content": (
+                    f"{_brand_ctx(state)}\n\n"
                     f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
                     f"Research:\n{sanitize_json_for_prompt(state.get('research_data', {}), max_length=5000)}"
                 ),
@@ -121,6 +162,7 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
             {
                 "role": "user",
                 "content": (
+                    f"{_brand_ctx(state)}\n\n"
                     f"Research Personas (source of truth):\n{personas_context}\n\n"
                     f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
                     f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}\n\n"
@@ -155,22 +197,12 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
 async def plan_cadence(state: StrategyState) -> dict[str, Any]:
     """Plan posting cadence per platform."""
     try:
-        # Load enabled channels from brand config
-        brand_config = await get_brand_config(state["brand_id"])
-        channels_cfg = (brand_config or {}).get("brand_guidelines", {})
-        if isinstance(channels_cfg, str):
-            try:
-                import json as _json
-                channels_cfg = _json.loads(channels_cfg)
-            except Exception:
-                channels_cfg = {}
-        channels_cfg = channels_cfg.get("channels", {})
-        enabled_channels = [
-            ch for ch, cfg in channels_cfg.items()
-            if isinstance(cfg, dict) and cfg.get("enabled")
-        ]
-        if not enabled_channels:
-            enabled_channels = ["instagram"]
+        # Enabled channels come from the shared brand-context helper so every
+        # workflow computes them identically.
+        brand_config = state.get("brand_config")
+        if brand_config is None:
+            brand_config = await get_brand_config(state["brand_id"]) or {}
+        enabled_channels = get_enabled_channels(brand_config)
         channels_str = ", ".join(enabled_channels)
 
         prompt = [
@@ -192,6 +224,7 @@ async def plan_cadence(state: StrategyState) -> dict[str, Any]:
             {
                 "role": "user",
                 "content": (
+                    f"{build_brand_context_block(brand_config)}\n\n"
                     f"Enabled channels: {channels_str}\n\n"
                     f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}), max_length=1000)}\n\n"
                     f"Audiences:\n{sanitize_json_for_prompt(state.get('audiences', []))}\n\n"
@@ -220,14 +253,26 @@ async def plan_cadence(state: StrategyState) -> dict[str, Any]:
 async def generate_themes(state: StrategyState) -> dict[str, Any]:
     """Generate monthly content themes for the next 12 months."""
     try:
+        # Ground key_dates in the real events calendar — never LLM memory.
+        try:
+            events = await get_events_for_research(state["brand_id"], months_ahead=12)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load events for brand %s: %s", state["brand_id"], exc
+            )
+            events = []
+        events_block = _format_events_for_prompt(events)
+
         prompt = [
             {
                 "role": "system",
-                "content": "You are a content strategist. Based on the brand's target market, generate monthly themes for ALL 12 months starting from the current date. Each month should have: month (month name and year), theme_name (overarching theme), description, sub_themes (array of 4 weekly sub-themes, each with: week as 'W1'/'W2'/'W3'/'W4', focus as sub-theme name, pillar as which content pillar this week emphasizes, primary_audience as which persona to prioritize this week), key_dates (array of notable dates in this month, each with: date as date string, event as event name covering relevant holidays and global awareness days and industry events for the brand's market, content_angle as specific angle for this date, format as recommended content format, audience as target persona), pillar_rotation (how pillars rotate across the 4 weeks), key_campaigns, pillar_focus. Return a JSON array.",
+                "content": "You are a content strategist. Based on the brand's target market, generate monthly themes for ALL 12 months starting from the current date. Each month should have: month (month name and year), theme_name (overarching theme), description, sub_themes (array of 4 weekly sub-themes, each with: week as 'W1'/'W2'/'W3'/'W4', focus as sub-theme name, pillar as which content pillar this week emphasizes, primary_audience as which persona to prioritize this week), key_dates (array of notable dates in this month taken ONLY from the significant-events list in the user message — copy the exact date strings from that list; if the list has no events in a month, key_dates MUST be an empty array; NEVER add holidays, festivals, or awareness days from memory. Each key_date has: date as the exact date string from the events list, event as the event title from the list, content_angle as specific angle for this date, format as recommended content format, audience as target persona), pillar_rotation (how pillars rotate across the 4 weeks), key_campaigns, pillar_focus. Themes, sub-themes and campaigns must comply with the brand NEVER-guardrails in the brand block and reference only the enabled platforms listed there. Return a JSON array.",
             },
             {
                 "role": "user",
                 "content": (
+                    f"{_brand_ctx(state)}\n\n"
+                    f"Significant events (next 12 months — the ONLY dates allowed in key_dates):\n{events_block}\n\n"
                     f"Positioning:\n{sanitize_json_for_prompt(state.get('positioning', {}))}\n\n"
                     f"Pillars:\n{sanitize_json_for_prompt(state.get('pillars', []))}\n\n"
                     f"Audiences:\n{sanitize_json_for_prompt(state.get('audiences', []))}\n\n"
