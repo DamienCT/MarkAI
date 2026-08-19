@@ -2697,6 +2697,7 @@ async def _replace_product_in_generated_image(
         from PIL import Image as PILImage
         from io import BytesIO
 
+        from shared.image_text_guard import detect_unintended_text
         from shared.product_swap import (
             build_swap_instruction,
             prepare_product_reference,
@@ -2735,40 +2736,87 @@ async def _replace_product_in_generated_image(
         aspect_hint = aspect_hint_for_size(input_size)
 
         swap_model = await get_model_for_category("image-edit")
-        # generate_content is synchronous — keep it off the worker event loop
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=swap_model,
-            contents=[
-                build_swap_instruction(
-                    product_name, aspect_hint, vendor_name=vendor_name
-                ),
-                marketing_img,
-                product_img,
-            ],
-            config=gtypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
-        )
 
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None:
-                result_data = part.inline_data.data
+        async def _one_swap() -> bytes | None:
+            """One Gemini edit, returned at the marketing image's size."""
+            # generate_content is synchronous — keep it off the worker event loop
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model=swap_model,
+                contents=[
+                    build_swap_instruction(
+                        product_name, aspect_hint, vendor_name=vendor_name
+                    ),
+                    marketing_img,
+                    product_img,
+                ],
+                config=gtypes.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"]
+                ),
+            )
+            for part in response.candidates[0].content.parts:
+                if part.inline_data is None:
+                    continue
+                data = part.inline_data.data
                 # Gemini ignores aspect hints fairly often. When it returns a
                 # mismatched size we center-crop to the target aspect instead
                 # of stretching, which would otherwise distort the product.
-                result_img = PILImage.open(BytesIO(result_data))
-                if result_img.size != input_size:
+                img = PILImage.open(BytesIO(data))
+                if img.size != input_size:
                     logger.info(
                         "Gemini returned %s, aspect-preserving resize to %s",
-                        result_img.size, input_size,
+                        img.size, input_size,
                     )
-                    result_img = resize_preserve_aspect(result_img, input_size)
+                    img = resize_preserve_aspect(img, input_size)
                     buf = BytesIO()
-                    result_img.save(buf, format="PNG", quality=95)
-                    result_data = buf.getvalue()
+                    img.save(buf, format="PNG", quality=95)
+                    data = buf.getvalue()
+                return data
+            return None
+
+        # The swap re-synthesises every pixel of the pack, so this — not the
+        # background render — is where fabricated pack copy comes from. A
+        # verified KAOKA Chocolat Noir bar shipped in a reel reading "Sliry
+        # Sniilzo Sci Cooira" under a correct wordmark. generate_image's guard
+        # runs on the BACKGROUND, which by design carries no product and no
+        # text, so it inspects the one stage that cannot produce this defect
+        # and never saw the one that does.
+        #
+        # Judged on `malformed`, not `offending`: a faithful swap reproduces
+        # the real pack's own small print, which is not in allowed_text but is
+        # correct. Only invented or unresolvable letterforms are the defect.
+        for attempt in (1, 2):
+            result_data = await _one_swap()
+            if result_data is None:
+                break
+            verdict = await detect_unintended_text(
+                result_data,
+                "image/png",
+                allowed_text=[t for t in (product_name, vendor_name) if t],
+                label=f"swap:{product_name[:40]}",
+            )
+            if not verdict.malformed:
                 logger.info(
                     "Gemini product replacement successful for %s", product_name
                 )
                 return result_data
+            logger.warning(
+                "Product swap attempt %d for '%s' invented pack lettering (%s)",
+                attempt,
+                product_name,
+                "; ".join(verdict.malformed[:4]),
+            )
+
+        # Both attempts fabricated copy. Fall back to the pre-swap frame — the
+        # same choice this function already makes for a too-small reference,
+        # and for the same reason: a clean unlabeled container is publishable,
+        # a fabricated third-party pack is not.
+        logger.warning(
+            "Keeping the unlabeled placeholder for '%s' — the swap could not "
+            "render the pack without inventing copy",
+            product_name,
+        )
+        return image_data
 
     except Exception as exc:
         logger.warning(

@@ -128,12 +128,28 @@ class TextGuardVerdict:
     visible_text: list[str] = field(default_factory=list)
     unintended_text: list[str] = field(default_factory=list)
     gibberish_text: list[str] = field(default_factory=list)
+    illegible_marks: list[str] = field(default_factory=list)
 
     @property
     def offending(self) -> list[str]:
         """Every string that made this frame unpublishable, de-duplicated."""
         seen: dict[str, None] = {}
         for item in [*self.gibberish_text, *self.unintended_text]:
+            seen.setdefault(item, None)
+        return list(seen)
+
+    @property
+    def malformed(self) -> list[str]:
+        """Lettering that is garbled or unresolvable, whatever the allow-list.
+
+        Distinct from ``offending``: a caller checking the output of a product
+        SWAP wants this, not that. The swap legitimately reproduces the real
+        pack's own small print, which is unlisted but faithful — judging it by
+        the allow-list would reject a good swap. Invented or unresolvable
+        letterforms are a defect no allow-list can excuse.
+        """
+        seen: dict[str, None] = {}
+        for item in [*self.gibberish_text, *self.illegible_marks]:
             seen.setdefault(item, None)
         return list(seen)
 
@@ -366,6 +382,7 @@ def verdict_from_payload(payload: dict) -> TextGuardVerdict:
         # (strengthen_prompt, logging) reads this list, so they belong in it.
         unintended_text=unintended + illegible,
         gibberish_text=gibberish,
+        illegible_marks=illegible,
     )
 
 
