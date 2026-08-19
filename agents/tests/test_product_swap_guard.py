@@ -159,7 +159,9 @@ def test_the_swap_block_asks_the_guard_about_the_swap_output():
     """Pin the wiring: the guard call must exist in the swap function."""
     import inspect
 
-    source = inspect.getsource(nodes._replace_product_in_generated_image)
+    from shared.product_swap import swap_product_into_image
+
+    source = inspect.getsource(swap_product_into_image)
     assert "detect_unintended_text" in source, (
         "the swap returned unchecked bytes — this is how invented pack copy "
         "reached a published reel"
@@ -175,3 +177,45 @@ def test_the_swap_block_asks_the_guard_about_the_swap_output():
     assert ".malformed" not in source
     # The fallback must be the pre-swap image, not a failure.
     assert "return image_data" in source
+
+
+class TestRegenerationIsGuardedToo:
+    """The regeneration path had no fabrication guard at all.
+
+    worker.py carried its own copy of the swap that returned the editor's
+    first output unread — so a post regenerated from the UI, the button a
+    reviewer presses precisely BECAUSE the image was wrong, had less
+    protection than the pipeline run that produced it.
+    """
+
+    def test_the_regen_path_no_longer_returns_the_first_output_unread(self):
+        import inspect
+
+        import worker
+
+        src = inspect.getsource(worker._replace_product_in_image)
+        assert "swap_product_into_image(" in src
+        # The old copy pulled inline_data straight out of the response and
+        # returned it.
+        assert "inline_data" not in src
+        assert "generate_content" not in src
+
+    def test_the_vendor_reaches_the_guards_allow_list(self):
+        import inspect
+
+        import worker
+
+        src = inspect.getsource(worker._handle_image_regeneration)
+        # Regen resolved the vendor for the logo overlay but never passed it
+        # to the swap, so a faithful pack carrying the vendor's own wordmark
+        # could be reported as invented copy.
+        assert "product_vendor" in src
+        assert "product_name, product_vendor" in src
+
+    def test_both_callers_get_the_same_attempt_budget(self):
+        from shared.product_swap import SWAP_ATTEMPTS
+
+        assert SWAP_ATTEMPTS >= 2, (
+            "the editor is stochastic; one roll was the regen path's whole "
+            "budget"
+        )

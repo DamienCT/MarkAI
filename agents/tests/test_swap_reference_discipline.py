@@ -59,22 +59,34 @@ class TestTheUpscaleLaundersTheCheck:
 
 class TestCallSitesCheckBeforePreparing:
     def test_check_precedes_preparation(self):
-        # Match the CALL sites, not the names: both appear in the function's
-        # local import block, in the other order.
-        src = inspect.getsource(nodes._replace_product_in_generated_image)
-        i_check = src.index("reference_supports_swap(raw_reference_img)")
+        # Match the CALL sites, not the names: both appear in the module's
+        # import block, in the other order.
+        from shared.product_swap import swap_product_into_image
+
+        src = inspect.getsource(swap_product_into_image)
+        i_check = src.index("reference_supports_swap(raw_reference)")
         i_prep = src.index("prepare_product_reference(product_image_data)")
         assert i_check < i_prep, "the thumbnail check must run on the RAW reference"
 
-    def test_the_regeneration_path_matches(self):
-        # worker.py carries a second, divergent copy of the swap; it drifted
-        # once already, so pin the ordering there too.
+    def test_there_is_only_one_swap_implementation(self):
+        # worker.py and the content workflow each carried their own copy, and
+        # they drifted: the regeneration path — the button a reviewer presses
+        # BECAUSE the image was wrong — lost the fabrication guard entirely.
         import worker
 
-        src = inspect.getsource(worker)
-        i_check = src.index("reference_supports_swap(raw_reference_img)")
-        i_prep = src.index("prepare_product_reference(product_image_data)")
-        assert i_check < i_prep
+        for module in (worker, nodes):
+            src = inspect.getsource(module)
+            assert "reference_supports_swap(" not in src, (
+                f"{module.__name__} is reimplementing the swap instead of "
+                "calling shared.product_swap.swap_product_into_image"
+            )
+            assert "prepare_product_reference(" not in src
+
+    def test_both_paths_call_the_shared_swap(self):
+        import worker
+
+        for module in (worker, nodes):
+            assert "swap_product_into_image(" in inspect.getsource(module)
 
 
 class TestTheEditorIsToldWhichPack:

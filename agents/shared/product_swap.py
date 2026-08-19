@@ -299,3 +299,154 @@ def build_swap_instruction(
         f"scene.\n"
         f"{aspect_hint}"
     )
+
+
+# --- the swap itself -------------------------------------------------------
+#
+# The reference discipline and the copy-don't-draw contract above are only
+# half the defence. The other half is checking what came BACK, and that check
+# lived in the content workflow alone: agents/worker.py's regeneration path
+# carried its own copy of the swap that returned the editor's first output
+# unread. So a post regenerated from the UI — the button a reviewer presses
+# precisely BECAUSE the image was wrong — had no fabrication guard at all,
+# while the pipeline that produced the original did.
+#
+# swap_product_into_image is that one implementation. Both callers use it, so
+# the two cannot drift again.
+
+#: Attempts allowed before falling back to the unlabeled placeholder. The
+#: editor is stochastic, so a second roll is worth its cost; a third mostly
+#: buys latency.
+SWAP_ATTEMPTS = 2
+
+
+async def swap_product_into_image(
+    image_data: bytes,
+    product_image_data: bytes,
+    product_name: str,
+    *,
+    vendor_name: str = "",
+    label: str = "",
+) -> bytes:
+    """Replace the scene's blank placeholder with the real pack.
+
+    Returns the edited image, or *image_data* unchanged when the swap cannot
+    be done faithfully. Never raises: a failed swap keeps the clean unlabeled
+    container, which is publishable, where a fabricated third-party pack is
+    not.
+
+    The output is judged on ``verdict.fabricated`` — invented or unresolvable
+    letterforms — and NOT on ``malformed``. malformed also carries
+    illegible_marks, and build_swap_instruction explicitly ASKS for copy too
+    small to reproduce to come back as soft out-of-focus texture, which the
+    guard is required to report as an unresolvable mark. Judged that way a
+    CORRECT swap fails every attempt and the blank placeholder ships.
+    """
+    import asyncio
+    from io import BytesIO
+
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+        from PIL import Image as PILImage
+
+        from shared.config import settings
+        from shared.image_processing import (
+            aspect_hint_for_size,
+            resize_preserve_aspect,
+        )
+        from shared.image_text_guard import detect_unintended_text
+        from shared.llm import get_model_for_category
+
+        if not getattr(settings, "GEMINI_API_KEY", ""):
+            logger.warning("GEMINI_API_KEY not set — skipping product swap")
+            return image_data
+
+        # This MUST run on the RAW reference. prepare_product_reference grows
+        # the short edge to REFERENCE_MIN_EDGE, four times MIN_SWAPPABLE_EDGE,
+        # so the same check made afterwards can never fail — a 120px thumbnail
+        # would be laundered into "large enough" and the editor would then
+        # invent every character on it.
+        raw_reference = PILImage.open(BytesIO(product_image_data))
+        if not reference_supports_swap(raw_reference):
+            logger.warning(
+                "Product reference too small (%s) for a faithful swap — "
+                "keeping the unlabeled placeholder",
+                raw_reference.size,
+            )
+            return image_data
+
+        marketing_img = PILImage.open(BytesIO(image_data))
+        input_size = marketing_img.size
+        aspect_hint = aspect_hint_for_size(input_size)
+        product_img = PILImage.open(
+            BytesIO(prepare_product_reference(product_image_data))
+        )
+
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        swap_model = await get_model_for_category("image-edit")
+        instruction = build_swap_instruction(
+            product_name, aspect_hint, vendor_name=vendor_name
+        )
+
+        async def _one_swap() -> bytes | None:
+            """One edit, returned at the marketing image's size."""
+            # generate_content is synchronous — keep it off the event loop.
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=swap_model,
+                contents=[instruction, marketing_img, product_img],
+                config=gtypes.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"]
+                ),
+            )
+            for part in response.candidates[0].content.parts:
+                if part.inline_data is None:
+                    continue
+                data = part.inline_data.data
+                # The editor ignores aspect hints fairly often. On a size
+                # mismatch, centre-crop to the target aspect rather than
+                # stretching, which would distort the pack.
+                img = PILImage.open(BytesIO(data))
+                if img.size != input_size:
+                    logger.info(
+                        "Editor returned %s, aspect-preserving resize to %s",
+                        img.size,
+                        input_size,
+                    )
+                    img = resize_preserve_aspect(img, input_size)
+                    buf = BytesIO()
+                    img.save(buf, format="PNG", quality=95)
+                    data = buf.getvalue()
+                return data
+            return None
+
+        allowed = [t for t in (product_name, vendor_name) if t]
+        for attempt in range(1, SWAP_ATTEMPTS + 1):
+            result = await _one_swap()
+            if result is None:
+                break
+            verdict = await detect_unintended_text(
+                result,
+                "image/png",
+                allowed_text=allowed,
+                label=f"swap:{label or product_name[:40]}",
+            )
+            if not verdict.fabricated:
+                logger.info("Product swap successful for %s", product_name)
+                return result
+            logger.warning(
+                "Product swap attempt %d for '%s' invented pack lettering (%s)",
+                attempt,
+                product_name,
+                "; ".join(verdict.fabricated[:4]),
+            )
+
+        logger.warning(
+            "Keeping the unlabeled placeholder for '%s' — the swap could not "
+            "render the pack without inventing copy",
+            product_name,
+        )
+    except Exception as exc:
+        logger.warning("Product swap failed: %s — using the original image", exc)
+    return image_data

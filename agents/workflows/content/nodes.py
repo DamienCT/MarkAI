@@ -2685,64 +2685,13 @@ async def _replace_product_in_generated_image(
                     resp.raise_for_status()
                     product_image_data = resp.content
 
-        # Use Gemini to replace the generic product
-        from shared.config import settings
-
-        if not settings.GEMINI_API_KEY:
-            logger.warning("GEMINI_API_KEY not set — skipping product replacement")
-            return image_data
-
-        from google import genai
-        from google.genai import types as gtypes
-        from PIL import Image as PILImage
-        from io import BytesIO
-
-        from shared.image_text_guard import detect_unintended_text
-        from shared.product_swap import (
-            build_swap_instruction,
-            prepare_product_reference,
-            reference_supports_swap,
-        )
-
-        gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        marketing_img = PILImage.open(BytesIO(image_data))
-
-        # A thumbnail reference simply does not contain the pack's lettering,
-        # so the editor can only invent it. Publishing a clean unlabeled
-        # container beats publishing a fabricated third-party pack.
-        #
-        # This MUST run on the RAW reference. prepare_product_reference grows
-        # the short edge to REFERENCE_MIN_EDGE (1024), four times
-        # MIN_SWAPPABLE_EDGE (256), so the same check made afterwards can never
-        # fail — a 120px thumbnail was upscaled into "large enough" and the
-        # editor then invented every character on it. That ordering is the
-        # upstream cause of the fabrication seen in rendered reels: a correct
-        # KAOKA wordmark (large enough to survive at thumbnail scale) above
-        # invented body copy, and "AIMLO / Miheell" for Emile Noel.
-        raw_reference_img = PILImage.open(BytesIO(product_image_data))
-        if not reference_supports_swap(raw_reference_img):
-            logger.warning(
-                "Product reference too small (%s) for a faithful swap — "
-                "keeping the unlabeled placeholder",
-                raw_reference_img.size,
-            )
-            return image_data
-
-        # The editor re-synthesises every pixel of the pack, so what it can
-        # SEE of the reference decides whether the pack's printed copy comes
-        # back faithful or as invented letterforms. Crop the flat catalogue
-        # background away and rescale so the editor's fixed input budget is
-        # spent on the pack rather than on white margin.
-        product_image_data = prepare_product_reference(product_image_data)
-        product_img = PILImage.open(BytesIO(product_image_data))
-
+        _prod = state.get("product")
+        _prod = _prod if isinstance(_prod, dict) else {}
         # calendar_items has no product_name column, so the old lookup
         # calendar_item["product_name"] resolved to the literal "product" on
         # EVERY run: the editor was never told which pack it was copying, and
         # the guard's allow-list read ["product", vendor]. The matched product
         # is already in state.
-        _prod = state.get("product")
-        _prod = _prod if isinstance(_prod, dict) else {}
         product_name = (
             (_prod.get("name") or "").strip()
             or (state.get("calendar_item", {}).get("title") or "").strip()
@@ -2750,97 +2699,15 @@ async def _replace_product_in_generated_image(
         )
         vendor_name = (_prod.get("vendor_name") or "").strip()
 
-        input_size = marketing_img.size  # preserve original dimensions (e.g. 1024x1024)
-        aspect_hint = aspect_hint_for_size(input_size)
+        from shared.product_swap import swap_product_into_image
 
-        swap_model = await get_model_for_category("image-edit")
-
-        async def _one_swap() -> bytes | None:
-            """One Gemini edit, returned at the marketing image's size."""
-            # generate_content is synchronous — keep it off the worker event loop
-            response = await asyncio.to_thread(
-                gemini_client.models.generate_content,
-                model=swap_model,
-                contents=[
-                    build_swap_instruction(
-                        product_name, aspect_hint, vendor_name=vendor_name
-                    ),
-                    marketing_img,
-                    product_img,
-                ],
-                config=gtypes.GenerateContentConfig(
-                    response_modalities=["TEXT", "IMAGE"]
-                ),
-            )
-            for part in response.candidates[0].content.parts:
-                if part.inline_data is None:
-                    continue
-                data = part.inline_data.data
-                # Gemini ignores aspect hints fairly often. When it returns a
-                # mismatched size we center-crop to the target aspect instead
-                # of stretching, which would otherwise distort the product.
-                img = PILImage.open(BytesIO(data))
-                if img.size != input_size:
-                    logger.info(
-                        "Gemini returned %s, aspect-preserving resize to %s",
-                        img.size, input_size,
-                    )
-                    img = resize_preserve_aspect(img, input_size)
-                    buf = BytesIO()
-                    img.save(buf, format="PNG", quality=95)
-                    data = buf.getvalue()
-                return data
-            return None
-
-        # The swap re-synthesises every pixel of the pack, so this — not the
-        # background render — is where fabricated pack copy comes from. A
-        # verified KAOKA Chocolat Noir bar shipped in a reel reading "Sliry
-        # Sniilzo Sci Cooira" under a correct wordmark. generate_image's guard
-        # runs on the BACKGROUND, which by design carries no product and no
-        # text, so it inspects the one stage that cannot produce this defect
-        # and never saw the one that does.
-        #
-        # Judged on `malformed`, not `offending`: a faithful swap reproduces
-        # the real pack's own small print, which is not in allowed_text but is
-        # correct. Only invented or unresolvable letterforms are the defect.
-        for attempt in (1, 2):
-            result_data = await _one_swap()
-            if result_data is None:
-                break
-            verdict = await detect_unintended_text(
-                result_data,
-                "image/png",
-                allowed_text=[t for t in (product_name, vendor_name) if t],
-                label=f"swap:{product_name[:40]}",
-            )
-            # `fabricated`, not `malformed`. malformed also carries
-            # illegible_marks, and build_swap_instruction explicitly ASKS for
-            # copy too small to reproduce to come back as soft out-of-focus
-            # texture — which the guard is required to report as an
-            # unresolvable letter-like mark. Judged that way a CORRECT swap
-            # fails both attempts and the blank placeholder ships.
-            if not verdict.fabricated:
-                logger.info(
-                    "Gemini product replacement successful for %s", product_name
-                )
-                return result_data
-            logger.warning(
-                "Product swap attempt %d for '%s' invented pack lettering (%s)",
-                attempt,
-                product_name,
-                "; ".join(verdict.fabricated[:4]),
-            )
-
-        # Both attempts fabricated copy. Fall back to the pre-swap frame — the
-        # same choice this function already makes for a too-small reference,
-        # and for the same reason: a clean unlabeled container is publishable,
-        # a fabricated third-party pack is not.
-        logger.warning(
-            "Keeping the unlabeled placeholder for '%s' — the swap could not "
-            "render the pack without inventing copy",
+        return await swap_product_into_image(
+            image_data,
+            product_image_data,
             product_name,
+            vendor_name=vendor_name,
+            label=product_name[:40],
         )
-        return image_data
 
     except Exception as exc:
         logger.warning(

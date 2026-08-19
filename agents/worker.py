@@ -189,12 +189,17 @@ async def _release_stuck_calendar_item(
 
 
 async def _replace_product_in_image(
-    image_data: bytes, product_image_url: str, product_name: str
+    image_data: bytes,
+    product_image_url: str,
+    product_name: str,
+    vendor_name: str = "",
 ) -> bytes:
-    """Use Gemini to swap a generic placeholder with the real product photo.
+    """Resolve the product photo, then run the shared guarded swap.
 
-    Mirrors agents.workflows.content.nodes._replace_product_in_generated_image
-    so regeneration preserves the same product across runs.
+    Only the URL resolution lives here; the swap itself is
+    shared.product_swap.swap_product_into_image, the same call the content
+    workflow makes. This function used to hold a second, divergent copy of
+    the swap that skipped the fabrication guard entirely.
     """
     import httpx as _httpx
 
@@ -227,76 +232,20 @@ async def _replace_product_in_image(
                     resp.raise_for_status()
                     product_image_data = resp.content
 
-        from shared.config import settings as _settings
-        if not getattr(_settings, "GEMINI_API_KEY", ""):
-            logger.warning("GEMINI_API_KEY not set — skipping product replacement on regen")
-            return image_data
+        from shared.product_swap import swap_product_into_image
 
-        from google import genai
-        from google.genai import types as gtypes
-        from PIL import Image as PILImage
-        from io import BytesIO
-        from shared.image_processing import (
-            resize_preserve_aspect,
-            aspect_hint_for_size,
+        # One implementation, shared with the content workflow. This path used
+        # to carry its own copy that returned the editor's first output
+        # UNREAD — no fabrication guard, no retry — so a post regenerated from
+        # the UI, the button a reviewer presses precisely BECAUSE the image
+        # was wrong, had less protection than the run that produced it.
+        return await swap_product_into_image(
+            image_data,
+            product_image_data,
+            product_name,
+            vendor_name=vendor_name,
+            label=f"regen:{product_name[:40]}",
         )
-
-        from shared.llm import get_model_for_category
-        from shared.product_swap import (
-            build_swap_instruction,
-            prepare_product_reference,
-            reference_supports_swap,
-        )
-
-        gemini_client = genai.Client(api_key=_settings.GEMINI_API_KEY)
-        marketing_img = PILImage.open(BytesIO(image_data))
-        # Same reference discipline as the content workflow: the editor redraws
-        # the pack, so skip the swap outright when the reference is too small
-        # to carry lettering, THEN crop the flat catalogue background away.
-        # Order matters — prepare_product_reference upscales the short edge to
-        # 1024, four times MIN_SWAPPABLE_EDGE, so a check made after it can
-        # never fail and a 120px thumbnail is laundered into "large enough".
-        raw_reference_img = PILImage.open(BytesIO(product_image_data))
-        if not reference_supports_swap(raw_reference_img):
-            logger.warning(
-                "Product reference too small (%s) for a faithful swap on regen "
-                "— keeping the unlabeled placeholder",
-                raw_reference_img.size,
-            )
-            return image_data
-        product_image_data = prepare_product_reference(product_image_data)
-        product_img = PILImage.open(BytesIO(product_image_data))
-        input_size = marketing_img.size
-        aspect_hint = aspect_hint_for_size(input_size)
-
-        swap_model = await get_model_for_category("image-edit")
-        # generate_content is synchronous — keep it off the worker event loop
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=swap_model,
-            contents=[
-                build_swap_instruction(product_name, aspect_hint),
-                marketing_img,
-                product_img,
-            ],
-            config=gtypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
-        )
-
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None:
-                result_data = part.inline_data.data
-                result_img = PILImage.open(BytesIO(result_data))
-                if result_img.size != input_size:
-                    logger.info(
-                        "Gemini returned %s, aspect-preserving resize to %s (regen)",
-                        result_img.size, input_size,
-                    )
-                    result_img = resize_preserve_aspect(result_img, input_size)
-                    buf = BytesIO()
-                    result_img.save(buf, format="PNG", quality=95)
-                    result_data = buf.getvalue()
-                logger.info("Gemini product replacement successful (regen) for %s", product_name)
-                return result_data
     except Exception as exc:
         logger.warning("Gemini product replacement failed on regen: %s — using base image", exc)
 
@@ -463,6 +412,10 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # product placeholder and Gemini swaps the real product back in.
         product_image_url: str | None = None
         product_name = ""
+        # The swap's guard allow-lists the vendor's own wordmark, so a
+        # faithful pack is not reported as invented copy. Regen resolved the
+        # vendor for the logo overlay but never passed it to the swap.
+        product_vendor = ""
         cal_channel = ""
         # Resolve the vendor (manufacturer) logo from the product's vendor_name
         # so posts generated BEFORE the vendor-logo feature pick it up on regen,
@@ -494,6 +447,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 if not product_name:
                     product_name = product.get("name", "")
                 _vendor = (product.get("vendor_name") or "").strip()
+                product_vendor = _vendor
                 if _vendor:
                     _vlogos = brand_guidelines.get("vendor_logos", {})
                     _ventry = _vlogos.get(_vendor) if isinstance(_vlogos, dict) else None
@@ -667,7 +621,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # ── 1b. Replace generic placeholder with real product via Gemini ──
         if product_image_url:
             image_data = await _replace_product_in_image(
-                image_data, product_image_url, product_name
+                image_data, product_image_url, product_name, product_vendor
             )
 
         raw_obj = f"{brand_id}/{calendar_item_id}/background.png"
