@@ -66,12 +66,19 @@ class TestGammaMath:
             assert nodes._gamma_for(100.0, bad) == 1.0
 
 
+def _apply(stats, p, key):
+    """Where *key* lands after the black point and gamma this grade sets."""
+    lifted = nodes._black_point(float(stats[key]), float(p.get("black") or 0.0))
+    return 255.0 * (lifted / 255.0) ** (1.0 / p["gamma"])
+
+
 class TestGradeParams:
     def test_the_measured_reel_is_lifted_toward_the_stills(self):
         p = nodes._grade_params(REEL_MIDDLE)
         assert p is not None
-        landed = 255.0 * (REEL_MIDDLE["YAVG"] / 255.0) ** (1.0 / p["gamma"])
-        assert landed == pytest.approx(GOLD_YAVG, abs=2.0)
+        assert _apply(REEL_MIDDLE, p, "YAVG") == pytest.approx(
+            GOLD_YAVG, abs=2.0
+        )
 
     def test_and_its_colour_is_brought_back(self):
         p = nodes._grade_params(REEL_MIDDLE)
@@ -112,10 +119,9 @@ class TestGradeParams:
     def test_highlights_are_protected_from_clipping(self):
         # Dark overall but with a hot specular already near the top — the
         # oil-and-glass case. The lift must back off rather than burn it.
-        hot = {"YAVG": 70.0, "YHIGH": 232.0, "SATAVG": 12.0}
+        hot = {"YAVG": 70.0, "YHIGH": 232.0, "YLOW": 20.0, "SATAVG": 12.0}
         p = nodes._grade_params(hot)
-        landed = 255.0 * (hot["YHIGH"] / 255.0) ** (1.0 / p["gamma"])
-        assert landed <= nodes._GRADE_MAX_YHIGH
+        assert _apply(hot, p, "YHIGH") <= nodes._GRADE_MAX_YHIGH
 
     def test_a_grey_shot_is_saturated_but_not_beyond_the_cap(self):
         p = nodes._grade_params({"YAVG": GOLD_YAVG, "YHIGH": GOLD_YHIGH,
@@ -232,3 +238,82 @@ class TestPictureMeasurement:
         assert f"scale={nodes._GRADE_ANALYSIS_W}:-2" in " ".join(cmd)
         # tblend would turn this into a motion measurement, not a tone one.
         assert "tblend" not in " ".join(cmd)
+
+
+class TestTheBlackPointStopsTheWash:
+    """Gamma alone cannot land both the mean and the shadows.
+
+    The first graded pass proved it on real footage: lifting the reel from
+    YAVG 92.8 to 132.8 also dragged YLOW from 31.5 to 72.6 against the
+    stills' 60. Thirteen points of raised black is what "washed out" looks
+    like, and it was visible on the contact sheet. Subtracting a black point
+    before the gamma gives a second control, and two controls land two
+    targets.
+    """
+
+    REEL_BODY = {"YAVG": 92.8, "YHIGH": 186.5, "YLOW": 31.5, "SATAVG": 11.1}
+
+    def test_all_three_tonal_landmarks_land_on_the_stills(self):
+        p = nodes._grade_params(self.REEL_BODY)
+        assert _apply(self.REEL_BODY, p, "YLOW") == pytest.approx(60.0, abs=2.0)
+        assert _apply(self.REEL_BODY, p, "YAVG") == pytest.approx(140.0, abs=2.0)
+        # The highlight lands for free — the same curve steepens the top.
+        assert _apply(self.REEL_BODY, p, "YHIGH") == pytest.approx(
+            GOLD_YHIGH, abs=4.0
+        )
+
+    def test_without_the_black_point_the_shadows_would_be_milky(self):
+        """The measured regression, stated as the reason the solve exists."""
+        p = nodes._grade_params(self.REEL_BODY)
+        gamma_only = 255.0 * (self.REEL_BODY["YLOW"] / 255.0) ** (
+            1.0 / p["gamma"]
+        )
+        assert gamma_only > 70.0, "this is the wash the black point removes"
+        assert _apply(self.REEL_BODY, p, "YLOW") < gamma_only
+
+    def test_a_shot_with_deep_blacks_already_is_barely_touched(self):
+        # YLOW at 8 is a genuinely deep shadow; subtracting much would crush
+        # detail that is really there.
+        p = nodes._grade_params(
+            {"YAVG": 95.0, "YHIGH": 190.0, "YLOW": 8.0, "SATAVG": 11.0}
+        )
+        assert p["black"] == pytest.approx(0.0, abs=0.01)
+
+    def test_the_subtraction_is_bounded(self):
+        p = nodes._grade_params(
+            {"YAVG": 60.0, "YHIGH": 120.0, "YLOW": 55.0, "SATAVG": 8.0}
+        )
+        assert p["black"] <= nodes._GRADE_MAX_BLACK_POINT
+
+    def test_the_black_point_maths_matches_the_filter(self):
+        # colorlevels: out = (in/255 - rimin) / (1 - rimin)
+        assert nodes._black_point(255.0, 0.0) == pytest.approx(255.0)
+        assert nodes._black_point(0.0, 0.1) == 0.0
+        assert nodes._black_point(25.5, 0.1) == pytest.approx(0.0)
+        assert nodes._black_point(127.5, 0.1) == pytest.approx(
+            255.0 * (0.5 - 0.1) / 0.9
+        )
+
+    def test_the_filter_puts_the_black_point_before_the_gamma(self):
+        chain = nodes._grade_chain(
+            [nodes._grade_params(self.REEL_BODY)], [5.0]
+        )
+        assert chain.index("colorlevels=") < chain.index("eq=")
+        # Same window on both, or one of them would bleed into its neighbour.
+        assert chain.count("enable=between(t\\,0.000\\,4.999)") == 2
+
+    def test_all_three_channels_move_together(self):
+        # A per-channel difference would tint the shadows.
+        chain = nodes._grade_chain(
+            [{"gamma": 1.5, "saturation": 1.2, "black": 0.06}], [4.0]
+        )
+        assert "rimin=0.0600" in chain
+        assert "gimin=0.0600" in chain
+        assert "bimin=0.0600" in chain
+
+    def test_no_black_point_emits_no_colorlevels(self):
+        chain = nodes._grade_chain(
+            [{"gamma": 1.5, "saturation": 1.2, "black": 0.0}], [4.0]
+        )
+        assert "colorlevels" not in chain
+        assert "eq=gamma=1.500" in chain

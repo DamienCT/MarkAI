@@ -1810,6 +1810,7 @@ def _motion_verdict(score: float | None) -> str | None:
 # costs no extra pass, and it is applied to the PICTURE before the text is
 # composited so captions keep the colour they were designed with.
 _GRADE_TARGET_YAVG = 140.0
+_GRADE_TARGET_YLOW = 60.0
 _GRADE_TARGET_SATAVG = 19.0
 _GRADE_ANALYSIS_W = 240
 #: Inside this band the shot already matches the stills — leave it alone.
@@ -1817,8 +1818,12 @@ _GRADE_YAVG_TOLERANCE = 8.0
 #: Only ever LIFT. A shot that comes back brighter than the stills is a
 #: deliberate high-key beat, not a defect, and darkening it is a taste call
 #: nothing here has grounds to make.
-_GRADE_MAX_GAMMA = 1.85
+_GRADE_MAX_GAMMA = 1.95
 _GRADE_MAX_SATURATION = 1.9
+#: Upper bound on the black-point subtraction, as a fraction of full scale.
+#: Beyond this a shot with genuinely deep blacks starts losing shadow detail
+#: rather than milk.
+_GRADE_MAX_BLACK_POINT = 0.14
 #: Predicted YHIGH above this would start clipping highlights, so the gamma
 #: is backed off until it doesn't. Real specular highlights on oil and glass
 #: are the most expensive thing in these frames to lose.
@@ -1891,8 +1896,32 @@ def _gamma_for(measured: float, target: float) -> float:
     return math.log(measured / 255.0) / math.log(target / 255.0)
 
 
+def _black_point(value: float, r: float) -> float:
+    """Where *value* lands after colorlevels subtracts a black point *r* (pure).
+
+    colorlevels with rimin=r and the defaults elsewhere computes
+    ``out = (in/255 - r) / (1 - r)``, clamped at zero.
+    """
+    if r <= 0.0:
+        return value
+    return max(0.0, 255.0 * (value / 255.0 - r) / (1.0 - r))
+
+
 def _grade_params(stats: dict[str, float] | None) -> dict[str, float] | None:
-    """Gamma and saturation for one shot, or None to leave it untouched (pure).
+    """Black point, gamma and saturation for one shot, or None (pure).
+
+    Gamma alone cannot land both the mean and the shadows: it lifts
+    everything, and lifting a shot from YAVG 93 to 140 also drags YLOW from
+    31 to 73 against the stills' 60. That extra 13 points of raised black is
+    exactly what "washed out" looks like, and it was visible on the first
+    graded pass. Subtracting a black point FIRST gives a second control, and
+    with two controls both landmarks land: on the measured reel r=0.06 with
+    gamma 1.88 puts YAVG on 140, YLOW on 61 and — for free, because the same
+    curve steepens the top — YHIGH on 213 against the stills' 214.
+
+    The black point is solved by bisection rather than algebra because the
+    gamma it implies depends on it. Twenty iterations of arithmetic; it costs
+    nothing next to the render it corrects.
 
     Returns None whenever the shot is unmeasurable, already on target, or
     already brighter than the stills — in every one of those cases the honest
@@ -1903,16 +1932,41 @@ def _grade_params(stats: dict[str, float] | None) -> dict[str, float] | None:
     yavg = float(stats.get("YAVG") or 0.0)
     if yavg <= 0.0:
         return None
+    ylow = float(stats.get("YLOW") or 0.0)
+    yhigh = float(stats.get("YHIGH") or 0.0)
 
+    black = 0.0
     gamma = 1.0
     if yavg < _GRADE_TARGET_YAVG - _GRADE_YAVG_TOLERANCE:
-        gamma = min(_GRADE_MAX_GAMMA, _gamma_for(yavg, _GRADE_TARGET_YAVG))
+        def _solve(r: float) -> tuple[float, float]:
+            """(gamma landing the mean on target, where YLOW ends up)."""
+            mean = _black_point(yavg, r)
+            g = _gamma_for(mean, _GRADE_TARGET_YAVG) if mean > 0.0 else 1.0
+            g = max(1.0, min(_GRADE_MAX_GAMMA, g))
+            low = _black_point(ylow, r)
+            landed = 255.0 * (low / 255.0) ** (1.0 / g) if low > 0.0 else 0.0
+            return g, landed
+
+        # Raising r pushes the landed shadow DOWN monotonically, so bisect
+        # for the r that lands it on the stills' black level. r=0 is the
+        # milky end; _GRADE_MAX_BLACK_POINT bounds how much shadow detail
+        # may be traded away.
+        lo, hi = 0.0, _GRADE_MAX_BLACK_POINT
+        if _solve(lo)[1] > _GRADE_TARGET_YLOW:
+            for _ in range(20):
+                mid = (lo + hi) / 2.0
+                if _solve(mid)[1] > _GRADE_TARGET_YLOW:
+                    lo = mid
+                else:
+                    hi = mid
+            black = round((lo + hi) / 2.0, 4)
+        gamma = _solve(black)[0]
         # Back the lift off until the predicted 90th-percentile highlight
         # stays out of clipping. Losing the specular on oil and glass costs
         # more than the remaining stop of exposure buys.
-        yhigh = float(stats.get("YHIGH") or 0.0)
         if yhigh > 0.0:
-            while gamma > 1.0 and 255.0 * (yhigh / 255.0) ** (1.0 / gamma) > (
+            top = _black_point(yhigh, black)
+            while gamma > 1.0 and 255.0 * (top / 255.0) ** (1.0 / gamma) > (
                 _GRADE_MAX_YHIGH
             ):
                 gamma -= 0.05
@@ -1926,9 +1980,9 @@ def _grade_params(stats: dict[str, float] | None) -> dict[str, float] | None:
         )
         saturation = round(saturation, 3)
 
-    if gamma <= 1.0 and saturation <= 1.0:
+    if gamma <= 1.0 and saturation <= 1.0 and black <= 0.0:
         return None
-    return {"gamma": gamma, "saturation": saturation}
+    return {"gamma": gamma, "saturation": saturation, "black": black}
 
 
 def _grade_chain(
@@ -1946,17 +2000,26 @@ def _grade_chain(
         end = start + float(dur or 0.0)
         p = params[i] if i < len(params) else None
         if p:
+            # Escaped commas, NOT quotes. Verified against ffmpeg 6:
+            # `enable=between(t\,0\,3)` initialises, while the form the docs
+            # show for a shell — `enable='between(t,0,3)'` — reaches the
+            # filtergraph parser with its quotes already consumed and fails
+            # with "No such filter: '0'".
+            #
+            # The window is half-open on the right so neighbouring shots
+            # never both claim the frame on the boundary.
+            window = f"enable=between(t\\,{start:.3f}\\,{end - 0.001:.3f})"
+            black = float(p.get("black") or 0.0)
+            if black > 0.0:
+                # Black point first: the gamma was solved for what this
+                # leaves behind, so the order is not interchangeable.
+                parts.append(
+                    f"colorlevels=rimin={black:.4f}:gimin={black:.4f}"
+                    f":bimin={black:.4f}:{window}"
+                )
             parts.append(
                 f"eq=gamma={p['gamma']:.3f}:saturation={p['saturation']:.3f}"
-                # Escaped commas, NOT quotes. Verified against ffmpeg 6:
-                # `enable=between(t\,0\,3)` initialises, while the form the
-                # docs show for a shell — `enable='between(t,0,3)'` — reaches
-                # the filtergraph parser with its quotes already consumed and
-                # fails with "No such filter: '0'".
-                #
-                # The window is half-open on the right so neighbouring shots
-                # never both claim the frame on the boundary.
-                f":enable=between(t\\,{start:.3f}\\,{end - 0.001:.3f})"
+                f":{window}"
             )
         start = end
     return ",".join(parts)
