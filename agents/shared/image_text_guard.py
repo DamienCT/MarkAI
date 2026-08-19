@@ -202,26 +202,36 @@ For each piece of lettering you can read, decide:
 Garbled, misspelled, invented or malformed lettering is ALWAYS a defect — even
 on a label that legitimately belongs there.
 
-CRITICAL — text you CANNOT read is still text. A generated frame's most common
-text defect is lettering that reads as writing at a glance but resolves into no
-characters: a chalk board with strokes in the rhythm of words, a jar label
-carrying a line of letter-like marks, a shelf tag with a price-shaped smudge, a
-sign whose letters dissolve under inspection. A viewer reads these as words the
-brand did not write, so they are defects, and you must report them EVEN THOUGH
-you cannot transcribe them. Do not omit a surface merely because you failed to
-resolve its characters — say where it is instead.
+CRITICAL — PROMINENT text you cannot read is still text. A generated frame's
+most common text defect is lettering that reads as writing at a glance but
+resolves into no characters: a chalk board with strokes in the rhythm of words,
+a jar label carrying a line of letter-like marks, a shelf tag with a
+price-shaped smudge. A viewer reads these as words the brand did not write, so
+they are defects, and you must report them EVEN THOUGH you cannot transcribe
+them. Do not omit such a surface merely because you failed to resolve its
+characters — say where it is instead.
 
-NOT a defect: a pattern with no linguistic rhythm at all (fabric weave, foliage,
-wood grain, bokeh); a logo mark made of shapes rather than letterforms.
+Apply a PROMINENCE test before reporting one. Report it only if a viewer would
+actually try to read it — that is, it is on the hero subject or product, OR in
+the foreground, OR in sharp focus, OR large enough to draw the eye.
 
-Judge every surface at the size it appears. Background and out-of-focus
-surfaces count: a defocused label still reads as a label.
+NOT a defect, and NOT to be reported:
+- lettering deep in the background, small or soft, of the kind every real
+  photograph of a shop, shelf, market or street contains. A real grocery
+  photograph has dozens of unreadable labels at distance; that is what a
+  photograph looks like, not a fault.
+- a surface that is genuinely BLANK. An empty sign, an unlabelled jar or a
+  plain box carries no lettering at all — never report blankness as marks.
+- a pattern with no linguistic rhythm (fabric weave, foliage, wood grain,
+  bokeh); a logo mark made of shapes rather than letterforms.
+
+Judge each surface at the size and focus it actually appears at.
 
 Answer STRICT JSON only:
 {{"visible_text": ["<each distinct piece of lettering you CAN read, transcribed verbatim>"],
   "unintended_text": ["<the subset NOT covered by the legitimate list>"],
   "gibberish_text": ["<the subset that is garbled, misspelled, invented or nonsense>"],
-  "illegible_text_marks": ["<each surface carrying letter-like marks you could NOT resolve, named by where it is, e.g. 'chalk board behind the counter', 'label on the left jar'>"],
+  "illegible_text_marks": ["<each PROMINENT surface carrying letter-like marks you could NOT resolve, named by where it is, e.g. 'chalk board behind the counter', 'label on the left jar'. Omit distant/soft background lettering and anything genuinely blank.>"],
   "has_unintended_text": true|false,
   "reason": "<one short sentence>"}}"""
 

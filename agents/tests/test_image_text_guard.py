@@ -195,6 +195,24 @@ class TestGuardPromptAsksForTheMarks:
         # fires on every fabric weave.
         assert "fabric weave" in prompt
 
+    def test_prompt_gates_the_marks_on_prominence(self):
+        """Without a prominence test the rule rejects every realistic scene.
+
+        Asking for ALL unresolvable lettering rejected 7 of 7 generated images
+        in the first hour it ran — every shop, shelf and market photograph
+        contains distant labels nobody tries to read, and one flagged item was
+        a BLANK sandwich board. The re-roll fixed each on the second attempt,
+        so nothing shipped broken, but every image cost a second render and a
+        re-roll pushes a scene toward sterile emptiness.
+        """
+        prompt = build_guard_prompt(None)
+        assert "PROMINENCE test" in prompt
+        assert "hero subject" in prompt and "sharp focus" in prompt
+        # Blankness must never be reported as marks.
+        assert "genuinely BLANK" in prompt
+        # Distant background lettering is what a photograph looks like.
+        assert "deep in the background" in prompt
+
 
 class TestVerdictFromPayload:
     def test_clean_frame_passes(self):
