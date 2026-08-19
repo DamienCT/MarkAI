@@ -12,6 +12,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import workflows.video.nodes as video_nodes
 from workflows.video.nodes import (
+    MAX_PLAN_TOTAL_S,
+    MAX_SHOTS,
+    MIN_PLAN_SHOTS,
     _build_video_prompt,
     _extract_first_frame,
     _normalize_shot_plan,
@@ -105,14 +108,107 @@ class TestPlanShots:
     def test_over_budget_durations_are_scaled(self, monkeypatch):
         plan = _canned_plan()
         for shot in plan["shots"]:
-            shot["duration_s"] = 6.0  # 18s total — way over the 10s cap
+            shot["duration_s"] = 30.0  # 90s total — way over the plan cap
         _patch_llm(monkeypatch, json.dumps(plan))
         result = asyncio.run(plan_shots(_state()))
 
         assert result.get("status") != "failed"
         shots = result["shot_plan"]["shots"]
-        assert sum(s["duration_s"] for s in shots) <= 10
+        assert sum(s["duration_s"] for s in shots) <= MAX_PLAN_TOTAL_S
         assert shots[0]["duration_s"] >= 2.0
+
+    def test_over_budget_plan_keeps_every_beat(self):
+        # Scaling down must never truncate the shot list: the render fitter
+        # needs 6-8 beats to land on the ~30s target.
+        plan = {
+            "hook_line": "h",
+            "shots": [
+                {"index": i + 1, "duration_s": 12.0, "scene": _scene()}
+                for i in range(8)
+            ],
+            "caption": "c",
+            "hashtags": [],
+            "cta": "go",
+        }
+        normalized = _normalize_shot_plan(plan)
+        assert len(normalized["shots"]) == 8
+        assert sum(s["duration_s"] for s in normalized["shots"]) <= MAX_PLAN_TOTAL_S
+        assert all(s["duration_s"] >= 0.5 for s in normalized["shots"])
+        assert normalized["shots"][0]["duration_s"] >= 2.0
+
+    def test_more_than_max_shots_are_truncated(self):
+        plan = {
+            "hook_line": "h",
+            "shots": [
+                {"index": i + 1, "duration_s": 4.0, "scene": _scene()}
+                for i in range(12)
+            ],
+            "caption": "c",
+            "hashtags": [],
+            "cta": "go",
+        }
+        normalized = _normalize_shot_plan(plan)
+        assert len(normalized["shots"]) == MAX_SHOTS
+
+    def test_prompt_asks_for_the_full_story_arc(self, monkeypatch):
+        captured = _patch_llm(monkeypatch, json.dumps(_canned_plan()))
+        asyncio.run(plan_shots(_state()))
+        system = captured["messages"][0]["content"]
+        assert f"{MIN_PLAN_SHOTS} to {MAX_SHOTS}" in system
+        for beat in ("HOOK", "TENSION", "REVEAL", "PROOF", "USE MOMENT",
+                     "PAYOFF", "CTA"):
+            assert beat in system
+        assert "30 second" in system
+
+    def test_prompt_has_room_for_a_max_shots_plan(self, monkeypatch):
+        # MAX_SHOTS beats x a 7-label structured scene + overlay/caption/tags
+        # does not fit in 4096 tokens; truncation used to fail the item.
+        captured = _patch_llm(monkeypatch, json.dumps(_canned_plan()))
+        asyncio.run(plan_shots(_state()))
+        assert captured["kwargs"]["max_tokens"] == video_nodes._SHOT_PLAN_MAX_TOKENS
+        assert video_nodes._SHOT_PLAN_MAX_TOKENS >= 8192
+
+    def test_truncated_plan_is_repaired_instead_of_failing_the_item(self, monkeypatch):
+        """One JSON-repair retry, like the campaign path — not an instant _fail."""
+        calls: list[list[dict]] = []
+        truncated = json.dumps(_canned_plan())[:-40]
+
+        async def fake_chat_completion(messages, **kwargs):
+            calls.append(messages)
+            if len(calls) == 1:
+                return truncated
+            return json.dumps(_canned_plan())
+
+        monkeypatch.setattr(video_nodes, "chat_completion", fake_chat_completion)
+        result = asyncio.run(plan_shots(_state()))
+
+        assert result.get("status") != "failed"
+        assert len(result["shot_plan"]["shots"]) == 3
+        assert len(calls) == 2
+        assert "You repair malformed JSON" in calls[1][0]["content"]
+
+    def test_prompt_carries_the_temporal_context(self, monkeypatch):
+        """The video graph never runs generate_hook/generate_caption, so this
+        is the only place a reel's own copy meets the temporal guard — and
+        'opening soon' burned into a 30s master is the worst instance."""
+        state = _state()
+        state["calendar_item"] = {
+            **state["calendar_item"],
+            "scheduled_date": "2026-09-15",
+        }
+        state["events"] = [
+            {"title": "Grand Baie Store Opening", "start": "2026-09-01", "end": None},
+            {"title": "Diwali", "start": "2026-11-08", "end": None},
+        ]
+        captured = _patch_llm(monkeypatch, json.dumps(_canned_plan()))
+        asyncio.run(plan_shots(state))
+
+        system = captured["messages"][0]["content"]
+        user = captured["messages"][1]["content"]
+        assert "TEMPORAL RULES" in system
+        assert "TEMPORAL CONTEXT" in user
+        assert "Grand Baie Store Opening" in user  # already happened by then
+        assert "Diwali" in user  # still ahead
 
     def test_bad_json_fails_workflow(self, monkeypatch):
         _patch_llm(monkeypatch, "sorry, I cannot produce a plan")

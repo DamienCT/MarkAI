@@ -88,6 +88,49 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# ── Video render budget ────────────────────────────────────────────────
+# A reel is rendered shot by shot (see workflows.video.nodes): one provider
+# call per shot, each bounded by VIDEO_RENDER_TIMEOUT_S, then the ffmpeg
+# finishing passes. Both the worker's asyncio.wait_for budget and the NATS
+# ack_wait derive from video_workflow_timeout_s so they can never drift.
+VIDEO_MAX_REEL_SHOTS = 8
+# ffmpeg work on top of the shot renders, sized to the passes it actually
+# runs: per-shot normalization (600s each, worst case every clip is non-forge),
+# the concat (900s) and the overlay burn (600s). The old flat 1800s covered
+# barely three of the ten passes an 8-shot reel can need.
+VIDEO_NORMALIZE_TIMEOUT_S = 600
+VIDEO_CONCAT_TIMEOUT_S = 900
+VIDEO_BURN_TIMEOUT_S = 600
+VIDEO_FINISHING_BUDGET_S = (
+    VIDEO_MAX_REEL_SHOTS * VIDEO_NORMALIZE_TIMEOUT_S
+    + VIDEO_CONCAT_TIMEOUT_S
+    + VIDEO_BURN_TIMEOUT_S
+)
+
+
+def video_workflow_timeout_s(base_timeout_s: int) -> int:
+    """Longest a video workflow may run before the worker cancels it.
+
+    Worst case for the multi-shot path: every one of VIDEO_MAX_REEL_SHOTS
+    shots burns its full per-render deadline, plus the finishing passes. That
+    ``shots x VIDEO_RENDER_TIMEOUT_S`` term is only a true bound because
+    render_video wraps each shot's generate_video in its own
+    ``asyncio.wait_for(VIDEO_RENDER_TIMEOUT_S)`` — the provider cascade gives
+    EVERY provider its own deadline, so an unbounded shot could otherwise run
+    3x that on its own. The legacy single-call path does walk the full
+    3-provider cascade inside ONE render, so that older budget is kept as a
+    floor. Never shorter than the generic workflow timeout. Operators wanting
+    a tighter bound should lower VIDEO_RENDER_TIMEOUT_S — every term is
+    derived from it.
+    """
+    return max(
+        int(base_timeout_s),
+        3 * settings.VIDEO_RENDER_TIMEOUT_S + 600,
+        VIDEO_MAX_REEL_SHOTS * settings.VIDEO_RENDER_TIMEOUT_S
+        + VIDEO_FINISHING_BUDGET_S,
+    )
+
+
 # ── Startup validation for production ──────────────────────────────────
 _DEFAULTS_TO_CHECK = {
     "POSTGRES_PASSWORD": "",

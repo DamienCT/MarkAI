@@ -5,7 +5,7 @@ Reuses the content workflow's context/brief/product-image machinery
 video-specific stages: plan_shots (LLM shot list with per-shot on-screen
 overlay lines), make_keyframe (branded product keyframe at 9:16),
 render_video (one shared.video provider call per shot, chained i2v from the
-previous shot's last frame, ffmpeg concat into a 20-35s master reel, then a
+previous shot's last frame, ffmpeg concat into a ~30s master reel, then a
 best-effort libass burn of the overlay text onto the master), and
 store_video (MinIO + video_jobs/media_assets/content persistence).
 """
@@ -25,6 +25,14 @@ from typing import Any
 from uuid import uuid4
 
 from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
+from shared.config import (
+    VIDEO_BURN_TIMEOUT_S,
+    VIDEO_CONCAT_TIMEOUT_S,
+    VIDEO_MAX_REEL_SHOTS,
+    VIDEO_NORMALIZE_TIMEOUT_S,
+    settings as _config_settings,
+)
+from shared.editorial import TEMPORAL_RULES_BLOCK, build_temporal_block
 from shared.llm import chat_completion, generate_image, parse_llm_json
 from shared.sanitize import sanitize_for_prompt
 from shared.tools.database import (
@@ -52,20 +60,41 @@ logger = logging.getLogger(__name__)
 # MinIO bucket for rendered videos: {brand_id}/{calendar_item_id}/final.mp4
 VIDEO_BUCKET = "videos"
 
-# Plan-level limits (the LLM plans beats; duration_s is a relative weight).
-MAX_TOTAL_DURATION_S = 10.0
+# ── Plan-level limits ─────────────────────────────────────────────────────
+# The LLM plans beats and gives each an intended on-screen length in seconds;
+# the render fitter below turns those weights into renderable 3-5s clips.
 MIN_FIRST_SHOT_S = 2.0
 MIN_SHOT_S = 0.5
-# 7 shots x 5s clips = 35s — makes the full top of the 20-35s target range
-# reachable (6 capped the reel at 30s).
-MAX_SHOTS = 7
+# A complete marketing story needs 6-8 beats (hook → tension → reveal →
+# proof → use moment → payoff → CTA), and 6 is also the smallest shot count
+# that can reach the ~30s target (6 x MAX_SHOT_RENDER_S = 30s exactly).
+MIN_PLAN_SHOTS = 6
+MAX_SHOTS = VIDEO_MAX_REEL_SHOTS  # 8 — also the worker's render-timeout basis
+# Widest plan the fitter can actually render: MAX_SHOTS x MAX_SHOT_RENDER_S.
+MAX_PLAN_TOTAL_S = 40.0
+# The legacy single-call path renders the WHOLE plan in one provider call and
+# every provider clamps that to ~5-10s, so that request is capped separately.
+SINGLE_CALL_MAX_DURATION_S = 10.0
 
-# Render-level limits — every provider clamps a single call to ~5s (forge
-# MAX_FRAMES=121 @ 24fps ≈ 5.04s; fal/veo similar), so each planned shot is
-# rendered as its own 3-5s clip and the clips are concatenated into the
-# 20-35s reel the master spec targets.
+# ── Render-level limits ───────────────────────────────────────────────────
+# Every provider clamps a single call to ~5s (forge MAX_FRAMES=121 @ 24fps
+# ≈ 5.04s; fal/veo similar), so each planned shot is rendered as its own 3-5s
+# clip and the clips are concatenated into the master reel.
 MIN_SHOT_RENDER_S = 3.0
 MAX_SHOT_RENDER_S = 5.0
+# The reel AIMS at TARGET_TOTAL_S and must stay inside the master-spec window
+# [TARGET_MIN_TOTAL_S, TARGET_MAX_TOTAL_S]. With every shot clamped to 3-5s,
+# an N-shot plan can realise any total in [3N, 5N]; the fitter lands on the
+# point of that band closest to 30s:
+#     N=4 → 20.0s              N=5 → 25.0s
+#     N=6 → 30.0s (5.00s each) N=7 → 30.0s (≈4.29s each)
+#     N=8 → 30.0s (3.75s each) N=9 → 30.0s (≈3.33s each)
+#     N=10 → 30.0s (3.0s each) N=11 → 33.0s (3.0s each, the band's floor)
+#     N≥12 → trailing shots dropped until 3N fits under the 35s ceiling.
+# So every plan with 6-11 beats — and plan_shots is asked for 6-8 — lands
+# within 3s of 30s, and 6-10 beats land EXACTLY on it. Only plans of 5 beats
+# or fewer fall short (best effort: MAX_SHOT_RENDER_S per shot).
+TARGET_TOTAL_S = 30.0
 TARGET_MIN_TOTAL_S = 20.0
 TARGET_MAX_TOTAL_S = 35.0
 # Fewer than 4 renderable shots can never reach the 20s floor (N shots cap at
@@ -95,6 +124,13 @@ _OVERLAY_MAX_CHARS = _OVERLAY_WRAP_CHARS * _OVERLAY_MAX_LINES
 _OVERLAY_PAD_IN_S = 0.2  # a line appears 0.2s into its shot window
 _OVERLAY_PAD_OUT_S = 0.15  # and clears 0.15s before the cut
 _OVERLAY_MIN_EVENT_S = 0.3
+# Shortest a line may sit on screen and still be readable at phone scale
+# (~6 words at ~4 words/s plus the 250ms fade in/out). A shot window under
+# this holds its line over the following windows instead of flashing it —
+# see _overlay_events. The multi-shot path clears it by construction
+# (MIN_SHOT_RENDER_S - the pads = 2.65s); it only bites on the legacy
+# single-call path, where the whole plan is spread across one ~5s clip.
+_OVERLAY_MIN_ON_SCREEN_S = 1.6
 # Sized for phone viewing: a full line fills ~55-60% of the 1080px frame, the
 # scale professional short-form uses. Smaller reads as a subtitle, not a hook.
 _OVERLAY_FONT_SIZE = 96
@@ -237,10 +273,15 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
     """Validate and normalize the LLM's shot plan JSON.
 
     Enforces: non-empty shots with scene text, per-shot duration >= 0.5s,
-    first shot >= 2s, total duration <= 10s (proportional scale-down, then
-    trailing shots dropped if still over), at most MAX_SHOTS shots, cleaned
-    per-shot overlay_text (<= MAX_OVERLAY_WORDS words, no newlines, '' when
-    absent), and cleaned hashtags (no '#', no spaces).
+    first shot >= 2s, total duration <= MAX_PLAN_TOTAL_S, at most MAX_SHOTS
+    shots, cleaned per-shot overlay_text (<= MAX_OVERLAY_WORDS words, no
+    newlines, '' when absent), and cleaned hashtags (no '#', no spaces).
+
+    Over-budget plans are scaled DOWN, never truncated: the hook keeps its
+    floor and the remaining beats share whatever budget is left, because
+    dropping beats here would fight the 6-8 shot count the render fitter
+    needs to land on ~30s. A plan under MIN_PLAN_SHOTS beats is kept (it
+    still renders, just shorter) and logged.
 
     Raises ValueError when the plan is unusable.
     """
@@ -273,26 +314,33 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
     if not shots:
         raise ValueError("shot plan has no usable shots (missing scene text)")
 
-    # First shot carries the hook — never shorter than 2s.
-    shots[0]["duration_s"] = max(MIN_FIRST_SHOT_S, shots[0]["duration_s"])
+    if len(shots) < MIN_PLAN_SHOTS:
+        logger.warning(
+            "Shot plan returned %d beats (asked for %d-%d) — the reel will "
+            "be shorter than the %.0fs target",
+            len(shots),
+            MIN_PLAN_SHOTS,
+            MAX_SHOTS,
+            TARGET_TOTAL_S,
+        )
 
-    # Scale down proportionally when over budget, keeping the first-shot floor.
-    total = sum(s["duration_s"] for s in shots)
-    if total > MAX_TOTAL_DURATION_S:
-        factor = MAX_TOTAL_DURATION_S / total
-        for s in shots:
-            s["duration_s"] = max(MIN_SHOT_S, round(s["duration_s"] * factor, 2))
-        shots[0]["duration_s"] = max(MIN_FIRST_SHOT_S, shots[0]["duration_s"])
-    # Floors can push the sum back over — drop trailing beats until it fits.
-    while len(shots) > 1 and sum(s["duration_s"] for s in shots) > MAX_TOTAL_DURATION_S:
-        shots.pop()
-    shots[-1]["duration_s"] = min(
-        shots[-1]["duration_s"],
-        max(
-            MIN_SHOT_S,
-            MAX_TOTAL_DURATION_S - sum(s["duration_s"] for s in shots[:-1]),
-        ),
+    # First shot carries the hook — never shorter than 2s, and never so long
+    # that the remaining beats cannot keep their MIN_SHOT_S floors.
+    head_cap = max(MIN_SHOT_S, MAX_PLAN_TOTAL_S - MIN_SHOT_S * (len(shots) - 1))
+    shots[0]["duration_s"] = min(
+        head_cap, max(MIN_FIRST_SHOT_S, shots[0]["duration_s"])
     )
+
+    # An over-budget tail is re-shared onto whatever the hook left, floors
+    # included — no beat is ever dropped to make the arithmetic work.
+    tail = shots[1:]
+    tail_budget = round(MAX_PLAN_TOTAL_S - shots[0]["duration_s"], 2)
+    if tail and sum(s["duration_s"] for s in tail) > tail_budget:
+        allocated = _allocate_durations(
+            [s["duration_s"] for s in tail], tail_budget, MIN_SHOT_S, tail_budget
+        )
+        for shot, duration in zip(tail, allocated):
+            shot["duration_s"] = duration
 
     hashtags: list[str] = []
     for tag in plan.get("hashtags") or []:
@@ -309,12 +357,59 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
     }
 
 
+# A MAX_SHOTS-beat plan carries a 7-label structured `scene` per shot plus
+# overlay_text, hook_line, caption and hashtags — well past what a 4096-token
+# completion holds. Truncation used to fail the calendar item outright
+# (parse -> None -> _normalize_shot_plan raises -> _fail), the same
+# single-call-truncation class the campaign path already removed.
+_SHOT_PLAN_MAX_TOKENS = 8192
+
+
+async def _repair_shot_plan_json(raw: str) -> Any:
+    """One-shot JSON repair for a truncated shot plan; ``None`` if unrecoverable.
+
+    Mirrors the campaign path's repair retry: a plan cut mid-value still holds
+    several complete shots, and salvaging them beats failing the item.
+    """
+    logger.warning(
+        "plan_shots: shot plan JSON unparseable (%d chars) — retrying with a "
+        "repair prompt",
+        len(raw),
+    )
+    repaired = await chat_completion(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You repair malformed JSON. The input below came from a "
+                    "short-form video director and is invalid — most likely "
+                    "truncated mid-value. Return ONLY a valid JSON object with "
+                    'the keys "hook_line", "shots", "caption", "hashtags" and '
+                    '"cta". Keep only the shots that are COMPLETE in the input '
+                    "and drop any trailing shot whose fields were cut off. Do "
+                    "not invent shots, do not add commentary, and keep every "
+                    "intact field value verbatim."
+                ),
+            },
+            {"role": "user", "content": sanitize_for_prompt(raw, max_length=12000)},
+        ],
+        category="text",
+        temperature=0.0,
+        max_tokens=_SHOT_PLAN_MAX_TOKENS,
+        response_format={"type": "json_object"},
+    )
+    parsed = parse_llm_json(str(repaired), fallback=None)
+    if parsed is not None:
+        logger.info("plan_shots: repair retry recovered a parseable shot plan")
+    return parsed
+
+
 async def plan_shots(state: VideoState) -> dict[str, Any]:
     """One LLM call producing the strict-JSON shot plan.
 
-    Planned duration_s values are beat weights inside the 10s planning budget;
+    Asks for MIN_PLAN_SHOTS..MAX_SHOTS beats carrying a full marketing story;
     render_video refits each shot to a 3-5s clip so the final concatenated
-    reel lands in the 20-35s master-spec window."""
+    reel lands on the ~TARGET_TOTAL_S master-spec target."""
     await update_agent_run_step(
         state.get("run_id", ""),
         "plan_shots",
@@ -337,6 +432,15 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
         bible_section = f"{brand_bible_block}\n\n" if brand_bible_block else ""
 
         brief = (item.get("content_brief") or item.get("description") or "").strip()
+        # The video graph never runs content.generate_hook/generate_caption,
+        # so this is the ONLY place the reel's own invented copy
+        # (overlay_text, hook_line, caption, cta) meets the temporal guard.
+        # "Opening soon" burned into a 30s master is the most visible
+        # instance of the stale-anticipation defect.
+        temporal_block = build_temporal_block(
+            item.get("scheduled_at") or item.get("scheduled_date"),
+            state.get("events", []),
+        )
         product_section = ""
         if product.get("name"):
             product_section = (
@@ -351,13 +455,35 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             f"{bible_section}"
             "You are a short-form video director planning a vertical (9:16) "
             "product reel. Each shot in your list is generated as its own "
-            "3-5 second clip by an AI video model and the clips are cut "
-            "together into a 20-35 second reel.\n\n"
+            f"{MIN_SHOT_RENDER_S:.0f}-{MAX_SHOT_RENDER_S:.0f} second clip by "
+            "an AI video model and the clips are cut together into a "
+            f"{TARGET_TOTAL_S:.0f} second reel.\n\n"
+            f"STORY ARC — plan {MIN_PLAN_SHOTS} to {MAX_SHOTS} beats that "
+            "tell a COMPLETE marketing story, in this order:\n"
+            "1. HOOK — the scroll-stopper: the product already in motion, "
+            "the most arresting image you have.\n"
+            "2. TENSION — the everyday friction or problem this product "
+            "removes, shown (never narrated).\n"
+            "3. REVEAL — the product itself, hero framing, label and form "
+            "clearly readable.\n"
+            "4. BENEFIT / PROOF — the promise made visible: texture, "
+            "freshness, craft, the detail that proves the claim.\n"
+            "5. USE MOMENT — a real person actually using or enjoying it in "
+            "its natural setting.\n"
+            "6. PAYOFF — the emotional result: the satisfied face, the "
+            "finished table, the restored calm.\n"
+            "7. CTA — the closing frame that carries the call to action.\n"
+            f"Plan {MIN_PLAN_SHOTS} beats by merging two adjacent stages, "
+            f"{MAX_SHOTS} by adding a second proof or use-moment beat. Never "
+            f"return fewer than {MIN_PLAN_SHOTS} shots — a shorter list "
+            "produces a reel that is too short to publish.\n\n"
             "SHORT-FORM DISCIPLINE (non-negotiable):\n"
             "- The product is VISIBLE and actively solving something within "
             "seconds 0-2. No slow establishing shots.\n"
-            "- One clear visual change every ~1.5-2 seconds — each shot is "
-            "exactly one beat.\n"
+            "- Each shot is exactly ONE beat with one clear visual change — "
+            "it has to stay interesting for its full 3-5 seconds, so give it "
+            "internal motion (a pour, a hand, a camera move), never a static "
+            "hold.\n"
             "- The final shot resolves back toward the opening composition "
             "so the clip loops cleanly.\n"
             "- NEVER request on-screen text, captions, subtitles, prices, or "
@@ -365,8 +491,13 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "- Audio is diegetic only: sounds that belong to the scene "
             "(sizzle, pour, clink, ambience). No voiceover, no music cues.\n"
             "- Stay strictly inside the brand voice above; never make claims "
-            "the MUST NEVER DO list forbids.\n\n"
-            "Each shot's \"scene\" value is a structured prompt with exactly "
+            "the MUST NEVER DO list forbids.\n"
+            "- NEVER call something upcoming, coming soon, or count down to "
+            "it if the TEMPORAL CONTEXT block says it already happened by "
+            "this reel's publish date — that line gets burned into the "
+            "master.\n\n"
+            + TEMPORAL_RULES_BLOCK
+            + "Each shot's \"scene\" value is a structured prompt with exactly "
             "these labeled sections, one per line:\n"
             "SCENE CONTEXT: where we are and what is happening\n"
             "FIRST FRAME: precise description of the opening frame of this shot\n"
@@ -381,27 +512,31 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             f"- Every shot has an \"overlay_text\": a punchy on-screen line, "
             f"{MAX_OVERLAY_WORDS} words maximum, ALWAYS IN ENGLISH, "
             "marketing-grade.\n"
-            "- The lines build a benefit/tension/payoff arc across the reel: "
-            "shot 1 carries the hook_line, middle shots carry one benefit "
-            "beat each, and the final shot hands off to the cta (the final "
-            "shot shows the cta on screen).\n"
+            "- The lines follow the story arc: shot 1 carries the hook_line, "
+            "every middle shot carries the ONE idea its beat is about "
+            "(tension, reveal, proof, use, payoff), and the final shot hands "
+            "off to the cta (the final shot shows the cta on screen).\n"
+            "- Consecutive lines must never repeat each other — each line "
+            f"holds the screen for {MIN_SHOT_RENDER_S:.0f}-"
+            f"{MAX_SHOT_RENDER_S:.0f} seconds, long enough to read twice.\n"
             "- Plain words only: no emojis, no hashtags, no quotation "
             "marks.\n\n"
             "Return STRICT JSON only, with this exact shape:\n"
             "{\n"
             '  "hook_line": "<scroll-stopping line under 8 words, ENGLISH>",\n'
             '  "shots": [\n'
-            '    {"index": 1, "duration_s": 2.5, "overlay_text": "<on-screen line, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."}\n'
+            '    {"index": 1, "duration_s": 4.0, "overlay_text": "<on-screen line, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."}\n'
             "  ],\n"
             '  "caption": "<post caption in the brand voice, ENGLISH>",\n'
             '  "hashtags": ["tag1", "tag2"],\n'
             '  "cta": "<short call to action, ENGLISH>"\n'
             "}\n\n"
-            "Duration rules: durations sum to 10 seconds or less; the first "
-            f"shot is at least 2 seconds; use 4 to {MAX_SHOTS} shots. Each "
-            "shot is later rendered as its own 3-5 second clip, so duration_s "
-            "expresses the shot's relative weight — write every scene as one "
-            "clear beat that can hold for a few seconds.\n"
+            f"Duration rules: return {MIN_PLAN_SHOTS} to {MAX_SHOTS} shots. "
+            f"Every duration_s is between {MIN_SHOT_RENDER_S:.0f} and "
+            f"{MAX_SHOT_RENDER_S:.0f} seconds and the durations sum to about "
+            f"{TARGET_TOTAL_S:.0f} seconds — that IS the length of the "
+            "finished reel. Give the hook and the CTA the longer slots and "
+            "the connective beats the shorter ones.\n"
             f"Caption rules: under {settings['max_words']} words, between "
             f"{settings['hashtags_min']} and {settings['hashtags_max']} hashtags, "
             "no hashtags or URLs inside the caption body.\n"
@@ -410,6 +545,7 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "whatever language the brief uses."
         )
         user = (
+            f"{temporal_block}"
             f"WHAT THIS REEL IS ABOUT (primary intent — never override):\n"
             f"{sanitize_for_prompt(brief) or '(no brief — use the theme below)'}\n\n"
             f"PLATFORM: {sanitize_for_prompt(channel or 'instagram')}\n"
@@ -427,10 +563,12 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             ],
             category="text",
             temperature=0.7,
-            max_tokens=4096,
+            max_tokens=_SHOT_PLAN_MAX_TOKENS,
             response_format={"type": "json_object"},
         )
         parsed = parse_llm_json(str(result), fallback=None)
+        if parsed is None:
+            parsed = await _repair_shot_plan_json(str(result))
         plan = _normalize_shot_plan(parsed)
         logger.info(
             "Shot plan: %d shots, %.1fs total",
@@ -571,11 +709,72 @@ def _build_video_prompt(plan: dict[str, Any]) -> str:
 
 # ── Multi-shot render machinery ────────────────────────────────────────────
 #
-# Every video provider clamps a single call to ~5s, so a 20-35s reel is built
+# Every video provider clamps a single call to ~5s, so a ~30s reel is built
 # shot by shot: shot 1 is i2v from the branded keyframe, every later shot is
 # i2v from the LAST FRAME of the previous shot's rendered clip (extracted with
 # ffmpeg -sseof), carrying motion/scene continuity across cuts. The clips are
 # then normalized to the master spec where needed and concatenated with ffmpeg.
+
+
+def _allocate_durations(
+    weights: list[float], target: float, lo: float, hi: float
+) -> list[float]:
+    """Split *target* seconds across *weights*, every share inside [lo, hi].
+
+    Pure function, water-filling: shares start proportional to the weights;
+    any share that would breach a bound is pinned there and the remaining
+    seconds are re-shared over the still-free shots. *target* is first
+    clamped into the band N shots can actually cover ([N*lo, N*hi]), so a
+    short plan gets the longest reel it can reach and a long one the
+    shortest. Shares are rounded to 2dp and sum to the clamped target.
+    """
+    n = len(weights)
+    if n == 0:
+        return []
+    target = min(max(float(target), n * lo), n * hi)
+    w = [max(0.0, float(x or 0.0)) for x in weights]
+    if sum(w) <= 0:
+        w = [1.0] * n
+    out = [0.0] * n
+    free = list(range(n))
+    remaining = target
+    while free:
+        total_w = sum(w[i] for i in free)
+        if total_w <= 0:  # pragma: no cover - guarded by the fallback above
+            share = remaining / len(free)
+            for i in free:
+                out[i] = min(hi, max(lo, share))
+            break
+        pinned = []
+        for i in free:
+            share = remaining * w[i] / total_w
+            if share < lo:
+                out[i] = lo
+                pinned.append(i)
+            elif share > hi:
+                out[i] = hi
+                pinned.append(i)
+        if not pinned:
+            for i in free:
+                out[i] = remaining * w[i] / total_w
+            break
+        remaining -= sum(out[i] for i in pinned)
+        free = [i for i in free if i not in pinned]
+
+    out = [round(v, 2) for v in out]
+    # Rounding drift (a few hundredths) goes to whichever shots still have
+    # room, lowest-priority first so the hook keeps its planned length.
+    residue = round(target - sum(out), 2)
+    for i in reversed(range(n)):
+        if abs(residue) < 0.01:
+            break
+        room = (hi - out[i]) if residue > 0 else (out[i] - lo)
+        if room <= 0:
+            continue
+        step = min(abs(residue), room) * (1.0 if residue > 0 else -1.0)
+        out[i] = round(out[i] + step, 2)
+        residue = round(residue - step, 2)
+    return out
 
 
 def _fit_shot_durations(
@@ -583,12 +782,14 @@ def _fit_shot_durations(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Refit planned beat durations to renderable per-shot clip lengths.
 
-    Pure function. Clamps every duration to [MIN_SHOT_RENDER_S,
-    MAX_SHOT_RENDER_S]. If the clamped total exceeds TARGET_MAX_TOTAL_S the
-    lowest-priority shots are dropped (plan order = priority, so trailing
-    shots go first). If the total is under TARGET_MIN_TOTAL_S, durations are
-    stretched toward MAX_SHOT_RENDER_S — best effort: a plan with few shots
-    can still land under target (N shots cap out at N*5s).
+    Pure function targeting TARGET_TOTAL_S (not merely "somewhere inside the
+    20-35s window"): every duration is clamped to [MIN_SHOT_RENDER_S,
+    MAX_SHOT_RENDER_S] and the 30s target is then distributed across the
+    shots in proportion to their planned weights. Shots are dropped ONLY when
+    even a minimum-length reel would breach the hard TARGET_MAX_TOTAL_S
+    ceiling (plan order = priority, so trailing shots go first) — a plan of
+    6-8 beats therefore keeps every beat and lands exactly on 30s; see the
+    achievable-total table next to TARGET_TOTAL_S.
 
     Returns (fitted_shots, dropped_shots); input dicts are not mutated.
     """
@@ -603,27 +804,19 @@ def _fit_shot_durations(
         for s in shots
     ]
     dropped: list[dict[str, Any]] = []
-    while len(fitted) > 1 and sum(s["duration_s"] for s in fitted) > TARGET_MAX_TOTAL_S:
+    # Only a plan too long to fit even at MIN_SHOT_RENDER_S loses beats.
+    while len(fitted) > 1 and len(fitted) * MIN_SHOT_RENDER_S > TARGET_MAX_TOTAL_S:
         dropped.append(fitted.pop())
     dropped.reverse()
 
-    total = sum(s["duration_s"] for s in fitted)
-    if total < TARGET_MIN_TOTAL_S:
-        headroom = sum(MAX_SHOT_RENDER_S - s["duration_s"] for s in fitted)
-        if headroom > 0:
-            scale = min(1.0, (TARGET_MIN_TOTAL_S - total) / headroom)
-            for s in fitted:
-                s["duration_s"] = min(
-                    MAX_SHOT_RENDER_S,
-                    round(
-                        s["duration_s"]
-                        + (MAX_SHOT_RENDER_S - s["duration_s"]) * scale,
-                        2,
-                    ),
-                )
-    else:
-        for s in fitted:
-            s["duration_s"] = round(s["duration_s"], 2)
+    allocated = _allocate_durations(
+        [s["duration_s"] for s in fitted],
+        TARGET_TOTAL_S,
+        MIN_SHOT_RENDER_S,
+        MAX_SHOT_RENDER_S,
+    )
+    for shot, duration in zip(fitted, allocated):
+        shot["duration_s"] = duration
     return fitted, dropped
 
 
@@ -633,7 +826,7 @@ def _split_to_min_shots(
     """Split the longest beats in half until the plan has *min_count* shots.
 
     Pure function; input dicts are not mutated. A 1-3 shot plan can never
-    reach the 20s master-spec floor (N shots cap at N*MAX_SHOT_RENDER_S), so
+    reach the TARGET_MIN_TOTAL_S floor (N shots cap at N*MAX_SHOT_RENDER_S), so
     the longest scenes are split into two chained shots covering the same
     beat — the i2v chaining (next shot starts from the previous shot's last
     frame) keeps the beat continuous across the split. Both halves keep the
@@ -662,35 +855,46 @@ def _split_to_min_shots(
     return out
 
 
-def _fit_hero_durations(fitted: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _fit_hero_durations(
+    fitted: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fit hero-tier shot durations to Veo's billing grid (pure function).
 
     Veo snaps every request to 4/6/8s and bills the snapped value
     (shared.video._snap_veo_duration: 5 → 6), so a hero reel requested at
-    ~30s could render AND bill ~36s — over the 35s spec ceiling. Snapping
-    here makes requested == snapped == billed; 6s shots are then downgraded
-    to 4s from the tail (plan order = priority) until the aggregate stays
-    inside TARGET_MAX_TOTAL_S. Input dicts are not mutated.
+    ~30s could render AND bill ~36s — over the 35s spec ceiling. Placing the
+    shots on the grid here makes requested == snapped == billed.
+
+    With N shots on the {4, 6} grid the reachable totals are 4N + 2k for k
+    six-second shots, so k is chosen to land as close to TARGET_TOTAL_S as
+    the grid allows without passing TARGET_MAX_TOTAL_S, and the 6s slots go
+    to the highest-priority beats (longest fitted duration, plan order
+    breaking ties). Trailing shots are dropped when even an all-4s reel would
+    breach the ceiling. Reachable hero totals: N=4 → 24s, N=5/6/7 → 30s,
+    N=8 → 32s. Input dicts are not mutated.
+
+    Returns (fitted_shots, dropped_shots).
     """
-    # Same snap Veo applies (ties round up: 5 → 6) so requested == billed.
-    midpoint = (_VEO_SHOT_GRID_SHORT + _VEO_SHOT_GRID_LONG) / 2
-    out = [
-        {
-            **s,
-            "duration_s": (
-                _VEO_SHOT_GRID_LONG
-                if float(s["duration_s"]) >= midpoint
-                else _VEO_SHOT_GRID_SHORT
-            ),
-        }
-        for s in fitted
-    ]
-    while sum(s["duration_s"] for s in out) > TARGET_MAX_TOTAL_S:
-        long_idx = [i for i, s in enumerate(out) if s["duration_s"] > _VEO_SHOT_GRID_SHORT]
-        if not long_idx:
-            break
-        out[long_idx[-1]]["duration_s"] = _VEO_SHOT_GRID_SHORT
-    return out
+    out = [dict(s) for s in fitted]
+    dropped: list[dict[str, Any]] = []
+    while len(out) > 1 and len(out) * _VEO_SHOT_GRID_SHORT > TARGET_MAX_TOTAL_S:
+        dropped.append(out.pop())
+    dropped.reverse()
+    count = len(out)
+    if not count:
+        return out, dropped
+    base = count * _VEO_SHOT_GRID_SHORT
+    step = _VEO_SHOT_GRID_LONG - _VEO_SHOT_GRID_SHORT
+    long_count = max(0, min(count, round((TARGET_TOTAL_S - base) / step)))
+    while long_count > 0 and base + long_count * step > TARGET_MAX_TOTAL_S:
+        long_count -= 1
+    priority = sorted(range(count), key=lambda i: (-float(out[i]["duration_s"]), i))
+    longs = set(priority[:long_count])
+    for i, shot in enumerate(out):
+        shot["duration_s"] = (
+            _VEO_SHOT_GRID_LONG if i in longs else _VEO_SHOT_GRID_SHORT
+        )
+    return out, dropped
 
 
 def _map_shot_progress(shot_idx: int, num_shots: int, percent: float) -> int:
@@ -1109,6 +1313,13 @@ def _overlay_events(
     folds those halves back into one continuous CTA event. Consecutive windows
     carrying the same text merge the same way (split-shot halves share their
     line); empty texts and sub-minimum windows are skipped.
+
+    A line whose window is too short to read (_OVERLAY_MIN_ON_SCREEN_S) holds
+    over the windows that follow it rather than flashing — never across the
+    Overlay → CTA boundary, so the CTA can never be swallowed. On the
+    multi-shot path this never triggers (MIN_SHOT_RENDER_S guarantees a 2.65s
+    window); it exists for the legacy single-call path, where a 6-8 beat plan
+    is distributed across one ~5s clip.
     """
     n = min(len(shots), len(durations))
     cta_text = str(cta or "").strip()
@@ -1143,8 +1354,44 @@ def _overlay_events(
             merged[-1]["end"] = entry["end"]
         else:
             merged.append(dict(entry))
+
+    # Hold short lines over the following windows so nothing flashes.
+    dwell = _OVERLAY_MIN_ON_SCREEN_S + _OVERLAY_PAD_IN_S + _OVERLAY_PAD_OUT_S
+    held: list[dict[str, Any]] = []
+    i = 0
+    while i < len(merged):
+        window = dict(merged[i])
+        nxt = i + 1
+        if window["text"]:
+            while (
+                window["end"] - window["start"] < dwell
+                and nxt < len(merged)
+                and merged[nxt]["style"] == window["style"]
+            ):
+                window["end"] = merged[nxt]["end"]
+                nxt += 1
+            if nxt > i + 1:
+                logger.info(
+                    "Overlay line %r held over %d following window(s) — its "
+                    "own window was under the %.1fs readable minimum",
+                    window["text"],
+                    nxt - i - 1,
+                    _OVERLAY_MIN_ON_SCREEN_S,
+                )
+        held.append(window)
+        i = nxt
+
+    # A CTA cannot borrow from what comes after it, so when the reel is too
+    # short to give it a readable window it takes the time back from the line
+    # before it instead of being padded out of existence.
+    if len(held) > 1 and held[-1]["style"] == "CTA" and held[-1]["text"]:
+        cta_window, before = held[-1], held[-2]
+        if cta_window["end"] - cta_window["start"] < dwell:
+            cta_window["start"] = max(before["start"], cta_window["end"] - dwell)
+            before["end"] = cta_window["start"]
+
     events: list[dict[str, Any]] = []
-    for entry in merged:
+    for entry in held:
         if not entry["text"]:
             continue
         start = entry["start"] + _OVERLAY_PAD_IN_S
@@ -1345,7 +1592,9 @@ async def _burn_overlays(
                 )
             dst = os.path.join(workdir, "master_overlay.mp4")
             proc = await asyncio.to_thread(
-                _run_ffmpeg, _burn_cmd(src, ass_path, dst, fontsdir), 600
+                _run_ffmpeg,
+                _burn_cmd(src, ass_path, dst, fontsdir),
+                VIDEO_BURN_TIMEOUT_S,
             )
             if (
                 proc.returncode != 0
@@ -1372,7 +1621,7 @@ async def _burn_overlays(
 
 async def render_video(state: VideoState) -> dict[str, Any]:
     """Render the reel — one provider call per planned shot, chained i2v for
-    continuity, an ffmpeg concat into the 20-35s master final.mp4, then a
+    continuity, an ffmpeg concat into the ~30s master final.mp4, then a
     best-effort overlay-text burn pass onto the finished master.
 
     Shot 1 is i2v from the branded keyframe; every later shot is i2v from the
@@ -1427,7 +1676,25 @@ async def render_video(state: VideoState) -> dict[str, Any]:
     if quality_tier == "hero":
         # Veo bills its snapped grid (5s → 6s billed) — fit requests to the
         # grid so aggregate duration AND cost stay inside the 35s spec.
-        fitted = _fit_hero_durations(fitted)
+        fitted, hero_dropped = _fit_hero_durations(fitted)
+        if hero_dropped:
+            dropped_indices += [s.get("index") for s in hero_dropped]
+            logger.info(
+                "render_video: hero grid fit dropped %d trailing shot(s) %s",
+                len(hero_dropped),
+                [s.get("index") for s in hero_dropped],
+            )
+    requested_total = round(sum(s["duration_s"] for s in fitted), 2)
+    logger.info(
+        "render_video: %d shot(s) fitted to %.2fs (target %.0fs, window "
+        "%.0f-%.0fs, tier=%s)",
+        len(fitted),
+        requested_total,
+        TARGET_TOTAL_S,
+        TARGET_MIN_TOTAL_S,
+        TARGET_MAX_TOTAL_S,
+        quality_tier,
+    )
     base_key = f"{state['brand_id']}:{item_id}:{state.get('run_id', '')}"
 
     async def _progress(percent: int, stage: str) -> None:
@@ -1466,7 +1733,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         duration_s = (
             fitted[0]["duration_s"]
             if not multi
-            else min(MAX_TOTAL_DURATION_S, sum(s["duration_s"] for s in fitted))
+            else min(SINGLE_CALL_MAX_DURATION_S, requested_total)
         )
         try:
             req = VideoRequest(
@@ -1500,6 +1767,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 "ledger": result.ledger,
                 "idempotency_key": req.idempotency_key,
                 "shot_count": len(fitted),
+                "requested_total_s": requested_total,
             }
             if dropped_indices:
                 meta["dropped_shots"] = dropped_indices
@@ -1575,8 +1843,29 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     idempotency_key=f"{base_key}:s{i + 1}"[:128],
                 )
                 try:
-                    result = await generate_video(
-                        req, progress_cb=_wrap_progress(_progress, i, num)
+                    # Bound the SHOT, not just the run. shared.video gives
+                    # every provider in the cascade its own
+                    # VIDEO_RENDER_TIMEOUT_S deadline, so an unbounded shot
+                    # can run 2-3x that — and the workflow budget
+                    # (VIDEO_MAX_REEL_SHOTS x VIDEO_RENDER_TIMEOUT_S +
+                    # finishing) only holds if each shot really costs one.
+                    # Without this the worker's asyncio.wait_for could cancel
+                    # a live render mid-flight, which is what that budget
+                    # exists to prevent.
+                    result = await asyncio.wait_for(
+                        generate_video(
+                            req, progress_cb=_wrap_progress(_progress, i, num)
+                        ),
+                        timeout=_config_settings.VIDEO_RENDER_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    shot_ledgers.append(
+                        {"shot": i + 1, "status": "timeout", "ledger": []}
+                    )
+                    return await _fail_multi(
+                        f"render_video: shot {i + 1}/{num} exceeded the "
+                        f"{_config_settings.VIDEO_RENDER_TIMEOUT_S}s per-shot "
+                        "render budget"
                     )
                 except Exception as exc:
                     # A shot failing after the full provider cascade fails the
@@ -1654,7 +1943,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                             bool(info and info.get("audio")),
                             (info or {}).get("duration"),
                         ),
-                        600,
+                        VIDEO_NORMALIZE_TIMEOUT_S,
                     )
                     if proc.returncode != 0 or not os.path.exists(npath):
                         return await _fail_multi(
@@ -1687,7 +1976,9 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 )
                 concat_mode = "copy"
                 proc = await asyncio.to_thread(
-                    _run_ffmpeg, _concat_copy_cmd(list_path, final_path), 900
+                    _run_ffmpeg,
+                    _concat_copy_cmd(list_path, final_path),
+                    VIDEO_CONCAT_TIMEOUT_S,
                 )
                 if proc.returncode != 0 or not os.path.exists(final_path):
                     # Stream copy can trip on subtly non-uniform inputs —
@@ -1699,12 +1990,16 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     )
                     concat_mode = "reencode"
                     proc = await asyncio.to_thread(
-                        _run_ffmpeg, _concat_reencode_cmd(norm_paths, final_path), 900
+                        _run_ffmpeg,
+                        _concat_reencode_cmd(norm_paths, final_path),
+                        VIDEO_CONCAT_TIMEOUT_S,
                     )
             else:
                 concat_mode = "reencode"
                 proc = await asyncio.to_thread(
-                    _run_ffmpeg, _concat_reencode_cmd(norm_paths, final_path), 900
+                    _run_ffmpeg,
+                    _concat_reencode_cmd(norm_paths, final_path),
+                    VIDEO_CONCAT_TIMEOUT_S,
                 )
             if proc.returncode != 0 or not os.path.exists(final_path):
                 return await _fail_multi(
@@ -1775,6 +2070,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         "ledger": shot_ledgers,
         "idempotency_key": base_key[:128],
         "shot_count": num,
+        "requested_total_s": requested_total,
         "shots": shot_metas,
         "dropped_shots": dropped_indices,
         "normalized_shots": normalized,
@@ -1937,6 +2233,7 @@ async def store_video(state: VideoState) -> dict[str, Any]:
                         "width": meta.get("width"),
                         "height": meta.get("height"),
                         "shot_count": meta.get("shot_count"),
+                        "requested_total_s": meta.get("requested_total_s"),
                         "concat_mode": meta.get("concat_mode"),
                         "dropped_shots": meta.get("dropped_shots"),
                         "overlay_burn": meta.get("overlay_burn"),

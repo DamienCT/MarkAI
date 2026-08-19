@@ -12,22 +12,30 @@ from nats.aio.client import Client as NATSClient
 from nats.js import JetStreamContext
 from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
 
-from shared.config import settings
+from shared.config import settings, video_workflow_timeout_s
 
 logger = logging.getLogger(__name__)
 
-# NATS ack_wait MUST exceed the worker's LONGEST workflow timeout, otherwise
-# JetStream redelivers a message while its workflow is still running (or just
-# finished), spawning duplicate/looping runs of the same item. Derived from the
-# SAME env var as worker.WORKFLOW_TIMEOUT — and the SAME video-cascade budget
-# as worker.VIDEO_WORKFLOW_TIMEOUT (3 providers × VIDEO_RENDER_TIMEOUT_S +
-# margin) — plus a buffer, so the values can never drift apart.
-_ACK_WAIT_SECONDS = (
-    max(
-        int(os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400")),
-        3 * settings.VIDEO_RENDER_TIMEOUT_S + 600,
-    )
-    + 120
+# NATS ack_wait MUST exceed the workflow timeout of the subject it serves,
+# otherwise JetStream redelivers a message while its workflow is still running
+# (or just finished), spawning duplicate/looping runs of the same item.
+#
+# Per-subject, deliberately: the reel budget is hours long, and applying it to
+# research/strategy/content/planning would leave THOSE messages unredelivered
+# for the same hours after a worker dies (x max_deliver=5 for the full retry
+# horizon). Both values derive from the SAME env var as worker.WORKFLOW_TIMEOUT
+# — and the video one from the SAME helper as worker.VIDEO_WORKFLOW_TIMEOUT —
+# plus a buffer, so they can never drift apart.
+_ACK_WAIT_BUFFER_S = 120
+WORKFLOW_TIMEOUT_SECONDS = int(os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400"))
+
+#: ack_wait for ordinary workflow subjects.
+ACK_WAIT_SECONDS = WORKFLOW_TIMEOUT_SECONDS + _ACK_WAIT_BUFFER_S
+
+#: ack_wait for video.render — per-shot render budget x the reel's shot cap,
+#: plus the ffmpeg finishing passes.
+VIDEO_ACK_WAIT_SECONDS = (
+    video_workflow_timeout_s(WORKFLOW_TIMEOUT_SECONDS) + _ACK_WAIT_BUFFER_S
 )
 
 
@@ -64,13 +72,20 @@ class NATSConsumer:
         durable_name: str,
         stream: str,
         handler: Callable[[nats.aio.msg.Msg], Awaitable[None]],
+        ack_wait: int | None = None,
     ) -> None:
-        """Create a durable push subscription on *subject*."""
+        """Create a durable push subscription on *subject*.
+
+        *ack_wait* defaults to :data:`ACK_WAIT_SECONDS`; long-running subjects
+        (video.render) pass their own. It must exceed the workflow timeout the
+        worker applies to this subject.
+        """
+        wait = int(ack_wait or ACK_WAIT_SECONDS)
         config = ConsumerConfig(
             durable_name=durable_name,
             deliver_policy=DeliverPolicy.ALL,
             ack_policy=AckPolicy.EXPLICIT,
-            ack_wait=_ACK_WAIT_SECONDS,  # must exceed worker WORKFLOW_TIMEOUT
+            ack_wait=wait,  # must exceed this subject's workflow timeout
             max_deliver=5,  # after 5 delivery attempts, message is discarded
         )
         sub = await self.js.subscribe(
@@ -81,7 +96,25 @@ class NATSConsumer:
             manual_ack=True,
         )
         self._subscriptions.append(sub)
-        logger.info("Subscribed to %s (durable=%s)", subject, durable_name)
+        logger.info(
+            "Subscribed to %s (durable=%s, ack_wait=%ss)", subject, durable_name, wait
+        )
+        # JetStream does not always apply a changed ack_wait to an ALREADY
+        # EXISTING durable consumer, so the deployed value can silently stay
+        # at the old one. Report the drift instead of assuming subscribe()
+        # re-applied it — fixing it needs an explicit `nats consumer edit`.
+        try:
+            info = await sub.consumer_info()
+            live = int(getattr(info.config, "ack_wait", 0) or 0)
+            if live and live != wait:
+                logger.warning(
+                    "Durable %s on %s still has ack_wait=%ss (wanted %ss) — "
+                    "JetStream kept the existing consumer config; run "
+                    "`nats consumer edit %s %s` to apply it",
+                    durable_name, subject, live, wait, stream, durable_name,
+                )
+        except Exception as exc:  # informational only — never block startup
+            logger.debug("Could not verify ack_wait for %s: %s", durable_name, exc)
 
     @staticmethod
     async def ack(msg: nats.aio.msg.Msg) -> None:

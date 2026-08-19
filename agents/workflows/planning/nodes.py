@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from pydantic import BaseModel, field_validator
@@ -15,6 +16,18 @@ from shared.brand_context import (
     ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE,
     build_brand_context_block,
     get_brand_timezone,
+)
+from shared.editorial import (
+    BRIEF_STYLE_BLOCK,
+    TEMPORAL_RULES_BLOCK,
+    VARIETY_RULES_BLOCK,
+    apply_temporal_guard,
+    build_recent_usage_block,
+    format_repetition_report,
+    item_stats,
+    item_title,
+    repetition_report,
+    scrub_brief_fields,
 )
 from shared.llm import (
     chat_completion,
@@ -59,6 +72,38 @@ VALID_CONTENT_TYPES = {
     "event",
     "other",
 }
+
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+# Four-digit year inside a markdown header line ("### January 2027").
+_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+
+# ── Campaign / strategy-document integrity ────────────────────────────
+# A 12-month campaign set never fits in one 4096-token completion: the
+# response is cut mid-value, strict JSON parsing fails, and the old
+# fallback wrapped the raw truncated string as a single fake campaign
+# ({"name": "General Campaign", "description": "<escaped JSON>"}). That
+# is exactly what production stored — June/July campaigns lost silently
+# and the artifact unparseable. Fix: generate one call per quarter, and
+# NEVER turn an unparsed string into a campaign record.
+_CAMPAIGN_CHUNK_MONTHS = 3
+_CAMPAIGN_MAX_TOKENS = 8192
+_CAMPAIGN_REQUIRED_FIELDS = ("name", "description", "start_date", "end_date")
+_CAMPAIGN_RECOMMENDED_FIELDS = ("pillar", "platforms", "goal", "target_audience")
+
+# The year-long strategy document shares the truncation risk (12 monthly
+# sections + two tables + a per-channel cadence block routinely runs
+# 8-14K tokens against a 16K cap, so December silently disappears). It is
+# generated the same way: a shared header call plus one call per quarter.
+_STRATEGY_DOC_MAX_TOKENS = 8192
+
+# How many monthly sections may be missing from the assembled document before
+# the run fails. The header check is a heuristic over markdown, so one miss is
+# absorbed; beyond that a whole chunk call came back empty or off-format.
+_MAX_MISSING_DOC_MONTHS = 1
 
 # _ENGLISH_ONLY_RULE (imported above from shared.brand_context) is injected
 # into every system prompt that produces user-facing text here: campaign
@@ -290,6 +335,399 @@ def _match_product(
     return None, "no_match"
 
 
+class CampaignIntegrityError(RuntimeError):
+    """Raised when generated campaigns cannot be trusted as a stored artifact.
+
+    Surfacing this fails the planning node loudly (status=failed + error)
+    instead of persisting a corrupt campaigns payload the way the previous
+    raw-string fallback did.
+    """
+
+
+def _add_months(value: date, months: int) -> date:
+    """Shift a date by N months, clamping to the target month's last day."""
+    total = value.month - 1 + months
+    year = value.year + total // 12
+    month = total % 12 + 1
+    # Last day of the target month, computed without importing the stdlib
+    # `calendar` module (this file's vocabulary is already full of "calendar").
+    last = 31 if month == 12 else (date(year, month + 1, 1) - timedelta(days=1)).day
+    return date(year, month, min(value.day, last))
+
+
+def _campaign_chunk_windows(
+    start: date, end: date, months_per_chunk: int = _CAMPAIGN_CHUNK_MONTHS
+) -> list[tuple[date, date]]:
+    """Split ``[start, end)`` into consecutive windows of at most N months.
+
+    Pure function. One LLM call per window keeps every response far below
+    the token cap, so no single completion has to carry a year of campaigns.
+    Short horizons (activation runs at 2 weeks) collapse to a single window.
+    """
+    months_per_chunk = max(1, int(months_per_chunk or 1))
+    if end <= start:
+        return [(start, end)]
+    windows: list[tuple[date, date]] = []
+    cursor = start
+    while cursor < end:
+        nxt = min(_add_months(cursor, months_per_chunk), end)
+        if nxt <= cursor:  # defensive: never spin on a non-advancing cursor
+            nxt = end
+        windows.append((cursor, nxt))
+        cursor = nxt
+    return windows
+
+
+def _months_in_window(start: date, end: date) -> list[str]:
+    """["September 2026", ...] for every month touched by ``[start, end]``.
+
+    Both ends are INCLUSIVE — callers holding a half-open ``[start, end)``
+    window pass ``end - 1 day``. Always yields at least the start month.
+    """
+    if end < start:
+        end = start
+    months: list[str] = []
+    cursor = date(start.year, start.month, 1)
+    last = date(end.year, end.month, 1)
+    while cursor <= last:
+        months.append(f"{_MONTH_NAMES[cursor.month - 1]} {cursor.year}")
+        cursor = _add_months(cursor, 1)
+    return months
+
+
+def _chunk_months(months: list[str], size: int = _CAMPAIGN_CHUNK_MONTHS) -> list[list[str]]:
+    """Group month labels into consecutive chunks of at most ``size``.
+
+    Used for the strategy document, whose sections must tile the horizon
+    without overlap — date windows straddle month boundaries and would make
+    the same month appear in two sections.
+    """
+    size = max(1, int(size or 1))
+    return [months[i : i + size] for i in range(0, len(months), size)]
+
+
+def _coerce_campaign_list(parsed: Any) -> Optional[list[dict[str, Any]]]:
+    """Normalize a parsed LLM payload into a list of campaign dicts.
+
+    Returns ``None`` when the payload is not campaign-shaped at all (parse
+    failure, a bare string, a number) so the caller can trigger a repair
+    pass. It NEVER wraps a raw string as a campaign — that fallback is what
+    produced the corrupt single "General Campaign" record in production.
+    """
+    if isinstance(parsed, dict):
+        # json_object mode can't return a top-level array, so the model wraps
+        # it. Prefer a list-valued key (e.g. {"campaigns": [...]}); if it
+        # instead returned one object per campaign ({"campaign_1": {...}}),
+        # collect the dict values so we don't silently drop everything.
+        listed = next((v for v in parsed.values() if isinstance(v, list)), None)
+        parsed = (
+            listed
+            if listed is not None
+            else [v for v in parsed.values() if isinstance(v, dict)]
+        )
+    if not isinstance(parsed, list):
+        return None
+    return [c for c in parsed if isinstance(c, dict)]
+
+
+# A serialized object/array betrays itself with a quoted key followed by a
+# value. Escaped forms (\"name\": ...) count — the production artifact stored
+# the array escaped inside a description.
+_JSON_KEY_RE = re.compile(r'\\?"\s*:\s*(?:\\?"|[\[{\d])')
+_CAMPAIGN_KEY_RE = re.compile(
+    r'\\?"(?:name|description|start_date|end_date|pillar|platforms)\\?"\s*:'
+)
+
+
+def _looks_like_embedded_json(value: Any) -> bool:
+    """True when a campaign field holds a serialized JSON blob, not prose.
+
+    The production corruption stored the entire campaign array as an escaped
+    JSON string inside one campaign's ``description``; this catches that
+    shape even when the blob is truncated and therefore unparseable.
+
+    A leading bracket alone is NOT evidence — bracket-tagged prose
+    ("[Launch] Celebrate the opening of our Curepipe store …") is a normal
+    LLM output shape, and flagging it failed the whole planning run for a
+    cosmetic quirk. Real JSON evidence is required on top of the bracket:
+    the blob opens as an object/array of objects, or it carries a quoted
+    key/value pair (campaign keys especially).
+    """
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    if len(stripped) < 120 or stripped[:1] not in ("{", "["):
+        return False
+    return (
+        stripped[:2] in ('{"', '[{', '[[')
+        or stripped[:3] in ('{\\"', '[\\"')
+        or bool(_CAMPAIGN_KEY_RE.search(stripped))
+        or bool(_JSON_KEY_RE.search(stripped))
+    )
+
+
+def _parse_campaign_date(value: Any) -> Optional[date]:
+    """Parse a campaign date field to a ``date``; ``None`` when unparseable."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _min_expected_campaigns(scope_weeks: int) -> int:
+    """Sane floor for how many campaigns a horizon must yield (~1 per 2 months)."""
+    try:
+        weeks = max(1, int(scope_weeks or 1))
+    except (TypeError, ValueError):
+        weeks = 1
+    months = max(1, round(weeks / 4.345))
+    return max(1, months // 2)
+
+
+def _merge_campaign_chunks(
+    chunks: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Flatten per-window campaign lists, dropping duplicates by name.
+
+    Windows are generated independently, so the same seasonal campaign can
+    surface twice at a quarter boundary. First occurrence wins; the merged
+    list is ordered chronologically by start_date, then by name. Campaigns
+    without a parseable start_date sort last rather than being dropped —
+    the validation gate is what rejects them.
+    """
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        for campaign in chunk or []:
+            if not isinstance(campaign, dict):
+                continue
+            key = " ".join(str(campaign.get("name") or "").lower().split())
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            merged.append(campaign)
+    merged.sort(
+        key=lambda c: (
+            str(_parse_campaign_date(c.get("start_date")) or "9999-12-31"),
+            str(c.get("name") or ""),
+        )
+    )
+    return merged
+
+
+def _partition_campaigns(
+    campaigns: Any,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split a merged campaign list into keepers and discards (availability gate).
+
+    Runs BEFORE :func:`_validate_campaigns`. One malformed entry among a
+    year's campaigns is an LLM quirk, not corruption: dropping it keeps the
+    brand's campaigns, strategy document and calendar, where failing the node
+    left the brand with nothing at all. Discarded here: entries that are not
+    objects, entries missing a required field, and entries whose dates do not
+    parse or run backwards. Everything that survives still faces the
+    fail-closed gate (embedded-JSON blobs, count floor, JSON round-trip),
+    which is what actually guards against a corrupt payload.
+
+    Returns ``(kept, reasons)`` — one human-readable reason per discard.
+    """
+    if not isinstance(campaigns, list):
+        return [], [f"campaigns is {type(campaigns).__name__}, expected a list"]
+
+    kept: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for idx, campaign in enumerate(campaigns):
+        if not isinstance(campaign, dict):
+            reasons.append(
+                f"campaign[{idx}] is {type(campaign).__name__}, expected an object"
+            )
+            continue
+        name = str(campaign.get("name") or "").strip()
+        label = f"campaign[{idx}] {name or '<unnamed>'}"
+
+        missing = [
+            f
+            for f in _CAMPAIGN_REQUIRED_FIELDS
+            if not str(campaign.get(f) or "").strip()
+        ]
+        if missing:
+            reasons.append(f"{label}: missing required field(s) {', '.join(missing)}")
+            continue
+
+        starts = _parse_campaign_date(campaign.get("start_date"))
+        ends = _parse_campaign_date(campaign.get("end_date"))
+        if starts is None or ends is None:
+            field = "start_date" if starts is None else "end_date"
+            reasons.append(f"{label}: unparseable {field} {campaign.get(field)!r}")
+            continue
+        if ends < starts:
+            reasons.append(f"{label}: end_date {ends} precedes start_date {starts}")
+            continue
+
+        kept.append(campaign)
+    return kept, reasons
+
+
+def _validate_campaigns(
+    campaigns: Any,
+    *,
+    window_start: Optional[date] = None,
+    window_end: Optional[date] = None,
+    min_expected: int = 1,
+) -> tuple[list[str], dict[str, int]]:
+    """Integrity gate run after the campaign chunks are merged and partitioned.
+
+    Returns ``(problems, campaigns_per_month)``. An empty problems list means
+    the artifact is safe to persist. Checks: shape, required fields, no
+    embedded-JSON blobs masquerading as prose, parseable and ordered dates,
+    a sane minimum count for the scope, and a clean json.dumps/loads
+    round-trip (storage serializes this payload verbatim).
+
+    Callers run :func:`_partition_campaigns` first, so the per-field checks
+    here are a belt-and-braces double check on survivors; what makes this
+    gate fail a real run is a corrupt payload (embedded JSON, no round-trip)
+    or too few campaigns left to be a plan at all.
+    """
+    problems: list[str] = []
+    per_month: dict[str, int] = {}
+
+    if not isinstance(campaigns, list):
+        return (
+            [f"campaigns is {type(campaigns).__name__}, expected a list"],
+            per_month,
+        )
+
+    for idx, campaign in enumerate(campaigns):
+        if not isinstance(campaign, dict):
+            problems.append(
+                f"campaign[{idx}] is {type(campaign).__name__}, expected an object"
+            )
+            continue
+        name = str(campaign.get("name") or "").strip()
+        label = f"campaign[{idx}] {name or '<unnamed>'}"
+
+        missing = [
+            f
+            for f in _CAMPAIGN_REQUIRED_FIELDS
+            if not str(campaign.get(f) or "").strip()
+        ]
+        if missing:
+            problems.append(f"{label}: missing required field(s) {', '.join(missing)}")
+
+        for field in ("name", "description"):
+            if _looks_like_embedded_json(campaign.get(field)):
+                problems.append(
+                    f"{label}: {field} holds an embedded JSON blob, not prose "
+                    "(raw LLM output persisted as a campaign)"
+                )
+
+        raw_start, raw_end = campaign.get("start_date"), campaign.get("end_date")
+        starts, ends = _parse_campaign_date(raw_start), _parse_campaign_date(raw_end)
+        # Blank/absent dates are already reported as missing required fields —
+        # only a non-empty value that refuses to parse is an "unparseable" one.
+        if str(raw_start or "").strip() and starts is None:
+            problems.append(f"{label}: unparseable start_date {raw_start!r}")
+        if str(raw_end or "").strip() and ends is None:
+            problems.append(f"{label}: unparseable end_date {raw_end!r}")
+        if starts and ends and ends < starts:
+            problems.append(f"{label}: end_date {ends} precedes start_date {starts}")
+
+        if starts:
+            key = starts.strftime("%Y-%m")
+            per_month[key] = per_month.get(key, 0) + 1
+            if window_start and window_end and not (window_start <= starts <= window_end):
+                # Out-of-window is odd but not corrupt — warn, don't fail.
+                logger.warning(
+                    "%s starts %s outside the planning window %s..%s",
+                    label, starts, window_start, window_end,
+                )
+
+        soft_missing = [
+            f
+            for f in _CAMPAIGN_RECOMMENDED_FIELDS
+            if not campaign.get(f)
+        ]
+        if soft_missing:
+            logger.warning("%s: missing recommended field(s) %s", label, soft_missing)
+
+    if len(campaigns) < min_expected:
+        problems.append(
+            f"only {len(campaigns)} campaign(s) generated, expected at least "
+            f"{min_expected} for this scope"
+        )
+
+    # The payload is stored via json.dumps — prove it survives the round-trip
+    # before anything persists it.
+    try:
+        if json.loads(json.dumps(campaigns)) != campaigns:
+            problems.append("campaigns do not round-trip through json.dumps/loads")
+    except (TypeError, ValueError) as exc:
+        problems.append(f"campaigns are not JSON-serializable: {exc}")
+
+    return problems, per_month
+
+
+def _missing_document_months(document: str, months: list[str]) -> list[str]:
+    """Months from ``months`` that have no markdown header in the document.
+
+    Only header lines count: a month named in passing inside a table cell is
+    not a monthly section, and the point of this check is to catch sections
+    lost to a truncated completion. The year is matched when the header
+    carries one, so "### January 2027" is not mistaken for January 2026.
+
+    Headers are consumed as they match. A 52-week horizon spans 13 months, so
+    the same month name appears twice; a yearless "### January" is evidence of
+    ONE January section, not both, and must not mark the second one present.
+    """
+    headers = [
+        ln.strip().lstrip("#").strip().lower()
+        for ln in (document or "").splitlines()
+        if ln.strip().startswith("#")
+    ]
+    if not headers:
+        return list(months)
+
+    used: set[int] = set()
+
+    def _claim(predicate) -> bool:
+        idx = next(
+            (i for i, h in enumerate(headers) if i not in used and predicate(h)),
+            None,
+        )
+        if idx is None:
+            return False
+        used.add(idx)
+        return True
+
+    # Pass 1: headers naming the year are unambiguous, so they are matched
+    # first and cannot be stolen by a yearless header of the same month.
+    pending: list[str] = []
+    for label in months:
+        parts = label.split()
+        month_name = parts[0].lower()
+        year = parts[1] if len(parts) > 1 else ""
+        if not (year and _claim(lambda h: month_name in h and year in h)):
+            pending.append(label)
+
+    # Pass 2: a yearless header satisfies exactly one occurrence of its month.
+    missing: list[str] = []
+    for label in pending:
+        month_name = label.split()[0].lower()
+        if not _claim(
+            lambda h: month_name in h and not any(ch.isdigit() for ch in h)
+        ):
+            missing.append(label)
+    return missing
+
+
 async def load_strategy(state: PlanningState) -> dict[str, Any]:
     """Load the latest approved strategy and enabled channels from the database."""
     brand_id = state["brand_id"]
@@ -403,6 +841,61 @@ async def load_strategy(state: PlanningState) -> dict[str, Any]:
     }
 
 
+async def _campaigns_from_prompt(
+    prompt: list[dict[str, str]], *, label: str
+) -> list[dict[str, Any]]:
+    """Run one campaign-generation call, with a single JSON-repair retry.
+
+    Raises ``CampaignIntegrityError`` when the model never returns parseable
+    JSON. A raw unparsed string is NEVER converted into a campaign record —
+    that fallback is what stored a year of campaigns as one escaped blob.
+    """
+    result = await chat_completion(
+        prompt,
+        temperature=0.5,
+        max_tokens=_CAMPAIGN_MAX_TOKENS,
+        response_format={"type": "json_object"},
+    )
+    campaigns = _coerce_campaign_list(parse_llm_json(result, fallback=None))
+    if campaigns is not None:
+        return campaigns
+
+    logger.warning(
+        "%s: campaign JSON unparseable (%d chars) — retrying with a repair prompt",
+        label,
+        len(result),
+    )
+    repair_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "You repair malformed JSON. The input below came from a campaign "
+                "planner and is invalid — most likely truncated mid-value. Return "
+                'ONLY a valid JSON object of the form {"campaigns": [...]} holding '
+                "the campaigns that are COMPLETE in the input. Drop any trailing "
+                "campaign whose fields were cut off. Do not invent campaigns, do "
+                "not add commentary, and keep every intact field value verbatim."
+            ),
+        },
+        {"role": "user", "content": sanitize_for_prompt(str(result), max_length=12000)},
+    ]
+    repaired = await chat_completion(
+        repair_prompt,
+        temperature=0.0,
+        max_tokens=_CAMPAIGN_MAX_TOKENS,
+        response_format={"type": "json_object"},
+    )
+    campaigns = _coerce_campaign_list(parse_llm_json(repaired, fallback=None))
+    if campaigns is None:
+        raise CampaignIntegrityError(
+            f"{label}: campaign JSON still unparseable after the repair retry "
+            f"(original {len(result)} chars, repair {len(repaired)} chars) — "
+            "refusing to persist raw LLM output as a campaign"
+        )
+    logger.info("%s: repair retry recovered %d campaign(s)", label, len(campaigns))
+    return campaigns
+
+
 async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
     """Generate campaign plans from the strategy using LLM, plus a year-long strategy document."""
     try:
@@ -421,15 +914,17 @@ async def generate_campaigns(state: PlanningState) -> dict[str, Any]:
 async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
     brand_id = state["brand_id"]
     strategy = state.get("strategy", {})
-    scope_weeks = state.get("scope_weeks", 52)
+    # Coerced the same way generate_calendar/store_calendar do, so the
+    # campaign horizon can never disagree with the calendar horizon.
+    scope_weeks = max(1, int(state.get("scope_weeks", 52) or 52))
     enabled_channels = state.get("enabled_channels", ["instagram"])
     events = state.get("events", [])
     events_block = _format_events_for_prompt(events)
     brand_context = state.get("brand_context", "")
-    start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    end_date = (datetime.now(timezone.utc) + timedelta(weeks=scope_weeks)).strftime(
-        "%Y-%m-%d"
-    )
+    horizon_start = datetime.now(timezone.utc).date()
+    horizon_end = horizon_start + timedelta(weeks=scope_weeks)
+    start_date = horizon_start.isoformat()
+    end_date = horizon_end.isoformat()
 
     # Load brand info for strategy document (get_brand returns name, etc.)
     brand = await get_brand(brand_id) or {}
@@ -470,6 +965,8 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
             constraints += (
                 " You MUST include these user-defined campaigns, enriching each with the full "
                 f"structure (use the given name/description verbatim as the basis): {must_include}."
+                " Include each one only in the window where its timing belongs — another"
+                " window's call covers the rest."
             )
     if removed_campaigns:
         constraints += (
@@ -477,128 +974,357 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
             f"{', '.join(removed_campaigns)}."
         )
 
-    prompt = [
-        {
-            "role": "system",
-            "content": (
-                f"{_ENGLISH_ONLY_RULE}\n\n"
-                "You are a campaign planner. Based on the brand's target market and strategy, generate specific campaigns "
-                f"for the period {start_date} to {end_date} ({scope_weeks} weeks). "
-                f"Generate content ONLY for these platforms: {channels_str}. "
-                "Do NOT generate content for any other platforms. "
-                "Each campaign should have: name, description, start_date, "
-                "end_date, pillar, platforms, goal, kpis, "
-                "target_metrics (object with reach, engagement_rate targets), "
-                "creative_direction (2-3 sentences describing the visual/tonal approach), "
-                "content_format_mix (object with content_type percentages e.g. {reel: 40, carousel: 30, static: 20, story: 10}), "
-                "target_audience (primary persona name from strategy). "
-                "Return a JSON object with a single key \"campaigns\" whose value is an array of the campaign objects."
-                + constraints
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"{brand_context}\n\n"
-                f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}\n\n"
-                f"Significant Events Calendar (anchor campaigns to these dates where relevant):\n"
-                f"{events_block}\n\n"
-                f"Available Products:\n{product_summary}"
-            ),
-        },
-    ]
-    result = await chat_completion(
-        prompt, temperature=0.5, response_format={"type": "json_object"}
+    # ── Chunked campaign generation ────────────────────────────────────────
+    # One LLM call per quarter (or fewer for short horizons). A single call
+    # asked to carry a whole year overruns the token cap and comes back cut
+    # mid-value; chunking keeps every response comfortably inside it.
+    campaign_user_msg = (
+        f"{brand_context}\n\n"
+        f"Strategy:\n{sanitize_json_for_prompt(strategy, max_length=8000)}\n\n"
+        f"Significant Events Calendar (anchor campaigns to these dates where relevant):\n"
+        f"{events_block}\n\n"
+        f"Available Products:\n{product_summary}"
     )
-    campaigns = parse_llm_json(
-        result, fallback=[{"name": "General Campaign", "description": result}]
+    windows = _campaign_chunk_windows(horizon_start, horizon_end)
+
+    def _campaign_prompt(
+        win_start: date, win_end: date, idx: int, total: int
+    ) -> list[dict[str, str]]:
+        if total > 1:
+            # The window is half-open [start, end); the prompt reads
+            # inclusive, so hand the model the last covered day. Without
+            # this, two consecutive windows both claim the boundary day and
+            # two differently-named campaigns can start on it.
+            win_last = max(win_start, win_end - timedelta(days=1))
+            scope_rule = (
+                f"This is window {idx} of {total} in a {scope_weeks}-week plan "
+                f"running {start_date} to {end_date}. Generate campaigns ONLY for "
+                f"{win_start.isoformat()} to {win_last.isoformat()} — every "
+                "campaign's start_date MUST fall inside that window. The other "
+                "windows are handled by separate calls: do not plan for them and "
+                "do not repeat their campaigns."
+            )
+        else:
+            scope_rule = (
+                f"Generate campaigns for the period {start_date} to {end_date} "
+                f"({scope_weeks} weeks)."
+            )
+        return [
+            {
+                "role": "system",
+                "content": (
+                    f"{_ENGLISH_ONLY_RULE}\n\n"
+                    "You are a campaign planner. Based on the brand's target market and strategy, generate specific campaigns. "
+                    f"{scope_rule} "
+                    f"Generate content ONLY for these platforms: {channels_str}. "
+                    "Do NOT generate content for any other platforms. "
+                    "Each campaign MUST have: name, description, start_date "
+                    "(YYYY-MM-DD), end_date (YYYY-MM-DD), pillar, platforms, goal, kpis, "
+                    "target_metrics (object with reach, engagement_rate targets), "
+                    "creative_direction (2-3 sentences describing the visual/tonal approach), "
+                    "content_format_mix (object with content_type percentages e.g. {reel: 40, carousel: 30, static: 20, story: 10}), "
+                    "target_audience (primary persona name from strategy). "
+                    "Return a JSON object with a single key \"campaigns\" whose value is an array of the campaign objects. "
+                    "Keep descriptions to 2-4 sentences so the response is never truncated."
+                    + constraints
+                ),
+            },
+            {"role": "user", "content": campaign_user_msg},
+        ]
+
+    # return_exceptions so a failing window doesn't leave its siblings'
+    # results (or exceptions) unretrieved; the first failure is re-raised
+    # once every window has settled.
+    campaign_chunks = await asyncio.gather(
+        *[
+            _campaigns_from_prompt(
+                _campaign_prompt(win_start, win_end, idx + 1, len(windows)),
+                label=f"campaigns[{win_start.isoformat()}..{win_end.isoformat()}]",
+            )
+            for idx, (win_start, win_end) in enumerate(windows)
+        ],
+        return_exceptions=True,
     )
-    if isinstance(campaigns, dict):
-        # json_object mode can't return a top-level array, so the model wraps it.
-        # Prefer a list-valued key (e.g. {"campaigns": [...]}); if it instead
-        # returned one object per campaign ({"campaign_1": {...}, ...}), collect
-        # the dict values so we don't silently drop everything.
-        campaigns = (
-            next((v for v in campaigns.values() if isinstance(v, list)), None)
-            or [v for v in campaigns.values() if isinstance(v, dict)]
-        )
+    for chunk in campaign_chunks:
+        if isinstance(chunk, BaseException):
+            raise chunk
+    campaigns = _merge_campaign_chunks(list(campaign_chunks))
 
     # Safety net: drop any campaign whose name the user removed (LLM may ignore).
-    if removed_campaigns and isinstance(campaigns, list):
+    if removed_campaigns:
         _removed_lc = {n.strip().lower() for n in removed_campaigns if isinstance(n, str)}
         campaigns = [
             c for c in campaigns
-            if not (isinstance(c, dict) and (c.get("name") or "").strip().lower() in _removed_lc)
+            if (c.get("name") or "").strip().lower() not in _removed_lc
         ]
 
-    # ── Generate year-long content calendar strategy document ──────────────
-    strategy_doc_prompt = [
+    # Report (don't fail on) user-curated campaigns the model never produced —
+    # it enriches names, so exact-match absence is a smell, not corruption.
+    if campaign_overrides:
+        _generated_lc = {(c.get("name") or "").strip().lower() for c in campaigns}
+        dropped = [
+            c.get("name")
+            for c in campaign_overrides
+            if isinstance(c, dict)
+            and c.get("name")
+            and str(c["name"]).strip().lower() not in _generated_lc
+        ]
+        if dropped:
+            logger.warning(
+                "Brand %s: user-defined campaigns absent by exact name from the "
+                "generated set (may have been renamed): %s",
+                brand_id, dropped,
+            )
+
+    # ── Availability gate: drop the defective, keep the plan ───────────────
+    # A single campaign with a missing/reversed/unparseable date is an LLM
+    # quirk. Failing the node for it costs the brand its campaigns, strategy
+    # document AND calendar (the graph routes straight to END), so those
+    # entries are discarded and logged instead.
+    campaigns, dropped_campaigns = _partition_campaigns(campaigns)
+    for reason in dropped_campaigns:
+        logger.warning("CAMPAIGN_DROPPED brand=%s: %s", brand_id, reason)
+
+    # ── Validation gate ────────────────────────────────────────────────────
+    # Nothing corrupt reaches storage: required fields present, dates parse
+    # and are ordered, a sane count for the scope, and a clean JSON
+    # round-trip. Failing here fails the node (status=failed + error).
+    min_expected = _min_expected_campaigns(scope_weeks)
+    problems, per_month = _validate_campaigns(
+        campaigns,
+        window_start=horizon_start,
+        window_end=horizon_end,
+        min_expected=min_expected,
+    )
+    logger.info(
+        "CAMPAIGNS brand=%s total=%d dropped=%d windows=%d min_expected=%d per_month: %s",
+        brand_id,
+        len(campaigns),
+        len(dropped_campaigns),
+        len(windows),
+        min_expected,
+        ", ".join(f"{m}={n}" for m, n in sorted(per_month.items())) or "(none dated)",
+    )
+    if problems:
+        for problem in problems:
+            logger.error("CAMPAIGN_INVALID brand=%s: %s", brand_id, problem)
+        raise CampaignIntegrityError(
+            f"campaign validation failed for brand {brand_id} "
+            f"({len(problems)} problem(s)): " + "; ".join(problems[:8])
+        )
+
+    # ── Content calendar strategy document (chunked like campaigns) ────────
+    # A 12-month document (12 monthly sections + two tables + a per-channel
+    # cadence block) routinely runs 8-14K tokens against a 16K cap, so the
+    # tail months silently disappeared. Generated as a header section plus
+    # one section per window instead, each far below the cap.
+    doc_user_msg = (
+        f"{brand_context}\n\n"
+        f"Brand: {sanitize_for_prompt(brand.get('name', '') or '')}\n"
+        f"Positioning: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=3000)}\n"
+        f"Pillars: {sanitize_json_for_prompt(strategy.get('pillars', []), max_length=3000)}\n"
+        f"Audiences: {sanitize_json_for_prompt(strategy.get('audiences', []), max_length=3000)}\n"
+        f"Cadence: {sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=3000)}\n"
+        f"Themes: {sanitize_json_for_prompt(strategy.get('themes', []), max_length=3000)}\n"
+        f"Enabled Channels: {channels_str}\n\n"
+        f"Significant Events Calendar (the ONLY dates you may cite — include EVERY one):\n"
+        f"{events_block}"
+    )
+    doc_common_rules = (
+        f"{_ENGLISH_ONLY_RULE}\n\n"
+        "You are a senior content strategist writing ONE section of a brand's "
+        "Content Calendar Strategy Document. That document is the reference "
+        "guide for daily content generation.\n\n"
+        "FORMATTING REQUIREMENTS (strict):\n"
+        "- Use '## ' for major section headers\n"
+        "- Use '### ' for month headers, always with the year (e.g., '### January 2027')\n"
+        "- Use bullet lists (- ) for key points\n"
+        "- Use **bold** for emphasis on key terms\n\n"
+        "EVENTS CALENDAR INTEGRATION (CRITICAL):\n"
+        "- The user message includes a 'Significant Events Calendar' — these are the ONLY event dates you may cite.\n"
+        "- Date-range events (e.g. 2026-05-11 → 2026-05-27) are multi-day campaigns; plan a sustained content arc across the range.\n"
+        "- Do NOT invent or cite events that are not in that list.\n"
+        "- If the list is empty, say so rather than inventing dates.\n\n"
+        "Write ONLY the section you are asked for — other sections are written "
+        "by separate calls and concatenated with yours. Do not repeat them and "
+        "do not add a closing summary.\n\n"
+    )
+    # horizon_end is exclusive; the last covered day is the day before it.
+    horizon_months = _months_in_window(horizon_start, horizon_end - timedelta(days=1))
+    months_csv = ", ".join(horizon_months)
+
+    header_prompt = [
         {
             "role": "system",
             "content": (
-                f"{_ENGLISH_ONLY_RULE}\n\n"
-                "You are a senior content strategist. Create a comprehensive Content Calendar Strategy Document "
-                "that covers the full year. This document will be the reference guide for daily content generation.\n\n"
-                "FORMATTING REQUIREMENTS (strict):\n"
-                "- Use '## ' for major section headers (e.g., '## Monthly Overview', '## Q1 Strategy')\n"
-                "- Use '### ' for month names (e.g., '### January', '### February')\n"
-                "- Use bullet lists (- ) for key points\n"
-                "- Use **bold** for emphasis on key terms\n"
-                "- Use '---' horizontal rules between quarters\n"
-                "- Include a markdown table for the yearly overview with columns: Month | Theme | Key Dates | Content Focus | Pillar Rotation\n"
-                "- Include a markdown table for content mix ratios by platform\n"
-                "- Start with an executive summary paragraph\n\n"
-                "CONTENT TO INCLUDE:\n"
-                "- Monthly themes with strategic rationale\n"
-                "- Seasonal hooks and key dates/holidays relevant to the brand's market\n"
-                "- Content pillar rotation schedule\n"
-                "- Content mix ratios per platform\n"
-                "- Strategic rationale for content sequencing\n\n"
-                "EVENTS CALENDAR INTEGRATION (CRITICAL):\n"
-                "- The user message includes a 'Significant Events Calendar' — these are the ONLY event dates you may cite.\n"
-                "- You MUST reference EVERY event from that list by name and date in the appropriate monthly section.\n"
-                "- Each event must appear in the 'Key Dates' column of the yearly overview table.\n"
-                "- Date-range events (e.g. 2026-05-11 → 2026-05-27) are multi-day campaigns; plan a sustained content arc across the range.\n"
-                "- Do NOT invent or cite events that are not in that list.\n"
-                "- If the list is empty, say so in the executive summary rather than inventing dates.\n\n"
-                "CHANNEL CADENCE SECTION (REQUIRED — include a section titled '## Channel Posting Cadence' with this exact format):\n"
-                "For EACH enabled channel, include:\n"
+                doc_common_rules
+                + "YOUR SECTION — the opening of the document:\n"
+                "1. An executive summary paragraph (no header).\n"
+                "2. '## Yearly Overview' — a markdown table with columns: "
+                "Month | Theme | Key Dates | Content Focus | Pillar Rotation. "
+                "One row per month listed by the user, in order. EVERY event "
+                "from the Significant Events Calendar must appear in the "
+                "'Key Dates' cell of its month's row.\n"
+                "3. '## Content Mix by Platform' — a markdown table of content "
+                "mix ratios per enabled platform.\n"
+                "4. '## Channel Posting Cadence' — REQUIRED, with this exact format. "
+                "For EACH enabled channel:\n"
                 "### [Channel Name]\n"
                 "- Weekly cadence: [N] posts per week\n"
                 "- Best days: [day1], [day2], [day3]\n"
                 "- Best times: [HH:MM], [HH:MM], [HH:MM]\n"
                 "- Primary role: [one sentence]\n"
                 "- Best formats: [format1], [format2]\n"
-                "This section is critical — the content calendar generator reads these exact numbers."
+                "This section is critical — the content calendar generator reads "
+                "these exact numbers.\n"
+                "Do NOT write the per-month detail sections; later sections cover those."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"{brand_context}\n\n"
-                f"Brand: {sanitize_for_prompt(brand.get('name', '') or '')}\n"
-                f"Positioning: {sanitize_json_for_prompt(strategy.get('positioning', {}), max_length=3000)}\n"
-                f"Pillars: {sanitize_json_for_prompt(strategy.get('pillars', []), max_length=3000)}\n"
-                f"Audiences: {sanitize_json_for_prompt(strategy.get('audiences', []), max_length=3000)}\n"
-                f"Cadence: {sanitize_json_for_prompt(strategy.get('cadence', {}), max_length=3000)}\n"
-                f"Themes: {sanitize_json_for_prompt(strategy.get('themes', []), max_length=3000)}\n"
-                f"Enabled Channels: {channels_str}\n\n"
-                f"Significant Events Calendar (the ONLY dates you may cite — include EVERY one):\n"
-                f"{events_block}\n\n"
-                f"Generate a full 12-month content calendar strategy document."
+                f"{doc_user_msg}\n\n"
+                f"Months to cover, in order: {months_csv}\n\n"
+                "Write the opening sections of the content calendar strategy document."
             ),
         },
     ]
-    strategy_document = await chat_completion(
-        strategy_doc_prompt, temperature=0.6, max_tokens=16384
+
+    def _doc_window_prompt(win_months: list[str]) -> list[dict[str, str]]:
+        win_csv = ", ".join(win_months)
+        return [
+            {
+                "role": "system",
+                "content": (
+                    doc_common_rules
+                    + f"YOUR SECTION — the monthly detail for {win_csv}.\n"
+                    "Write one '### <Month> <Year>' subsection per month listed "
+                    "above, in order, and nothing else above them — no wrapper "
+                    "header (a month name in a wrapper header would confuse the "
+                    "generator that slices this document by month). Each "
+                    "subsection covers:\n"
+                    "- Monthly theme with strategic rationale\n"
+                    "- Seasonal hooks and every event from the events calendar that falls in that month\n"
+                    "- Content pillar rotation for the month\n"
+                    "- Strategic rationale for content sequencing\n"
+                    "End with a '---' horizontal rule.\n"
+                    "Do NOT write an executive summary, the yearly overview table, "
+                    "the content mix table, or the channel cadence section."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{doc_user_msg}\n\n"
+                    f"Months to cover, in order: {win_csv}\n\n"
+                    "Write the monthly detail sections for exactly those months."
+                ),
+            },
+        ]
+
+    # Section windows tile the horizon by calendar month (not by the campaign
+    # date windows, which straddle month boundaries and would emit the same
+    # month twice).
+    doc_month_chunks = _chunk_months(horizon_months)
+    # return_exceptions mirrors the campaign gather: one failing section must
+    # not leave its siblings' exceptions unretrieved ("Task exception was
+    # never retrieved" noise on an already-failing run). The first failure is
+    # re-raised once every section has settled.
+    doc_sections = await asyncio.gather(
+        *[
+            chat_completion(
+                prompt, temperature=0.6, max_tokens=_STRATEGY_DOC_MAX_TOKENS
+            )
+            for prompt in [
+                header_prompt,
+                *[_doc_window_prompt(chunk) for chunk in doc_month_chunks],
+            ]
+        ],
+        return_exceptions=True,
     )
-    logger.info(
-        "Generated year-long strategy document for brand %s (%d chars)",
-        brand_id,
-        len(strategy_document),
+    for section in doc_sections:
+        if isinstance(section, BaseException):
+            raise section
+    strategy_document = "\n\n".join(
+        str(section).strip() for section in doc_sections if str(section).strip()
     )
 
+    missing_months = _missing_document_months(strategy_document, horizon_months)
+    logger.info(
+        "STRATEGY_DOC brand=%s chars=%d sections=%d months=%d missing=%s",
+        brand_id,
+        len(strategy_document),
+        len(doc_sections),
+        len(horizon_months),
+        missing_months or "none",
+    )
+    # Chunking guarantees one call per quarter, so a missing month means a
+    # section really was lost — not that a single call ran out of tokens.
+    # The old `> len(horizon_months) // 2` threshold let 6 of 13 months
+    # vanish behind a log line, which is the very defect chunking fixed. One
+    # miss is tolerated (the header check is a heuristic on markdown text);
+    # two is a lost section.
+    if not strategy_document or len(missing_months) > _MAX_MISSING_DOC_MONTHS:
+        raise CampaignIntegrityError(
+            f"strategy document incomplete for brand {brand_id}: "
+            f"{len(strategy_document)} chars, missing monthly sections for "
+            f"{missing_months or '(document empty)'}"
+        )
+    if missing_months:
+        logger.error(
+            "STRATEGY_DOC_GAPS brand=%s missing monthly sections: %s",
+            brand_id,
+            missing_months,
+        )
+
     return {"campaigns": campaigns, "strategy_document": strategy_document}
+
+
+# ── Calendar batch scheduling (pure — unit tested) ───────────────────
+
+# Concurrent calendar LLM calls. 8 avoids rate-limit spikes while keeping a
+# full-year run at ~5 min wall clock.
+_BATCH_CONCURRENCY = 8
+
+# How many distinct titles / statistics of the run so far are replayed into
+# each batch prompt. Capped so the block stays a few hundred tokens even at
+# week 50 of a 52-week horizon.
+_RECENT_TITLES_CAP = 40
+_RECENT_STATS_CAP = 15
+
+# Upper bound on wave size. Batches inside one wave cannot see each other, so
+# the wave width IS the blind spot of the repetition damping. VARIETY_RULES
+# mandates "any single statistic at most once in any rolling 4-week window";
+# a 12-week wave meant the mechanism structurally could not enforce its own
+# headline rule. Capped at the rule's window so prompt and mechanism agree.
+_MAX_WAVE_WINDOWS = 4
+
+
+def _wave_size(
+    n_channels: int,
+    concurrency: int = _BATCH_CONCURRENCY,
+    max_windows: int = _MAX_WAVE_WINDOWS,
+) -> int:
+    """Number of week-windows generated per wave.
+
+    Batches must run in waves (not one flat gather) for repetition damping to
+    work at all: a batch can only be told which titles/stats are already
+    taken if the batches that produced them have finished. Waves are the
+    cheapest ordering that preserves throughput — pick a size whose
+    ``windows x channels`` task count is about three full rounds of the
+    semaphore, so every wave saturates the LLM pool and the whole run costs
+    roughly one extra round rather than serializing.
+
+    ``max_windows`` then clamps that to the variety rule's own 4-week window
+    (see ``_MAX_WAVE_WINDOWS``): a wave wider than the rule it enforces
+    cannot enforce it. Multi-channel brands still fill the pool (3 channels
+    x 4 windows = 12 tasks); a single-channel brand trades a little
+    parallelism for a damping signal that matches the prompt.
+    """
+    channels = max(1, int(n_channels or 1))
+    target_tasks = max(1, int(concurrency)) * 3
+    windows = -(-target_tasks // channels)  # ceil division
+    return max(1, min(int(max_windows), windows))
 
 
 async def generate_calendar(state: PlanningState) -> dict[str, Any]:
@@ -731,22 +1457,38 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
     channels_str = ", ".join(enabled_channels)
 
-    def _extract_month_strategy(month_name: str) -> str:
+    def _extract_month_strategy(month_label: str) -> str:
         """Extract the relevant month/quarter section from the strategy document.
 
-        Searches for the month name in any header format (##, ###, **, bold, etc.)
-        and captures everything until the next month header. Also captures the
+        ``month_label`` is a '%B %Y' label ("August 2026"). The year is
+        load-bearing: a 52-week horizon spans 13 months, so one month name
+        appears twice and a bare-name match spliced BOTH years' sections into
+        every batch prompt for that month.
+
+        Searches for the month in any header format (##, ###, **, bold, etc.)
+        and captures everything until the next month header — including a
+        header for the SAME month in a different year. Also captures the
         quarter section and channel strategy guidance.
         """
         if not strategy_document:
             return ""
 
-        all_months = [
-            "January", "February", "March", "April", "May", "June",
-            "July", "August", "September", "October", "November", "December",
-        ]
+        parts = month_label.split()
+        month_name = parts[0]
+        year = parts[1] if len(parts) > 1 else ""
+
+        all_months = _MONTH_NAMES
         month_idx = next((i for i, m in enumerate(all_months) if m.lower() == month_name.lower()), -1)
         quarter = f"Q{(month_idx // 3) + 1}" if month_idx >= 0 else ""
+
+        def _is_our_month(stripped: str, name: str) -> bool:
+            """True when the line names ``name`` and not some OTHER year."""
+            if name.lower() not in stripped:
+                return False
+            if not year:
+                return True
+            years = _YEAR_RE.findall(stripped)
+            return not years or year in years
 
         lines = strategy_document.split("\n")
         result_lines: list[str] = []
@@ -757,21 +1499,23 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
             # Start capturing if line contains this month's name or quarter
             if not capturing:
-                if month_name.lower() in stripped or (quarter and quarter.lower() in stripped and "strategy" in stripped):
+                if _is_our_month(stripped, month_name) or (quarter and quarter.lower() in stripped and "strategy" in stripped):
                     capturing = True
                     result_lines.append(line)
                     continue
             else:
-                # Stop when we hit a DIFFERENT month's header
+                # Stop when we hit a DIFFERENT month's header — a different
+                # month name, or our own month name under another year.
                 is_next_month = False
                 for m in all_months:
-                    if m.lower() == month_name.lower():
+                    if m.lower() not in stripped:
                         continue
-                    if m.lower() in stripped and any(
-                        stripped.startswith(p) for p in ("#", "**", "###")
-                    ):
-                        is_next_month = True
-                        break
+                    if not any(stripped.startswith(p) for p in ("#", "**")):
+                        continue
+                    if m.lower() == month_name.lower() and _is_our_month(stripped, m):
+                        continue
+                    is_next_month = True
+                    break
                 # Also stop at next quarter header (unless it's our quarter)
                 if not is_next_month and "q" in stripped and "strategy" in stripped:
                     for q in ["q1", "q2", "q3", "q4"]:
@@ -915,14 +1659,29 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
     # Semaphore caps concurrent LLM calls — 8 at a time avoids rate-limit
     # spikes while keeping wall-clock time to ~5 min for a full year.
-    _sem = asyncio.Semaphore(8)
+    _sem = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
-    async def _run_batch(batch_idx: int, batch_start: datetime, batch_end: datetime, channel: str) -> list[dict]:
+    # Repetition damping: every batch is told which titles/angles and which
+    # statistics earlier batches on the SAME channel already spent. That needs
+    # ordering, so windows run in waves (see the wave loop below) instead of
+    # one flat gather — waves stay fully parallel internally.
+    recent_titles: dict[str, list[str]] = {ch: [] for ch in enabled_channels}
+    recent_stats: dict[str, list[str]] = {ch: [] for ch in enabled_channels}
+
+    async def _run_batch(
+        batch_idx: int,
+        batch_start: datetime,
+        batch_end: datetime,
+        channel: str,
+        recent_block: str = "",
+    ) -> list[dict]:
         async with _sem:
             b_start_str = batch_start.strftime("%Y-%m-%d")
             b_last_day = batch_end - timedelta(days=1)
             b_end_str = b_last_day.strftime("%Y-%m-%d")
-            b_month = batch_start.strftime("%B")
+            # Year-qualified: the horizon spans 13 months, so "August" alone
+            # would pull BOTH Augusts' sections out of the strategy document.
+            b_month = batch_start.strftime("%B %Y")
             month_strategy = _extract_month_strategy(b_month)
             posts_needed = channel_cadence.get(channel, 3)
             best_days = channel_best_days.get(channel, "")
@@ -989,6 +1748,9 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         "wellness/lifestyle filler that could fit any brand\n"
                         "- NEVER violate the brand's NEVER-guardrails: no item may "
                         "reference, script, or imply anything those guardrails forbid\n\n"
+                        + TEMPORAL_RULES_BLOCK
+                        + VARIETY_RULES_BLOCK
+                        + BRIEF_STYLE_BLOCK
                         + (
                             "PRODUCT RULES:\n"
                             "- Product-focused items — roughly HALF of the posts and "
@@ -1027,6 +1789,7 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                     "content": (
                         f"{brand_context}\n\n"
                         f"{dedup}"
+                        f"{recent_block}"
                         f"Campaigns:\n{sanitize_json_for_prompt(campaigns, max_length=2000)}\n\n"
                         f"SIGNIFICANT EVENTS THIS WEEK (schedule on the event date, do NOT invent others):\n"
                         f"{week_events_block}\n\n"
@@ -1116,32 +1879,135 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                 logger.error("BATCH_FAIL batch=%d channel=%s: %s", batch_idx, channel, batch_exc)
                 return []
 
-    # Launch all batch×channel tasks concurrently
-    tasks = [
-        _run_batch(
-            idx * len(enabled_channels) + ch_idx,
-            bs, be, ch,
-        )
-        for idx, (bs, be) in enumerate(batch_windows)
-        for ch_idx, ch in enumerate(enabled_channels)
-    ]
-    batch_results = await asyncio.gather(*tasks)
-    for r in batch_results:
-        all_items.extend(r)
-        for item in r:
-            ch = item.get("platform", "")
-            if ch in channel_counts:
-                channel_counts[ch] += 1
+    # Launch batch×channel tasks in waves. Every wave is a full concurrent
+    # gather (same semaphore, same throughput); the only thing the wave
+    # boundary buys is that wave N+1's prompts can list the titles and
+    # statistics waves 1..N already spent on that channel, which is what
+    # damps the year-long repetition. Ordering costs ~1 extra concurrency
+    # round per run, not a serialization — see _wave_size.
+    wave_size = _wave_size(len(enabled_channels))
+    indexed_windows = list(enumerate(batch_windows))
+    for wave_start in range(0, len(indexed_windows), wave_size):
+        wave = indexed_windows[wave_start:wave_start + wave_size]
+        recent_blocks = {
+            ch: build_recent_usage_block(
+                recent_titles[ch],
+                recent_stats[ch],
+                channel=ch,
+                max_titles=_RECENT_TITLES_CAP,
+                max_stats=_RECENT_STATS_CAP,
+            )
+            for ch in enabled_channels
+        }
+        tasks = [
+            _run_batch(
+                idx * len(enabled_channels) + ch_idx,
+                bs, be, ch, recent_blocks.get(ch, ""),
+            )
+            for idx, (bs, be) in wave
+            for ch_idx, ch in enumerate(enabled_channels)
+        ]
+        wave_results = await asyncio.gather(*tasks)
+        for r in wave_results:
+            all_items.extend(r)
+            for item in r:
+                ch = item.get("platform", "")
+                if ch in channel_counts:
+                    channel_counts[ch] += 1
+                if ch in recent_titles:
+                    title = item_title(item)
+                    if title:
+                        recent_titles[ch].append(title)
+                    sub = str(item.get("weekly_sub_theme") or "").strip()
+                    if sub:
+                        recent_titles[ch].append(sub)
+                    recent_stats[ch].extend(item_stats(item))
+        # Bound the carried context so late waves don't blow the prompt
+        # budget on a 52-week horizon.
+        for ch in enabled_channels:
+            recent_titles[ch] = recent_titles[ch][-(_RECENT_TITLES_CAP * 2):]
+            recent_stats[ch] = recent_stats[ch][-(_RECENT_STATS_CAP * 2):]
 
     # ── Batch summary ─────────────────────────────────────────────
     logger.info(
-        "BATCH_SUMMARY total=%d expected=%d (%.0f%%). Per channel: %s",
+        "BATCH_SUMMARY total=%d expected=%d (%.0f%%) waves=%d. Per channel: %s",
         len(all_items),
         expected_total,
         (len(all_items) / expected_total * 100) if expected_total else 0,
+        -(-len(batch_windows) // wave_size) if batch_windows else 0,
         ", ".join(f"{ch}={cnt}" for ch, cnt in channel_counts.items()),
     )
+
+    # ── Post-generation deterministic passes ──────────────────────
+    # The LLM sees one week at a time; these run over the whole horizon and
+    # are the only thing that can catch cross-item defects. None of them
+    # drops an item — a hole in the published cadence is worse than a flawed
+    # line, and the warnings below tell the QA loop exactly what to inspect.
+    _apply_post_generation_checks(brand_id, all_items, events)
+
     return {"calendar_items": all_items}
+
+
+def _apply_post_generation_checks(
+    brand_id: str,
+    items: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Temporal guard + brief hygiene + repetition measurement over one run.
+
+    Rewrites ``items`` in place and logs what it changed. Returns the
+    repetition report so callers (and tests) can assert on it.
+    """
+    # 1. Temporal guard — anticipatory framing about an event that has
+    #    already happened by the item's own publish date is factually false.
+    try:
+        stale = apply_temporal_guard(items, events)
+    except Exception as exc:  # never let a guard sink a whole plan
+        logger.warning("TEMPORAL_GUARD failed for brand %s: %s", brand_id, exc)
+        stale = []
+    if stale:
+        logger.warning(
+            "TEMPORAL_GUARD brand=%s de-anticipated %d/%d items (post-event "
+            "countdown language). Affected: %s",
+            brand_id,
+            len(stale),
+            len(items),
+            "; ".join(
+                f"{f['scheduled_date']} {f['title']!r} "
+                f"[{','.join(f['markers'])}] after {'/'.join(f['events'])}"
+                for f in stale[:20]
+            ),
+        )
+
+    # 2. Brief hygiene — content_brief is creative direction, not commentary
+    #    about a post.
+    scrubbed = 0
+    try:
+        for item in items:
+            if isinstance(item, dict) and scrub_brief_fields(item):
+                scrubbed += 1
+    except Exception as exc:
+        logger.warning("BRIEF_SCRUB failed for brand %s: %s", brand_id, exc)
+    if scrubbed:
+        logger.info(
+            "BRIEF_SCRUB brand=%s stripped generator meta-language from "
+            "%d/%d briefs",
+            brand_id,
+            scrubbed,
+            len(items),
+        )
+
+    # 3. Repetition measurement — log only, never rejects. These counters are
+    #    the QA loop's yardstick cycle over cycle.
+    try:
+        report = repetition_report(items)
+    except Exception as exc:
+        logger.warning("REPETITION_REPORT failed for brand %s: %s", brand_id, exc)
+        return {}
+    logger.info(
+        "REPETITION_REPORT brand=%s %s", brand_id, format_repetition_report(report)
+    )
+    return report
 
 
 async def assign_products(state: PlanningState) -> dict[str, Any]:

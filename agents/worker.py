@@ -26,15 +26,21 @@ from sqlalchemy.exc import IntegrityError
 WORKFLOW_TIMEOUT = int(
     os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400")
 )  # 90 min default (full-year calendar = 200+ LLM calls)
-from shared.config import settings as _settings  # noqa: E402
-from shared.nats_consumer import NATSConsumer  # noqa: E402
+from shared.config import video_workflow_timeout_s as _video_timeout  # noqa: E402
+from shared.nats_consumer import (  # noqa: E402
+    VIDEO_ACK_WAIT_SECONDS,
+    NATSConsumer,
+)
 
-# Video renders walk a cascade of up to 3 providers, each bounded by
-# VIDEO_RENDER_TIMEOUT_S — budget the video workflow timeout for the worst
-# case (hero tier: 3 × 2400s = 7200s > the 5400s default) so asyncio.wait_for
-# cannot cancel the cascade mid-flight. nats_consumer._ACK_WAIT_SECONDS uses
-# the SAME formula (+ buffer) so JetStream never redelivers a live run.
-VIDEO_WORKFLOW_TIMEOUT = max(WORKFLOW_TIMEOUT, 3 * _settings.VIDEO_RENDER_TIMEOUT_S + 600)
+# A reel renders up to VIDEO_MAX_REEL_SHOTS shots SEQUENTIALLY (each one
+# provider call bounded by VIDEO_RENDER_TIMEOUT_S — render_video wraps every
+# shot in its own asyncio.wait_for, so a shot cannot spend the whole cascade's
+# worth of deadlines) plus the ffmpeg normalize/concat/burn passes. Budgeting
+# the video workflow timeout for that worst case is what keeps asyncio.wait_for
+# from cancelling a live render mid-flight. nats_consumer.VIDEO_ACK_WAIT_SECONDS
+# derives from the SAME helper (+ buffer) so JetStream never redelivers a live
+# run; the other subjects keep the ordinary, much shorter ack_wait.
+VIDEO_WORKFLOW_TIMEOUT = _video_timeout(WORKFLOW_TIMEOUT)
 from shared.tools.database import (  # noqa: E402
     create_agent_run,
     complete_agent_run,
@@ -103,16 +109,19 @@ STREAM_NAME = "WORKFLOWS"
 # nats_service; ensured here too so worker startup order doesn't matter)
 VIDEO_STREAM_NAME = "VIDEO"
 
-# Subjects to subscribe to with their durable consumer names and stream
+# Subjects to subscribe to with their durable consumer names, stream, and
+# ack_wait. None = the ordinary WORKFLOW_TIMEOUT-derived wait; only video.render
+# needs the hours-long reel budget, and giving it to the others would leave a
+# planning message unredelivered for hours after a worker dies.
 SUBSCRIPTIONS = [
-    ("research.>", "research-worker", STREAM_NAME),
-    ("strategy.>", "strategy-worker", STREAM_NAME),
-    ("content.>", "content-worker", STREAM_NAME),
-    ("evaluation.>", "evaluation-worker", STREAM_NAME),
-    ("product.>", "product-worker", STREAM_NAME),
-    ("planning.>", "planning-worker", STREAM_NAME),
-    ("adaptation.>", "adaptation-worker", STREAM_NAME),
-    ("video.render", "video-worker", VIDEO_STREAM_NAME),
+    ("research.>", "research-worker", STREAM_NAME, None),
+    ("strategy.>", "strategy-worker", STREAM_NAME, None),
+    ("content.>", "content-worker", STREAM_NAME, None),
+    ("evaluation.>", "evaluation-worker", STREAM_NAME, None),
+    ("product.>", "product-worker", STREAM_NAME, None),
+    ("planning.>", "planning-worker", STREAM_NAME, None),
+    ("adaptation.>", "adaptation-worker", STREAM_NAME, None),
+    ("video.render", "video-worker", VIDEO_STREAM_NAME, VIDEO_ACK_WAIT_SECONDS),
 ]
 
 # Module-level reference to the consumer, set during main()
@@ -142,10 +151,13 @@ async def _release_stuck_calendar_item(
         return
     try:
         await execute_update(
+            # CAST(:reason AS text), not :reason::text — SQLAlchemy's bind-param
+            # regex refuses to match a name followed by ':', so the ::-form ships
+            # the literal ":reason" to Postgres and the statement dies on syntax.
             "UPDATE calendar_items "
             "SET status = 'failed', "
             "    generation_metadata = COALESCE(generation_metadata, '{}'::jsonb) "
-            "        || jsonb_build_object('last_error', :reason::text) "
+            "        || jsonb_build_object('last_error', CAST(:reason AS text)) "
             f"WHERE id = :id AND {stuck_filter}",
             {"id": calendar_item_id, "reason": reason},
         )
@@ -2218,12 +2230,13 @@ async def main() -> None:
     await consumer.connect()
     await _ensure_stream(consumer)
 
-    for subject, durable, stream in SUBSCRIPTIONS:
+    for subject, durable, stream, ack_wait in SUBSCRIPTIONS:
         await consumer.subscribe(
             subject=subject,
             durable_name=durable,
             stream=stream,
             handler=_handle_message,
+            ack_wait=ack_wait,
         )
 
     logger.info("Worker started — listening on %d subjects", len(SUBSCRIPTIONS))

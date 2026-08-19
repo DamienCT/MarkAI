@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
+from shared.editorial import build_temporal_block, scrub_brief_meta
 from shared.llm import chat_completion, generate_image, get_model_for_category, parse_llm_json
 from shared.prompt_enhancer import enhance_image_prompt as enhance_image_prompt_fn
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
@@ -953,9 +954,20 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
         )
 
         raw_brief = item.get("content_brief") or item.get("description") or ""
-        brief_text = sanitize_for_prompt(raw_brief)
+        # Strip generator meta-language ("This post should…", "Focus on…")
+        # before the brief reaches the writer — 106 of the last plan's 624
+        # briefs leaked it, and a hook written from commentary ABOUT a post
+        # comes out sounding like commentary. Intent detection still reads the
+        # raw brief so a promo request can't be scrubbed away.
+        brief_text = sanitize_for_prompt(scrub_brief_meta(raw_brief))
         is_promo = _detect_promo_intent(raw_brief)
         promo_section = f"{_PROMO_DIRECTIVE}\n\n" if is_promo else ""
+        # Which listed events are past vs still ahead on THIS post's publish
+        # date — the hook is where "the upcoming store" leaks in.
+        temporal_block = build_temporal_block(
+            item.get("scheduled_at") or item.get("scheduled_date"),
+            state.get("events", []),
+        )
 
         bible_section = f"{brand_bible_block}\n\n" if brand_bible_block else ""
         prompt = [
@@ -984,12 +996,16 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
                     "journey, curated, bespoke, seamless, holistic, "
                     "game-changer, in today's world\n"
                     "- Concrete and specific, not vague-aspirational\n"
+                    "- NEVER call something upcoming, coming soon, or count "
+                    "down to it if the TEMPORAL CONTEXT block says it already "
+                    "happened by this post's publish date\n"
                     "Return ONLY the hook text. No quotes, no labels."
                 ),
             },
             {
                 "role": "user",
                 "content": (
+                    f"{temporal_block}"
                     f"WHAT TO WRITE ABOUT (primary intent — never override):\n"
                     f"{brief_text or '(no brief provided — use theme as fallback)'}\n\n"
                     f"THIS POST:\n"
@@ -1101,11 +1117,19 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
         )
 
         raw_brief = item.get("content_brief") or item.get("description") or ""
-        brief_text = sanitize_for_prompt(raw_brief)
+        # See generate_hook: the brief is creative direction, so meta-language
+        # about a post is stripped before the writer ever sees it. Promo
+        # detection reads the raw brief so the scrub can't hide the intent.
+        brief_text = sanitize_for_prompt(scrub_brief_meta(raw_brief))
         is_promo = _detect_promo_intent(raw_brief)
         promo_section = f"{_PROMO_DIRECTIVE}\n\n" if is_promo else ""
         if is_promo:
             logger.info("Promo intent detected in brief — injecting sales directive")
+        # Past vs still-ahead events on this post's own publish date.
+        temporal_block = build_temporal_block(
+            item.get("scheduled_at") or item.get("scheduled_date"),
+            state.get("events", []),
+        )
 
         bible_section = f"{brand_bible_block}\n\n" if brand_bible_block else ""
         prompt = [
@@ -1154,7 +1178,21 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
                     "  publishing pipeline from a separate field. Writing them "
                     "  in the caption will produce duplicates in the final post.\n"
                     "- NEVER include URLs, web addresses, or 'http://' / "
-                    "  'https://' / 'www.' anywhere in the caption.\n\n"
+                    "  'https://' / 'www.' anywhere in the caption.\n"
+                    "- NEVER describe anything as upcoming, coming soon, or "
+                    "  count down to it when the TEMPORAL CONTEXT block lists "
+                    "  it as already past on this post's publish date. Write "
+                    "  it in the present or past instead. A post that greets "
+                    "  a shop opening as 'coming soon' two weeks after it "
+                    "  opened is simply false to everyone who reads it.\n"
+                    "- The BRIEF is direction FOR you, never material to quote. "
+                    "  Do not write commentary about the post ('this post "
+                    "  shows...', 'here we explain...'); just write the post.\n"
+                    "- At most ONE statistic in the whole caption, and only if "
+                    "  it comes from the brief or the product data. The same "
+                    "  number repeated post after post is what makes a feed "
+                    "  look automated — when in doubt, make the point without "
+                    "  the number.\n\n"
                     "WRITE LIKE A HUMAN, NOT AN AI:\n"
                     "- Vary sentence length. Short. Then medium. Occasionally a "
                     "  longer one if the thought needs it.\n"
@@ -1178,6 +1216,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
             {
                 "role": "user",
                 "content": (
+                    f"{temporal_block}"
                     f"WHAT TO WRITE ABOUT (primary intent — never override):\n"
                     f"{brief_text or '(no brief — fall back to theme below)'}\n\n"
                     f"HOOK (start the caption with this line):\n"

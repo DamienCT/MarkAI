@@ -21,7 +21,9 @@ from workflows.video.nodes import (
 )
 from workflows.video.nodes import (
     MAX_OVERLAY_WORDS,
+    TARGET_TOTAL_S,
     _OVERLAY_MAX_CHARS,
+    _OVERLAY_MIN_ON_SCREEN_S,
     _ass_escape,
     _brand_accent_hex,
     _build_overlay_ass,
@@ -278,6 +280,61 @@ class TestOverlayEvents:
     def test_sub_minimum_window_is_dropped(self):
         events = _overlay_events(_overlay_shots(["Blink"]), [0.4], "")
         assert events == []
+
+    def test_multi_shot_windows_always_clear_the_readable_minimum(self):
+        # Every rendered shot is >= MIN_SHOT_RENDER_S, so the multi-shot path
+        # can never produce a line too short to read — 8 shots included.
+        for count in (6, 7, 8):
+            shots = _overlay_shots([f"Beat {i + 1}" for i in range(count)])
+            durations = [TARGET_TOTAL_S / count] * count
+            events = _overlay_events(shots, durations, "Shop now")
+            assert len(events) == count
+            assert all(
+                e["end"] - e["start"] >= _OVERLAY_MIN_ON_SCREEN_S for e in events
+            )
+
+    def test_unreadably_short_windows_hold_instead_of_flashing(self):
+        # Legacy single-call path: an 8-beat plan spread over one ~5s clip
+        # would flash each line for 0.6s — the lines hold instead.
+        shots = _overlay_shots([f"Beat {i + 1}" for i in range(8)])
+        events = _overlay_events(shots, [0.625] * 8, "")
+        assert events
+        assert all(
+            e["end"] - e["start"] >= _OVERLAY_MIN_ON_SCREEN_S for e in events
+        )
+        # Windows stay in order and never overlap.
+        for earlier, later in zip(events, events[1:]):
+            assert earlier["end"] <= later["start"]
+        # The opening line survives — holding never reorders the arc.
+        assert events[0]["text"] == "Beat 1"
+
+    def test_holding_never_swallows_the_cta(self):
+        # A short line may absorb its neighbours but must stop at the
+        # Overlay → CTA boundary, or the reel would lose its call to action.
+        shots = _overlay_shots(["Hook", "Beat", "Payoff"])
+        events = _overlay_events(shots, [0.6, 0.6, 0.6], "Shop now")
+        assert events
+        assert events[-1]["text"] == "Shop now"
+        assert events[-1]["style"] == "CTA"
+
+    def test_short_cta_takes_its_dwell_from_the_line_before_it(self):
+        # 8 beats over one ~5s fallback clip: the CTA owns only 0.625s of it
+        # and would be padded away — it borrows from the held line instead.
+        shots = _overlay_shots([f"Beat {i + 1}" for i in range(8)])
+        events = _overlay_events(shots, [0.625] * 8, "Shop now")
+        assert [e["style"] for e in events] == ["Overlay", "CTA"]
+        assert events[-1]["text"] == "Shop now"
+        # The CTA lands on exactly the readable minimum (float slack aside).
+        assert all(
+            e["end"] - e["start"] >= _OVERLAY_MIN_ON_SCREEN_S - 0.01
+            for e in events
+        )
+        assert events[0]["end"] <= events[1]["start"]
+
+    def test_long_enough_windows_are_left_alone(self):
+        shots = _overlay_shots(["One", "Two", "Three"])
+        events = _overlay_events(shots, [3.0, 3.0, 3.0], "")
+        assert [e["text"] for e in events] == ["One", "Two", "Three"]
 
 
 class TestBrandAccentHex:
