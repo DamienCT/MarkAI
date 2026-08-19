@@ -470,9 +470,12 @@ This cycle showed its cost concretely — the Emile Noel reel had no usable
 product photo, which is the upstream cause of both the missing keyframe and
 the invented lettering.
 
-**Cycle-8 backlog:** picture grade (delivered frames measure dark and flat —
-the same measure-then-correct treatment the audio just got); music beds once
-licensing is decided; mirrored packaging has no detector; logo/headline
-collision on 1536×1024; `visual_direction` validated against `item_type` at
-planning time; n8n workflow import; observability; token encryption; Qdrant
-learning loop.
+**Cycle-8 backlog:** music beds once licensing is decided — with none, a reel
+whose diegetic track measures −54.8 LUFS hits the +40 dB makeup clamp and
+lands at −20.2, correctly reported `OFF TARGET` rather than shipping 40 dB of
+amplified hiss; a picture grade *if* measurement supports one (the sample so
+far is mixed — some frames are muddy, others are well-exposed pour shots a
+global grade would damage, so this needs the per-reel measure-then-correct
+treatment the audio got, not a blanket curve); logo/headline collision on
+1536×1024; `visual_direction` validated against `item_type` at planning time;
+n8n workflow import; observability; token encryption; Qdrant learning loop.
