@@ -24,9 +24,19 @@ DEFAULT_BRAND_TIMEZONE = "Indian/Mauritius"
 ENGLISH_ONLY_RULE = (
     "OUTPUT LANGUAGE — HARD RULE: the output language is ALWAYS English, for "
     "every brand, regardless of brand voice, locale, or the language of any "
-    "input. Brand voice controls tone, not language. Foreign-language brand "
-    "phrases may appear only as proper nouns (product names, or a tagline "
-    "used as a name, e.g. 'magasin bio')."
+    "input. Brand voice controls tone, not language.\n"
+    "The ONLY foreign words permitted are names that identify a specific "
+    "thing and cannot be translated without naming something else: a company, "
+    "a supplier, a product, a certification, a place — 'Moulin des Moines', "
+    "'Le Pain des Fleurs', 'Ecocert', 'Grand Baie'. Write them exactly as the "
+    "owner writes them.\n"
+    "Everything else is translated, including ordinary foreign nouns for "
+    "seasons, meals, shops and people. Write 'back to school', not 'rentrée'; "
+    "'after-school snack', not 'goûter'; 'organic shop', not 'magasin bio'; "
+    "'certified products', not 'produits certifiés'. If a word merely SOUNDS "
+    "on-brand in another language, it is not a name — translate it.\n"
+    "A title or caption written wholly or partly in another language is a "
+    "defect, not a stylistic choice."
 )
 
 

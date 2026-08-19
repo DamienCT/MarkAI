@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -28,6 +29,10 @@ from shared.editorial import (
     item_title,
     repetition_report,
     scrub_brief_fields,
+)
+from shared.language_guard import (
+    check_items as check_language,
+    format_flags as format_language_flags,
 )
 from shared.llm import (
     chat_completion,
@@ -1943,15 +1948,37 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     # are the only thing that can catch cross-item defects. None of them
     # drops an item — a hole in the published cadence is worse than a flawed
     # line, and the warnings below tell the QA loop exactly what to inspect.
-    _apply_post_generation_checks(brand_id, all_items, events)
+    _apply_post_generation_checks(
+        brand_id, all_items, events, catalog_names=catalog_names
+    )
 
     return {"calendar_items": all_items}
+
+
+def _proper_nouns(catalog_names: Sequence[str]) -> list[str]:
+    """Names the language guard must not read as French.
+
+    Product names are stored "Supplier, Product, Size", so both the whole name
+    and its leading supplier segment are names in their own right — copy says
+    "Moulin des Moines cereals" far more often than it quotes the full SKU.
+    """
+    names: list[str] = []
+    for name in catalog_names:
+        text = str(name).strip()
+        if not text:
+            continue
+        names.append(text)
+        head = text.split(",")[0].strip()
+        if head and head != text:
+            names.append(head)
+    return names
 
 
 def _apply_post_generation_checks(
     brand_id: str,
     items: list[dict[str, Any]],
     events: list[dict[str, Any]],
+    catalog_names: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Temporal guard + brief hygiene + repetition measurement over one run.
 
@@ -1997,7 +2024,27 @@ def _apply_post_generation_checks(
             len(items),
         )
 
-    # 3. Repetition measurement — log only, never rejects. These counters are
+    # 3. Language — ENGLISH_ONLY_RULE is a prompt directive, and on 2026-08-18
+    #    it let five French items through; one was mid-render before anyone
+    #    noticed. Nothing is rewritten: a machine translation of marketing copy
+    #    is worse than the writer's English and would hide that the generator
+    #    misbehaved. The warning names the items to reissue.
+    try:
+        foreign = check_language(items, allow=_proper_nouns(catalog_names))
+    except Exception as exc:
+        logger.warning("LANGUAGE_GUARD failed for brand %s: %s", brand_id, exc)
+        foreign = []
+    if foreign:
+        logger.warning(
+            "LANGUAGE_GUARD brand=%s %d/%d items are not in English "
+            "(ENGLISH_ONLY_RULE ignored). Affected: %s",
+            brand_id,
+            len(foreign),
+            len(items),
+            format_language_flags(foreign),
+        )
+
+    # 4. Repetition measurement — log only, never rejects. These counters are
     #    the QA loop's yardstick cycle over cycle.
     try:
         report = repetition_report(items)

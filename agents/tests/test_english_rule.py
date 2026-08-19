@@ -56,7 +56,27 @@ def test_english_rule_wording():
     # The load-bearing clauses of the user directive.
     assert "ALWAYS English" in rule
     assert "tone, not language" in rule
-    assert "proper nouns" in rule
+
+
+def test_english_rule_scopes_its_own_exception():
+    """The foreign-word exception must not read as a general licence.
+
+    The earlier wording allowed foreign phrases "as proper nouns (e.g.
+    'magasin bio')". The model generalised that from names to ordinary nouns —
+    goûter, rentrée, produits certifiés — and then to whole titles: five
+    Naturespan items shipped in French on 2026-08-18, one of them mid-render.
+    So the rule now has to say which words qualify AND name the ones that
+    don't.
+    """
+    rule = brand_context.ENGLISH_ONLY_RULE.lower()
+    # Only names, and specifically a name that identifies one particular thing.
+    assert "supplier" in rule and "certification" in rule
+    # Ordinary nouns are called out by example, because the abstract rule alone
+    # did not hold.
+    assert "rentrée" in rule and "goûter" in rule
+    assert "magasin bio" in rule, "the phrase that was previously licensed"
+    # And it must state that a mixed-language line is a defect, not a style.
+    assert "defect" in rule
 
 
 def test_video_plan_shots_prompt_carries_the_rule():

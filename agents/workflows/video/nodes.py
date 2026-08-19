@@ -20,11 +20,12 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 from uuid import uuid4
 
 from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
+from shared.language_guard import detect_non_english
 from shared.config import (
     VIDEO_BURN_TIMEOUT_S,
     VIDEO_CONCAT_TIMEOUT_S,
@@ -422,6 +423,96 @@ async def _repair_shot_plan_json(raw: str) -> Any:
     return parsed
 
 
+# Plan fields that end up in front of a viewer: burned onto the master, or
+# published beside it. Anything here that is not English is a defect.
+_PLAN_TEXT_FIELDS = ("hook_line", "caption", "cta")
+
+
+def _plan_language_flags(plan: dict[str, Any], allow: Sequence[str]) -> dict[str, list[str]]:
+    """Non-English markers per field across a normalized shot plan."""
+    flags: dict[str, list[str]] = {}
+    for field in _PLAN_TEXT_FIELDS:
+        if markers := detect_non_english(str(plan.get(field) or ""), allow=allow):
+            flags[field] = markers
+    for index, shot in enumerate(plan.get("shots") or []):
+        if markers := detect_non_english(
+            str(shot.get("overlay_text") or ""), allow=allow
+        ):
+            flags[f"shots[{index}].overlay_text"] = markers
+    return flags
+
+
+async def _enforce_plan_language(
+    plan: dict[str, Any],
+    system: str,
+    user: str,
+    *,
+    allow: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Re-ask once if the plan came back in the wrong language.
+
+    ENGLISH_ONLY_RULE sits at the top of the shot-plan system prompt and the
+    model still mirrored a French brief on 2026-08-18 — five reels rendered
+    with French burned onto the master, including the CTA card. Catching it
+    here rather than in review is what makes the retry worth it: the render
+    downstream costs tens of GPU-minutes per reel, so one extra text call to
+    avoid producing an unusable master is cheap.
+
+    A failed retry does NOT sink the item. The plan still describes a coherent
+    reel and the warning names it for the QA loop; refusing to render leaves a
+    hole in the calendar, which is the worse outcome.
+    """
+    allow = [a for a in allow if a]
+    flags = _plan_language_flags(plan, allow)
+    if not flags:
+        return plan
+
+    logger.warning(
+        "PLAN_LANGUAGE: shot plan is not in English (%s) — re-asking once",
+        "; ".join(f"{f}[{','.join(m[:4])}]" for f, m in flags.items()),
+    )
+    try:
+        retry = await chat_completion(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous plan was written in the wrong language. "
+                        "Rewrite the ENTIRE plan in English. Every hook_line, "
+                        "overlay_text, caption and cta must be English — these "
+                        "are burned onto the finished video. Keep proper nouns "
+                        "(brand, product, place and certification names) "
+                        "exactly as they are; translate everything else."
+                    ),
+                },
+            ],
+            category="text",
+            temperature=0.2,
+            max_tokens=_SHOT_PLAN_MAX_TOKENS,
+            response_format={"type": "json_object"},
+        )
+        parsed = parse_llm_json(str(retry), fallback=None)
+        if parsed is None:
+            parsed = await _repair_shot_plan_json(str(retry))
+        candidate = _normalize_shot_plan(parsed)
+    except Exception as exc:
+        logger.warning("PLAN_LANGUAGE: retry failed (%s) — keeping first plan", exc)
+        return plan
+
+    remaining = _plan_language_flags(candidate, allow)
+    if remaining:
+        logger.warning(
+            "PLAN_LANGUAGE: retry STILL not English (%s) — rendering anyway, "
+            "flag this reel in review",
+            "; ".join(f"{f}[{','.join(m[:4])}]" for f, m in remaining.items()),
+        )
+    else:
+        logger.info("PLAN_LANGUAGE: retry returned an English plan")
+    return candidate
+
+
 async def plan_shots(state: VideoState) -> dict[str, Any]:
     """One LLM call producing the strict-JSON shot plan.
 
@@ -572,8 +663,11 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             f"{settings['hashtags_min']} and {settings['hashtags_max']} hashtags, "
             "no hashtags or URLs inside the caption body.\n"
             "LANGUAGE: the OUTPUT LANGUAGE hard rule at the top of this prompt "
-            "applies to hook_line, every overlay_text, caption, and cta — "
-            "whatever language the brief uses."
+            "applies to hook_line, every overlay_text, caption, and cta. The "
+            "brief, theme and brand voice below may contain another language; "
+            "that does NOT license you to answer in it. Do not mirror the "
+            "brief's language — translate it. Every line you write is burned "
+            "onto the finished video in English."
         )
         user = (
             f"{temporal_block}"
@@ -601,6 +695,12 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
         if parsed is None:
             parsed = await _repair_shot_plan_json(str(result))
         plan = _normalize_shot_plan(parsed)
+        plan = await _enforce_plan_language(
+            plan,
+            system,
+            user,
+            allow=[product.get("name", ""), brand.get("name", ""), sub_brand],
+        )
         logger.info(
             "Shot plan: %d shots, %.1fs total",
             len(plan["shots"]),
