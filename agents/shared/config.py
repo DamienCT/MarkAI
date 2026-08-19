@@ -129,11 +129,42 @@ VIDEO_MAX_REEL_SHOTS = 8
 VIDEO_NORMALIZE_TIMEOUT_S = 600
 VIDEO_CONCAT_TIMEOUT_S = 900
 VIDEO_BURN_TIMEOUT_S = 600
+VIDEO_AUDIO_TIMEOUT_S = 600
 VIDEO_FINISHING_BUDGET_S = (
     VIDEO_MAX_REEL_SHOTS * VIDEO_NORMALIZE_TIMEOUT_S
     + VIDEO_CONCAT_TIMEOUT_S
     + VIDEO_BURN_TIMEOUT_S
+    + VIDEO_AUDIO_TIMEOUT_S
 )
+
+# ── Reel audio ─────────────────────────────────────────────────────────────
+# Reels shipped silent: LTX/forge produces no audio at all, and the concat
+# pass substituted anullsrc silence without saying so, while video_jobs
+# recorded audio: true regardless. A silent reel is the single loudest
+# amateur signal on a feed where every competing post has a bed.
+#
+# Beds are supplied as files, NOT generated and NOT fetched: music licensing
+# is the operator's call, so the pipeline reads whatever is dropped in this
+# directory and says plainly in the metadata when there is nothing to read.
+# Layout: <dir>/<mood>/*.{mp3,m4a,wav,opus,ogg,flac}, plus any files at the
+# top level as the fallback pool.
+VIDEO_MUSIC_DIR = "/app/assets/music"
+# Platform delivery targets. Instagram, TikTok and YouTube all normalize
+# playback to roughly -14 LUFS; delivering quieter throws away loudness the
+# platform will not give back, and delivering hotter just gets turned down
+# with the transients already squashed. -1 dBTP leaves headroom for the
+# lossy re-encode every platform runs.
+VIDEO_TARGET_LUFS = -14.0
+VIDEO_TARGET_TRUE_PEAK_DB = -1.0
+# Bed level under diegetic audio vs. carrying the reel alone. A bed under
+# dialogue or foley sits well down; with nothing else in the mix it comes up
+# but still stays under unity so the platform's own normalization has room.
+VIDEO_MUSIC_DUCKED_DB = -18.0
+VIDEO_MUSIC_SOLO_DB = -6.0
+# Anything peaking below this is silence with encoder noise on top, not a
+# real track — measured, because "the file has an audio stream" was exactly
+# the check that let silent reels through.
+VIDEO_SILENCE_PEAK_DB = -50.0
 
 
 def video_workflow_timeout_s(base_timeout_s: int) -> int:

@@ -304,6 +304,7 @@ class TestVideoWorkflowBudget:
 
     def test_finishing_budget_covers_the_ffmpeg_passes_it_names(self):
         from shared.config import (
+            VIDEO_AUDIO_TIMEOUT_S,
             VIDEO_BURN_TIMEOUT_S,
             VIDEO_CONCAT_TIMEOUT_S,
             VIDEO_FINISHING_BUDGET_S,
@@ -311,11 +312,13 @@ class TestVideoWorkflowBudget:
             VIDEO_NORMALIZE_TIMEOUT_S,
         )
 
-        # Worst case: every clip is non-forge and needs its own normalize pass.
+        # Worst case: every clip is non-forge and needs its own normalize pass,
+        # then concat, then the overlay burn, then the audio finishing pass.
         assert VIDEO_FINISHING_BUDGET_S == (
             VIDEO_MAX_REEL_SHOTS * VIDEO_NORMALIZE_TIMEOUT_S
             + VIDEO_CONCAT_TIMEOUT_S
             + VIDEO_BURN_TIMEOUT_S
+            + VIDEO_AUDIO_TIMEOUT_S
         )
 
 
@@ -543,13 +546,20 @@ class TestRenderVideoMultiShot:
         assert result.get("status") != "failed"
         # One provider call per shot
         assert len(h.requests) == 5
-        # Shot 1 starts from the keyframe; shots 2..N chain from the previous
-        # shot's extracted last frame.
+        # Shot 1 starts from the keyframe; later shots chain from the previous
+        # shot's extracted last frame, but only _MAX_CHAIN_DEPTH hops before
+        # re-anchoring — nothing is rendered further downstream than that.
         assert h.requests[0].mode == "i2v"
         assert h.requests[0].image_bytes == b"KEYFRAME"
-        for req in h.requests[1:]:
-            assert req.mode == "i2v"
-            assert req.image_bytes == b"PNGFRAME"
+        assert all(r.mode == "i2v" for r in h.requests)
+        sources = [r.image_bytes for r in h.requests]
+        assert sources == [
+            b"KEYFRAME",  # depth 0
+            b"PNGFRAME",  # depth 1
+            b"PNGFRAME",  # depth 2 — the cap
+            b"KEYFRAME",  # re-anchored
+            b"PNGFRAME",  # depth 1 again
+        ]
         # Per-shot idempotency keys are distinct
         keys = [r.idempotency_key for r in h.requests]
         assert len(set(keys)) == 5
@@ -557,10 +567,11 @@ class TestRenderVideoMultiShot:
         # Fitted durations forwarded per shot — 5 shots cap at 5 x 5s = 25s,
         # the closest they can get to the 30s target.
         assert all(r.duration_s == MAX_SHOT_RENDER_S for r in h.requests)
-        # 4 last-frame extractions + 1 concat (all forge master → stream copy)
+        # A re-anchored shot needs no last frame from its predecessor, so the
+        # extraction count drops with the re-anchors.
         png_calls = [c for c in h.ffmpeg_calls if c[-1].endswith(".png")]
         mp4_calls = [c for c in h.ffmpeg_calls if c[-1].endswith("final.mp4")]
-        assert len(png_calls) == 4
+        assert len(png_calls) == 3
         assert len(mp4_calls) == 1
         assert "copy" in mp4_calls[0]
         # Final bytes come from the concat output
@@ -651,10 +662,11 @@ class TestRenderVideoMultiShot:
             assert meta["shot_count"] == MIN_RENDER_SHOTS
             assert meta["split_to_min_shots"] is True
             assert meta["duration_s"] >= TARGET_MIN_TOTAL_S
-            # Chained i2v carries the beat across the split halves
-            assert h.requests[0].image_bytes == b"KEYFRAME"
-            for req in h.requests[1:]:
-                assert req.image_bytes == b"PNGFRAME"
+            # Chained i2v carries the beat across the split halves, until the
+            # depth cap cuts back to the keyframe.
+            assert [r.image_bytes for r in h.requests] == [
+                b"KEYFRAME", b"PNGFRAME", b"PNGFRAME", b"KEYFRAME",
+            ]
 
     @pytest.mark.parametrize("count", [6, 7, 8])
     def test_six_to_eight_shot_plans_render_a_thirty_second_reel(

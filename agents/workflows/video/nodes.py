@@ -20,7 +20,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import zlib
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
@@ -28,10 +30,17 @@ from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.image_processing import contrast_ratio, relative_luminance
 from shared.language_guard import detect_non_english
 from shared.config import (
+    VIDEO_AUDIO_TIMEOUT_S,
     VIDEO_BURN_TIMEOUT_S,
     VIDEO_CONCAT_TIMEOUT_S,
     VIDEO_MAX_REEL_SHOTS,
+    VIDEO_MUSIC_DIR,
+    VIDEO_MUSIC_DUCKED_DB,
+    VIDEO_MUSIC_SOLO_DB,
     VIDEO_NORMALIZE_TIMEOUT_S,
+    VIDEO_SILENCE_PEAK_DB,
+    VIDEO_TARGET_LUFS,
+    VIDEO_TARGET_TRUE_PEAK_DB,
     settings as _config_settings,
 )
 from shared.editorial import TEMPORAL_RULES_BLOCK, build_temporal_block
@@ -109,6 +118,51 @@ _VEO_SHOT_GRID_LONG = 6.0
 
 # Multi-shot progress: shots share 0..95, the concat/finishing pass gets the rest.
 _CONCAT_PROGRESS_START = 95
+
+# ── Chain discipline ──────────────────────────────────────────────────────
+# Every shot after the first is i2v from the PREVIOUS shot's last frame, so
+# an 8-beat reel put shot 8 seven generations downstream of the branded
+# keyframe. i2v is lossy per hop: contrast flattens, the label softens, and
+# the product silhouette drifts until the pack in the closing beat is not the
+# pack that was sourced. Measured on rendered reels, the back half looked
+# washed and the bottle had changed shape.
+#
+# Capping the depth bounds that: after _MAX_CHAIN_DEPTH consecutive chained
+# shots the next one re-anchors on the branded keyframe, which is also the
+# grammar real product ads use — they CUT back to the hero rather than
+# holding one unbroken take for 30s.
+_MAX_CHAIN_DEPTH = 2
+
+# ── Motion floor ──────────────────────────────────────────────────────────
+# Nothing measured whether a rendered shot actually moved. i2v models fail by
+# returning the input image held for the whole duration — a clip that passes
+# every structural check (right codec, right length, real bytes) and is a
+# dead-obvious tell on screen. _measure_motion averages the mean absolute
+# inter-frame luma difference.
+#
+# Calibrated on four rendered reels, per 5s window:
+#     held-still control ....... 0.001
+#     slowest real beat ........ 0.53  (a hand breaking chocolate over a bowl:
+#                                       small subject motion, static frame)
+#     ordinary beats ........... 1.2 - 5.3
+#     fast dolly through a shop  9.29
+# The floor sits between the control and the slowest real beat, nearer the
+# control: a genuine freeze carries encoder noise so it will not measure
+# 0.001 exactly, but it lands far below a shot where only a hand moves.
+# Re-rendering costs a provider call, so the check is deliberately biased
+# toward letting a slow shot through.
+_MIN_MOTION_YAVG = 0.25
+# The other failure mode: the frame dissolving into churn rather than moving.
+# UNCALIBRATED — no smeared shot has been measured yet, so this is a
+# catastrophe backstop set ~3.5x above the fastest real camera move observed,
+# not a tuned threshold. Tighten it once a genuinely morphing shot is caught.
+_MAX_MOTION_YAVG = 34.0
+# Analysis width — the metric is a frame-difference average, so full
+# resolution buys nothing and costs a decode.
+_MOTION_ANALYSIS_W = 240
+# A failed shot buys ONE re-render, and the reel buys at most this many in
+# total: a mis-calibrated floor must not be able to double the render bill.
+_MAX_MOTION_RETRIES = 2
 
 # Burned-in overlay text: each planned shot carries an overlay_text line that
 # is composited onto the FINISHED master as an .ass subtitle track rendered by
@@ -1335,6 +1389,75 @@ def _stderr_tail(proc: subprocess.CompletedProcess, limit: int = 400) -> str:
     return text[-limit:].strip()
 
 
+_MOTION_KEY_RE = re.compile(r"lavfi\.signalstats\.YAVG=([0-9.]+)")
+
+
+def _motion_cmd(path: str) -> list[str]:
+    """ffmpeg args printing per-frame inter-frame difference (pure function).
+
+    `tblend=difference` turns each frame into |frame - previous frame|, and
+    signalstats' YAVG is then the mean absolute luma change over the whole
+    frame. Averaging that across the clip gives one number for "how much did
+    this shot actually move". Decoded at _MOTION_ANALYSIS_W and written to
+    null — nothing is encoded.
+    """
+    return [
+        "ffmpeg", "-v", "info", "-nostats", "-i", path,
+        "-vf",
+        f"scale={_MOTION_ANALYSIS_W}:-2,tblend=all_mode=difference,"
+        "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+        "-an", "-f", "null", "-",
+    ]
+
+
+def _motion_from_stderr(stderr: str) -> float | None:
+    """Mean YAVG across the printed frames, or None if nothing parsed (pure).
+
+    The first tblend output compares frame 1 against itself and is always 0,
+    so it is dropped — on a 3s clip keeping it would drag the average down
+    by ~1%, but on a 2-frame probe it would halve it.
+    """
+    values = [float(m) for m in _MOTION_KEY_RE.findall(stderr or "")]
+    if len(values) > 1:
+        values = values[1:]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _measure_motion(path: str) -> float | None:
+    """Average inter-frame luma difference for one clip, or None if unmeasurable.
+
+    Runs in a worker thread. None means ffmpeg is unavailable or the filter
+    chain failed — callers must treat that as "unknown", never as "static",
+    so a missing measurement can never fail an otherwise good shot.
+    """
+    if not _ffmpeg_ok():
+        return None
+    try:
+        proc = _run_ffmpeg(_motion_cmd(path), timeout=120)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    except AttributeError:  # already str (mocked runs)
+        stderr = str(proc.stderr or "")
+    return _motion_from_stderr(stderr)
+
+
+def _motion_verdict(score: float | None) -> str | None:
+    """'static' / 'smeared' / None(=ok) for a measured motion score (pure)."""
+    if score is None:
+        return None
+    if score < _MIN_MOTION_YAVG:
+        return "static"
+    if score > _MAX_MOTION_YAVG:
+        return "smeared"
+    return None
+
+
 def _probe_shot(path: str) -> dict[str, Any] | None:
     """ffprobe one clip: {duration, video: {...}, audio: {...}} or None.
 
@@ -1924,6 +2047,468 @@ async def _burn_overlays(
         return video_bytes, {"overlay_burn": f"failed:{exc}"[:220]}
 
 
+# ── Audio finishing (post pass) ────────────────────────────────────────────
+#
+# Nothing in the pipeline had ever measured a reel's loudness. Measured on
+# four delivered reels against the -14 LUFS platform target:
+#
+#     reel        integrated   true peak   range
+#     0903e649    -19.9 LUFS     -2.4 dB   20.3 LU
+#     70036111    -34.8 LUFS    -12.5 dB   17.1 LU
+#     914edae5    -42.6 LUFS    -22.8 dB   26.9 LU
+#     d15857a0    -43.0 LUFS    -16.3 dB   21.4 LU
+#
+# So the reels are not silent — they carry a real track — they are delivered
+# 6 to 29 LU under target. At -43 LUFS a viewer scrolling a feed at normal
+# volume hears nothing at all, and the 23 LU spread BETWEEN reels means the
+# same brand is inaudible in one post and merely quiet in the next. A 20-27
+# LU internal range is the other half of it: the concat splices shots with
+# wildly different levels, so what audio there is lurches beat to beat.
+#
+# Runs after the overlay burn, on the finished master. Three jobs, in order:
+#
+#   1. MEASURE what the master actually carries. "The file has an audio
+#      stream" was the only check, and it is true of digital silence.
+#   2. Lay a music bed under it — ducked below real diegetic audio, brought
+#      up when it is carrying the reel alone — with a fade at each end so
+#      the reel neither starts on a hard transient nor stops dead. A bed
+#      also masks the noise floor that lifting a -43 LUFS track exposes.
+#   3. Normalize to the platform delivery target, in two passes: measure the
+#      finished mix, then apply the correction with those measurements.
+#
+# Best-effort by the same contract as the overlay burn: any failure keeps the
+# master untouched and records why.
+
+_AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".wav", ".opus", ".ogg", ".flac")
+# Fade at the head and tail of the bed. Short enough not to eat the hook.
+_MUSIC_FADE_IN_S = 0.6
+_MUSIC_FADE_OUT_S = 1.2
+_PEAK_RE = re.compile(r"lavfi\.astats\.Overall\.Peak_level=(-?[0-9.]+|-inf)")
+
+
+def _astats_cmd(path: str) -> list[str]:
+    """ffmpeg args printing overall peak level for a clip (pure function)."""
+    return [
+        "ffmpeg", "-v", "info", "-nostats", "-i", path,
+        "-af", "astats=metadata=1:reset=0,ametadata=print:"
+               "key=lavfi.astats.Overall.Peak_level",
+        "-vn", "-f", "null", "-",
+    ]
+
+
+def _peak_from_stderr(stderr: str) -> float | None:
+    """Loudest overall peak in dBFS from an astats run, or None (pure).
+
+    '-inf' is digital silence and comes back as -inf, which compares below
+    any threshold — callers get "silent" rather than "unmeasurable".
+    """
+    matches = _PEAK_RE.findall(stderr or "")
+    if not matches:
+        return None
+    values = [float("-inf") if m == "-inf" else float(m) for m in matches]
+    return max(values)
+
+
+def _measure_peak_db(path: str) -> float | None:
+    """Peak level of a clip's audio in dBFS, or None if unmeasurable."""
+    if not _ffmpeg_ok():
+        return None
+    try:
+        proc = _run_ffmpeg(_astats_cmd(path), timeout=180)
+    except Exception:
+        return None
+    try:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    except AttributeError:  # already str (mocked runs)
+        stderr = str(proc.stderr or "")
+    return _peak_from_stderr(stderr)
+
+
+def _has_real_audio(peak_db: float | None) -> bool:
+    """True when a measured peak is a real signal rather than silence (pure).
+
+    None means the measurement failed. That is reported as "no real audio"
+    on purpose: the pass then lays a bed, which is the safe outcome either
+    way — a bed under real diegetic audio is a mix, a bed under silence is
+    the whole point.
+    """
+    if peak_db is None:
+        return False
+    return peak_db > VIDEO_SILENCE_PEAK_DB
+
+
+def _music_moods(plan: dict[str, Any], brand: dict[str, Any]) -> list[str]:
+    """Mood folder names to try, most specific first (pure function)."""
+    candidates = [
+        plan.get("music_mood"),
+        plan.get("mood"),
+        (brand.get("brand_voice") or {}).get("music_mood")
+        if isinstance(brand.get("brand_voice"), dict)
+        else None,
+    ]
+    out: list[str] = []
+    for c in candidates:
+        slug = re.sub(r"[^a-z0-9_-]+", "-", str(c or "").strip().lower()).strip("-")
+        if slug and slug not in out:
+            out.append(slug)
+    return out
+
+
+def _pick_music_bed(
+    music_dir: str, moods: Sequence[str], seed: str
+) -> str | None:
+    """Choose a bed file for this reel, or None when the library is empty.
+
+    Tries each mood sub-directory in order, then the top level. Within a
+    pool the choice is deterministic in *seed* (the item id), so a re-render
+    of the same item reuses the same bed instead of shuffling the soundtrack
+    under a reviewer.
+    """
+    if not music_dir or not os.path.isdir(music_dir):
+        return None
+
+    def pool(directory: str) -> list[str]:
+        try:
+            names = sorted(
+                n for n in os.listdir(directory)
+                if n.lower().endswith(_AUDIO_EXTS)
+                and os.path.isfile(os.path.join(directory, n))
+            )
+        except OSError:
+            return []
+        return [os.path.join(directory, n) for n in names]
+
+    for mood in list(moods) + [""]:
+        files = pool(os.path.join(music_dir, mood) if mood else music_dir)
+        if files:
+            # zlib.crc32 rather than hash(): PYTHONHASHSEED randomizes str
+            # hashing per process, which would defeat the whole point.
+            return files[zlib.crc32(seed.encode("utf-8")) % len(files)]
+    return None
+
+
+# ffmpeg's loudnorm filter was the obvious tool and it does NOT work on this
+# material. Measured across the four delivered reels:
+#
+#     reel        target   loudnorm two-pass   miss
+#     0903e649    -14.0        -11.5 LUFS      +2.5, and +0.3 dBTP (clipped)
+#     70036111    -14.0        -21.7 LUFS      -7.7
+#     914edae5    -14.0        -18.2 LUFS      -4.2, and -0.1 dBTP
+#     d15857a0    -14.0        -20.4 LUFS      -6.4, and +0.2 dBTP (clipped)
+#
+# Two reasons. loudnorm's dynamic mode rides gain frame by frame, so when the
+# input range (17-27 LU here) far exceeds the target it lifts gated-out quiet
+# passages into the measurement and drifts off target; and its warmup eats
+# most of the correction on a 5s clip. It also missed the true-peak ceiling
+# in both directions.
+#
+# A flat gain has neither problem — it moves integrated loudness by exactly
+# the gain applied — so the correction is measured, applied, and re-measured
+# until it lands. Measured with this approach the same four reels came in at
+# -14.1, -14.4, -14.6 and -15.0 LUFS with true peak between -1.2 and -0.5
+# dBTP, none clipping.
+_MAX_GAIN_ROUNDS = 4
+# Close enough to stop: platform normalization moves everything by more than
+# this anyway.
+_LOUDNESS_TOLERANCE_LU = 0.5
+# Runaway guard. +40 dB would be lifting a track that is essentially a noise
+# floor, and the result is amplified hiss rather than a louder reel.
+_MAX_MAKEUP_GAIN_DB = 40.0
+# alimiter caps the SAMPLE peak. Platforms measure the TRUE (inter-sample)
+# peak, which sits above it — and the resample back down to 48k plus the AAC
+# encode both add more on top. Measured overshoot past the ceiling was up to
+# 1.7 dB, so a -1.5 dB ceiling still delivered +0.2 dBTP. The ceiling is set
+# a full 2 dB under the delivery target to absorb that; it costs nothing in
+# loudness because the gain search measures AFTER the limiter and simply
+# converges to a higher gain.
+_LIMITER_CEILING_DB = -3.0
+_LIMITER_OVERSAMPLE_HZ = 192000
+_EBUR128_I_RE = re.compile(r"^\s*I:\s*(-?[0-9.]+|-inf)\s*LUFS", re.M)
+_EBUR128_TP_RE = re.compile(r"^\s*Peak:\s*(-?[0-9.]+|-inf)\s*dBFS", re.M)
+_EBUR128_LRA_RE = re.compile(r"^\s*LRA:\s*(-?[0-9.]+)\s*LU", re.M)
+
+
+def _limiter_chain() -> str:
+    """True-peak brick wall: oversample, limit, come back down (pure)."""
+    return (
+        f"aresample={_LIMITER_OVERSAMPLE_HZ},"
+        f"alimiter=level_in=1:level_out=1:limit={_LIMITER_CEILING_DB}dB"
+        ":attack=5:release=50:level=disabled,"
+        "aresample=48000"
+    )
+
+
+def _parse_ebur128(stderr: str) -> tuple[float, float, float] | None:
+    """(integrated LUFS, true peak dBFS, range LU) from an ebur128 summary.
+
+    Reads the LAST match of each: ebur128 logs progress lines throughout and
+    prints the summary block at the end. None when the summary is absent —
+    the caller must not treat that as "already on target".
+    """
+    i_matches = _EBUR128_I_RE.findall(stderr or "")
+    tp_matches = _EBUR128_TP_RE.findall(stderr or "")
+    if not i_matches or not tp_matches:
+        return None
+    lra_matches = _EBUR128_LRA_RE.findall(stderr or "")
+
+    def num(value: str) -> float:
+        return float("-inf") if value == "-inf" else float(value)
+
+    return (
+        num(i_matches[-1]),
+        num(tp_matches[-1]),
+        float(lra_matches[-1]) if lra_matches else 0.0,
+    )
+
+
+def _next_gain(current_db: float, measured_lufs: float) -> float:
+    """Gain that should land the next round on target (pure function).
+
+    Clamped both ways: a measurement of -inf (silence) would ask for infinite
+    gain, and lifting a noise floor by 40 dB produces amplified hiss rather
+    than a louder reel.
+    """
+    if measured_lufs == float("-inf"):
+        return current_db
+    proposed = current_db + (VIDEO_TARGET_LUFS - measured_lufs)
+    return max(-_MAX_MAKEUP_GAIN_DB, min(_MAX_MAKEUP_GAIN_DB, proposed))
+
+
+def _audio_finish_cmd(
+    src: str,
+    dst: str | None,
+    duration_s: float,
+    music_path: str | None,
+    keep_source_audio: bool,
+    gain_db: float = 0.0,
+) -> list[str]:
+    """ffmpeg args mixing the bed in and normalizing to target (pure function).
+
+    *dst* None builds a MEASUREMENT pass: the identical graph, plus ebur128,
+    decoded to null. Measuring the assembled mix rather than the source alone
+    matters because the bed changes the loudness, and measuring the graph
+    rather than an encoded file means each round of the gain search costs a
+    decode instead of an encode.
+
+    The bed is looped to cover the reel (a 12s track under a 30s reel would
+    otherwise leave the last two thirds bare) and trimmed to the exact
+    runtime. Video is stream-copied — this pass must never re-encode picture,
+    which would spend a generation of quality on an audio change.
+    """
+    args = ["ffmpeg", "-y"]
+    if dst is None:
+        # Measurement runs decode audio only; pulling the video through is
+        # pure cost.
+        args += ["-vn"]
+    args += ["-i", src]
+    if music_path:
+        args += ["-stream_loop", "-1", "-i", music_path]
+
+    fade_out_at = max(0.0, duration_s - _MUSIC_FADE_OUT_S)
+    chains: list[str] = []
+    if music_path:
+        level = VIDEO_MUSIC_DUCKED_DB if keep_source_audio else VIDEO_MUSIC_SOLO_DB
+        chains.append(
+            f"[1:a]atrim=0:{duration_s:.3f},asetpts=N/SR/TB,"
+            f"volume={level:.1f}dB,"
+            f"afade=t=in:st=0:d={_MUSIC_FADE_IN_S},"
+            f"afade=t=out:st={fade_out_at:.3f}:d={_MUSIC_FADE_OUT_S}[bed]"
+        )
+        if keep_source_audio:
+            # duration=first keeps the reel's length authoritative; dropout
+            # transition 0 stops amix from pumping the bed up whenever the
+            # diegetic track goes quiet.
+            chains.append(
+                "[0:a][bed]amix=inputs=2:duration=first:dropout_transition=0"
+                ":normalize=0[mix]"
+            )
+            label = "[mix]"
+        else:
+            label = "[bed]"
+    else:
+        label = "[0:a]"
+
+    tail = f"volume={gain_db:.2f}dB,{_limiter_chain()}"
+    if dst is None:
+        chains.append(f"{label}{tail},ebur128=peak=true[out]")
+        return args + [
+            "-filter_complex", ";".join(chains),
+            "-map", "[out]", "-f", "null", "-",
+        ]
+    chains.append(f"{label}{tail}[out]")
+    return args + [
+        "-filter_complex", ";".join(chains),
+        "-map", "0:v:0", "-map", "[out]",
+        "-c:v", "copy",
+        *_MASTER_AUDIO_ARGS,
+        "-shortest", "-movflags", "+faststart", dst,
+    ]
+
+
+async def _finish_audio(
+    video_bytes: bytes,
+    plan: dict[str, Any],
+    brand: dict[str, Any],
+    seed: str,
+    duration_s: float | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+    """Lay a music bed under the master and normalize it to platform target.
+
+    Best-effort: ANY failure returns the ORIGINAL bytes with an audio_finish
+    reason. Returns (video_bytes, meta_patch). The patch always carries
+    `audio` — measured, never assumed — so a silent reel is recorded as one.
+    """
+    meta: dict[str, Any] = {}
+    try:
+        if not _ffmpeg_ok():
+            return video_bytes, {
+                "audio": False, "audio_finish": "failed:ffmpeg unavailable"
+            }
+        with tempfile.TemporaryDirectory(prefix="audio_") as workdir:
+            src = os.path.join(workdir, "master.mp4")
+            await asyncio.to_thread(_write_bytes, src, video_bytes)
+
+            peak_db = await asyncio.to_thread(_measure_peak_db, src)
+            keep_source_audio = _has_real_audio(peak_db)
+            meta["source_peak_db"] = (
+                None if peak_db is None or peak_db == float("-inf")
+                else round(peak_db, 1)
+            )
+
+            if not duration_s or duration_s <= 0:
+                info = await asyncio.to_thread(_probe_shot, src)
+                duration_s = float((info or {}).get("duration") or 0.0)
+            if duration_s <= 0:
+                return video_bytes, {
+                    **meta, "audio": keep_source_audio,
+                    "audio_finish": "failed:unknown duration",
+                }
+
+            music_path = await asyncio.to_thread(
+                _pick_music_bed,
+                VIDEO_MUSIC_DIR,
+                _music_moods(plan, brand),
+                seed,
+            )
+            if music_path:
+                meta["music_bed"] = os.path.basename(music_path)
+            elif not keep_source_audio:
+                # Nothing to mix and nothing to normalize — say so loudly
+                # rather than shipping a silent reel that claims audio.
+                logger.warning(
+                    "Reel has no diegetic audio and no music bed in %s — "
+                    "shipping SILENT. Drop licensed tracks in that directory "
+                    "to give reels a bed.",
+                    VIDEO_MUSIC_DIR,
+                )
+                return video_bytes, {
+                    **meta, "audio": False, "audio_finish": "silent:no bed available"
+                }
+
+            # ── Converge on the loudness target ────────────────────────────
+            # Measure the assembled mix, correct the gain, measure again.
+            # Each round is a decode, not an encode, so the search is cheap;
+            # only the final render writes a file.
+            gain_db = 0.0
+            rounds = 0
+            first_lufs: float | None = None
+            last: tuple[float, float, float] | None = None
+            for rounds in range(1, _MAX_GAIN_ROUNDS + 1):
+                analysis = await asyncio.to_thread(
+                    _run_ffmpeg,
+                    _audio_finish_cmd(
+                        src, None, duration_s, music_path, keep_source_audio,
+                        gain_db=gain_db,
+                    ),
+                    VIDEO_AUDIO_TIMEOUT_S,
+                )
+                if analysis.returncode != 0:
+                    break
+                try:
+                    stderr = (analysis.stderr or b"").decode(
+                        "utf-8", errors="replace"
+                    )
+                except AttributeError:  # already str (mocked runs)
+                    stderr = str(analysis.stderr or "")
+                measured = _parse_ebur128(stderr)
+                if measured is None:
+                    break
+                last = measured
+                if first_lufs is None:
+                    first_lufs = measured[0]
+                if abs(measured[0] - VIDEO_TARGET_LUFS) <= _LOUDNESS_TOLERANCE_LU:
+                    break
+                nxt = _next_gain(gain_db, measured[0])
+                if abs(nxt - gain_db) < 0.05:
+                    break  # clamped or already converged — more rounds are waste
+                gain_db = nxt
+
+            if first_lufs is not None and first_lufs != float("-inf"):
+                meta["measured_lufs"] = round(first_lufs, 1)
+            if last is not None:
+                meta["delivered_lufs"] = round(last[0], 1) if last[0] != float(
+                    "-inf"
+                ) else None
+                meta["delivered_true_peak_db"] = round(last[1], 1)
+                meta["delivered_lra"] = round(last[2], 1)
+            meta["gain_db"] = round(gain_db, 2)
+            meta["loudness_rounds"] = rounds
+
+            # Apply the converged gain.
+            dst = os.path.join(workdir, "master_audio.mp4")
+            proc = await asyncio.to_thread(
+                _run_ffmpeg,
+                _audio_finish_cmd(
+                    src, dst, duration_s, music_path, keep_source_audio,
+                    gain_db=gain_db,
+                ),
+                VIDEO_AUDIO_TIMEOUT_S,
+            )
+            if (
+                proc.returncode != 0
+                or not os.path.exists(dst)
+                or os.path.getsize(dst) == 0
+            ):
+                reason = _stderr_tail(proc, 200) or f"ffmpeg exit {proc.returncode}"
+                logger.warning(
+                    "audio finish failed — keeping the unmixed master: %s", reason
+                )
+                return video_bytes, {
+                    **meta,
+                    "audio": keep_source_audio,
+                    "audio_finish": f"failed:{reason}"[:220],
+                }
+            mixed = await asyncio.to_thread(_read_bytes, dst)
+            on_target = (
+                meta.get("delivered_lufs") is not None
+                and abs(meta["delivered_lufs"] - VIDEO_TARGET_LUFS)
+                <= _LOUDNESS_TOLERANCE_LU * 2
+            )
+            logger.info(
+                "Audio finished: bed=%s diegetic=%s %s → %s LUFS "
+                "(%+.1f dB in %d round(s), peak %s dBTP, %d → %d bytes)%s",
+                meta.get("music_bed") or "none",
+                "kept" if keep_source_audio else "none",
+                meta.get("measured_lufs", "?"),
+                meta.get("delivered_lufs", "?"),
+                gain_db,
+                rounds,
+                meta.get("delivered_true_peak_db", "?"),
+                len(video_bytes),
+                len(mixed),
+                "" if on_target else " — OFF TARGET",
+            )
+            return mixed, {
+                **meta,
+                "audio": True,
+                "audio_finish": "ok" if on_target else "ok:off-target",
+                "audio_lufs": meta.get("delivered_lufs"),
+            }
+    except Exception as exc:
+        logger.warning("audio finish failed — keeping the unmixed master: %s", exc)
+        return video_bytes, {**meta, "audio": False, "audio_finish": f"failed:{exc}"[:220]}
+
+
 async def render_video(state: VideoState) -> dict[str, Any]:
     """Render the reel — one provider call per planned shot, chained i2v for
     continuity, an ffmpeg concat into the ~30s master final.mp4, then a
@@ -2088,6 +2673,14 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 state.get("brand") or {},
             )
             meta.update(overlay_meta)
+            video_bytes, audio_meta = await _finish_audio(
+                video_bytes,
+                plan,
+                state.get("brand") or {},
+                seed=str(item_id),
+                duration_s=result.duration_s,
+            )
+            meta.update(audio_meta)
             return {
                 "video_bytes": video_bytes,
                 "video_prompt": prompt,
@@ -2135,8 +2728,13 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         # every exit path (success, _fail, unexpected exception).
         with tempfile.TemporaryDirectory(prefix=f"reel_{item_id}_") as workdir:
             chain_image = keyframe
+            # Depth of the CURRENT chain_image: 0 = the branded keyframe,
+            # 1 = one i2v hop downstream of it, and so on.
+            chain_depth = 0
+            motion_retries = 0
             shot_paths: list[str] = []
             for i, (shot, shot_prompt) in enumerate(zip(fitted, shot_prompts)):
+                anchor = "keyframe" if chain_depth == 0 else f"chain+{chain_depth}"
                 req = VideoRequest(
                     mode="i2v" if chain_image else "t2v",
                     prompt=shot_prompt,
@@ -2187,8 +2785,86 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     )
                 path = os.path.join(workdir, f"shot_{i + 1:02d}.mp4")
                 await asyncio.to_thread(_write_bytes, path, result.video_bytes)
-                shot_paths.append(path)
                 total_cost += result.cost_usd or 0.0
+
+                # ── Did the shot actually move? ────────────────────────────
+                # i2v fails by returning the input image held for the whole
+                # duration. That passes every structural check (right codec,
+                # right length, real bytes) and is unmistakable on screen, so
+                # it is measured rather than assumed.
+                motion = await asyncio.to_thread(_measure_motion, path)
+                verdict = _motion_verdict(motion)
+                if (
+                    verdict
+                    and keyframe
+                    and chain_depth > 0
+                    and motion_retries < _MAX_MOTION_RETRIES
+                ):
+                    # A frozen or churning shot usually means the chain frame
+                    # was a poor starting point — most often it was itself the
+                    # tail of a stalled shot. Re-anchor and pay for one retry.
+                    motion_retries += 1
+                    logger.warning(
+                        "Shot %d/%d looks %s (motion %.2f) — re-rendering from "
+                        "the keyframe (retry %d/%d)",
+                        i + 1, num, verdict, motion or 0.0,
+                        motion_retries, _MAX_MOTION_RETRIES,
+                    )
+                    retry_req = replace(
+                        req,
+                        mode="i2v",
+                        image_bytes=keyframe,
+                        # A fresh key, or a caching provider hands back the
+                        # same frozen clip.
+                        idempotency_key=f"{base_key}:s{i + 1}:r2"[:128],
+                    )
+                    try:
+                        retry = await asyncio.wait_for(
+                            generate_video(
+                                retry_req,
+                                progress_cb=_wrap_progress(_progress, i, num),
+                            ),
+                            timeout=_config_settings.VIDEO_RENDER_TIMEOUT_S,
+                        )
+                    except Exception as exc:
+                        # Best-effort: the first clip is already in hand, so a
+                        # failed retry keeps it rather than failing the reel.
+                        logger.warning(
+                            "Shot %d/%d motion retry failed (%s) — keeping the "
+                            "%s take",
+                            i + 1, num, exc, verdict,
+                        )
+                    else:
+                        retry_path = os.path.join(
+                            workdir, f"shot_{i + 1:02d}_r2.mp4"
+                        )
+                        await asyncio.to_thread(
+                            _write_bytes, retry_path, retry.video_bytes
+                        )
+                        total_cost += retry.cost_usd or 0.0
+                        retry_motion = await asyncio.to_thread(
+                            _measure_motion, retry_path
+                        )
+                        # Keep the retry only if it is genuinely better —
+                        # otherwise the reel pays twice for a worse take.
+                        if _motion_verdict(retry_motion) is None:
+                            logger.info(
+                                "Shot %d/%d retry accepted (motion %.2f → %.2f)",
+                                i + 1, num, motion or 0.0, retry_motion or 0.0,
+                            )
+                            path, result = retry_path, retry
+                            motion, verdict = retry_motion, None
+                            chain_depth = 0
+                            anchor = "keyframe:retry"
+                        else:
+                            logger.warning(
+                                "Shot %d/%d retry still %s (motion %.2f) — "
+                                "keeping the first take",
+                                i + 1, num,
+                                _motion_verdict(retry_motion), retry_motion or 0.0,
+                            )
+
+                shot_paths.append(path)
                 shot_metas.append(
                     {
                         "index": shot.get("index", i + 1),
@@ -2197,6 +2873,9 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                         "requested_s": shot["duration_s"],
                         "rendered_s": result.duration_s,
                         "cost_usd": result.cost_usd,
+                        "anchor": anchor,
+                        "motion": round(motion, 2) if motion is not None else None,
+                        "motion_verdict": verdict,
                     }
                 )
                 shot_ledgers.append(
@@ -2205,21 +2884,49 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                         "provider": result.provider,
                         "model": result.model,
                         "cost_usd": result.cost_usd,
+                        "anchor": anchor,
+                        "motion": round(motion, 2) if motion is not None else None,
                         "ledger": result.ledger,
                     }
                 )
                 logger.info(
-                    "Shot %d/%d rendered: %s/%s %.1fs (%d bytes, $%.4f)",
+                    "Shot %d/%d rendered: %s/%s %.1fs from %s, motion %s "
+                    "(%d bytes, $%.4f)",
                     i + 1,
                     num,
                     result.provider,
                     result.model,
                     result.duration_s,
+                    anchor,
+                    "n/a" if motion is None else f"{motion:.2f}",
                     len(result.video_bytes),
                     result.cost_usd,
                 )
                 if i < num - 1:
                     # Chain: the next shot starts from this shot's last frame.
+                    # Two things end a chain early, and both skip the
+                    # extraction entirely rather than extracting a frame the
+                    # next iteration would discard:
+                    #
+                    #  - the cap. Rendering from a frame that is already
+                    #    _MAX_CHAIN_DEPTH hops downstream would put the next
+                    #    shot further from the branded keyframe than the
+                    #    pack survives.
+                    #  - a shot that failed the motion floor. Its last frame
+                    #    IS the still that stalled, so chaining off it hands
+                    #    the next shot the same dead end.
+                    reanchor = None
+                    if verdict:
+                        reanchor = f"shot {i + 1} looks {verdict}"
+                    elif chain_depth >= _MAX_CHAIN_DEPTH:
+                        reanchor = f"chain depth {chain_depth} reached the cap"
+                    if reanchor and keyframe:
+                        logger.info(
+                            "Shot %d/%d will re-anchor on the keyframe (%s)",
+                            i + 2, num, reanchor,
+                        )
+                        chain_image, chain_depth = keyframe, 0
+                        continue
                     chain_image = await asyncio.to_thread(
                         _extract_last_frame, path, workdir, i + 1
                     )
@@ -2228,6 +2935,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                             f"render_video: last-frame extraction failed after "
                             f"shot {i + 1}/{num}"
                         )
+                    chain_depth += 1
 
             # ── Normalize non-master shots, then concat ────────────────────
             await _progress(_CONCAT_PROGRESS_START + 1, "concat:normalize")
@@ -2349,6 +3057,17 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 state.get("brand") or {},
                 durations=rendered_durations,
             )
+
+            # ── Music bed + platform loudness ──────────────────────────────
+            await _progress(_CONCAT_PROGRESS_START + 4, "audio:finish")
+            video_bytes, audio_meta = await _finish_audio(
+                video_bytes,
+                plan,
+                state.get("brand") or {},
+                seed=str(item_id),
+                duration_s=final_duration or None,
+            )
+            overlay_meta = {**overlay_meta, **audio_meta}
             await _progress(100, "render:complete")
     except Exception as exc:
         return await _fail_multi(f"render_video failed: {exc}")
@@ -2533,7 +3252,13 @@ async def store_video(state: VideoState) -> dict[str, Any]:
                 "params": json.dumps(
                     {
                         "aspect": "9:16",
-                        "audio": True,
+                        # MEASURED by the audio finishing pass, not assumed.
+                        # This was hardcoded True while every reel shipped
+                        # silent, so the column said nothing at all.
+                        "audio": bool(meta.get("audio")),
+                        "audio_finish": meta.get("audio_finish"),
+                        "audio_lufs": meta.get("audio_lufs"),
+                        "music_bed": meta.get("music_bed"),
                         "quality_tier": state.get("quality_tier") or "standard",
                         "width": meta.get("width"),
                         "height": meta.get("height"),
