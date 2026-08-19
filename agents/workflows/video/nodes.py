@@ -281,6 +281,12 @@ class VideoState(ContentState, total=False):
     #: deliberately unreadable packaging), so render_video reads this rather
     #: than inferring pack provenance from the keyframe's existence.
     keyframe_verified_pack: bool
+    #: Generated first frames by shot index. Index 0 is the keyframe; the
+    #: rest are the frames each RE-ANCHOR cuts to. Re-anchoring is the only
+    #: thing in this pipeline that produces a visible cut, so these are the
+    #: reel's actual cut points.
+    anchor_frames: dict[int, bytes]
+    anchor_objects: dict[int, str]
     video_bytes: bytes | None
     video_meta: dict[str, Any]
     video_object: str | None
@@ -1017,6 +1023,39 @@ _KEYFRAME_EXPOSURE_RULE = (
 )
 
 
+#: Upper bound on anchor frames per reel. Each is an image generation, so a
+#: long plan must not fan out without limit. Four covers a 7-8 shot reel at
+#: _MAX_CHAIN_DEPTH 2 with room to lower the cap one notch.
+_MAX_ANCHOR_FRAMES = 4
+
+# Seven frames generated from seven separate prompts can read as seven
+# different films — the opposite defect to the one being fixed. The plan's
+# own LOCKS lines already pin palette, setting and product identity per
+# shot; this pins the things a plan does not talk about.
+_ANCHOR_LOOK_RULE = (
+    "CONSISTENT LOOK: this frame belongs to a set from the same shoot. Same "
+    "camera and lens character, same colour temperature, same film stock and "
+    "grade, same location and set dressing as the rest of the story. It is a "
+    "different MOMENT, not a different production. "
+)
+
+
+def _anchor_indices(
+    num_shots: int, cap: int = _MAX_CHAIN_DEPTH, limit: int = _MAX_ANCHOR_FRAMES
+) -> list[int]:
+    """Shot indices that will start from their own generated frame (pure).
+
+    A shot re-anchors when the chain reaches ``cap`` hops, so the re-anchor
+    points are known before a single frame is rendered: 0, cap+1, 2(cap+1)…
+    Lowering ``cap`` therefore buys more cuts — it is the cut-rhythm dial —
+    at one image generation each.
+    """
+    if num_shots <= 0:
+        return []
+    step = max(1, int(cap) + 1)
+    return list(range(0, num_shots, step))[:max(1, limit)]
+
+
 async def make_keyframe(state: VideoState) -> dict[str, Any]:
     """Generate the branded 9:16 product keyframe for shot 1's first frame.
 
@@ -1039,8 +1078,6 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
     if not shots:
         return await _fail(state, "make_keyframe: no shot plan available")
 
-    first_scene = str(shots[0].get("scene") or "")
-    first_frame = _extract_first_frame(first_scene) or first_scene
     has_product_image = state.get("product_image") is not None
     is_lifestyle_only = state.get("is_lifestyle_only", True)
 
@@ -1091,52 +1128,107 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
     else:
         product_rule = "Do NOT include any products. Focus on the scene and mood. "
 
-    prompt_text = (
-        f"REAL PHOTOGRAPH — Ultra realistic commercial photography, vertical "
-        f"9:16 portrait frame, the opening frame of a short product video.\n\n"
-        f"SCENE:\n{sanitize_for_prompt(first_frame, max_length=4000)}\n\n"
-        # No brand NAME here. A name is a word, and image models typeset the
-        # words you hand them — the same line was removed from the content
-        # pipeline's prompts after a bake-off traced fabricated wordmarks in
-        # the "reserved" logo corner directly to it. The keyframe seeds every
-        # downstream shot, so a wordmark invented here propagates through the
-        # whole reel.
-        f"{product_rule}"
-        f"Real shadows. Authentic textures. Natural depth of field. "
-        f"{_KEYFRAME_EXPOSURE_RULE}"
-        f"{no_text_rule}"
-        f"The image MUST look like a photograph captured with a real camera, "
-        f"NOT an artwork, NOT a rendering, NOT an illustration."
-        f"{pack_directive}"
-    )
-
-    try:
-        channel = (item.get("channel", "") or "").lower()
-        # The keyframe seeds every downstream shot, so hallucinated lettering
-        # here propagates through the whole reel. No text is legitimate in it —
-        # the real product (with its own packaging text) is composited in below.
-        image_url = await generate_image(
-            prompt_text,
-            size="1024x1792",
-            channel=channel or None,
-            guard_label=f"video:keyframe:{channel or 'default'}",
+    def _prompt_for(scene: str) -> str:
+        first_frame = _extract_first_frame(scene) or scene
+        return (
+            f"REAL PHOTOGRAPH — Ultra realistic commercial photography, "
+            f"vertical 9:16 portrait frame, the opening frame of one shot in "
+            f"a short product video.\n\n"
+            f"SCENE:\n{sanitize_for_prompt(first_frame, max_length=4000)}\n\n"
+            # No brand NAME here. A name is a word, and image models typeset
+            # the words you hand them — the same line was removed from the
+            # content pipeline's prompts after a bake-off traced fabricated
+            # wordmarks in the "reserved" logo corner directly to it. An
+            # anchor seeds every shot chained off it, so a wordmark invented
+            # here propagates through that whole run of the reel.
+            f"{product_rule}"
+            f"Real shadows. Authentic textures. Natural depth of field. "
+            f"{_KEYFRAME_EXPOSURE_RULE}"
+            f"{_ANCHOR_LOOK_RULE}"
+            f"{no_text_rule}"
+            f"The image MUST look like a photograph captured with a real "
+            f"camera, NOT an artwork, NOT a rendering, NOT an illustration."
+            f"{pack_directive}"
         )
 
-        import base64 as _b64
-        import httpx
+    channel = (item.get("channel", "") or "").lower()
 
-        if image_url.startswith("data:"):
-            _, b64_part = image_url.split(",", 1)
-            image_data = _b64.b64decode(b64_part)
-        elif image_url.startswith("content-images/"):
-            image_data = await async_download_file(
-                "content-images", image_url.replace("content-images/", "")
+    async def _render_anchor(index: int) -> bytes | None:
+        """Generate one anchor frame, or None if it could not be made."""
+        try:
+            # generate_image vision-checks the result and re-rolls invented
+            # lettering (shared.image_text_guard). generate_video has no such
+            # guard, so every frame that starts a shot here is the only part
+            # of the reel that gets that protection.
+            image_url = await generate_image(
+                _prompt_for(str(shots[index].get("scene") or "")),
+                size="1024x1792",
+                channel=channel or None,
+                guard_label=f"video:keyframe:{channel or 'default'}",
             )
-        else:
+            import base64 as _b64
+            import httpx
+
+            if image_url.startswith("data:"):
+                _, b64_part = image_url.split(",", 1)
+                return _b64.b64decode(b64_part)
+            if image_url.startswith("content-images/"):
+                return await async_download_file(
+                    "content-images", image_url.replace("content-images/", "")
+                )
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.get(image_url)
                 resp.raise_for_status()
-                image_data = resp.content
+                return resp.content
+        except Exception as exc:
+            logger.warning("anchor %d generation failed: %s", index + 1, exc)
+            return None
+
+    try:
+        # ── One anchor per RE-ANCHOR point, not one for the whole reel ──────
+        #
+        # Measured on a delivered 7-shot reel, scene score at each boundary:
+        #
+        #     5.0s chain      0.000      13.0s RE-ANCHOR  0.754
+        #     8.0s chain      0.194      25.0s RE-ANCHOR  0.442
+        #    17.0s chain      0.147
+        #    21.0s chain      0.098
+        #
+        # Chained boundaries are invisible — at 5.0s the score is literally
+        # zero — because a chained shot starts from the previous shot's last
+        # frame and is continuous with it by construction. So re-anchoring is
+        # the ONLY thing in this pipeline that produces a cut, and a 30s reel
+        # was shipping two of them. Eight of nine reels in the bucket had none
+        # at all above the 0.3 detection threshold.
+        #
+        # And both of those cuts landed back on the SAME frame. Shots 1, 4
+        # and 7 all started from the one keyframe, and they came out as the
+        # three most similar pairs in the reel — SSIM 0.75, 0.68, 0.65,
+        # against 0.58 or less for every chained pair. Across nine reels that
+        # one measured 0.467 mean internal SSIM against a median of 0.258.
+        #
+        # Giving each re-anchor its own generated frame keeps the only cuts
+        # the format has and removes the repetition. They render concurrently,
+        # so the wall clock is one generation (~103s) rather than N.
+        anchor_indices = _anchor_indices(len(shots))
+        rendered = await asyncio.gather(
+            *(_render_anchor(i) for i in anchor_indices)
+        )
+        anchors: dict[int, bytes] = {
+            idx: data for idx, data in zip(anchor_indices, rendered) if data
+        }
+        if 0 not in anchors:
+            return await _fail(
+                state, "make_keyframe: the opening anchor could not be generated"
+            )
+        if len(anchors) < len(anchor_indices):
+            logger.warning(
+                "Only %d of %d anchors generated — the reel will re-use "
+                "earlier anchors where one is missing",
+                len(anchors),
+                len(anchor_indices),
+            )
+        image_data = anchors[0]
 
         # Swap the blank placeholder for the real product photo. Identity is
         # the signal: every no-op path inside the swap returns the SAME bytes
@@ -1167,19 +1259,31 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
                 "keyframe_verified_pack": False,
             }
         image_data = swapped
+        anchors[0] = image_data
 
         keyframe_object = f"{brand_id}/{item_id}/keyframe.png"
         await async_upload_file(VIDEO_BUCKET, keyframe_object, image_data, "image/png")
+        # Later anchors are stored under their shot number so a reviewer can
+        # see what each cut actually cut TO, not only what the reel opened on.
+        anchor_objects = {0: keyframe_object}
+        for idx, data in anchors.items():
+            if idx == 0:
+                continue
+            obj = f"{brand_id}/{item_id}/anchor_{idx + 1:02d}.png"
+            await async_upload_file(VIDEO_BUCKET, obj, data, "image/png")
+            anchor_objects[idx] = obj
         logger.info(
-            "Keyframe stored at %s/%s (%s)",
-            VIDEO_BUCKET,
-            keyframe_object,
+            "%d anchor frame(s) stored for shots %s (%s)",
+            len(anchors),
+            ", ".join(str(i + 1) for i in sorted(anchors)),
             "real pack swapped in" if swap_ready else "no readable pack",
         )
         return {
             "keyframe_bytes": image_data,
             "keyframe_object": keyframe_object,
             "keyframe_verified_pack": swap_ready,
+            "anchor_frames": anchors,
+            "anchor_objects": anchor_objects,
         }
     except Exception as exc:
         logger.warning("make_keyframe failed (%s) — falling back to t2v", exc)
@@ -1187,6 +1291,8 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
             "keyframe_bytes": None,
             "keyframe_object": None,
             "keyframe_verified_pack": False,
+            "anchor_frames": {},
+            "anchor_objects": {},
         }
 
 
@@ -3566,6 +3672,10 @@ async def render_video(state: VideoState) -> dict[str, Any]:
             TARGET_MIN_TOTAL_S,
         )
     keyframe = state.get("keyframe_bytes")
+    # Generated first frames by shot index — the reel's cut points. Empty on
+    # a t2v reel and on any state built before per-shot anchors existed, in
+    # which case every re-anchor falls back to the single opening frame.
+    anchor_frames: dict[int, bytes] = state.get("anchor_frames") or {}
     quality_tier = state.get("quality_tier") or "standard"
     if quality_tier == "hero":
         # Veo bills its snapped grid (5s → 6s billed) — fit requests to the
@@ -3796,7 +3906,16 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     # does not exist.
                     anchor = "t2v"
                 elif chain_depth == 0:
-                    anchor = "keyframe" if chain_image is keyframe else "anchor"
+                    # Which generated frame this cut landed on is the whole
+                    # point of the change that introduced per-shot anchors —
+                    # a label that said "keyframe" for all of them is what
+                    # hid the repetition for two cycles.
+                    if chain_image is keyframe:
+                        anchor = "keyframe"
+                    elif chain_image is anchor_frames.get(i):
+                        anchor = f"anchor#{i + 1}"
+                    else:
+                        anchor = "anchor"
                 else:
                     anchor = f"chain+{chain_depth}"
                 req = VideoRequest(
@@ -4014,12 +4133,24 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                         reanchor = f"shot {i + 1} looks {verdict}"
                     elif chain_depth >= _MAX_CHAIN_DEPTH:
                         reanchor = f"chain depth {chain_depth} reached the cap"
-                    if reanchor and anchor_image:
+                    # Prefer the frame generated FOR the next shot. Re-anchoring
+                    # is the only thing here that produces a visible cut
+                    # (measured: chained boundaries score 0.000-0.194, re-anchors
+                    # 0.442-0.754), and cutting back to the one keyframe every
+                    # time made the re-anchored shots the three most similar in
+                    # the reel. Its own frame gives the cut somewhere new to
+                    # land; anchor_image remains the fallback when a generation
+                    # failed or the re-anchor was triggered off-schedule by the
+                    # motion check.
+                    fresh = anchor_frames.get(i + 1)
+                    if reanchor and (fresh or anchor_image):
                         logger.info(
-                            "Shot %d/%d will re-anchor (%s)",
+                            "Shot %d/%d will re-anchor (%s) to %s",
                             i + 2, num, reanchor,
+                            "its own frame" if fresh else "the opening frame",
                         )
-                        chain_image, chain_depth = anchor_image, 0
+                        chain_image = fresh or anchor_image
+                        chain_depth = 0
                         continue
                     chain_image = await asyncio.to_thread(
                         _extract_last_frame, path, workdir, i + 1
