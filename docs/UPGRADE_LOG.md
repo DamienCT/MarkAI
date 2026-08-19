@@ -109,3 +109,34 @@ and every one of 624 items scheduled 06:30–21:00 Mauritius local. 0 findings r
 25-item Aug 18 → Sep 1 batch queued and generating sequentially (posts + reels; reels render
 on the local RTX 4090 via LTX-2.5 — see D:\markai-video-forge, live as of this cycle:
 3s 1080×1920 H.264+AAC in 24s wall).
+
+---
+
+## Cycle 3 — Batch delivery + multi-shot reels (2026-08-18/19)
+
+**Batch result: 25/25 generated, 0 failures.** 16 posts (branded images verified) + 9 reels
+(videos byte-verified in MinIO, 2.4–4.8 MB each, rendered on the local 4090 at $0.00 marginal
+cost). Final inline audit across all items: 0 guardrail violations (after fixes below),
+0 hashtag overruns, accents present, every slot 06:30–21:00 Mauritius local, no duplicate
+(channel, time) slots, Sept 1 opening covered on all 3 channels, 13 countdown items Aug 23–31.
+
+**Mid-batch corrections (feedback loop in action):**
+- First two captions spoke as *je/moi* → 2 new hard guardrails added to brand_guidelines
+  (nous/on voice; ≤5 hashtags, never hashtag pillar names) — every later item complied.
+  The 3 pre-patch captions were hand-rewritten to brand voice (worker correctly refuses
+  `content.generate` on in_review items — editor-style SQL rewrite was the right tool).
+- One truncated pillar-name hashtag (`#WellnessWith`) removed.
+
+**Multi-shot reel engine shipped (`de851f5`, deployed post-batch):** per-shot provider calls
+(shot 1 i2v from branded keyframe; shots 2..N i2v chained from the previous shot's last frame),
+duration fitter (3–5s clamp, 20–35s target), master-spec normalization for non-forge shots,
+same-encoder-only stream-copy concat (else re-encode), per-shot progress windows, aggregated
+cost/ledger. Review found 6 issues (mixed-encoder copy-concat, `-shortest` truncation,
+ffprobe gating, Veo snap drift, reel-length floor, partial-spend surfacing) — all fixed;
+agents suite 97 passed. Current-batch reels are single-shot ~5s (rendered pre-upgrade);
+future reels render 20–30s.
+
+**Cycle-4+ backlog:** campaigns-JSON truncation fix + validation gate, generator-side temporal
+check, proof-point repetition damping, meta-language leak in briefs, franglais tuning,
+planner MAX_SHOTS=6 (35s top end unreachable), "Mauritius Health Week" authenticity (user),
+n8n workflow re-import, observability, token encryption, engagement 2.0, Qdrant learning loop.
