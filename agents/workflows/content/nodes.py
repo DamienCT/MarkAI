@@ -2707,6 +2707,27 @@ async def _replace_product_in_generated_image(
         gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         marketing_img = PILImage.open(BytesIO(image_data))
 
+        # A thumbnail reference simply does not contain the pack's lettering,
+        # so the editor can only invent it. Publishing a clean unlabeled
+        # container beats publishing a fabricated third-party pack.
+        #
+        # This MUST run on the RAW reference. prepare_product_reference grows
+        # the short edge to REFERENCE_MIN_EDGE (1024), four times
+        # MIN_SWAPPABLE_EDGE (256), so the same check made afterwards can never
+        # fail — a 120px thumbnail was upscaled into "large enough" and the
+        # editor then invented every character on it. That ordering is the
+        # upstream cause of the fabrication seen in rendered reels: a correct
+        # KAOKA wordmark (large enough to survive at thumbnail scale) above
+        # invented body copy, and "AIMLO / Miheell" for Emile Noel.
+        raw_reference_img = PILImage.open(BytesIO(product_image_data))
+        if not reference_supports_swap(raw_reference_img):
+            logger.warning(
+                "Product reference too small (%s) for a faithful swap — "
+                "keeping the unlabeled placeholder",
+                raw_reference_img.size,
+            )
+            return image_data
+
         # The editor re-synthesises every pixel of the pack, so what it can
         # SEE of the reference decides whether the pack's printed copy comes
         # back faithful or as invented letterforms. Crop the flat catalogue
@@ -2715,22 +2736,19 @@ async def _replace_product_in_generated_image(
         product_image_data = prepare_product_reference(product_image_data)
         product_img = PILImage.open(BytesIO(product_image_data))
 
-        # A thumbnail reference simply does not contain the pack's lettering.
-        # Publishing a clean unlabeled container beats publishing a fabricated
-        # third-party pack, so skip the swap entirely in that case.
-        if not reference_supports_swap(product_img):
-            logger.warning(
-                "Product reference too small (%s) for a faithful swap — "
-                "keeping the unlabeled placeholder",
-                product_img.size,
-            )
-            return image_data
-
-        product_name = state.get("calendar_item", {}).get("product_name", "product")
+        # calendar_items has no product_name column, so the old lookup
+        # calendar_item["product_name"] resolved to the literal "product" on
+        # EVERY run: the editor was never told which pack it was copying, and
+        # the guard's allow-list read ["product", vendor]. The matched product
+        # is already in state.
         _prod = state.get("product")
-        vendor_name = (
-            (_prod.get("vendor_name") or "") if isinstance(_prod, dict) else ""
+        _prod = _prod if isinstance(_prod, dict) else {}
+        product_name = (
+            (_prod.get("name") or "").strip()
+            or (state.get("calendar_item", {}).get("title") or "").strip()
+            or "product"
         )
+        vendor_name = (_prod.get("vendor_name") or "").strip()
 
         input_size = marketing_img.size  # preserve original dimensions (e.g. 1024x1024)
         aspect_hint = aspect_hint_for_size(input_size)
@@ -2795,7 +2813,13 @@ async def _replace_product_in_generated_image(
                 allowed_text=[t for t in (product_name, vendor_name) if t],
                 label=f"swap:{product_name[:40]}",
             )
-            if not verdict.malformed:
+            # `fabricated`, not `malformed`. malformed also carries
+            # illegible_marks, and build_swap_instruction explicitly ASKS for
+            # copy too small to reproduce to come back as soft out-of-focus
+            # texture — which the guard is required to report as an
+            # unresolvable letter-like mark. Judged that way a CORRECT swap
+            # fails both attempts and the blank placeholder ships.
+            if not verdict.fabricated:
                 logger.info(
                     "Gemini product replacement successful for %s", product_name
                 )
@@ -2804,7 +2828,7 @@ async def _replace_product_in_generated_image(
                 "Product swap attempt %d for '%s' invented pack lettering (%s)",
                 attempt,
                 product_name,
-                "; ".join(verdict.malformed[:4]),
+                "; ".join(verdict.fabricated[:4]),
             )
 
         # Both attempts fabricated copy. Fall back to the pre-swap frame — the

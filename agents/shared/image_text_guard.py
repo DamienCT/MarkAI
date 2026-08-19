@@ -154,6 +154,27 @@ class TextGuardVerdict:
         return list(seen)
 
     @property
+    def fabricated(self) -> list[str]:
+        """Lettering the model INVENTED — readable but not real words.
+
+        The product-swap caller wants this, not ``malformed``. A faithful swap
+        renders copy too small to reproduce as soft out-of-focus texture,
+        which is exactly what ``build_swap_instruction`` asks for and exactly
+        what the guard is required to report as an unresolvable letter-like
+        mark. Judged by ``malformed`` a CORRECT swap fails both attempts and
+        the blank placeholder gets published instead — the pass criterion
+        would be the negation of the swap's own success criterion.
+
+        Everything else in the frame was already excluded upstream: the
+        background is generated with ``allowed_text=None``, so the only new
+        illegible surface a swap can introduce is the pack itself.
+        """
+        seen: dict[str, None] = {}
+        for item in self.gibberish_text:
+            seen.setdefault(item, None)
+        return list(seen)
+
+    @property
     def severity(self) -> int:
         """Rough badness score — used to pick the least-bad attempt.
 

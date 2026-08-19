@@ -116,7 +116,15 @@ _CONCAT_PROGRESS_START = 95
 # master (see _burn_overlays).
 FONTS_DIR = "/usr/share/fonts/truetype/markai"
 MAX_OVERLAY_WORDS = 6
-_OVERLAY_WRAP_CHARS = 16  # ~16 chars/line at 96px keeps x within 65..1015
+# 20 chars/line at 76px is NARROWER in pixels than the old 16 at 96px
+# (20x76 = 1520 vs 16x96 = 1536), so the block still fills the frame fraction
+# professional short-form uses while holding four more characters a line.
+# That headroom is what stops ordinary six-word marketing lines losing their
+# last word. At 16x2 a greedy wrap dropped "pour" from "Dinner starts with a
+# clean pour", "bottle" from "Certified organic, every bottle" and
+# "throughout" from "Open today, certified throughout" — all three shipped
+# that way inside finished 30-second masters.
+_OVERLAY_WRAP_CHARS = 20
 _OVERLAY_MAX_LINES = 2
 # The whole box holds two 18-char lines — overlay_text is clamped to that
 # budget at plan normalization so _wrap_overlay_text rarely has to drop words
@@ -134,8 +142,9 @@ _OVERLAY_MIN_EVENT_S = 0.3
 _OVERLAY_MIN_ON_SCREEN_S = 1.6
 # Sized for phone viewing: a full line fills ~55-60% of the 1080px frame, the
 # scale professional short-form uses. Smaller reads as a subtitle, not a hook.
-_OVERLAY_FONT_SIZE = 96
-_CTA_FONT_SIZE = 108
+# 76 rather than 96 buys four characters a line at a slightly narrower block.
+_OVERLAY_FONT_SIZE = 76
+_CTA_FONT_SIZE = 96
 # The CTA is set larger, so it fits FEWER characters per line than the overlay
 # — wrapping it at the overlay's budget is what pushed "See clearer choices
 # from shelf to table." past two lines and silently dropped "shelf to table."
@@ -265,17 +274,40 @@ def _clean_overlay_text(
 
     The CTA passes its own, smaller budget (_CTA_MAX_CHARS / _CTA_WRAP_CHARS)
     because it is set at a larger size and so fits fewer characters per line.
+
+    The budget is measured by SIMULATING the wrap, not by counting characters
+    against ``wrap_chars * max_lines``. That product assumes perfect packing,
+    and a greedy wrap never packs perfectly — it abandons the ragged end of
+    every line. "Dinner starts with a clean pour" is 6 words and 30 characters,
+    inside a nominal 32-character budget, yet wraps to "Dinner starts" +
+    "with a clean" and loses "pour". Both that line and "Certified organic,
+    every bottle" shipped a word short in a finished 30-second master. The
+    ``max_chars`` argument is now an upper bound that the wrap check refines.
     """
     text = re.sub(r"\s+", " ", str(value or "")).strip()
-    words = text.split()[:MAX_OVERLAY_WORDS]
-    kept: list[str] = []
-    used = 0
-    for word in words:
-        cost = len(word) + (1 if kept else 0)
-        if used + cost > max_chars:
-            break
-        kept.append(word)
-        used += cost
+    # Mirror the burn exactly: _wrap_overlay_text truncates any word wider than
+    # a line, so truncate here too or the stored text again promises more than
+    # the screen shows.
+    words = [w[:wrap_chars] for w in text.split()[:MAX_OVERLAY_WORDS]]
+    max_lines = max(1, -(-max_chars // wrap_chars))
+
+    def fits(candidate: list[str]) -> bool:
+        """True when these words wrap into max_lines of wrap_chars."""
+        lines, cur = 1, ""
+        for word in candidate:
+            nxt = f"{cur} {word}".strip() if cur else word
+            if len(nxt) <= wrap_chars:
+                cur = nxt
+                continue
+            lines += 1
+            if lines > max_lines:
+                return False
+            cur = word
+        return True
+
+    kept = list(words)
+    while kept and not fits(kept):
+        kept.pop()
     if not kept and words:
         # A single oversized word: keep a one-line truncation rather than
         # losing the line entirely.
@@ -777,7 +809,12 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
         f"REAL PHOTOGRAPH — Ultra realistic commercial photography, vertical "
         f"9:16 portrait frame, the opening frame of a short product video.\n\n"
         f"SCENE:\n{sanitize_for_prompt(first_frame, max_length=4000)}\n\n"
-        f"Brand: {sanitize_for_prompt(state.get('brand', {}).get('name', ''))}. "
+        # No brand NAME here. A name is a word, and image models typeset the
+        # words you hand them — the same line was removed from the content
+        # pipeline's prompts after a bake-off traced fabricated wordmarks in
+        # the "reserved" logo corner directly to it. The keyframe seeds every
+        # downstream shot, so a wordmark invented here propagates through the
+        # whole reel.
         f"{product_rule}"
         f"Real shadows. Authentic textures. Natural depth of field. "
         f"{no_text_rule}"
@@ -813,9 +850,27 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
                 resp.raise_for_status()
                 image_data = resp.content
 
-        # Swap the blank placeholder for the real product photo (no-op when
-        # lifestyle-only or no gallery image).
-        image_data = await _replace_product_in_generated_image(state, image_data)
+        # Swap the blank placeholder for the real product photo. Identity is
+        # the signal: every no-op path inside the swap returns the SAME bytes
+        # object it was handed, so `is` separates "swapped" from "kept the
+        # placeholder" without changing the swap's bytes-in/bytes-out contract.
+        swapped = await _replace_product_in_generated_image(state, image_data)
+        if swapped is image_data and has_product_image and not is_lifestyle_only:
+            # Keeping the placeholder is a sound outcome for a still post,
+            # where a blank matte box is an inert prop. It is not sound here:
+            # this frame seeds shot 1 and, through the i2v chain, every shot
+            # after it, so a blank unbranded pouch becomes the hero of a 30s
+            # reel — which is exactly what shipped in one Naturespan reel,
+            # dominating four consecutive shots. No keyframe at all is better;
+            # render_video downgrades cleanly to t2v.
+            logger.warning(
+                "make_keyframe: product swap did not fire for %s/%s — dropping "
+                "the blank-placeholder keyframe and falling back to t2v",
+                brand_id,
+                item_id,
+            )
+            return {"keyframe_bytes": None, "keyframe_object": None}
+        image_data = swapped
 
         keyframe_object = f"{brand_id}/{item_id}/keyframe.png"
         await async_upload_file(VIDEO_BUCKET, keyframe_object, image_data, "image/png")

@@ -238,17 +238,21 @@ async def _replace_product_in_image(
         gemini_client = genai.Client(api_key=_settings.GEMINI_API_KEY)
         marketing_img = PILImage.open(BytesIO(image_data))
         # Same reference discipline as the content workflow: the editor redraws
-        # the pack, so crop the flat catalogue background away first and skip
-        # the swap outright when the reference is too small to carry lettering.
-        product_image_data = prepare_product_reference(product_image_data)
-        product_img = PILImage.open(BytesIO(product_image_data))
-        if not reference_supports_swap(product_img):
+        # the pack, so skip the swap outright when the reference is too small
+        # to carry lettering, THEN crop the flat catalogue background away.
+        # Order matters — prepare_product_reference upscales the short edge to
+        # 1024, four times MIN_SWAPPABLE_EDGE, so a check made after it can
+        # never fail and a 120px thumbnail is laundered into "large enough".
+        raw_reference_img = PILImage.open(BytesIO(product_image_data))
+        if not reference_supports_swap(raw_reference_img):
             logger.warning(
                 "Product reference too small (%s) for a faithful swap on regen "
                 "— keeping the unlabeled placeholder",
-                product_img.size,
+                raw_reference_img.size,
             )
             return image_data
+        product_image_data = prepare_product_reference(product_image_data)
+        product_img = PILImage.open(BytesIO(product_image_data))
         input_size = marketing_img.size
         aspect_hint = aspect_hint_for_size(input_size)
 

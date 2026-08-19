@@ -10,9 +10,22 @@ Gemini swap that paints the pack in runs afterwards and returned its bytes
 unchecked. The guard was inspecting the one stage that cannot produce this
 defect and skipping the one that does.
 
-Judging by `malformed` rather than `offending` is the load-bearing choice: a
-faithful swap reproduces the real pack's ingredients and weight, which are not
-in allowed_text but are correct, and rejecting those would reject good swaps.
+Which verdict property the loop keys on is the load-bearing choice, and the
+first attempt got it wrong.
+
+`offending` is too broad: a faithful swap reproduces the real pack's
+ingredients and weight, which are not in allowed_text but are correct.
+
+`malformed` is also too broad, and worse — it carries illegible_marks, while
+build_swap_instruction explicitly ASKS for copy too small to reproduce to come
+back as soft out-of-focus texture, which the guard is required to report as an
+unresolvable letter-like mark. Judged that way the pass criterion is the
+negation of the swap's own success criterion: every CORRECT swap fails both
+attempts and the blank placeholder ships. That is a live defect — a blank white
+pouch dominated four shots of a rendered reel.
+
+`fabricated` is the right one: lettering the model invented, readable but not
+real words. Nothing an allow-list or a depth-of-field instruction can excuse.
 """
 
 import asyncio
@@ -35,10 +48,10 @@ BACKGROUND = _png()
 SWAPPED = _png(colour=(120, 90, 60))
 
 
-class TestMalformedVsOffending:
-    """The verdict property the swap check keys on."""
+class TestWhichVerdictPropertyTheSwapUses:
+    """The three candidate properties, and why only one is correct here."""
 
-    def test_faithful_small_print_is_not_malformed(self):
+    def test_faithful_small_print_is_not_fabricated(self):
         # Real pack copy the allow-list does not mention: unintended by the
         # letter of the rule, but a correct reproduction.
         verdict = verdict_from_payload({
@@ -48,18 +61,25 @@ class TestMalformedVsOffending:
             "has_unintended_text": True,
         })
         assert verdict.flagged is True, "still flagged for other callers"
-        assert verdict.malformed == [], "a faithful swap must not be rejected"
+        assert verdict.fabricated == [], "a faithful swap must not be rejected"
 
-    def test_invented_copy_is_malformed(self):
+    def test_invented_copy_is_fabricated(self):
         verdict = verdict_from_payload({
             "visible_text": ["KAOKA", "Sliry Sniilzo Sci Cooira"],
             "unintended_text": ["Sliry Sniilzo Sci Cooira"],
             "gibberish_text": ["Sliry Sniilzo Sci Cooira"],
             "has_unintended_text": True,
         })
-        assert "Sliry Sniilzo Sci Cooira" in verdict.malformed
+        assert "Sliry Sniilzo Sci Cooira" in verdict.fabricated
 
-    def test_unresolvable_marks_are_malformed(self):
+    def test_deliberately_soft_small_print_is_not_fabricated(self):
+        """The case that made `malformed` the wrong criterion for a swap.
+
+        build_swap_instruction asks for pack copy too small to reproduce to
+        come back as soft out-of-focus texture. The guard must report that as
+        an unresolvable mark, so it lands in `malformed` — but it is the
+        DESIRED output, and rejecting it publishes the blank placeholder.
+        """
         verdict = verdict_from_payload({
             "visible_text": ["KAOKA"],
             "unintended_text": [],
@@ -67,7 +87,10 @@ class TestMalformedVsOffending:
             "illegible_text_marks": ["certification badges on the lower pack"],
             "has_unintended_text": False,
         })
+        # Still malformed — the background caller depends on that.
         assert verdict.malformed == ["certification badges on the lower pack"]
+        # But NOT fabricated, so a correct swap is kept.
+        assert verdict.fabricated == []
 
 
 @pytest.fixture
@@ -108,28 +131,28 @@ class TestSwapRetryContract:
 
     def test_clean_swap_is_returned_on_the_first_attempt(self, monkeypatch, swap_env):
         clean = TextGuardVerdict(flagged=False, checked=True)
-        assert clean.malformed == []
+        assert clean.fabricated == []
 
     def test_a_flagged_then_clean_sequence_keeps_the_second(self):
         bad = verdict_from_payload({
             "gibberish_text": ["Sliry Sniilzo"], "has_unintended_text": True})
         good = verdict_from_payload({"has_unintended_text": False})
-        # The loop returns as soon as malformed is empty.
-        outcomes = [bool(v.malformed) for v in (bad, good)]
+        # The loop returns as soon as `fabricated` is empty.
+        outcomes = [bool(v.fabricated) for v in (bad, good)]
         assert outcomes == [True, False]
 
     def test_two_bad_attempts_mean_the_placeholder_wins(self):
         bad = verdict_from_payload({
             "gibberish_text": ["Sliry Sniilzo"], "has_unintended_text": True})
-        assert all(v.malformed for v in (bad, bad)), (
-            "both attempts malformed — the caller must keep the pre-swap frame"
+        assert all(v.fabricated for v in (bad, bad)), (
+            "both attempts fabricated — the caller must keep the pre-swap frame"
         )
 
     def test_an_unavailable_guard_does_not_block_the_swap(self):
         # Fail-open: a guard that could not form an opinion must not cost us
         # the product placement.
         skipped = TextGuardVerdict(flagged=False, checked=False, reason="guard unavailable")
-        assert skipped.malformed == []
+        assert skipped.fabricated == []
 
 
 def test_the_swap_block_asks_the_guard_about_the_swap_output():
@@ -141,8 +164,14 @@ def test_the_swap_block_asks_the_guard_about_the_swap_output():
         "the swap returned unchecked bytes — this is how invented pack copy "
         "reached a published reel"
     )
-    assert ".malformed" in source, (
-        "judging the swap by offending rejects faithful small print"
+    assert ".fabricated" in source, (
+        "judging a swap by `malformed` rejects every CORRECT swap: it carries "
+        "illegible_marks, and build_swap_instruction ASKS for copy too small "
+        "to reproduce to come back as soft out-of-focus texture — which the "
+        "guard must report as an unresolvable mark. The pass criterion would "
+        "be the negation of the swap's own success criterion, and the blank "
+        "placeholder would ship instead."
     )
+    assert ".malformed" not in source
     # The fallback must be the pre-swap image, not a failure.
     assert "return image_data" in source
