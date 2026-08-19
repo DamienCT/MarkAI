@@ -247,6 +247,7 @@ async def source_product_images_node(state: ProductIntelState) -> dict[str, Any]
 
         result = await source_product_image(
             product_sku=product.get("sku"),
+            bc_item_no=product.get("bc_item_no"),
             product_name=product.get("name"),
             brand_name=product.get("vendor", ""),
         )

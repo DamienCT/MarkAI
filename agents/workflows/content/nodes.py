@@ -1451,13 +1451,13 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     if product_ids:
         pid = product_ids[0] if isinstance(product_ids, list) else product_ids
         products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category, bc_item_no, bc_company FROM products "
             "WHERE id = :pid AND is_active = true LIMIT 1",
             {"pid": str(pid)},
         )
     else:
         products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category, bc_item_no, bc_company FROM products "
             "WHERE brand_id = :brand_id AND is_active = true AND ("
             "  bc_item_no = :sku OR LOWER(name) LIKE LOWER(:name_pattern)"
             ") LIMIT 1",
@@ -1473,7 +1473,7 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
     # name shares the most non-trivial words with the free-text.
     if not products and free_text:
         all_products = await execute_query(
-            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category FROM products "
+            "SELECT id, name, image_urls, primary_image_url, attributes, vendor_name, category, bc_item_no, bc_company FROM products "
             "WHERE brand_id = :brand_id AND is_active = true",
             {"brand_id": brand_id},
         )
@@ -1596,20 +1596,72 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
         except Exception as exc:
             logger.warning("Category logo lookup failed for '%s': %s", category, exc)
 
-    # Check if product has images in its gallery
-    if isinstance(gallery, list) and gallery:
-        # Use primary image or first gallery image
-        primary = product.get("primary_image_url")
-        if not primary and isinstance(gallery[0], dict):
+    # Check if product has images in its gallery. primary_image_url is checked
+    # on its own, not only as a field of a non-empty gallery — a product synced
+    # with a primary and an empty image_urls array is photographed, and the
+    # earlier `isinstance(gallery, list) and gallery` gate sent those to
+    # lifestyle-only.
+    primary = product.get("primary_image_url")
+    if not primary and isinstance(gallery, list) and gallery:
+        if isinstance(gallery[0], dict):
             primary = gallery[0].get("url")
-        elif not primary and isinstance(gallery[0], str):
+        elif isinstance(gallery[0], str):
             primary = gallery[0]
 
-        if primary:
-            logger.info("Using gallery image for product '%s'", product_name)
+    if primary:
+        logger.info("Using gallery image for product '%s'", product_name)
+        return {
+            "product_image": primary,
+            "product_image_source": "gallery",
+            "needs_manual_image": False,
+            "is_lifestyle_only": False,
+            "product_id": str(product.get("id", "")),
+            "product_logo_image": product_logo_image,
+            "product_logo_variants": product_logo_variants,
+        }
+
+    # Nothing stored yet — ask Business Central for the item card picture. The
+    # client's own ERP photo is the authoritative product shot, so it is tried
+    # BEFORE anything is inferred and instead of any web lookup; this node
+    # never searches the web.
+    #
+    # Products are synced from BC with an EMPTY sku and the identifier in
+    # bc_item_no (e.g. 'MSJZRCA01-7-BLACK') — every one of the 1,251 rows
+    # across the three brands has sku = ''. Passing sku here is why the BC
+    # fetch had never run for any product.
+    bc_item_no = (product.get("bc_item_no") or product.get("sku") or "").strip()
+    if bc_item_no:
+        # Local import: bc_images pulls in the BC config and httpx, and this is
+        # the only node that needs it.
+        from shared.tools.bc_images import get_product_image_from_bc
+
+        try:
+            bc_url = await get_product_image_from_bc(
+                bc_item_no,
+                bc_company=product.get("bc_company"),
+                product_id=str(product.get("id", "")) or None,
+            )
+        except Exception as exc:  # never let sourcing sink the item
+            logger.warning("BC image fetch failed for %s: %s", bc_item_no, exc)
+            bc_url = None
+        if bc_url:
+            # Store it so the next post reuses the fetch instead of repeating it.
+            try:
+                await execute_update(
+                    "UPDATE products SET primary_image_url = :url, "
+                    "updated_at = now() WHERE id = CAST(:pid AS uuid)",
+                    {"url": bc_url, "pid": str(product.get("id", ""))},
+                )
+            except Exception as exc:
+                logger.warning("Could not persist BC image for %s: %s", bc_item_no, exc)
+            logger.info(
+                "Using BC item-card image for product '%s' (%s)",
+                product_name,
+                bc_item_no,
+            )
             return {
-                "product_image": primary,
-                "product_image_source": "gallery",
+                "product_image": bc_url,
+                "product_image_source": "bc",
                 "needs_manual_image": False,
                 "is_lifestyle_only": False,
                 "product_id": str(product.get("id", "")),
@@ -1617,9 +1669,11 @@ async def source_product_image_node(state: ContentState) -> dict[str, Any]:
                 "product_logo_variants": product_logo_variants,
             }
 
-    # No gallery images — restrict to lifestyle shots
+    # No stored image and BC has none (or is unreachable) — restrict to
+    # lifestyle shots rather than inventing a product photo.
     logger.info(
-        "Product '%s' has no gallery images — lifestyle only, no product placement",
+        "Product '%s' has no gallery image and no BC item-card picture — "
+        "lifestyle only, no product placement",
         product_name,
     )
     return {

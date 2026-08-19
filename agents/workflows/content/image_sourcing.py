@@ -34,25 +34,40 @@ async def source_product_image(
     product_name: str | None = None,
     supplier_url: str | None = None,
     brand_name: str = "",
+    bc_item_no: str | None = None,
 ) -> ImageSourcingResult:
     """Run the full image sourcing pipeline for a product.
 
     Returns the best real product image found, or flags that manual
     sourcing is required.  Never generates AI images for products.
+
+    ``bc_item_no`` is the Business Central item number and is the identifier
+    that actually exists: products synced from BC carry it (e.g.
+    ``MSJZRCA01-7-BLACK``) and leave ``sku`` empty — all 1,251 rows across the
+    three brands have ``sku = ''``. Gating step 1 on ``product_sku`` alone
+    meant the BC item card was never consulted for any product, and every
+    image came from the supplier or web-search steps below.
     """
     # ── 1. Business Central item card (authoritative) ──────────────────
     # The client's own ERP picture outranks anything scraped or searched, so
     # it short-circuits the rest of the chain at confidence 1.0.
-    if product_sku:
+    bc_identifier = (bc_item_no or product_sku or "").strip()
+    if bc_identifier:
         try:
-            bc_url = await get_product_image_from_bc(product_sku)
+            bc_url = await get_product_image_from_bc(bc_identifier)
             if bc_url:
-                logger.info("Found BC image for %s: %s", product_sku, bc_url)
+                logger.info("Found BC image for %s: %s", bc_identifier, bc_url)
                 return ImageSourcingResult(
                     image_url=bc_url, source="bc", needs_manual=False, confidence=1.0
                 )
         except Exception:
-            logger.exception("BC image lookup failed for %s", product_sku)
+            logger.exception("BC image lookup failed for %s", bc_identifier)
+    else:
+        logger.warning(
+            "No BC item number for '%s' — skipping the authoritative item-card "
+            "step and falling through to supplier/web sourcing",
+            product_name,
+        )
 
     # ── 2. Supplier website ────────────────────────────────────────────
     if supplier_url and product_name:
