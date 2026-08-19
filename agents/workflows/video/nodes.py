@@ -108,6 +108,12 @@ MAX_SHOT_RENDER_S = 5.0
 TARGET_TOTAL_S = 30.0
 TARGET_MIN_TOTAL_S = 20.0
 TARGET_MAX_TOTAL_S = 35.0
+# These three are the FOOTAGE budget — what plan_shots is asked for and what
+# the fitter lands on. The delivered reel is footage plus the branded end
+# card appended in post (see _END_CARD_S), so a 30s plan ships at ~32.4s.
+# The card is best-effort, which is why the budget is stated this way round:
+# a card that fails to render leaves the reel SHORTER than planned, never
+# longer, so the delivered ceiling holds either way.
 # Fewer than 4 renderable shots can never reach the 20s floor (N shots cap at
 # N*5s) — short plans get their longest beats split before rendering.
 MIN_RENDER_SHOTS = 4
@@ -2047,6 +2053,321 @@ async def _burn_overlays(
         return video_bytes, {"overlay_burn": f"failed:{exc}"[:220]}
 
 
+# ── Branded end card (post pass) ───────────────────────────────────────────
+#
+# Reels ended on whatever frame the last i2v happened to land on, with the
+# CTA burned over it. Every professionally cut product ad closes on the mark
+# instead: a short branded card carrying the logo and the call to action.
+# It is also the only frame in the reel guaranteed to be on-brand — the
+# generated footage never is.
+#
+# The card is built at the master spec and concatenated onto the finished
+# master, so it costs one short encode rather than a re-render. Best-effort:
+# no logo, no ffmpeg, or any failure keeps the reel exactly as it was.
+
+_END_CARD_S = 2.4
+# The mark is fitted INSIDE a fixed box rather than scaled to a width, so
+# every element below it sits at a known y whatever shape the logo is.
+_END_CARD_LOGO_BOX_W = 720
+_END_CARD_LOGO_BOX_H = 300
+# The lockup is centred on the SAFE area, not the frame. Centring on the
+# frame put the button at y=1170, drifting toward the caption chrome; the
+# safe band is 240..1420, whose centre is 830.
+_END_CARD_LOGO_Y = 560
+_END_CARD_CTA_Y = 990
+_END_CARD_FONT_SIZE = 60
+_END_CARD_CTA_WRAP = 22
+# The CTA rides an explicitly drawn chip. libass's BorderStyle 3 boxes each
+# LINE separately, so a two-line call to action came out as two differently
+# sized rectangles in a ragged step — fine for a subtitle, wrong for a button.
+_END_CARD_CHIP_PAD_X = 44
+_END_CARD_CHIP_PAD_Y = 30
+_END_CARD_CHIP_LINE_H = 74
+_END_CARD_CHIP_MAX_W = 780
+# Mean advance of Poppins Bold as a fraction of the em. Measured off a
+# rendered card: "Shop the pantry range" set 410px wide at 60px, so 21 chars
+# x 60 x k = 410 gives k = 0.325. The first guess of 0.56 drew a button
+# nearly twice the width of its own label. This only sizes the chip's
+# padding — a wrong estimate makes the button roomier or tighter, it can
+# never drop a word (unlike the overlay wrap, which is simulated exactly).
+_END_CARD_CHAR_EM = 0.34
+# A wordmark on its brand colour is the obvious card and the wrong one:
+# Naturespan's dark mark on its mid-green measures ~2:1. The mark is fixed
+# (no light variant is registered), so the GROUND has to give way.
+_MIN_END_CARD_CONTRAST = 4.5
+_DEFAULT_CARD_GROUND = "#f4f7f1"
+
+
+def _hex_to_rgb(value: str | None) -> tuple[int, int, int] | None:
+    """'#80c020' → (128, 192, 32), or None if it is not a hex colour (pure)."""
+    text = str(value or "").strip().lstrip("#")
+    if len(text) != 6:
+        return None
+    try:
+        return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+    except ValueError:
+        return None
+
+
+def _end_card_ground(brand: dict[str, Any]) -> str:
+    """Card ground: the brand's light neutral when it carries the mark (pure).
+
+    The mark is assumed dark — that is the variant every brand here has — so
+    the ground must be light enough to clear _MIN_END_CARD_CONTRAST against
+    it. A brand neutral that fails falls back to the default near-white
+    rather than shipping a low-contrast wordmark.
+    """
+    palette = brand.get("color_palette")
+    if isinstance(palette, str):
+        try:
+            palette = json.loads(palette)
+        except (ValueError, TypeError):
+            palette = None
+    if not isinstance(palette, dict):
+        palette = {}
+    ink = _hex_to_rgb(palette.get("text_dark")) or (0x1A, 0x1A, 0x1A)
+    for key in ("neutral_light", "background", "surface"):
+        rgb = _hex_to_rgb(palette.get(key))
+        if rgb and contrast_ratio(
+            relative_luminance(rgb), relative_luminance(ink)
+        ) >= _MIN_END_CARD_CONTRAST:
+            return "#%02x%02x%02x" % rgb
+    return _DEFAULT_CARD_GROUND
+
+
+def _end_card_chip_box(text: str) -> tuple[int, int]:
+    """(width, height) of the CTA chip for already-wrapped text (pure)."""
+    lines = text.split("\\N") if text else [""]
+    longest = max((len(line) for line in lines), default=0)
+    width = round(longest * _END_CARD_FONT_SIZE * _END_CARD_CHAR_EM)
+    width = min(_END_CARD_CHIP_MAX_W, width + 2 * _END_CARD_CHIP_PAD_X)
+    height = 2 * _END_CARD_CHIP_PAD_Y + len(lines) * _END_CARD_CHIP_LINE_H
+    return width, height
+
+
+def _end_card_ass(cta: str, ground_hex: str, chip_hex: str) -> str:
+    """The .ass document for the end card's call to action (pure function).
+
+    The chip is an explicit \\p1 rectangle rather than libass's BorderStyle 3,
+    which boxes each LINE separately — a two-line call to action came out as
+    two differently sized rectangles in a ragged step.
+    """
+    text = _wrap_overlay_text(_ass_escape(cta), _END_CARD_CTA_WRAP)
+    # The type is knocked out of the chip, so it takes the card's ground.
+    # Both come back in the '&HBBGGRR&' form, which serves as a Style colour
+    # and as a \1c override unchanged.
+    fill = _hex_to_ass_color(ground_hex) or "&HFFFFFF&"
+    chip = _hex_to_ass_color(chip_hex) or "&H000000&"
+    width, height = _end_card_chip_box(text)
+    x0, x1 = 540 - width // 2, 540 + width // 2
+    y0, y1 = _END_CARD_CTA_Y - height // 2, _END_CARD_CTA_Y + height // 2
+    end = _format_ass_time(_END_CARD_S)
+    return "\n".join([
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1080",
+        "PlayResY: 1920",
+        "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: End,Poppins,{_END_CARD_FONT_SIZE},{fill},{fill},{fill},"
+        "&H00000000,-1,0,0,0,100,100,1,0,1,0,0,5,0,0,0,1",
+        # Drawing-only style for the chip, as with the overlay scrim.
+        "Style: Chip,Poppins,20,&H00000000,&H00000000,&H00000000,"
+        "&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text",
+        # Chip first — libass draws same-layer events in file order.
+        f"Dialogue: 0,0:00:00.00,{end},Chip,,0,0,0,,"
+        f"{{\\an7\\pos(0,0)\\bord0\\shad0\\1c{chip}\\fad(250,0)\\p1}}"
+        f"m {x0} {y0} l {x1} {y0} {x1} {y1} {x0} {y1}{{\\p0}}",
+        f"Dialogue: 0,0:00:00.00,{end},End,,0,0,0,,"
+        f"{{\\an5\\pos(540,{_END_CARD_CTA_Y})\\fad(250,0)}}{text}",
+    ])
+
+
+def _end_card_cmd(
+    dst: str,
+    ass_path: str,
+    logo_path: str | None,
+    ground_hex: str,
+    fontsdir: str | None,
+) -> list[str]:
+    """ffmpeg args rendering the end card at the master spec (pure function)."""
+    args = [
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", f"color=c={ground_hex}:s=1080x1920:r=30:d={_END_CARD_S}",
+        "-f", "lavfi",
+        "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+    ]
+    ass = f"ass={_filter_path(ass_path)}"
+    if fontsdir:
+        ass += f":fontsdir={_filter_path(fontsdir)}"
+
+    # No decorative rule between the mark and the button. One was tried and
+    # landed a second green line directly under a wordmark that already
+    # carries its own — and since the mark is padded into a fixed box, the
+    # gap between its visible baseline and any fixed-y rule varies with
+    # whatever logo the brand happens to have.
+    parts: list[str] = []
+    if logo_path:
+        args += ["-i", logo_path]
+        # Fit INSIDE a fixed box and pad back out to it, so the rule and the
+        # chip below sit at a known y whatever the mark's aspect ratio is.
+        parts.append(
+            f"[2:v]scale={_END_CARD_LOGO_BOX_W}:{_END_CARD_LOGO_BOX_H}"
+            ":force_original_aspect_ratio=decrease,"
+            f"pad={_END_CARD_LOGO_BOX_W}:{_END_CARD_LOGO_BOX_H}"
+            ":(ow-iw)/2:(oh-ih)/2:color=#00000000[lg];"
+        )
+        parts.append(f"[0:v][lg]overlay=(W-w)/2:{_END_CARD_LOGO_Y}[a];")
+    else:
+        parts.append("[0:v]null[a];")
+    parts.append(f"[a]{ass},fps=30,format=yuv420p[v]")
+
+    return args + [
+        "-filter_complex", "".join(parts),
+        "-map", "[v]", "-map", "1:a:0",
+        *_MASTER_VIDEO_ARGS,
+        "-profile:v", "high",
+        *_MASTER_AUDIO_ARGS,
+        "-t", f"{_END_CARD_S}",
+        "-movflags", "+faststart", dst,
+    ]
+
+
+async def _brand_logo_png(brand: dict[str, Any]) -> bytes | None:
+    """Fetch the brand mark and normalize it to PNG, or None."""
+    url = str(brand.get("logo_url") or "").strip()
+    if not url:
+        return None
+    try:
+        import httpx
+
+        from shared.image_processing import render_logo_png
+
+        if url.startswith(("content-images/", "brand-assets/")):
+            bucket, _, obj = url.partition("/")
+            raw = await async_download_file(bucket, obj)
+        else:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                raw = resp.content
+        if not raw:
+            return None
+        if raw[:5] == b"<?xml" or raw[:4] == b"<svg":
+            return await asyncio.to_thread(render_logo_png, raw, 1024)
+        return raw
+    except Exception as exc:
+        logger.warning("end card: could not fetch the brand logo: %s", exc)
+        return None
+
+
+async def _build_end_card(
+    brand: dict[str, Any], cta: str, workdir: str
+) -> tuple[str | None, dict[str, Any]]:
+    """Render the end card into *workdir*, or return None with the reason.
+
+    Built BEFORE the overlay burn on purpose. The card carries the CTA, so
+    the burn must know whether it exists — deciding afterwards would either
+    ship a reel with no ask, or burn the overlays twice to add one back.
+    """
+    try:
+        if not str(cta or "").strip():
+            return None, {"end_card": "skipped:no cta"}
+        if not _ffmpeg_ok():
+            return None, {"end_card": "failed:ffmpeg unavailable"}
+        logo_png = await _brand_logo_png(brand)
+        if not logo_png:
+            logger.info(
+                "end card: no brand logo available — rendering the card "
+                "without a mark"
+            )
+        accent = _brand_accent_hex(brand) or "#000000"
+        ground = _end_card_ground(brand)
+        logo_path = None
+        if logo_png:
+            logo_path = os.path.join(workdir, "endcard_logo.png")
+            await asyncio.to_thread(_write_bytes, logo_path, logo_png)
+        ass_path = os.path.join(workdir, "endcard.ass")
+        await asyncio.to_thread(
+            _write_text, ass_path, _end_card_ass(cta, ground, accent)
+        )
+        card = os.path.join(workdir, "endcard.mp4")
+        fontsdir = FONTS_DIR if os.path.isdir(FONTS_DIR) else None
+        proc = await asyncio.to_thread(
+            _run_ffmpeg,
+            _end_card_cmd(card, ass_path, logo_path, ground, fontsdir),
+            VIDEO_BURN_TIMEOUT_S,
+        )
+        if proc.returncode != 0 or not os.path.exists(card):
+            reason = _stderr_tail(proc, 200) or f"ffmpeg exit {proc.returncode}"
+            logger.warning("end card render failed: %s", reason)
+            return None, {"end_card": f"failed:{reason}"[:220]}
+        return card, {
+            "end_card": "ok",
+            "end_card_s": _END_CARD_S,
+            "end_card_logo": bool(logo_png),
+        }
+    except Exception as exc:
+        logger.warning("end card render failed: %s", exc)
+        return None, {"end_card": f"failed:{exc}"[:220]}
+
+
+async def _attach_end_card(
+    video_bytes: bytes, card_path: str, workdir: str
+) -> tuple[bytes, dict[str, Any]]:
+    """Concatenate an already-rendered end card onto the finished master.
+
+    Best-effort: a failure here returns the ORIGINAL bytes, and the caller
+    is left with a reel whose CTA was moved onto a card that never landed —
+    so the reason is recorded rather than swallowed.
+    """
+    try:
+        master = os.path.join(workdir, "master_for_card.mp4")
+        await asyncio.to_thread(_write_bytes, master, video_bytes)
+        out = os.path.join(workdir, "with_card.mp4")
+        list_path = os.path.join(workdir, "card_concat.txt")
+        await asyncio.to_thread(
+            _write_text, list_path, _build_concat_list([master, card_path])
+        )
+        proc = await asyncio.to_thread(
+            _run_ffmpeg, _concat_copy_cmd(list_path, out), VIDEO_CONCAT_TIMEOUT_S
+        )
+        if proc.returncode != 0 or not os.path.exists(out):
+            # The master came out of the burn pass and the card out of the
+            # card pass; both target the master spec, but a stream copy can
+            # still trip on SPS/PPS differences.
+            logger.info(
+                "end card stream-copy concat failed — re-encoding: %s",
+                _stderr_tail(proc, 160),
+            )
+            proc = await asyncio.to_thread(
+                _run_ffmpeg,
+                _concat_reencode_cmd([master, card_path], out),
+                VIDEO_CONCAT_TIMEOUT_S,
+            )
+        if proc.returncode != 0 or not os.path.exists(out):
+            reason = _stderr_tail(proc, 200) or f"ffmpeg exit {proc.returncode}"
+            logger.warning("end card concat failed: %s", reason)
+            return video_bytes, {"end_card": f"failed:concat {reason}"[:220]}
+        result = await asyncio.to_thread(_read_bytes, out)
+        logger.info("Appended a %.1fs branded end card", _END_CARD_S)
+        return result, {}
+    except Exception as exc:
+        logger.warning("end card concat failed: %s", exc)
+        return video_bytes, {"end_card": f"failed:concat {exc}"[:220]}
+
+
 # ── Audio finishing (post pass) ────────────────────────────────────────────
 #
 # Nothing in the pipeline had ever measured a reel's loudness. Measured on
@@ -2666,19 +2987,37 @@ async def render_video(state: VideoState) -> dict[str, Any]:
             # Burn the overlay text onto the clip (best-effort). No fitted
             # durations exist for a single call — the planned beats are
             # distributed proportionally across the clip's real duration.
-            video_bytes, overlay_meta = await _burn_overlays(
-                result.video_bytes,
-                fitted,
-                str(plan.get("cta") or ""),
-                state.get("brand") or {},
-            )
-            meta.update(overlay_meta)
+            cta_text = str(plan.get("cta") or "")
+            with tempfile.TemporaryDirectory(prefix="single_") as cardwork:
+                # Same order as the multi-shot path: the card owns the CTA,
+                # so it has to exist before the burn decides what to write
+                # on the final beat.
+                card_path, card_meta = await _build_end_card(
+                    state.get("brand") or {}, cta_text, cardwork
+                )
+                video_bytes, overlay_meta = await _burn_overlays(
+                    result.video_bytes,
+                    fitted,
+                    "" if card_path else cta_text,
+                    state.get("brand") or {},
+                )
+                meta.update(overlay_meta)
+                meta.update(card_meta)
+                duration_s = result.duration_s
+                if card_path:
+                    video_bytes, attach_meta = await _attach_end_card(
+                        video_bytes, card_path, cardwork
+                    )
+                    meta.update(attach_meta)
+                    if not attach_meta:
+                        duration_s = (duration_s or 0.0) + _END_CARD_S
+                        meta["duration_s"] = duration_s
             video_bytes, audio_meta = await _finish_audio(
                 video_bytes,
                 plan,
                 state.get("brand") or {},
                 seed=str(item_id),
-                duration_s=result.duration_s,
+                duration_s=duration_s,
             )
             meta.update(audio_meta)
             return {
@@ -3050,13 +3389,29 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 float((p or {}).get("duration") or m["requested_s"])
                 for p, m in zip(probes, shot_metas)
             ]
+            cta_text = str(plan.get("cta") or "")
+            # Render the card first: it carries the CTA, so whether it exists
+            # decides what the burn puts on the final beat.
+            card_path, card_meta = await _build_end_card(
+                state.get("brand") or {}, cta_text, workdir
+            )
             video_bytes, overlay_meta = await _burn_overlays(
                 video_bytes,
                 fitted,
-                str(plan.get("cta") or ""),
+                # With a card, the final beat keeps its own line and the ask
+                # lands on the brand mark instead of over the footage.
+                "" if card_path else cta_text,
                 state.get("brand") or {},
                 durations=rendered_durations,
             )
+            overlay_meta = {**overlay_meta, **card_meta}
+            if card_path:
+                video_bytes, attach_meta = await _attach_end_card(
+                    video_bytes, card_path, workdir
+                )
+                overlay_meta = {**overlay_meta, **attach_meta}
+                if not attach_meta:
+                    final_duration = (final_duration or 0.0) + _END_CARD_S
 
             # ── Music bed + platform loudness ──────────────────────────────
             await _progress(_CONCAT_PROGRESS_START + 4, "audio:finish")

@@ -128,6 +128,19 @@ SUBSCRIPTIONS = [
 _consumer: NATSConsumer | None = None
 
 
+# The only integrity failure that means "a run is already in flight" is the
+# partial unique index. Anything else — a check constraint, a bad foreign key
+# — is a message that will NEVER insert, and NAKing it as a duplicate retries
+# it forever under a log line saying something untrue.
+_DUPLICATE_RUN_MARKERS = ("idx_agent_runs_running", "uniqueviolation")
+
+
+def _is_duplicate_run_error(exc: Exception) -> bool:
+    """True only for the idempotency index violation (pure function)."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _DUPLICATE_RUN_MARKERS)
+
+
 async def _release_stuck_calendar_item(
     agent_type: str, payload: dict[str, Any], reason: str
 ) -> None:
@@ -1743,6 +1756,8 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     # Idempotency: the partial unique index idx_agent_runs_running on
     # (brand_id, agent_type) WHERE status='running' prevents duplicates.
     # We catch the unique violation instead of a TOCTOU SELECT check.
+    #
+    # Only THAT violation means "already running" — see _is_duplicate_run_error.
     try:
         run_id = await create_agent_run(
             brand_id=brand_id,
@@ -1751,6 +1766,24 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             input_payload=safe_payload,
         )
     except IntegrityError as ie:
+        # Not every IntegrityError is the idempotency index. A message
+        # carrying a trigger outside agent_runs_trigger_check also lands
+        # here, and treating THAT as "already running" retried a message
+        # that could never succeed every 5 minutes, logging a reason that
+        # was not true — the render looked blocked by a phantom run.
+        if not _is_duplicate_run_error(ie):
+            logger.error(
+                "Cannot start %s workflow for brand %s — the run row was "
+                "rejected: %s",
+                agent_type,
+                brand_id,
+                str(ie)[:400],
+            )
+            await _release_stuck_calendar_item(
+                agent_type, payload, "agent_runs insert rejected"
+            )
+            await msg.ack()
+            return
         if agent_type == "video":
             # A video run for this brand is already in flight. Unlike content
             # there is no remaining_queue chaining to pick this item back up,

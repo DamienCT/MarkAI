@@ -580,7 +580,8 @@ class TestRenderVideoMultiShot:
         assert meta["provider"] == "forge"
         assert meta["shot_count"] == 5
         assert meta["concat_mode"] == "copy"
-        assert meta["duration_s"] == pytest.approx(25.0)
+        # Delivered length is footage plus the branded end card.
+        assert meta["duration_s"] == pytest.approx(25.0 + video_nodes._END_CARD_S)
         assert meta["requested_total_s"] == pytest.approx(25.0)
         assert meta["cost_usd"] == 0.0
         # Per-shot ledger array preserved for video_jobs.generation_ledger
@@ -689,9 +690,15 @@ class TestRenderVideoMultiShot:
         assert meta["shot_count"] == count
         assert meta["dropped_shots"] == []
         assert meta["requested_total_s"] == pytest.approx(TARGET_TOTAL_S, abs=0.05)
-        assert meta["duration_s"] == pytest.approx(TARGET_TOTAL_S, abs=0.05)
-        # Every beat still gets its own on-screen line at a readable length.
+        # The footage lands on target; the end card ships on top of it.
+        assert meta["duration_s"] == pytest.approx(
+            TARGET_TOTAL_S + video_nodes._END_CARD_S, abs=0.05
+        )
+        # Every beat still gets its own on-screen line at a readable
+        # length. The CTA is no longer among them - it moved to the card -
+        # so the count is one line per beat rather than beats-minus-one.
         assert meta["overlay_lines"] == count
+        assert meta["end_card"] == "ok"
 
     def test_four_shot_plan_still_renders_a_valid_shorter_reel(self, monkeypatch):
         # An under-length plan is never padded with fabricated beats: it
@@ -708,7 +715,9 @@ class TestRenderVideoMultiShot:
         meta = result["video_meta"]
         assert meta["shot_count"] == 4
         assert "split_to_min_shots" not in meta
-        assert meta["duration_s"] == pytest.approx(TARGET_MIN_TOTAL_S)
+        assert meta["duration_s"] == pytest.approx(
+            TARGET_MIN_TOTAL_S + video_nodes._END_CARD_S
+        )
         assert TARGET_MIN_TOTAL_S <= meta["duration_s"] <= TARGET_MAX_TOTAL_S
         assert meta["overlay_burn"] == "ok"
 
