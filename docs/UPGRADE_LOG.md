@@ -591,3 +591,110 @@ calibrate against; music beds once licensing is decided; logo/headline
 collision on 1536×1024; `visual_direction` validated against `item_type` at
 planning time; n8n workflow import; observability; token encryption; Qdrant
 learning loop.
+
+## Cycle 9 — The chain was three defects wearing one coat (2026-08-19)
+
+**Re-anchoring is the only thing in this pipeline that produces a cut.**
+Scene score at every planned boundary of a delivered 7-shot reel:
+
+| boundary | type | score |
+|---|---|---|
+| 5.0s | chain | **0.000** |
+| 8.0s | chain | 0.194 |
+| 13.0s | **re-anchor** | **0.754** |
+| 17.0s | chain | 0.147 |
+| 21.0s | chain | 0.098 |
+| 25.0s | **re-anchor** | **0.442** |
+
+A chained shot starts from the previous shot's last frame, so it is
+continuous with it by construction — at 5.0s the score is literally zero.
+Across the nine reels in the bucket, **eight had no change above the 0.3 cut
+threshold anywhere**: thirty-second marketing reels with not one visible cut.
+
+**And both cuts landed on the same image.** Shots 1, 4 and 7 all started from
+the one keyframe and came out as the three most similar pairs in the reel —
+SSIM 0.750 / 0.676 / 0.645 against ≤0.583 for every chained pair. That rules
+out "they are all pour shots": the chained pairs include pour shots too. The
+chain cap shipped in cycle 7 bounded drift by making the reel repetitive.
+
+So the cuts stay and each gets somewhere new to land. `make_keyframe` renders
+one anchor per re-anchor point, **concurrently** — one generation is 103s
+measured, and seven serial would add five minutes to a six-minute render.
+Three things follow for free: every anchored shot is generation 0, so drift
+is bounded at least as tightly as before; `generate_image` vision-checks its
+output and re-rolls invented lettering while `generate_video` has no such
+guard, so the pipeline's only text protection now covers every cut point;
+and `_MAX_CHAIN_DEPTH` becomes the cut-rhythm dial at one generation per cut.
+
+**The dial was then set by A/B, not by argument.** Same calendar item, three
+renders, one variable:
+
+| | mean SSIM | worst pair | cuts |
+|---|---|---|---|
+| one shared keyframe, cap 2 | 0.467 | 0.750 | 2 |
+| per-cut anchors, cap 2 | 0.427 | 0.711 | 2 |
+| **per-cut anchors, cap 1** | **0.292** | **0.481** | **3** |
+| nine-reel population median | 0.258 | — | — |
+
+Cap 1 is the first setting that takes the reel off the repetitive tail and
+back to the population. **I expected the look to come apart and it did not**:
+chroma deviation from the reel's own mean runs 1.1–3.3 on a 0–255 scale
+across all seven shots. My read that the closing beat looked like "a
+different kitchen" was set dressing, which the plan chose, not colour. That
+removes the argument I was about to make against cap 0, which is now
+untested rather than ruled out.
+
+**The exposure contract was the cycle's biggest single lever.** The keyframe
+measured YAVG 77 where the same model delivers 140 under the content
+pipeline's prompts — which carry an explicit lighting directive and a "NO
+over-stylized lighting" exclusion, while the video prompt said only "Real
+shadows. Authentic textures." Left alone the model reads "commercial product
+photography" as chiaroscuro, and every chained shot inherits it. Stating the
+contract took the keyframe to **165** and the source shots from 71–89 (every
+one pinned at the gamma cap) to 117–147, with three of seven needing no
+grade at all.
+
+**Two defects an adversarial review caught that no render would have.** The
+per-anchor swap ran on `anchors[0]` alone, so shots 4 and 7 would have
+shipped the blank placeholder `product_rule` asks every anchor for — verbatim
+the defect `make_keyframe` already refuses for shot 1. It never reached a
+render only because this brand's photo is unswappable. And the planner
+shipped a rule with its verbatim contradiction: `pack_block` forbids the
+string `'product-shot distance'` while the same system message said "held at
+natural product-shot distance" *and* "Show the product whole at natural
+product-shot distance", neither gated on the flag. A model handed an
+instruction and its negation follows the instruction — which is why the
+hero-pack beat survived every ban placed on it, and why the delabel pass kept
+rewriting seven scenes to undo a beat the planner had just been told twice
+to write.
+
+**A number of mine was retracted.** See the correction box in Cycle 8: "the
+footage is ~35% darker than the stills" compared a scrimmed delivered master
+against unscrimmed stills. The scrim explanation survived a dedicated
+refutation attempt — above y=850 the burn changes luma by 0.00%, and a plain
+re-encode reproduces 132.8 → 132.8 — so the drop is the caption plate, which
+is deliberate. The defect was real and *larger* than claimed (77.6 pre-burn
+against 140), but the number quoted for it was measuring the wrong stage.
+`store_video` now persists the per-shot quartet the render already takes,
+because reconstructing it by cropping above the scrim does not work: that
+measures the top 900px of a 9:16 frame, whose background is systematically
+brighter than the whole.
+
+**Nine tests pinned the cap at 2**, which made the dial untestable at any
+other value. They derive from the constant now and the suite is green at 2, 1
+and 0. The guard asserting `2 <= cap <= 3` had its lower bound retired on its
+merits — "1 would lose all shot-to-shot continuity" was written when
+re-anchoring had nowhere to go but the opening frame.
+
+**Also:** a widow guard, after "See you on September 1" shipped wrapped as
+"See you on September" / "1".
+
+**Still blocked on the user:** BC API admin grant (unchanged since cycle 6).
+
+**Cycle-10 backlog:** cap 0, one render to settle; `_GRADE_MAX_YHIGH`'s
+rationale re-measured pre-burn (it was read off a scrimmed sample and the
+scrim can only push YHIGH down, so it errs unsafe); subject-presence
+detection once enough reels exist to calibrate; the audio path reporting a
+gain it may not have applied on the fourth round, and `delivered_*` metrics
+being pre-AAC; music beds once licensing is decided; n8n workflow import;
+observability; token encryption; Qdrant learning loop.
