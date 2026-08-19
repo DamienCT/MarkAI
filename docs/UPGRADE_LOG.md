@@ -364,3 +364,115 @@ Healthspan product photos are deliberately **not** web-sourced pending it.
 logo/headline collision on 1536×1024, `visual_direction` validated against
 `item_type` at planning time, n8n workflow import, observability, token
 encryption, Qdrant learning loop.
+
+## Cycle 7 — Reel finishing: what nobody had measured (2026-08-19)
+
+The brief was "the videos are not great — QA them properly". Everything below
+came from measuring delivered reels or looking at their frames, not from
+reading code. Where a number appears, it was measured.
+
+**Loudness: the largest single defect, and nothing had ever measured it.**
+Against the −14 LUFS platform target, four delivered reels came in at −19.9,
+−34.8, −42.6 and −43.0 LUFS with 17–27 LU of internal range. At −43 LUFS a
+viewer scrolling a feed at normal volume hears nothing at all, and a 23 LU
+spread *between* reels means the same brand is inaudible in one post and
+merely quiet in the next. `video_jobs` recorded `"audio": true`
+unconditionally throughout, so nothing downstream could tell.
+
+ffmpeg's `loudnorm` was the obvious tool and does not work on this material:
+its two-pass form landed at −11.5/−21.7/−18.2/−20.4 LUFS and clipped twice.
+Its dynamic mode rides gain frame by frame, so an input range far above the
+target lifts gated-out quiet passages into the measurement and drifts; and
+its warmup eats most of the correction on a 5 s clip. Replaced with a
+measured flat gain, converged over up to four **decode-only** rounds, into an
+oversampled true-peak limiter. `alimiter` alone caps the *sample* peak and
+delivered up to +1.2 dBTP; 4× oversampling plus a ceiling 2 dB under target
+absorbs the resample and AAC overshoot. All four reels now deliver
+**−14.3 … −14.5 LUFS at −2.3 … −0.6 dBTP**, none clipping. Verified again on
+a live render: −29.7 → −14.2 LUFS, +15.7 dB in 2 rounds, peak −3.0 dBTP.
+
+A music bed is laid under that when one exists — supplied as files by the
+operator, never generated and never fetched, because the licensing call is
+theirs. With no bed the pass still normalizes and says so.
+
+**Chain drift.** Every shot was i2v from the previous shot's last frame, so
+shot 8 sat seven generations from the branded keyframe; across one reel the
+pack name degraded `KAOKA → KOOKA → ҠӒOKA`. Depth is now capped at 2. The
+first version of the cap was gated on `keyframe` and therefore never fired on
+reels that *have* no keyframe — the case where drift is worst — which a live
+render exposed immediately (shot 6 "from chain+5"). A reel now **adopts** an
+anchor: the keyframe when there is one, shot 1's last frame otherwise. The
+anchor label was lying too, reporting "keyframe" for text-to-video shots,
+which is why the missing cap was invisible.
+
+**Dead shots.** i2v fails by returning its input image held for five seconds
+— a clip that passes every structural check the pipeline had. Shots are now
+measured (mean inter-frame luma difference) and a frozen one buys one
+re-render from the anchor, kept only if it measures better. Calibrated
+against footage rather than guessed: held-still control **0.001**, slowest
+real beat **0.53** (a hand breaking chocolate), ordinary beats **1.2–5.3**,
+fast dolly **9.29**. The floor is **0.25**, deliberately biased toward
+letting a slow shot through. The first guess of 1.0 would have re-rendered a
+perfectly good beat.
+
+**Burned type.** Lines were centred at (540,1130): on 1080×1920 that runs a
+long line to x=1015 — under the action rail — and lands the block where a 9:16
+product shot puts the bottle and the presenter. Rendered frames showed lines
+sitting on an olive-oil label and across a presenter's chest. Now bottom-left
+on a measured safe box, on a feathered translucent scrim (white over a pale
+wall was barely readable), with the CTA colour contrast-checked and demoted to
+white below 3:1 — Naturespan's lime measured 2.14:1 and had shipped as bright
+green letters over a warm brown dinner scene. `_clean_overlay_text` now
+*simulates* the wrap instead of counting characters, which stops it dropping
+the last word of 26–33% of lines.
+
+**Copy.** A reel held "AB Ecocert Eurofeuille," on screen for a full beat: a
+trailing comma promising a continuation the next cut never delivers, and a
+certification body transcribed off the pack instead of a claim. Lines are now
+closed deterministically after the wrap budget, and the prompt says outright
+that regulatory wording is packaging copy, not on-screen copy.
+
+**Pacing.** The JSON example anchored `"duration_s": 4.0` and the model copied
+it onto every beat — a reel that ticks like a metronome.
+
+**A branded close.** Reels ended on whatever frame the last i2v landed on. A
+2.4 s end card now carries the mark and the CTA; on a reel of generated
+footage it is the only frame guaranteed to be on-brand. Three defects were
+found by rendering it and looking: libass's `BorderStyle 3` boxes each *line*,
+so a two-line CTA came out as a ragged step (replaced with one drawn chip);
+the chip width estimate of 0.56 em drew a button nearly twice its label
+(measured: 0.325); and a decorative rule landed a second green line under a
+wordmark that already carries one.
+
+**Invented pack lettering.** A reel carried "FIIRE CMIS", "THETE CCRE MAITENE
+OL" and "TWTL CCRE PAILSNEWE" across seven shots. The swap had correctly
+refused — the product's only image is a 1200×630 share banner whose actual
+pack trims below the swappable floor — so nothing anchored the pack and the
+model drew a label from nothing. The existing rule ("never make the label the
+subject") was *obeyed* and did not help. When no keyframe survives, every shot
+prompt now forbids readable printed copy outright and states what correct
+output looks like.
+
+**One swap, not two.** `worker.py`'s regeneration path carried its own copy
+that returned the editor's first output **unread** — no fabrication guard, no
+retry, no vendor in the allow-list. That is the button a reviewer presses
+*because* the image was wrong. Both callers now use
+`shared.product_swap.swap_product_into_image`.
+
+**A message that could never succeed, retried forever.** Requeueing a reel
+with `trigger='manual-qa'` violated `agent_runs_trigger_check`; the worker
+logged it as "already running" and NAK'd every 5 minutes indefinitely while
+the reel sat in `queued` and the logs blamed a run that did not exist. Only
+the idempotency index means "already running" now.
+
+**Still blocked on the user:** BC API admin grant (unchanged from cycle 6).
+This cycle showed its cost concretely — the Emile Noel reel had no usable
+product photo, which is the upstream cause of both the missing keyframe and
+the invented lettering.
+
+**Cycle-8 backlog:** picture grade (delivered frames measure dark and flat —
+the same measure-then-correct treatment the audio just got); music beds once
+licensing is decided; mirrored packaging has no detector; logo/headline
+collision on 1536×1024; `visual_direction` validated against `item_type` at
+planning time; n8n workflow import; observability; token encryption; Qdrant
+learning loop.
