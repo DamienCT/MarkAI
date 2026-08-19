@@ -1935,6 +1935,17 @@ def _gamma_for(measured: float, target: float) -> float:
     ffmpeg's eq filter computes ``out = 255 * (in/255) ** (1/gamma)``, so
     solving for the exponent that lands the mean on the target gives
     ``gamma = ln(measured/255) / ln(target/255)``.
+
+    Verified against the filter on real footage rather than assumed. From a
+    window measuring YAVG 90.1:
+
+        gamma 1.2 → 106.2 (formula 107.2)   gamma 1.5 → 125.7 (127.5)
+        gamma 1.95 → 147.2 (149.6)          gamma 2.5 → 165.8 (168.2)
+
+    The formula runs ~1–1.5% high throughout — eq quantises to a 256-entry
+    LUT, and the mean of a convex curve is not the curve of the mean. That
+    bias lands slightly under target rather than over, which is the right
+    direction for a lift, so it is left uncorrected.
     """
     if measured <= 0.0 or measured >= 255.0 or target <= 0.0 or target >= 255.0:
         return 1.0
