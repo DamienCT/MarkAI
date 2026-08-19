@@ -586,3 +586,70 @@ class TestRenderVideoOverlayWiring:
         assert result["video_bytes"] == b"CLIP1"
         meta = result["video_meta"]
         assert meta["overlay_burn"] == "failed:ffmpeg unavailable"
+
+
+class TestCtaFitsItsBox:
+    """The CTA is set larger than the overlay lines, so it fits fewer
+    characters per line. Wrapping it at the overlay budget silently dropped
+    the tail of a real reel's CTA ("...shelf to table." vanished), so the
+    budget is enforced at plan time and honoured at burn time.
+    """
+
+    def test_cta_budget_is_smaller_than_overlay_budget(self):
+        assert video_nodes._CTA_FONT_SIZE > video_nodes._OVERLAY_FONT_SIZE
+        assert video_nodes._CTA_WRAP_CHARS < video_nodes._OVERLAY_WRAP_CHARS
+        assert (
+            video_nodes._CTA_MAX_CHARS
+            == video_nodes._CTA_WRAP_CHARS * video_nodes._OVERLAY_MAX_LINES
+        )
+
+    def test_normalize_clamps_cta_to_its_own_budget(self):
+        plan = _plan_with_cta("See clearer choices from shelf to table.")
+        cta = video_nodes._normalize_shot_plan(plan)["cta"]
+
+        assert len(cta) <= video_nodes._CTA_MAX_CHARS
+        # Whole words only — never a mid-word cut.
+        assert all(
+            w in "See clearer choices from shelf to table.".split()
+            for w in cta.split()
+        )
+
+    def test_short_cta_survives_untouched(self):
+        plan = _plan_with_cta("Shop the range")
+        assert video_nodes._normalize_shot_plan(plan)["cta"] == "Shop the range"
+
+    def test_burned_cta_never_drops_words(self):
+        plan = _plan_with_cta("See clearer choices from shelf to table.")
+        cta = video_nodes._normalize_shot_plan(plan)["cta"]
+        wrapped = video_nodes._wrap_overlay_text(cta, video_nodes._CTA_WRAP_CHARS)
+
+        # Every word that survived normalization also survives the wrap.
+        assert wrapped.replace("\\N", " ").split() == cta.split()
+        assert len(wrapped.split("\\N")) <= video_nodes._OVERLAY_MAX_LINES
+
+    def test_cta_event_wraps_at_cta_width(self):
+        events = [
+            {"text": "Shop certified today", "style": "CTA", "start": 0.0, "end": 4.0}
+        ]
+        doc = video_nodes._build_overlay_ass(events, accent_hex=None)
+        dialogue = [ln for ln in doc.splitlines() if ln.startswith("Dialogue:")]
+
+        assert len(dialogue) == 1
+        for line in dialogue[0].split(",")[-1].split("\\N"):
+            # Strip any leading ASS override block before measuring.
+            visible = line.split("}")[-1]
+            assert len(visible) <= video_nodes._CTA_WRAP_CHARS
+
+
+def _plan_with_cta(cta: str) -> dict:
+    return {
+        "hook_line": "Hook",
+        "caption": "Caption",
+        "hashtags": [],
+        "cta": cta,
+        "shots": [
+            {"index": i + 1, "duration_s": 5.0, "overlay_text": f"Beat {i + 1}",
+             "scene": "SCENE CONTEXT: x"}
+            for i in range(6)
+        ],
+    }

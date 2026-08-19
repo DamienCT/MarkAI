@@ -135,6 +135,12 @@ _OVERLAY_MIN_ON_SCREEN_S = 1.6
 # scale professional short-form uses. Smaller reads as a subtitle, not a hook.
 _OVERLAY_FONT_SIZE = 96
 _CTA_FONT_SIZE = 108
+# The CTA is set larger, so it fits FEWER characters per line than the overlay
+# — wrapping it at the overlay's budget is what pushed "See clearer choices
+# from shelf to table." past two lines and silently dropped "shelf to table."
+# off the end of a finished reel. Scale the budget by the font ratio.
+_CTA_WRAP_CHARS = max(1, (_OVERLAY_WRAP_CHARS * _OVERLAY_FONT_SIZE) // _CTA_FONT_SIZE)
+_CTA_MAX_CHARS = _CTA_WRAP_CHARS * _OVERLAY_MAX_LINES
 # \an5 anchor on the 1080x1920 grid, inside the platform safe zones
 # (x 65..1015, y 270..1250) — clear of UI chrome top and bottom.
 _OVERLAY_POS_X = 540
@@ -243,14 +249,21 @@ async def load_video_context(state: VideoState) -> dict[str, Any]:
     return out
 
 
-def _clean_overlay_text(value: Any) -> str:
-    """Normalize one shot's on-screen overlay line (pure function).
+def _clean_overlay_text(
+    value: Any,
+    max_chars: int = _OVERLAY_MAX_CHARS,
+    wrap_chars: int = _OVERLAY_WRAP_CHARS,
+) -> str:
+    """Normalize one on-screen line (pure function).
 
     Strips newlines/extra whitespace, clamps to MAX_OVERLAY_WORDS words AND to
-    the _OVERLAY_MAX_CHARS box budget (two 18-char lines) — whole trailing
-    words are dropped here rather than left for _wrap_overlay_text to discard
-    silently at burn time, so what the plan stores is what the viewer sees.
-    Absent/None becomes '' so pre-overlay shot plans keep working unchanged.
+    the box budget — whole trailing words are dropped here rather than left for
+    _wrap_overlay_text to discard silently at burn time, so what the plan
+    stores is what the viewer sees. Absent/None becomes '' so pre-overlay shot
+    plans keep working unchanged.
+
+    The CTA passes its own, smaller budget (_CTA_MAX_CHARS / _CTA_WRAP_CHARS)
+    because it is set at a larger size and so fits fewer characters per line.
     """
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     words = text.split()[:MAX_OVERLAY_WORDS]
@@ -258,14 +271,14 @@ def _clean_overlay_text(value: Any) -> str:
     used = 0
     for word in words:
         cost = len(word) + (1 if kept else 0)
-        if used + cost > _OVERLAY_MAX_CHARS:
+        if used + cost > max_chars:
             break
         kept.append(word)
         used += cost
     if not kept and words:
         # A single oversized word: keep a one-line truncation rather than
         # losing the line entirely.
-        kept = [words[0][:_OVERLAY_WRAP_CHARS]]
+        kept = [words[0][:wrap_chars]]
     return " ".join(kept)
 
 
@@ -353,7 +366,12 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
         "shots": shots,
         "caption": str(plan.get("caption") or "").strip(),
         "hashtags": hashtags,
-        "cta": str(plan.get("cta") or "").strip(),
+        # The CTA is burned onto the final beat, so it is clamped to its own
+        # (smaller) box budget here for the same reason overlay_text is: a line
+        # trimmed at burn time leaves a half-sentence on a finished reel.
+        "cta": _clean_overlay_text(
+            plan.get("cta"), _CTA_MAX_CHARS, _CTA_WRAP_CHARS
+        ),
     }
 
 
@@ -464,8 +482,8 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "the most arresting image you have.\n"
             "2. TENSION — the everyday friction or problem this product "
             "removes, shown (never narrated).\n"
-            "3. REVEAL — the product itself, hero framing, label and form "
-            "clearly readable.\n"
+            "3. REVEAL — the product itself, hero framing: its form, colour "
+            "and material, held at natural product-shot distance.\n"
             "4. BENEFIT / PROOF — the promise made visible: texture, "
             "freshness, craft, the detail that proves the claim.\n"
             "5. USE MOMENT — a real person actually using or enjoying it in "
@@ -488,6 +506,14 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "so the clip loops cleanly.\n"
             "- NEVER request on-screen text, captions, subtitles, prices, or "
             "logos in any scene — text is composited later in post.\n"
+            "- NEVER make a product's LABEL the subject of a shot, and never "
+            "frame the product so close that its label fills the frame. The "
+            "video model repaints every pixel each shot, so lettering it is "
+            "asked to hold comes back as convincing gibberish — a garbled "
+            "brand name on screen is worse than no product shot at all. Show "
+            "the product whole at natural product-shot distance; go tight on "
+            "TEXTURE instead (the pour, the grain, the crumb, the leaf), "
+            "never on printed words.\n"
             "- Audio is diegetic only: sounds that belong to the scene "
             "(sizzle, pour, clink, ambience). No voiceover, no music cues.\n"
             "- Stay strictly inside the brand voice above; never make claims "
@@ -529,8 +555,13 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "  ],\n"
             '  "caption": "<post caption in the brand voice, ENGLISH>",\n'
             '  "hashtags": ["tag1", "tag2"],\n'
-            '  "cta": "<short call to action, ENGLISH>"\n'
+            f'  "cta": "<call to action, ENGLISH, at most {_CTA_MAX_CHARS} '
+            'characters>"\n'
             "}\n\n"
+            f"The cta is BURNED onto the last beat at a larger size than the "
+            f"overlay lines, so it must fit {_OVERLAY_MAX_LINES} lines of "
+            f"{_CTA_WRAP_CHARS} characters. Anything longer is cut, which "
+            "leaves half a sentence on the finished reel.\n"
             f"Duration rules: return {MIN_PLAN_SHOTS} to {MAX_SHOTS} shots. "
             f"Every duration_s is between {MIN_SHOT_RENDER_S:.0f} and "
             f"{MAX_SHOT_RENDER_S:.0f} seconds and the durations sum to about "
@@ -1478,7 +1509,10 @@ def _build_overlay_ass(
         "Effect, Text",
     ]
     for event in events:
-        text = _wrap_overlay_text(_ass_escape(event["text"]))
+        wrap = (
+            _CTA_WRAP_CHARS if event["style"] == "CTA" else _OVERLAY_WRAP_CHARS
+        )
+        text = _wrap_overlay_text(_ass_escape(event["text"]), wrap)
         if not text:
             continue
         lines.append(
