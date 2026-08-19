@@ -258,26 +258,46 @@ _SAFE_BOTTOM = 1420  # 1920 - 500: clears the widest bottom caption block
 # olive-oil label and across a presenter's chest.
 _OVERLAY_POS_X = _SAFE_LEFT
 _OVERLAY_POS_Y = _SAFE_BOTTOM
-# Scrim: a feathered black plate under the type. Legibility was a property of
-# the GLYPH (outline + shadow), which is backdrop-dependent by construction —
-# white-on-beige at "Certified organic matters" was barely readable in a
-# finished reel. A scrim makes the backdrop deterministic instead, which is
-# also what makes the CTA contrast check below computable without decoding a
-# frame. 55% is the lightest value that still holds white Poppins Bold over a
-# blown-out white shot.
-_SCRIM_ALPHA_HEX = "73"  # ASS alpha: 0x73/0xFF transparent => ~55% opaque
-_SCRIM_TOP_Y = 980  # \blur feathers this edge upward from about y=900
-# The worst backdrop the scrim can produce (55% black over pure white).
-_SCRIM_WORST_BACKDROP = (115, 115, 115)
+# ── Caption card (replaced the half-frame scrim) ──────────────────────────
+# The old design darkened the whole frame below y=980 (~49% of the picture)
+# behind EVERY caption, fading in and out with each line. Measured on a
+# delivered reel: the bottom of the frame dropped from ~163 to ~87 mean luma
+# and back at every caption boundary — the user reported it verbatim as
+# "dark screen then light screen without overlay... a mess". Professional
+# short-form puts a compact rounded card behind the type instead: the
+# backdrop is exactly as large as the words, so nothing else in the frame
+# changes when a caption enters or leaves.
+_CARD_COLOR_ASS = "141414"  # near-black, BGR == RGB for a neutral
+_CARD_ALPHA_HEX = "3C"  # 0x3C/0xFF transparent => ~76% opaque
+_CARD_PAD_X = 34
+_CARD_PAD_Y = 24
+_CARD_RADIUS = 30
+# libass line advance is the face's ascent+descent. Poppins: ascender 1050,
+# descender 350, upem 1000 → 1.40 em. Verified against a rendered frame —
+# adjust here if the face ever changes.
+_LINE_HEIGHT_EM = 1.40
+# The worst backdrop the card can produce (76% of #141414 over pure white).
+_CARD_WORST_BACKDROP = (76, 76, 76)
 # WCAG 2.1 AA large-text is 3:1, and burned CTA type is large by definition
-# (96px on a 1080 frame). The body-text floor of 4.5:1 is NOT usable here: the
-# most contrast anything can reach against the scrim's worst backdrop is pure
-# white at 4.69:1, so a 4.5 floor admits only near-white and turns the check
-# into "always white" — a discriminator that never discriminates. At 3:1 a
-# pale brand colour passes and a saturated one (Naturespan's lime, 2.1:1)
-# does not, which is the distinction that matters.
+# (96px on a 1080 frame). Checked against the card's worst backdrop, which is
+# deterministic — no frame decode needed.
 _MIN_CTA_CONTRAST = 3.0
 _OVERLAY_RISE_PX = 24  # entry travel for the settle
+_FADE_IN_MS = 200  # editorial fade band per the caption-craft research:
+_FADE_OUT_MS = 260  # 200-300ms reads as a cut choice; sub-100ms as a glitch
+# The hook sits high-centre where every platform leaves the frame clean, well
+# clear of a centred product (frame centre ~y960) and the top chrome (240).
+_HOOK_FONT_SIZE = 92
+_HOOK_POS = (540, 620)
+# On-screen text is a few discrete BEATS, not subtitles: hook (first shot),
+# ONE mid-reel proof line, CTA (end card / final beat). Everything else is
+# clean footage. "when I said to put these caption in the video, should
+# [not] necessarily be throughout the video" — user, 2026-08-19.
+_MAX_MID_CAPTIONS = 1
+# A caption beat holds long enough to read twice, never the whole shot —
+# after the hold the footage runs clean to the cut.
+_CAPTION_MAX_HOLD_S = 3.2
+_HOOK_START_S = 0.35  # let the first frame land before type enters
 
 # Step tracking: maps node key to index for progress reporting
 VIDEO_PIPELINE_STEPS = [
@@ -936,18 +956,21 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "are the shots a viewer actually needs time to take in.\n"
             "- At least two beats must differ by a full second from each "
             "other.\n\n"
-            "OVERLAY TEXT (burned onto the video in post — the ONLY text "
-            "that ever appears on screen):\n"
-            f"- Every shot has an \"overlay_text\": a punchy on-screen line, "
+            "ON-SCREEN TEXT (burned onto the video in post — the ONLY text "
+            "that ever appears on screen). Professional reels use text as a "
+            "few DISCRETE BEATS, not subtitles:\n"
+            f"- Shot 1's \"overlay_text\" is the hook — a scroll-stopper, "
             f"{MAX_OVERLAY_WORDS} words maximum, ALWAYS IN ENGLISH, "
             "marketing-grade.\n"
-            "- The lines follow the story arc: shot 1 carries the hook_line, "
-            "every middle shot carries the ONE idea its beat is about "
-            "(tension, reveal, proof, use, payoff), and the final shot hands "
-            "off to the cta (the final shot shows the cta on screen).\n"
-            "- Consecutive lines must never repeat each other — each line "
-            f"holds the screen for {MIN_SHOT_RENDER_S:.0f}-"
-            f"{MAX_SHOT_RENDER_S:.0f} seconds, long enough to read twice.\n"
+            "- EXACTLY ONE middle shot carries an \"overlay_text\": the "
+            "single strongest proof/benefit claim of the reel, placed on the "
+            "beat where that claim lands visually.\n"
+            "- EVERY OTHER shot has \"overlay_text\": null — clean, "
+            "text-free footage. The pictures carry the story; a caption on "
+            "every cut reads as subtitles, the clearest tell of an automated "
+            "edit.\n"
+            "- The final shot hands off to the cta (shown on the closing "
+            "brand card).\n"
             "- EVERY LINE STANDS ALONE. A viewer reads it with nothing before "
             "or after it, so it must be a complete thought on its own — never "
             "a clause that runs on into the next shot. No trailing comma, "
@@ -965,8 +988,8 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "{\n"
             '  "hook_line": "<scroll-stopping line under 8 words, ENGLISH>",\n'
             '  "shots": [\n'
-            '    {"index": 1, "duration_s": 3.0, "overlay_text": "<on-screen line, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."},\n'
-            '    {"index": 2, "duration_s": 5.0, "overlay_text": "<...>", "scene": "..."}\n'
+            '    {"index": 1, "duration_s": 3.0, "overlay_text": "<the hook, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."},\n'
+            '    {"index": 2, "duration_s": 5.0, "overlay_text": null, "scene": "..."}\n'
             "  ],\n"
             '  "music_mood": "<one of: ' + "|".join(MUSIC_MOODS) + '>",\n'
             '  "caption": "<post caption in the brand voice, ENGLISH>",\n'
@@ -2561,6 +2584,43 @@ def _distribute_durations(planned: list[float], total_s: float) -> list[float]:
     return shares
 
 
+def _select_caption_beats(
+    shots: list[dict[str, Any]],
+    durations: list[float],
+    cta_from: int,
+) -> set[int]:
+    """Rendered indices whose overlay_text survives to the burn (pure).
+
+    Professional short-form uses on-screen text as a few discrete beats —
+    hook, one proof, CTA — with clean footage between. The plan is asked for
+    exactly that, but the selection is enforced here so a plan that captions
+    every beat (they all did, before 2026-08-19) still renders clean:
+
+    * index 0 (the hook) always survives;
+    * of the middle shots, the _MAX_MID_CAPTIONS with the LONGEST windows
+      survive (a proof line needs dwell; ties go to the later beat, where a
+      proof lands after the story has set it up);
+    * everything else is dropped — the CTA beat is handled separately and is
+      not part of this selection.
+    """
+    n = min(len(shots), len(durations))
+    keep: set[int] = set()
+    if n == 0:
+        return keep
+    keep.add(0)
+    hook_text = str(shots[0].get("overlay_text") or "").strip()
+    mids = [
+        i for i in range(1, min(cta_from, n))
+        if (text := str(shots[i].get("overlay_text") or "").strip())
+        # A split hook beat puts the hook's own text on rendered index 1 —
+        # promoting it to the proof slot would show the hook twice.
+        and text != hook_text
+    ]
+    mids.sort(key=lambda i: (float(durations[i] or 0.0), i), reverse=True)
+    keep.update(mids[:_MAX_MID_CAPTIONS])
+    return keep
+
+
 def _overlay_events(
     shots: list[dict[str, Any]],
     durations: list[float],
@@ -2568,9 +2628,14 @@ def _overlay_events(
 ) -> list[dict[str, Any]]:
     """Compute the timed overlay events for the finished reel (pure function).
 
-    Each shot's overlay_text spans that shot's ACTUAL time window, padded
-    _OVERLAY_PAD_IN_S in and _OVERLAY_PAD_OUT_S out so lines never sit on a
-    cut. The FINAL PLANNED shot shows the plan's cta (style 'CTA') instead of
+    Text appears as discrete beats, not subtitles: the HOOK on the first
+    shot (style 'Hook', high-centre), ONE mid-reel proof line (style
+    'Overlay', lower-third), and the CTA on the final planned beat. Shots
+    between beats run clean. Each beat is padded off the cuts and holds at
+    most _CAPTION_MAX_HOLD_S — long enough to read twice, never the whole
+    shot — so footage breathes after the words land.
+
+    The FINAL PLANNED shot shows the plan's cta (style 'CTA') instead of
     its own line — matched by the shot's ORIGINAL plan index, not its rendered
     position, because _split_to_min_shots can halve that last beat into two
     rendered shots that both belong to it; keying off the rendered index alone
@@ -2598,11 +2663,14 @@ def _overlay_events(
                 cta_from > 0 and shots[cta_from - 1].get("index") == final_index
             ):
                 cta_from -= 1
+    kept = _select_caption_beats(shots, durations, cta_from)
     entries: list[dict[str, Any]] = []
     t = 0.0
     for i in range(n):
         text = str(shots[i].get("overlay_text") or "").strip()
-        style = "Overlay"
+        style = "Hook" if i == 0 else "Overlay"
+        if i not in kept:
+            text = ""
         if i >= cta_from:
             text = cta_text
             style = "CTA"
@@ -2631,7 +2699,13 @@ def _overlay_events(
             while (
                 window["end"] - window["start"] < dwell
                 and nxt < len(merged)
-                and merged[nxt]["style"] == window["style"]
+                # An EMPTY window has no style claim — a short line may hold
+                # into the clean footage that follows it (the beat system
+                # leaves most windows empty on purpose).
+                and (
+                    merged[nxt]["style"] == window["style"]
+                    or not merged[nxt]["text"]
+                )
             ):
                 window["end"] = merged[nxt]["end"]
                 nxt += 1
@@ -2647,20 +2721,33 @@ def _overlay_events(
         i = nxt
 
     # A CTA cannot borrow from what comes after it, so when the reel is too
-    # short to give it a readable window it takes the time back from the line
-    # before it instead of being padded out of existence.
+    # short to give it a readable window it takes the time back from the
+    # windows before it instead of being padded out of existence. The walk
+    # continues backwards because the window directly before it may itself
+    # be too short to cover the debt (a beat-system reel is mostly empty
+    # windows); a window drained to zero length simply drops at event build.
     if len(held) > 1 and held[-1]["style"] == "CTA" and held[-1]["text"]:
-        cta_window, before = held[-1], held[-2]
-        if cta_window["end"] - cta_window["start"] < dwell:
+        cta_window = held[-1]
+        j = len(held) - 2
+        while j >= 0 and cta_window["end"] - cta_window["start"] < dwell:
+            before = held[j]
             cta_window["start"] = max(before["start"], cta_window["end"] - dwell)
-            before["end"] = cta_window["start"]
+            before["end"] = min(before["end"], cta_window["start"])
+            j -= 1
 
     events: list[dict[str, Any]] = []
     for entry in held:
         if not entry["text"]:
             continue
-        start = entry["start"] + _OVERLAY_PAD_IN_S
+        if entry["style"] == "Hook" and entry["start"] < _HOOK_START_S:
+            start = _HOOK_START_S
+        else:
+            start = entry["start"] + _OVERLAY_PAD_IN_S
         end = entry["end"] - _OVERLAY_PAD_OUT_S
+        # A beat holds long enough to read twice, then hands the frame back
+        # to the footage. The CTA is the closing ask and keeps its window.
+        if entry["style"] != "CTA":
+            end = min(end, start + _CAPTION_MAX_HOLD_S)
         if end - start < _OVERLAY_MIN_EVENT_S:
             continue
         events.append(
@@ -2707,12 +2794,10 @@ def _brand_accent_hex(brand: dict[str, Any]) -> str | None:
 def _cta_primary_colour(accent_hex: str | None) -> str:
     """ASS PrimaryColour for the CTA — the brand accent only when it reads.
 
-    The scrim makes the CTA's backdrop deterministic, so the accent can be
-    checked against the WORST backdrop the scrim can produce (55% black over
-    pure white) with the same WCAG helpers the logo placer uses, without
-    decoding a frame. Naturespan's accent is a saturated lime (#80c020) that
-    measures well under the floor; it shipped as bright green letters over a
-    warm brown dinner scene, which reads as a glitch rather than a CTA.
+    The caption card makes the CTA's backdrop deterministic, so the accent
+    can be checked against the WORST backdrop the card can produce (76% of
+    near-black over pure white) with the same WCAG helpers the logo placer
+    uses, without decoding a frame.
     """
     accent = _hex_to_ass_color(accent_hex)
     if not accent:
@@ -2720,12 +2805,12 @@ def _cta_primary_colour(accent_hex: str | None) -> str:
     raw = str(accent_hex).lstrip("#")
     rgb = (int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16))
     ratio = contrast_ratio(
-        relative_luminance(rgb), relative_luminance(_SCRIM_WORST_BACKDROP)
+        relative_luminance(rgb), relative_luminance(_CARD_WORST_BACKDROP)
     )
     if ratio < _MIN_CTA_CONTRAST:
         logger.info(
-            "CTA accent %s measures %.2f:1 on the scrim (floor %.1f:1) — "
-            "rendering the CTA in white instead",
+            "CTA accent %s measures %.2f:1 on the caption card (floor "
+            "%.1f:1) — rendering the CTA in white instead",
             accent_hex,
             ratio,
             _MIN_CTA_CONTRAST,
@@ -2734,23 +2819,124 @@ def _cta_primary_colour(accent_hex: str | None) -> str:
     return f"&H00{accent[2:-1]}"
 
 
-def _scrim_dialogue(start: float, end: float) -> str:
-    r"""One feathered black plate under the type, as an ASS vector drawing.
+# Per-character advance in em for Poppins Bold, bucketed. Exact metrics need
+# the font loaded; a bucket table is within ~±4% on marketing copy, and the
+# card's 34px side padding absorbs that. Measured against PIL renders of the
+# shipped face at 76px across the overlay lines of five delivered reels.
+_EM_NARROW = 0.30
+_EM_UPPER = 0.72
+_EM_WIDE = 0.95
+_EM_DIGIT = 0.60
+_EM_DEFAULT = 0.54
+_EM_SPACE = 0.26
+_NARROW_CHARS = frozenset("iljtf!.,;:'|()[] ")
+_WIDE_CHARS = frozenset("mwMW@%")
 
-    ``\an7`` + ``\pos(0,0)`` makes the ``\p1`` drawing coordinates frame
-    coordinates; ``\blur`` feathers the top edge so the plate reads as a
-    gradient rather than a rectangle.
+
+def _text_width_px(text: str, font_size: int) -> int:
+    """Estimated rendered width of one line of Poppins Bold (pure)."""
+    total_em = 0.0
+    for ch in text:
+        if ch == " ":
+            total_em += _EM_SPACE
+        elif ch in _WIDE_CHARS:
+            total_em += _EM_WIDE
+        elif ch in _NARROW_CHARS:
+            total_em += _EM_NARROW
+        elif ch.isdigit():
+            total_em += _EM_DIGIT
+        elif ch.isupper():
+            total_em += _EM_UPPER
+        else:
+            total_em += _EM_DEFAULT
+    return int(round(total_em * font_size))
+
+
+def _rounded_rect_path(x: int, y: int, w: int, h: int, r: int) -> str:
+    """ASS \\p1 drawing commands for a rounded rectangle (pure).
+
+    Quarter-circle corners via cubic beziers with the standard k=0.552
+    control-point offset. Coordinates are integers on the 1080x1920 grid.
     """
+    r = max(0, min(r, w // 2, h // 2))
+    k = int(round(r * 0.552))
+    return (
+        f"m {x + r} {y} "
+        f"l {x + w - r} {y} "
+        f"b {x + w - r + k} {y} {x + w} {y + r - k} {x + w} {y + r} "
+        f"l {x + w} {y + h - r} "
+        f"b {x + w} {y + h - r + k} {x + w - r + k} {y + h} {x + w - r} {y + h} "
+        f"l {x + r} {y + h} "
+        f"b {x + r - k} {y + h} {x} {y + h - r + k} {x} {y + h - r} "
+        f"l {x} {y + r} "
+        f"b {x} {y + r - k} {x + r - k} {y} {x + r} {y}"
+    )
+
+
+def _card_geometry(
+    wrapped: str, font_size: int, anchor: str, pos: tuple[int, int]
+) -> tuple[int, int, int, int]:
+    """(x, y, w, h) of the card behind a wrapped text block (pure).
+
+    *anchor* mirrors the text event's alignment: 'bl' = bottom-left (\\an1 at
+    pos), 'center' = mid-centre (\\an5 at pos). The block's height is
+    lines x the face's line advance; width is the widest line.
+    """
+    lines = [ln for ln in wrapped.split("\\N")] or [""]
+    line_h = int(round(font_size * _LINE_HEIGHT_EM))
+    block_w = max(_text_width_px(ln, font_size) for ln in lines)
+    block_h = line_h * len(lines)
+    px, py = pos
+    if anchor == "center":
+        left = px - block_w // 2
+        top = py - block_h // 2
+    else:  # bottom-left
+        left = px
+        top = py - block_h
+    return (
+        left - _CARD_PAD_X,
+        top - _CARD_PAD_Y,
+        block_w + 2 * _CARD_PAD_X,
+        block_h + 2 * _CARD_PAD_Y,
+    )
+
+
+def _card_dialogue(
+    start: float, end: float, rect: tuple[int, int, int, int], rise: bool = True
+) -> str:
+    r"""Layer-0 rounded card under one caption event, matching its motion.
+
+    The card shares the text's \fad and entry rise exactly — a backdrop that
+    arrives on a different clock than its words is the choppiness the old
+    scrim was rejected for. \an7 + \pos(0,0) makes drawing coordinates frame
+    coordinates.
+    """
+    x, y, w, h = rect
+    motion = (
+        f"\\move(0,{_OVERLAY_RISE_PX},0,0,0,220)" if rise else "\\pos(0,0)"
+    )
     body = (
-        "{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H000000&"
-        f"\\1a&H{_SCRIM_ALPHA_HEX}&\\blur64\\fad(180,220)\\p1}}"
-        f"m 0 {_SCRIM_TOP_Y} l 1080 {_SCRIM_TOP_Y} 1080 1920 0 1920"
+        f"{{\\an7{motion}\\bord0\\shad0\\1c&H{_CARD_COLOR_ASS}&"
+        f"\\1a&H{_CARD_ALPHA_HEX}&\\fad({_FADE_IN_MS},{_FADE_OUT_MS})\\p1}}"
+        f"{_rounded_rect_path(x, y, w, h, _CARD_RADIUS)}"
         "{\\p0}"
     )
     return (
         f"Dialogue: 0,{_format_ass_time(start)},{_format_ass_time(end)},"
-        f"Scrim,,0,0,0,,{body}"
+        f"Card,,0,0,0,,{body}"
     )
+
+
+# Per-style layout: (font size, wrap budget, anchor, position). The hook is
+# high-centre where all three platforms leave the frame clean; the proof line
+# and CTA sit lower-third, bottom-left anchored so extra lines grow upward.
+_STYLE_LAYOUT: dict[str, tuple[int, int, str, tuple[int, int]]] = {
+    "Hook": (_HOOK_FONT_SIZE, 16, "center", _HOOK_POS),
+    "Overlay": (_OVERLAY_FONT_SIZE, _OVERLAY_WRAP_CHARS, "bl",
+                (_OVERLAY_POS_X, _OVERLAY_POS_Y)),
+    "CTA": (_CTA_FONT_SIZE, _CTA_WRAP_CHARS, "bl",
+            (_OVERLAY_POS_X, _OVERLAY_POS_Y)),
+}
 
 
 def _build_overlay_ass(
@@ -2758,26 +2944,17 @@ def _build_overlay_ass(
 ) -> str:
     r"""Build the .ass subtitle document for the overlay events (pure).
 
-    1080x1920 play grid. Type is Poppins Bold, bottom-LEFT anchored (\an1) on
-    the safe baseline so it grows upward and can never drift into the bottom
-    caption chrome or under the right action rail. Each line rides a feathered
-    black scrim on the layer below, which is what carries legibility over
-    arbitrary footage — an outline alone is backdrop-dependent, and white type
-    over a pale wall was barely readable in a finished reel. The CTA takes the
-    brand accent only when it measures against the scrim; otherwise white.
+    1080x1920 play grid, Poppins Bold. Three styles, one per beat kind:
+    'Hook' (large, high-centre, \an5), 'Overlay' (lower-third proof line,
+    \an1) and 'CTA'. Each text event rides its own layer-0 rounded card
+    sized to the words (see _card_dialogue) — the card, not the glyph,
+    carries legibility over arbitrary footage, and unlike the old half-frame
+    scrim it changes nothing outside the words' own footprint. Card and type
+    share the same \fad and entry rise so they move as one object. The CTA
+    takes the brand accent only when it measures against the card; otherwise
+    white.
     """
     cta_color = _cta_primary_colour(accent_hex)
-    # \move settles the line upward as it fades in: a short travel reads as
-    # deliberate, where the old fade-plus-scale is the stock editor preset.
-    tags = (
-        "{\\an1\\move(%d,%d,%d,%d,0,220)\\fad(180,220)}"
-        % (
-            _OVERLAY_POS_X,
-            _OVERLAY_POS_Y + _OVERLAY_RISE_PX,
-            _OVERLAY_POS_X,
-            _OVERLAY_POS_Y,
-        )
-    )
     margin_r = 1080 - _SAFE_RIGHT
     margin_v = 1920 - _SAFE_BOTTOM
     lines = [
@@ -2793,19 +2970,20 @@ def _build_overlay_ass(
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        # Alignment 1 = bottom-left. The scrim carries legibility, so the type
-        # keeps a 2px keyline rather than the 4px outline + 2px shadow that
-        # reads as a sports lower-third. Spacing -1 tightens Poppins Bold at
-        # display size.
+        # The card carries legibility; the type needs no outline at all.
+        # Spacing -1 tightens Poppins Bold at display size.
+        f"Style: Hook,Poppins,{_HOOK_FONT_SIZE},&H00FFFFFF,&H00FFFFFF,"
+        f"&H00141414,&H00000000,-1,0,0,0,100,100,-1,0,1,0,0,5,"
+        f"{_SAFE_LEFT},{margin_r},{margin_v},1",
         f"Style: Overlay,Poppins,{_OVERLAY_FONT_SIZE},&H00FFFFFF,&H00FFFFFF,"
-        f"&H00141414,&H00000000,-1,0,0,0,100,100,-1,0,1,2,0,1,"
+        f"&H00141414,&H00000000,-1,0,0,0,100,100,-1,0,1,0,0,1,"
         f"{_SAFE_LEFT},{margin_r},{margin_v},1",
         f"Style: CTA,Poppins,{_CTA_FONT_SIZE},{cta_color},&H00FFFFFF,"
-        f"&H00141414,&H00000000,-1,0,0,0,100,100,-1,0,1,2,0,1,"
+        f"&H00141414,&H00000000,-1,0,0,0,100,100,-1,0,1,0,0,1,"
         f"{_SAFE_LEFT},{margin_r},{margin_v},1",
-        # Drawing-only style for the scrim plate. A small Fontsize keeps the
-        # line box from contributing ascent to the \p1 drawing origin.
-        "Style: Scrim,Poppins,20,&H00000000,&H00000000,&H00000000,"
+        # Drawing-only style for the caption cards. A small Fontsize keeps
+        # the line box from contributing ascent to the \p1 drawing origin.
+        "Style: Card,Poppins,20,&H00000000,&H00000000,&H00000000,"
         "&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
         "",
         "[Events]",
@@ -2813,17 +2991,29 @@ def _build_overlay_ass(
         "Effect, Text",
     ]
     for event in events:
-        wrap = (
-            _CTA_WRAP_CHARS if event["style"] == "CTA" else _OVERLAY_WRAP_CHARS
+        font_size, wrap, anchor, pos = _STYLE_LAYOUT.get(
+            event["style"], _STYLE_LAYOUT["Overlay"]
         )
         text = _wrap_overlay_text(_ass_escape(event["text"]), wrap)
         if not text:
             continue
-        # Scrim first: same Layer, and libass draws same-layer events in file
-        # order, so the plate lands under the type.
-        lines.append(_scrim_dialogue(event["start"], event["end"]))
+        rect = _card_geometry(text, font_size, anchor, pos)
+        # Card on layer 0, type on layer 1 — explicit layers, not file order.
+        lines.append(_card_dialogue(event["start"], event["end"], rect))
+        if anchor == "center":
+            align = "\\an5"
+            px, py = pos
+        else:
+            align = "\\an1"
+            px, py = pos
+        # \move settles the line upward as it fades in: a short travel reads
+        # as deliberate, where fade-plus-scale is the stock editor preset.
+        tags = (
+            f"{{{align}\\move({px},{py + _OVERLAY_RISE_PX},{px},{py},0,220)"
+            f"\\fad({_FADE_IN_MS},{_FADE_OUT_MS})}}"
+        )
         lines.append(
-            f"Dialogue: 0,{_format_ass_time(event['start'])},"
+            f"Dialogue: 1,{_format_ass_time(event['start'])},"
             f"{_format_ass_time(event['end'])},{event['style']},,0,0,0,,"
             f"{tags}{text}"
         )
@@ -3309,6 +3499,214 @@ async def _attach_end_card(
     except Exception as exc:
         logger.warning("end card concat failed: %s", exc)
         return video_bytes, {"end_card": f"failed:concat {exc}"[:220]}
+
+
+# ── Audio assembly (post pass) ─────────────────────────────────────────────
+#
+# The concat muxed each shot's LTX-generated ambience raw, so the soundtrack
+# restarted cold at every join. Measured on a delivered reel, the seam steps
+# ran up to +15.9 dB RMS in half a second, and the end card cut to digital
+# silence (-54.9 dB) — the user heard it as "music restarting every time a
+# new caption appears" (the seams coincide with the old per-shot captions).
+# This stage rebuilds the master's audio from the shot files: each clip is
+# level-matched to the reel's median loudness, faded 60/80ms at its joins,
+# and laid on a single timeline; the final shot's ambience carries under the
+# end card and releases over ~1.6s instead of cutting to nothing.
+
+_SEAM_FADE_IN_S = 0.06
+_SEAM_FADE_OUT_S = 0.08
+# Per-shot correction is capped: beyond ±9 dB the "match" is amplifying a
+# noise floor or crushing a real level difference the model intended.
+_MAX_SHOT_MATCH_DB = 9.0
+# Ambience carried under the end card, and its release.
+_TAIL_SOURCE_S = 2.5
+_TAIL_RELEASE_S = 1.6
+
+
+def _clip_lufs_cmd(path: str) -> list[str]:
+    """ffmpeg args measuring one clip's integrated loudness (pure)."""
+    return [
+        "ffmpeg", "-v", "info", "-nostats", "-i", path,
+        "-af", "ebur128=peak=true", "-vn", "-f", "null", "-",
+    ]
+
+
+def _measure_clip_lufs(path: str) -> float | None:
+    """Integrated LUFS of one clip's audio, or None if unmeasurable."""
+    if not _ffmpeg_ok():
+        return None
+    try:
+        proc = _run_ffmpeg(_clip_lufs_cmd(path), timeout=180)
+    except Exception:
+        return None
+    try:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    except AttributeError:  # already str (mocked runs)
+        stderr = str(proc.stderr or "")
+    parsed = _parse_ebur128(stderr)
+    return parsed[0] if parsed else None
+
+
+def _diegetic_gains(lufs: list[float | None]) -> list[float]:
+    """Per-shot dB corrections that bring every clip to the reel's median.
+
+    Pure function. The MEDIAN, not a fixed target: overall level is the
+    loudness search's job downstream — this pass only removes the steps
+    BETWEEN shots. Unmeasurable or silent clips get 0 (there is nothing to
+    match, and +40 dB of "correction" on a noise floor is hiss).
+    """
+    real = sorted(v for v in lufs if v is not None and v != float("-inf"))
+    if not real:
+        return [0.0] * len(lufs)
+    mid = len(real) // 2
+    # True median: an even count averages the middle pair, so the correction
+    # splits between the loud and quiet shot instead of dragging everything
+    # to whichever happened to sit above the middle.
+    anchor = real[mid] if len(real) % 2 else (real[mid - 1] + real[mid]) / 2.0
+    gains: list[float] = []
+    for v in lufs:
+        if v is None or v == float("-inf"):
+            gains.append(0.0)
+        else:
+            gains.append(
+                max(-_MAX_SHOT_MATCH_DB, min(_MAX_SHOT_MATCH_DB, anchor - v))
+            )
+    return gains
+
+
+def _assemble_audio_cmd(
+    master: str,
+    shot_paths: list[str],
+    durations: list[float],
+    gains: list[float],
+    end_card_s: float,
+    total_s: float,
+    dst: str,
+) -> list[str]:
+    """ffmpeg args rebuilding the master's audio from the shot files (pure).
+
+    Video is stream-copied — this pass must never re-encode picture. Each
+    shot's audio is level-matched, seam-faded and delayed onto one timeline;
+    when an end card follows the last shot, that shot's final seconds loop
+    under the card and release, so the reel never falls off a cliff into
+    silence. amix normalize=0 sums the (non-overlapping) clips untouched.
+    """
+    args = ["ffmpeg", "-y", "-i", master]
+    for path in shot_paths:
+        args += ["-i", path]
+
+    chains: list[str] = []
+    labels: list[str] = []
+    t = 0.0
+    for k, (dur, gain) in enumerate(zip(durations, gains), start=1):
+        d = max(0.0, float(dur or 0.0))
+        fade_out_at = max(0.0, d - _SEAM_FADE_OUT_S)
+        delay_ms = int(round(t * 1000))
+        chains.append(
+            f"[{k}:a]volume={gain:.2f}dB,"
+            f"afade=t=in:st=0:d={_SEAM_FADE_IN_S},"
+            f"afade=t=out:st={fade_out_at:.3f}:d={_SEAM_FADE_OUT_S},"
+            f"adelay={delay_ms}:all=1[a{k}]"
+        )
+        labels.append(f"[a{k}]")
+        t += d
+
+    if end_card_s > 0.3 and shot_paths:
+        last = len(shot_paths)
+        d_last = max(0.0, float(durations[-1] or 0.0))
+        seg_from = max(0.0, d_last - _TAIL_SOURCE_S)
+        release = min(_TAIL_RELEASE_S, end_card_s)
+        chains.append(
+            f"[{last}:a]atrim={seg_from:.3f}:{d_last:.3f},"
+            f"asetpts=PTS-STARTPTS,volume={gains[-1]:.2f}dB,"
+            f"aloop=loop=-1:size=2097152,atrim=0:{end_card_s:.3f},"
+            f"afade=t=in:st=0:d=0.12,"
+            f"afade=t=out:st={max(0.0, end_card_s - release):.3f}:d={release},"
+            f"adelay={int(round(t * 1000))}:all=1[tail]"
+        )
+        labels.append("[tail]")
+
+    chains.append(
+        "".join(labels)
+        + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0"
+        f":normalize=0,apad=whole_dur={total_s:.3f}[aout]"
+    )
+    return args + [
+        "-filter_complex", ";".join(chains),
+        "-map", "0:v:0", "-map", "[aout]",
+        "-c:v", "copy",
+        *_MASTER_AUDIO_ARGS,
+        "-movflags", "+faststart", dst,
+    ]
+
+
+async def _assemble_audio(
+    video_bytes: bytes,
+    shot_paths: list[str],
+    durations: list[float],
+    end_card_s: float,
+    total_s: float,
+) -> tuple[bytes, dict[str, Any]]:
+    """Rebuild the concatenated master's audio as one level-matched timeline.
+
+    Best-effort by contract: ANY failure returns the ORIGINAL bytes with an
+    audio_assembly reason — a reel with stepped seams still beats no reel.
+    Returns (video_bytes, meta_patch).
+    """
+    try:
+        if not shot_paths or not _ffmpeg_ok():
+            return video_bytes, {"audio_assembly": "skipped:no shots or no ffmpeg"}
+        lufs = [
+            await asyncio.to_thread(_measure_clip_lufs, p) for p in shot_paths
+        ]
+        gains = _diegetic_gains(lufs)
+        with tempfile.TemporaryDirectory(prefix="assembly_") as workdir:
+            master = os.path.join(workdir, "master.mp4")
+            await asyncio.to_thread(_write_bytes, master, video_bytes)
+            dst = os.path.join(workdir, "master_assembled.mp4")
+            proc = await asyncio.to_thread(
+                _run_ffmpeg,
+                _assemble_audio_cmd(
+                    master, shot_paths, durations, gains, end_card_s, total_s,
+                    dst,
+                ),
+                VIDEO_AUDIO_TIMEOUT_S,
+            )
+            if (
+                proc.returncode != 0
+                or not os.path.exists(dst)
+                or os.path.getsize(dst) == 0
+            ):
+                reason = _stderr_tail(proc, 200) or f"ffmpeg exit {proc.returncode}"
+                logger.warning(
+                    "audio assembly failed — keeping concat audio: %s", reason
+                )
+                return video_bytes, {"audio_assembly": f"failed:{reason}"[:220]}
+            assembled = await asyncio.to_thread(_read_bytes, dst)
+            spread = [g for g in gains if g]
+            logger.info(
+                "Audio assembled: %d shot(s) level-matched (gains %s dB), "
+                "seam fades %d/%dms, end-card tail %s (%d → %d bytes)",
+                len(shot_paths),
+                "/".join(f"{g:+.1f}" for g in gains),
+                int(_SEAM_FADE_IN_S * 1000),
+                int(_SEAM_FADE_OUT_S * 1000),
+                f"{end_card_s:.1f}s" if end_card_s > 0.3 else "none",
+                len(video_bytes),
+                len(assembled),
+            )
+            return assembled, {
+                "audio_assembly": "ok",
+                "shot_lufs": [
+                    None if v is None or v == float("-inf") else round(v, 1)
+                    for v in lufs
+                ],
+                "shot_gains_db": [round(g, 1) for g in gains],
+                "seam_leveled": bool(spread),
+            }
+    except Exception as exc:
+        logger.warning("audio assembly failed — keeping concat audio: %s", exc)
+        return video_bytes, {"audio_assembly": f"failed:{exc}"[:220]}
 
 
 # ── Audio finishing (post pass) ────────────────────────────────────────────
@@ -4462,16 +4860,33 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 grade_params=grade_params,
             )
             overlay_meta = {**overlay_meta, **card_meta}
+            card_attached = False
             if card_path:
                 video_bytes, attach_meta = await _attach_end_card(
                     video_bytes, card_path, workdir
                 )
                 overlay_meta = {**overlay_meta, **attach_meta}
                 if not attach_meta:
+                    card_attached = True
                     final_duration = (final_duration or 0.0) + _END_CARD_S
 
+            # ── Rebuild the audio as one level-matched timeline ────────────
+            # The concat muxed each shot's ambience raw: seams stepped up to
+            # 15.9 dB and the end card was dead silence. Assembly re-lays the
+            # shot audio with per-clip level matching, 60/80ms seam fades and
+            # an ambience tail released under the card.
+            await _progress(_CONCAT_PROGRESS_START + 4, "audio:assemble")
+            video_bytes, assembly_meta = await _assemble_audio(
+                video_bytes,
+                norm_paths,
+                rendered_durations,
+                _END_CARD_S if card_attached else 0.0,
+                final_duration or sum(rendered_durations),
+            )
+            overlay_meta = {**overlay_meta, **assembly_meta}
+
             # ── Music bed + platform loudness ──────────────────────────────
-            await _progress(_CONCAT_PROGRESS_START + 4, "audio:finish")
+            await _progress(_CONCAT_PROGRESS_START + 5, "audio:finish")
             video_bytes, audio_meta = await _finish_audio(
                 video_bytes,
                 plan,

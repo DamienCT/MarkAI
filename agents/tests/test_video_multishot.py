@@ -711,10 +711,11 @@ class TestRenderVideoMultiShot:
         assert meta["duration_s"] == pytest.approx(
             TARGET_TOTAL_S + video_nodes._END_CARD_S, abs=0.05
         )
-        # Every beat still gets its own on-screen line at a readable
-        # length. The CTA is no longer among them - it moved to the card -
-        # so the count is one line per beat rather than beats-minus-one.
-        assert meta["overlay_lines"] == count
+        # Discrete beats, not subtitles: whatever the plan captioned, the
+        # burn shows the hook plus one mid-reel proof line; the CTA moved to
+        # the card. ("should [not] necessarily be throughout the video" —
+        # user, 2026-08-19.)
+        assert meta["overlay_lines"] == 1 + video_nodes._MAX_MID_CAPTIONS
         assert meta["end_card"] == "ok"
 
     def test_four_shot_plan_still_renders_a_valid_shorter_reel(self, monkeypatch):

@@ -7,8 +7,11 @@ Measured from rendered reels:
     label and across a presenter's chest.
   - White fill with a 4px outline over a pale wall was barely readable:
     "Certified organic matters" measured 190,162,140 behind white glyphs.
-  - The CTA was painted in the raw brand accent. Naturespan's is a saturated
-    lime that shipped as bright green letters over a warm brown dinner scene.
+  - The half-frame scrim that replaced the outline darkened the bottom 49% of
+    the picture behind EVERY caption (163 → 87 mean luma and back at each
+    boundary). The user reported it verbatim: "dark screen then light screen
+    without overlay... its a mess". The backdrop is now a rounded card sized
+    to the words — nothing outside the words' own footprint changes.
 """
 
 import re
@@ -22,6 +25,10 @@ EVENTS = [
     {"text": "Shop pantry now", "style": "CTA", "start": 6.0, "end": 9.0},
 ]
 
+HOOK_EVENTS = [
+    {"text": "Dinner starts here", "style": "Hook", "start": 0.35, "end": 3.55},
+]
+
 
 @pytest.fixture
 def doc():
@@ -29,13 +36,23 @@ def doc():
 
 
 class TestSafeArea:
-    def test_type_is_bottom_left_anchored_not_centred(self, doc):
+    def test_body_type_is_bottom_left_anchored(self, doc):
         # Alignment 1 = bottom-left. Centre anchoring grows the block in BOTH
-        # directions, so any added line walks it toward the chrome.
+        # directions, so any added line walks it toward the chrome. The hook
+        # is the deliberate exception: \an5 high-centre, far above the chrome.
         for style in ("Overlay", "CTA"):
             line = next(l for l in doc.splitlines() if l.startswith(f"Style: {style},"))
             assert line.rstrip().split(",")[18] == "1", f"{style} is not \\an1"
-        assert "\\an1" in doc and "\\an5" not in doc
+        assert "\\an1" in doc
+
+    def test_the_hook_is_high_centre_clear_of_product_and_chrome(self):
+        doc = nodes._build_overlay_ass(HOOK_EVENTS, None)
+        assert "\\an5" in doc
+        cx, cy = nodes._HOOK_POS
+        assert cx == 540
+        # Below the top chrome, above where a 9:16 product shot centres the
+        # bottle (~y960).
+        assert nodes._SAFE_TOP < cy < 900
 
     def test_the_right_margin_clears_the_action_rail(self):
         assert 1080 - nodes._SAFE_RIGHT >= 180, (
@@ -56,7 +73,13 @@ class TestSafeArea:
 
     def test_the_anchor_sits_on_the_safe_baseline(self, doc):
         # \move(x, y0, x, y1, ...) — the settled position is the second pair.
-        move = re.search(r"\\move\((\d+),(\d+),(\d+),(\d+),", doc)
+        # The card's own \move runs from (0,rise) to (0,0), so scan the TEXT
+        # dialogues only.
+        text_lines = [
+            l for l in doc.splitlines()
+            if l.startswith("Dialogue:") and ",Card,," not in l
+        ]
+        move = re.search(r"\\move\((\d+),(\d+),(\d+),(\d+),", text_lines[0])
         assert move, "no settle animation found"
         assert int(move.group(3)) == nodes._SAFE_LEFT
         assert int(move.group(4)) == nodes._SAFE_BOTTOM
@@ -64,47 +87,91 @@ class TestSafeArea:
         assert int(move.group(2)) > int(move.group(4))
 
 
-class TestScrim:
-    def test_every_line_gets_a_plate_under_it(self, doc):
+class TestCaptionCard:
+    def test_every_beat_gets_a_card_under_it(self, doc):
         dialogues = [l for l in doc.splitlines() if l.startswith("Dialogue:")]
-        scrims = [l for l in dialogues if ",Scrim,," in l]
-        assert len(scrims) == len(EVENTS), "one plate per line"
+        cards = [l for l in dialogues if ",Card,," in l]
+        assert len(cards) == len(EVENTS), "one card per beat"
 
-    def test_the_plate_is_emitted_before_its_text(self, doc):
-        """libass draws same-layer events in file order."""
+    def test_the_card_is_on_the_layer_below_its_text(self, doc):
         dialogues = [l for l in doc.splitlines() if l.startswith("Dialogue:")]
-        for i, line in enumerate(dialogues):
-            if ",Scrim,," in line:
-                assert i + 1 < len(dialogues) and ",Scrim,," not in dialogues[i + 1]
+        for line in dialogues:
+            layer = int(line.split(":", 1)[1].split(",", 1)[0])
+            assert layer == (0 if ",Card,," in line else 1)
 
-    def test_the_plate_covers_the_type_band(self, doc):
-        draw = re.search(r"\\p1\}m 0 (\d+) l 1080 \1 1080 1920 0 1920", doc)
-        assert draw, "scrim drawing missing or malformed"
-        assert int(draw.group(1)) <= nodes._SAFE_BOTTOM, (
-            "the plate must start above the text baseline"
+    def test_the_card_hugs_the_words_not_the_frame(self, doc):
+        # The old scrim ran the full 1080px width from y=980 to the bottom of
+        # the frame. A card is sized to its text: its drawing never spans the
+        # full frame width and never reaches the frame bottom.
+        for line in doc.splitlines():
+            if ",Card,," not in line:
+                continue
+            xs = [int(m) for m in re.findall(r"[ml] (\d+) ", line)]
+            ys = [int(m) for m in re.findall(r"[ml] \d+ (\d+)", line)]
+            assert max(xs) - min(xs) < 1080, "card spans the full frame width"
+            assert max(ys) < 1700, "card reaches into the bottom chrome"
+
+    def test_the_card_is_translucent_not_opaque(self, doc):
+        assert f"\\1a&H{nodes._CARD_ALPHA_HEX}&" in doc
+        assert 0x20 < int(nodes._CARD_ALPHA_HEX, 16) < 0xC0
+
+    def test_the_card_moves_and_fades_with_its_text(self, doc):
+        # A backdrop on a different clock than its words is the choppiness
+        # the scrim was rejected for.
+        for line in doc.splitlines():
+            if ",Card,," in line:
+                assert f"\\fad({nodes._FADE_IN_MS},{nodes._FADE_OUT_MS})" in line
+                assert "\\move(" in line
+
+    def test_rounded_corners_are_real_beziers(self):
+        path = nodes._rounded_rect_path(100, 200, 400, 120, 30)
+        assert path.startswith("m 130 200 ")
+        assert path.count(" b ") == 4, "four rounded corners"
+        # The path never strays outside its own box.
+        xs = [int(m) for m in re.findall(r"(?:^|\s)(\d+) \d+(?:\s|$)", path)]
+        assert min(xs) >= 100 and max(xs) <= 500
+
+
+class TestCardGeometry:
+    def test_bottom_left_block_sits_above_its_anchor(self):
+        x, y, w, h = nodes._card_geometry(
+            "Certified organic,\\Nevery bottle", nodes._OVERLAY_FONT_SIZE,
+            "bl", (nodes._OVERLAY_POS_X, nodes._OVERLAY_POS_Y),
         )
+        assert x == nodes._OVERLAY_POS_X - nodes._CARD_PAD_X
+        assert y + h == pytest.approx(nodes._OVERLAY_POS_Y + nodes._CARD_PAD_Y)
+        line_h = int(round(nodes._OVERLAY_FONT_SIZE * nodes._LINE_HEIGHT_EM))
+        assert h == 2 * line_h + 2 * nodes._CARD_PAD_Y
 
-    def test_the_plate_is_translucent_and_feathered(self, doc):
-        assert "\\1a&H%s&" % nodes._SCRIM_ALPHA_HEX in doc
-        assert "\\blur" in doc, "a hard rectangle reads as a lower-third bar"
+    def test_centered_block_straddles_its_anchor(self):
+        cx, cy = nodes._HOOK_POS
+        x, y, w, h = nodes._card_geometry(
+            "Dinner starts here", nodes._HOOK_FONT_SIZE, "center", (cx, cy)
+        )
+        assert x < cx < x + w
+        assert y < cy < y + h
+        assert abs((x + w / 2) - cx) <= 1
 
-    def test_the_plate_is_not_opaque(self):
-        # 0x00 would be fully opaque and hide the footage entirely.
-        assert 0x30 < int(nodes._SCRIM_ALPHA_HEX, 16) < 0xC0
+    def test_width_tracks_the_widest_line(self):
+        narrow = nodes._card_geometry("iii", 76, "bl", (80, 1420))
+        wide = nodes._card_geometry("WWW", 76, "bl", (80, 1420))
+        assert wide[2] > narrow[2]
 
 
 class TestCTAContrast:
-    def test_a_saturated_accent_is_rejected(self):
-        # Naturespan's lime measures ~2.1:1 against the scrim's worst backdrop.
-        assert nodes._cta_primary_colour("#80c020") == "&H00FFFFFF"
+    def test_a_low_contrast_accent_is_rejected(self):
+        # Mid-grey reads ~1.6:1 against the card's worst backdrop.
+        assert nodes._cta_primary_colour("#555555") == "&H00FFFFFF"
 
     def test_no_accent_configured_falls_back_to_white(self):
         assert nodes._cta_primary_colour(None) == "&H00FFFFFF"
         assert nodes._cta_primary_colour("not-a-hex") == "&H00FFFFFF"
 
-    def test_a_light_accent_survives(self):
-        # Pale yellow clears the floor against a mid-grey backdrop.
-        assert nodes._cta_primary_colour("#FFF8B0") != "&H00FFFFFF"
+    def test_a_bright_accent_survives_on_the_dark_card(self):
+        # Naturespan's lime was unreadable on the old mid-grey scrim backdrop
+        # (2.1:1) but clears the floor against the near-black card (3.9:1) —
+        # bright-on-dark is exactly what the card buys.
+        assert nodes._cta_primary_colour("#80c020") != "&H00FFFFFF"
 
     def test_the_floor_is_wcag_large_text_and_achievable(self):
         from shared.image_processing import contrast_ratio, relative_luminance
@@ -113,10 +180,10 @@ class TestCTAContrast:
         # The floor must also be reachable, or the check is "always white".
         ceiling = contrast_ratio(
             relative_luminance((255, 255, 255)),
-            relative_luminance(nodes._SCRIM_WORST_BACKDROP),
+            relative_luminance(nodes._CARD_WORST_BACKDROP),
         )
         assert nodes._MIN_CTA_CONTRAST < ceiling, (
-            f"nothing can exceed {ceiling:.2f}:1 against the scrim, so this "
+            f"nothing can exceed {ceiling:.2f}:1 against the card, so this "
             "floor would reject every colour including near-white"
         )
 

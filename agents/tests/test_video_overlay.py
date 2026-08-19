@@ -203,16 +203,23 @@ class TestDistributeDurations:
 
 
 class TestOverlayEvents:
-    def test_timing_windows_are_padded(self):
+    def test_timing_windows_are_padded_and_capped(self):
         events = _overlay_events(
             _overlay_shots(["First line", "Second line"]), [5.0, 5.0], ""
         )
         assert len(events) == 2
-        assert events[0]["start"] == pytest.approx(0.2)
-        assert events[0]["end"] == pytest.approx(4.85)
+        # The hook waits for the first frame to land, then holds at most
+        # _CAPTION_MAX_HOLD_S — the footage runs clean to the cut after.
+        assert events[0]["style"] == "Hook"
+        assert events[0]["start"] == pytest.approx(video_nodes._HOOK_START_S)
+        assert events[0]["end"] == pytest.approx(
+            video_nodes._HOOK_START_S + video_nodes._CAPTION_MAX_HOLD_S
+        )
+        assert events[1]["style"] == "Overlay"
         assert events[1]["start"] == pytest.approx(5.2)
-        assert events[1]["end"] == pytest.approx(9.85)
-        assert all(e["style"] == "Overlay" for e in events)
+        assert events[1]["end"] == pytest.approx(
+            5.2 + video_nodes._CAPTION_MAX_HOLD_S
+        )
 
     def test_final_shot_shows_cta_with_cta_style(self):
         events = _overlay_events(
@@ -238,16 +245,18 @@ class TestOverlayEvents:
         )
         assert [e["text"] for e in events] == ["Hook", "Beat"]
 
-    def test_split_halves_with_same_text_merge_into_one_event(self):
+    def test_a_split_hook_never_shows_its_text_twice(self):
+        # _split_to_min_shots can halve the first beat into two rendered
+        # shots carrying the same line. The duplicate must not be promoted
+        # into the proof slot — the hook would show twice.
         events = _overlay_events(
             _overlay_shots(["Same beat", "Same beat", "Next"]),
             [4.0, 4.0, 4.0],
             "",
         )
-        assert len(events) == 2
-        assert events[0]["text"] == "Same beat"
-        assert events[0]["start"] == pytest.approx(0.2)
-        assert events[0]["end"] == pytest.approx(7.85)
+        texts = [e["text"] for e in events]
+        assert texts.count("Same beat") == 1
+        assert "Next" in texts
 
     def test_cta_spans_both_halves_of_a_split_final_shot(self):
         # _split_to_min_shots halves the last planned beat into two rendered
@@ -268,34 +277,38 @@ class TestOverlayEvents:
         assert cta["start"] == pytest.approx(10.2)
         assert cta["end"] == pytest.approx(19.85)
 
-    def test_cta_stays_on_the_last_shot_when_nothing_was_split(self):
+    def test_beats_are_hook_one_proof_and_cta(self):
         events = _overlay_events(
             _overlay_shots(["Hook", "Benefit", "Payoff"]),
             [5.0, 5.0, 5.0],
             "Shop now",
         )
-        assert [e["style"] for e in events] == ["Overlay", "Overlay", "CTA"]
+        assert [e["style"] for e in events] == ["Hook", "Overlay", "CTA"]
         assert events[-1]["start"] == pytest.approx(10.2)
 
     def test_sub_minimum_window_is_dropped(self):
         events = _overlay_events(_overlay_shots(["Blink"]), [0.4], "")
         assert events == []
 
-    def test_multi_shot_windows_always_clear_the_readable_minimum(self):
-        # Every rendered shot is >= MIN_SHOT_RENDER_S, so the multi-shot path
-        # can never produce a line too short to read — 8 shots included.
+    def test_a_captioned_every_shot_plan_still_renders_as_beats(self):
+        # Plans captioned every beat before 2026-08-19 ("should [not]
+        # necessarily be throughout the video" — user). Whatever the plan
+        # says, the burn shows at most hook + _MAX_MID_CAPTIONS + CTA.
         for count in (6, 7, 8):
             shots = _overlay_shots([f"Beat {i + 1}" for i in range(count)])
             durations = [TARGET_TOTAL_S / count] * count
             events = _overlay_events(shots, durations, "Shop now")
-            assert len(events) == count
+            assert len(events) == 2 + video_nodes._MAX_MID_CAPTIONS
+            assert [e["style"] for e in events][0] == "Hook"
+            assert [e["style"] for e in events][-1] == "CTA"
             assert all(
                 e["end"] - e["start"] >= _OVERLAY_MIN_ON_SCREEN_S for e in events
             )
 
     def test_unreadably_short_windows_hold_instead_of_flashing(self):
         # Legacy single-call path: an 8-beat plan spread over one ~5s clip
-        # would flash each line for 0.6s — the lines hold instead.
+        # would flash each line for 0.6s — a short beat holds into the clean
+        # windows that follow it instead.
         shots = _overlay_shots([f"Beat {i + 1}" for i in range(8)])
         events = _overlay_events(shots, [0.625] * 8, "")
         assert events
@@ -322,19 +335,24 @@ class TestOverlayEvents:
         # and would be padded away — it borrows from the held line instead.
         shots = _overlay_shots([f"Beat {i + 1}" for i in range(8)])
         events = _overlay_events(shots, [0.625] * 8, "Shop now")
-        assert [e["style"] for e in events] == ["Overlay", "CTA"]
         assert events[-1]["text"] == "Shop now"
-        # The CTA lands on exactly the readable minimum (float slack aside).
-        assert all(
-            e["end"] - e["start"] >= _OVERLAY_MIN_ON_SCREEN_S - 0.01
-            for e in events
+        assert events[-1]["style"] == "CTA"
+        # The CTA lands on at least the readable minimum (float slack aside).
+        assert (
+            events[-1]["end"] - events[-1]["start"]
+            >= _OVERLAY_MIN_ON_SCREEN_S - 0.01
         )
-        assert events[0]["end"] <= events[1]["start"]
+        for earlier, later in zip(events, events[1:]):
+            assert earlier["end"] <= later["start"]
 
-    def test_long_enough_windows_are_left_alone(self):
+    def test_the_proof_slot_goes_to_the_longest_middle_window(self):
         shots = _overlay_shots(["One", "Two", "Three"])
         events = _overlay_events(shots, [3.0, 3.0, 3.0], "")
-        assert [e["text"] for e in events] == ["One", "Two", "Three"]
+        # Equal windows: the LATER beat wins the proof slot — a proof lands
+        # after the story has set it up.
+        assert [e["text"] for e in events] == ["One", "Three"]
+        longer_mid = _overlay_events(shots, [3.0, 5.0, 3.0], "")
+        assert [e["text"] for e in longer_mid] == ["One", "Two"]
 
 
 class TestBrandAccentHex:
@@ -365,21 +383,26 @@ class TestBuildOverlayAss:
         doc = _build_overlay_ass(self._events(), "#f59e0b")
         assert "PlayResX: 1080" in doc
         assert "PlayResY: 1920" in doc
+        assert f"Style: Hook,Poppins,{video_nodes._HOOK_FONT_SIZE}," in doc
         assert f"Style: Overlay,Poppins,{_OVERLAY_FONT_SIZE}," in doc
-        # Amber measures 2.21:1 over the scrim, under the large-text floor, so
-        # the CTA is demoted to white rather than shipped unreadable.
-        assert f"Style: CTA,Poppins,{_CTA_FONT_SIZE},&H00FFFFFF," in doc
-        # Two type lines, each with a scrim plate emitted under it.
+        # Amber reads 3.2:1 on the caption card's worst backdrop — above the
+        # large-text floor — so the CTA takes the brand accent.
+        assert f"Style: CTA,Poppins,{_CTA_FONT_SIZE},&H000B9EF5," in doc
+        # Two beats (hook + CTA), each riding its own rounded card.
         assert doc.count("Dialogue:") == 4
-        assert doc.count(",Scrim,,") == 2
-        # Bottom-left on the safe baseline, settling upward. The old
-        # \an5\pos(540,1130) centred the line out to x=1015 — under the action
-        # rail — and dropped it onto the hero product.
+        assert doc.count(",Card,,") == 2
+        assert ",Scrim,," not in doc
+        # The hook is high-centre; the CTA bottom-left on the safe baseline.
+        hx, hy = video_nodes._HOOK_POS
+        assert f"\\an5\\move({hx},{hy + 24},{hx},{hy},0,220)" in doc
         assert "\\an1\\move(80,1444,80,1420,0,220)" in doc
-        assert "\\fad(180,220)" in doc
-        assert "\\an5" not in doc
-        assert "0:00:00.20" in doc
-        assert "0:00:04.85" in doc
+        assert "\\fad(200,260)" in doc
+        # The hook enters after the first frame lands.
+        assert "0:00:00.35" in doc
+
+    def test_a_low_contrast_accent_is_demoted_to_white(self):
+        doc = _build_overlay_ass(self._events(), "#555555")
+        assert f"Style: CTA,Poppins,{_CTA_FONT_SIZE},&H00FFFFFF," in doc
 
     def test_no_accent_falls_back_to_white_cta(self):
         doc = _build_overlay_ass(self._events(), None)
@@ -393,7 +416,7 @@ class TestBuildOverlayAss:
         dialogue = [
             ln
             for ln in doc.splitlines()
-            if ln.startswith("Dialogue:") and ",Scrim,," not in ln
+            if ln.startswith("Dialogue:") and ",Card,," not in ln
         ][0]
         text_part = dialogue.split("}", 1)[1]
         assert "{" not in text_part and "}" not in text_part
@@ -517,7 +540,8 @@ class TestBurnOverlaysStage:
         assert out == b"BURNED"
         assert meta == {
             "overlay_burn": "ok",
-            "overlay_lines": 4,
+            # Beat system: hook + one proof + CTA, whatever the plan says.
+            "overlay_lines": 3,
             # No grade_params passed, so nothing was graded in this pass.
             "graded_shots": 0,
         }
@@ -555,10 +579,11 @@ class TestBurnOverlaysStage:
         out, meta = _run(_burn_overlays(b"MASTER", shots, "Shop now", {}))
         assert meta["overlay_burn"] == "ok"
         doc = written["ass"]
-        # Shot 1 spans 0..15s of the 30s clip → its line ends at 14.85s
-        assert "0:00:00.20" in doc
-        assert "0:00:14.85" in doc
-        # CTA (final 6s window: 24..30) → 24.2..29.85
+        # Shot 1 spans 0..15s of the 30s clip → the hook enters at 0.35s and
+        # holds its capped beat, not the whole window.
+        assert "0:00:00.35" in doc
+        assert "0:00:03.55" in doc
+        # CTA (final 6s window: 24..30) → 24.2..29.85, uncapped.
         assert "0:00:24.20" in doc
         assert "0:00:29.85" in doc
 
@@ -577,8 +602,9 @@ class TestRenderVideoOverlayWiring:
         assert result.get("status") != "failed"
         meta = result["video_meta"]
         assert meta["overlay_burn"] == "ok"
-        # 4 shot lines + the CTA on the final shot = 5 events
-        assert meta["overlay_lines"] == 5
+        # Beat system with an end card: the card carries the CTA, so the
+        # burn shows hook + one proof line only.
+        assert meta["overlay_lines"] == 2
         burn_calls = [
             c
             for c in h.ffmpeg_calls
@@ -648,11 +674,11 @@ class TestCtaFitsItsBox:
             {"text": "Shop certified today", "style": "CTA", "start": 0.0, "end": 4.0}
         ]
         doc = video_nodes._build_overlay_ass(events, accent_hex=None)
-        # The scrim plate is a vector drawing, not type — measure the text only.
+        # The card plate is a vector drawing, not type — measure the text only.
         dialogue = [
             ln
             for ln in doc.splitlines()
-            if ln.startswith("Dialogue:") and ",Scrim,," not in ln
+            if ln.startswith("Dialogue:") and ",Card,," not in ln
         ]
 
         assert len(dialogue) == 1
