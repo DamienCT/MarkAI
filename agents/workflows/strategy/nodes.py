@@ -8,7 +8,11 @@ from typing import Any
 
 from langgraph.types import interrupt
 
-from shared.brand_context import build_brand_context_block, get_enabled_channels
+from shared.brand_context import (
+    ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE,
+    build_brand_context_block,
+    get_enabled_channels,
+)
 from shared.llm import (
     chat_completion,
     generate_executive_summary_plain,
@@ -25,6 +29,10 @@ from shared.tools.database import (
 from workflows.strategy.state import StrategyState
 
 logger = logging.getLogger(__name__)
+
+# _ENGLISH_ONLY_RULE (imported above from shared.brand_context) is injected
+# into every system prompt that produces user-facing text here: positioning,
+# pillars, audiences, cadence, themes.
 
 
 def _brand_ctx(state: StrategyState) -> str:
@@ -83,7 +91,8 @@ async def generate_positioning(state: StrategyState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a brand strategist. Based on the brand's target market and the research data, define a clear brand positioning. Return JSON with: value_proposition, differentiators, brand_voice, tone_attributes, key_messages, brand_archetype (the brand's Jungian archetype, e.g. Caregiver, Sage, Creator), emotional_territory (the emotional space the brand owns), competitive_differentiation (array of objects comparing this brand vs top 3 competitors across 5 dimensions, each object having: dimension, brand_score (1-5), competitor_scores (object with competitor name as key and score 1-5 as value)).",
+                "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                "You are a brand strategist. Based on the brand's target market and the research data, define a clear brand positioning. Return JSON with: value_proposition, differentiators, brand_voice, tone_attributes, key_messages, brand_archetype (the brand's Jungian archetype, e.g. Caregiver, Sage, Creator), emotional_territory (the emotional space the brand owns), competitive_differentiation (array of objects comparing this brand vs top 3 competitors across 5 dimensions, each object having: dimension, brand_score (1-5), competitor_scores (object with competitor name as key and score 1-5 as value)).",
             },
             {
                 "role": "user",
@@ -115,7 +124,8 @@ async def define_pillars(state: StrategyState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a content strategist. Based on the brand's target market, define 4-6 content pillars for this brand. Each pillar should have: name, description, content_types, percentage_of_content, example_topics, audience_alignment (array of persona names this pillar primarily serves), seasonal_emphasis (which months/quarters this pillar gets more weight), platform_fit (which platforms are best for this pillar's content), visual_style (visual direction for this pillar — colors, mood, photography style), pillar_rationale (why this pillar matters for this brand's strategic goals). Every pillar must comply with the brand NEVER-guardrails in the brand block, and platform_fit may only reference the enabled platforms listed there. Return a JSON array.",
+                "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                "You are a content strategist. Based on the brand's target market, define 4-6 content pillars for this brand. Each pillar should have: name, description, content_types, percentage_of_content, example_topics, audience_alignment (array of persona names this pillar primarily serves), seasonal_emphasis (which months/quarters this pillar gets more weight), platform_fit (which platforms are best for this pillar's content), visual_style (visual direction for this pillar — colors, mood, photography style), pillar_rationale (why this pillar matters for this brand's strategic goals). Every pillar must comply with the brand NEVER-guardrails in the brand block, and platform_fit may only reference the enabled platforms listed there. Return a JSON array.",
             },
             {
                 "role": "user",
@@ -157,7 +167,8 @@ async def define_audiences(state: StrategyState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a marketing strategist. Based on the brand's target market, define 3-5 target audience segments. IMPORTANT: Cross-reference the research personas below. Each segment must include a 'persona_ref' field naming which research persona it aligns with. Do NOT invent new audiences that contradict the research personas. Each should have: segment_name, persona_ref, description, demographics, platforms, content_preferences, engagement_strategy, best_times. Return a JSON object with a single key \"audiences\" whose value is an array of the segment objects.",
+                "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                "You are a marketing strategist. Based on the brand's target market, define 3-5 target audience segments. IMPORTANT: Cross-reference the research personas below. Each segment must include a 'persona_ref' field naming which research persona it aligns with. Do NOT invent new audiences that contradict the research personas. Each should have: segment_name, persona_ref, description, demographics, platforms, content_preferences, engagement_strategy, best_times. Return a JSON object with a single key \"audiences\" whose value is an array of the segment objects.",
             },
             {
                 "role": "user",
@@ -209,6 +220,7 @@ async def plan_cadence(state: StrategyState) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
+                    f"{_ENGLISH_ONLY_RULE}\n\n"
                     "You are a social media strategist. Create a posting cadence plan "
                     f"for EXACTLY these platforms: {channels_str}.\n\n"
                     "Return a JSON object with each platform as a key. Each platform MUST have:\n"
@@ -266,7 +278,8 @@ async def generate_themes(state: StrategyState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a content strategist. Based on the brand's target market, generate monthly themes for ALL 12 months starting from the current date. Each month should have: month (month name and year), theme_name (overarching theme), description, sub_themes (array of 4 weekly sub-themes, each with: week as 'W1'/'W2'/'W3'/'W4', focus as sub-theme name, pillar as which content pillar this week emphasizes, primary_audience as which persona to prioritize this week), key_dates (array of notable dates in this month taken ONLY from the significant-events list in the user message — copy the exact date strings from that list; if the list has no events in a month, key_dates MUST be an empty array; NEVER add holidays, festivals, or awareness days from memory. Each key_date has: date as the exact date string from the events list, event as the event title from the list, content_angle as specific angle for this date, format as recommended content format, audience as target persona), pillar_rotation (how pillars rotate across the 4 weeks), key_campaigns, pillar_focus. Themes, sub-themes and campaigns must comply with the brand NEVER-guardrails in the brand block and reference only the enabled platforms listed there. Return a JSON object with a single key \"themes\" whose value is the array of 12 month objects.",
+                "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                "You are a content strategist. Based on the brand's target market, generate monthly themes for ALL 12 months starting from the current date. Each month should have: month (month name and year), theme_name (overarching theme), description, sub_themes (array of 4 weekly sub-themes, each with: week as 'W1'/'W2'/'W3'/'W4', focus as sub-theme name, pillar as which content pillar this week emphasizes, primary_audience as which persona to prioritize this week), key_dates (array of notable dates in this month taken ONLY from the significant-events list in the user message — copy the exact date strings from that list; if the list has no events in a month, key_dates MUST be an empty array; NEVER add holidays, festivals, or awareness days from memory. Each key_date has: date as the exact date string from the events list, event as the event title from the list, content_angle as specific angle for this date, format as recommended content format, audience as target persona), pillar_rotation (how pillars rotate across the 4 weeks), key_campaigns, pillar_focus. Themes, sub-themes and campaigns must comply with the brand NEVER-guardrails in the brand block and reference only the enabled platforms listed there. Return a JSON object with a single key \"themes\" whose value is the array of 12 month objects.",
             },
             {
                 "role": "user",

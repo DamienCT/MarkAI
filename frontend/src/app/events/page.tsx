@@ -33,6 +33,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EventDialog } from "@/components/events/EventDialog";
 import { DetectEventsDialog } from "@/components/events/DetectEventsDialog";
 import { api } from "@/lib/api";
+import { getStoredBrandValue } from "@/lib/brand-selection";
 import type { Brand, Event } from "@/types";
 
 const SCOPE_ALL = "all";
@@ -105,6 +106,22 @@ export default function EventsPage() {
       setLoading(false);
     }
   }, [scope, categoryFilter, upcomingOnly]);
+
+  // Follow the global sidebar brand selection: hydrate from localStorage after
+  // mount (client-only, avoids SSR mismatch) and update when it changes. The
+  // stored value ("all" or a brand uuid) is a valid `scope`; a brand scope
+  // includes that brand's events plus global ones. The local scope dropdown
+  // still works; the global selection wins when the event fires.
+  useEffect(() => {
+    setScope(getStoredBrandValue());
+    // `Event` is shadowed by our domain type import — qualify the DOM one.
+    const handler = (e: globalThis.Event) => {
+      const brandId = (e as CustomEvent).detail?.brandId;
+      setScope(brandId || SCOPE_ALL);
+    };
+    window.addEventListener("brand-changed", handler);
+    return () => window.removeEventListener("brand-changed", handler);
+  }, []);
 
   useEffect(() => {
     async function fetchBrands() {

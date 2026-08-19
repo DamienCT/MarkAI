@@ -1,0 +1,524 @@
+"""Tests for the burned-in overlay text pass — ASS builder (timing windows,
+escaping, hex color conversion, wrap/clamp), the proportional single-shot
+distribution, the burn command, and the burn stage's failure/success paths
+with ffmpeg fully mocked."""
+
+import asyncio
+import os
+import subprocess
+import sys
+
+import pytest
+
+# Add the agents directory to the path so workflows/shared can be imported
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import workflows.video.nodes as video_nodes
+from workflows.video.nodes import (
+    MAX_OVERLAY_WORDS,
+    _OVERLAY_MAX_CHARS,
+    _ass_escape,
+    _brand_accent_hex,
+    _build_overlay_ass,
+    _burn_cmd,
+    _burn_overlays,
+    _clean_overlay_text,
+    _distribute_durations,
+    _filter_path,
+    _format_ass_time,
+    _hex_to_ass_color,
+    _normalize_shot_plan,
+    _overlay_events,
+    _wrap_overlay_text,
+)
+
+
+def _overlay_shots(texts, duration=5.0):
+    return [
+        {
+            "index": i + 1,
+            "duration_s": duration,
+            "scene": f"SCENE CONTEXT: beat {i + 1}",
+            "overlay_text": t,
+        }
+        for i, t in enumerate(texts)
+    ]
+
+
+class TestHexToAssColor:
+    def test_rrggbb_becomes_bbggrr(self):
+        assert _hex_to_ass_color("#f59e0b") == "&H0B9EF5&"
+
+    def test_hash_optional_and_case_insensitive(self):
+        assert _hex_to_ass_color("F59E0B") == "&H0B9EF5&"
+
+    def test_white_and_pure_channels(self):
+        assert _hex_to_ass_color("#ffffff") == "&HFFFFFF&"
+        assert _hex_to_ass_color("#ff0000") == "&H0000FF&"
+        assert _hex_to_ass_color("#0000ff") == "&HFF0000&"
+
+    def test_invalid_returns_none(self):
+        for bad in ("", None, "#fff", "#gggggg", "red", "#f59e0b0"):
+            assert _hex_to_ass_color(bad) is None
+
+
+class TestAssEscape:
+    def test_braces_and_backslash_neutralized(self):
+        out = _ass_escape("Buy {now} 50\\ off")
+        assert "{" not in out and "}" not in out
+        assert "\\" not in out
+
+    def test_newlines_collapse_to_spaces(self):
+        assert _ass_escape("two\nlines\r\nhere") == "two lines here"
+
+    def test_none_and_empty(self):
+        assert _ass_escape(None) == ""
+        assert _ass_escape("   ") == ""
+
+
+class TestWrapOverlayText:
+    def test_short_line_stays_single(self):
+        assert _wrap_overlay_text("Fresh drop") == "Fresh drop"
+
+    def test_wraps_at_eighteen_chars_two_lines(self):
+        out = _wrap_overlay_text("Slow mornings start with hazelnut")
+        lines = out.split("\\N")
+        assert 1 < len(lines) <= 2
+        assert all(len(line) <= 18 for line in lines)
+
+    def test_overflow_beyond_two_lines_is_dropped(self):
+        out = _wrap_overlay_text(
+            "wordone wordtwo wordthree wordfour wordfive wordsix wordseven"
+        )
+        lines = out.split("\\N")
+        assert len(lines) == 2
+        assert all(len(line) <= 18 for line in lines)
+
+    def test_giant_word_is_truncated_not_overflowed(self):
+        out = _wrap_overlay_text("supercalifragilisticexpialidocious")
+        assert len(out) <= 18
+
+    def test_dropped_words_are_logged_as_a_warning(self, caplog):
+        # Losing the tail of an on-screen line is a visible content defect —
+        # QA must see it in the logs, not have it silently trimmed.
+        with caplog.at_level("WARNING", logger=video_nodes.logger.name):
+            _wrap_overlay_text(
+                "wordone wordtwo wordthree wordfour wordfive wordsix"
+            )
+        assert any("wordfive" in r.getMessage() for r in caplog.records)
+
+    def test_fitting_text_logs_nothing(self, caplog):
+        with caplog.at_level("WARNING", logger=video_nodes.logger.name):
+            _wrap_overlay_text("Fresh drop today")
+        assert caplog.records == []
+
+
+class TestFormatAssTime:
+    def test_zero(self):
+        assert _format_ass_time(0) == "0:00:00.00"
+
+    def test_minutes_and_centiseconds(self):
+        assert _format_ass_time(83.456) == "0:01:23.46"
+
+    def test_negative_clamps_to_zero(self):
+        assert _format_ass_time(-3) == "0:00:00.00"
+
+
+class TestCleanOverlayText:
+    def test_absent_defaults_to_empty(self):
+        assert _clean_overlay_text(None) == ""
+        assert _clean_overlay_text("") == ""
+
+    def test_newlines_stripped(self):
+        assert _clean_overlay_text("one\ntwo\nthree") == "one two three"
+
+    def test_word_clamp(self):
+        out = _clean_overlay_text("a b c d e f g h")
+        assert len(out.split()) == MAX_OVERLAY_WORDS
+
+    def test_char_clamp_to_the_two_line_box(self):
+        # 6 words that would overflow the 2x18-char box: the tail is dropped
+        # HERE (whole words) instead of silently at burn time.
+        out = _clean_overlay_text(
+            "Slow mornings start with hazelnut coldbrew"
+        )
+        assert len(out) <= _OVERLAY_MAX_CHARS
+        assert out == "Slow mornings start with hazelnut"
+
+    def test_char_clamp_never_slices_mid_word(self):
+        out = _clean_overlay_text("aaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbb cccccccc")
+        assert out.split() == ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]
+
+    def test_single_oversized_word_survives_truncated(self):
+        # One word longer than the whole box: keep a one-line truncation
+        # rather than clamping the line away to ''.
+        out = _clean_overlay_text("supercalifragilisticexpialidociousness")
+        assert out == "supercalifragilist"
+
+    def test_normalize_shot_plan_carries_overlay_text(self):
+        plan = {
+            "hook_line": "Hook",
+            "shots": [
+                {
+                    "index": 1,
+                    "duration_s": 3,
+                    "scene": "SCENE CONTEXT: open",
+                    "overlay_text": "Craving\nsomething  real?",
+                },
+                {"index": 2, "duration_s": 3, "scene": "SCENE CONTEXT: mid"},
+            ],
+            "caption": "cap",
+            "hashtags": [],
+            "cta": "Shop now",
+        }
+        normalized = _normalize_shot_plan(plan)
+        assert normalized["shots"][0]["overlay_text"] == "Craving something real?"
+        # Old plans without the field still work — default ''
+        assert normalized["shots"][1]["overlay_text"] == ""
+
+
+class TestDistributeDurations:
+    def test_proportional_and_sums_exactly(self):
+        out = _distribute_durations([2.5, 2.0, 2.0], 26.0)
+        assert sum(out) == pytest.approx(26.0)
+        assert out[0] == pytest.approx(10.0, abs=0.05)
+        assert out[1] == pytest.approx(8.0, abs=0.05)
+
+    def test_zero_weights_fall_back_to_equal_split(self):
+        out = _distribute_durations([0, 0, 0, 0], 20.0)
+        assert out == [5.0, 5.0, 5.0, 5.0]
+
+    def test_zero_total_or_empty(self):
+        assert _distribute_durations([3, 3], 0) == [0.0, 0.0]
+        assert _distribute_durations([], 20.0) == []
+
+
+class TestOverlayEvents:
+    def test_timing_windows_are_padded(self):
+        events = _overlay_events(
+            _overlay_shots(["First line", "Second line"]), [5.0, 5.0], ""
+        )
+        assert len(events) == 2
+        assert events[0]["start"] == pytest.approx(0.2)
+        assert events[0]["end"] == pytest.approx(4.85)
+        assert events[1]["start"] == pytest.approx(5.2)
+        assert events[1]["end"] == pytest.approx(9.85)
+        assert all(e["style"] == "Overlay" for e in events)
+
+    def test_final_shot_shows_cta_with_cta_style(self):
+        events = _overlay_events(
+            _overlay_shots(["Hook line", "Benefit", "Payoff"]),
+            [5.0, 5.0, 5.0],
+            "Shop now",
+        )
+        assert events[-1]["text"] == "Shop now"
+        assert events[-1]["style"] == "CTA"
+        # Non-final shots keep their own lines
+        assert events[0]["text"] == "Hook line"
+
+    def test_empty_cta_keeps_final_overlay_text(self):
+        events = _overlay_events(
+            _overlay_shots(["One", "Two"]), [5.0, 5.0], ""
+        )
+        assert events[-1]["text"] == "Two"
+        assert events[-1]["style"] == "Overlay"
+
+    def test_empty_texts_are_skipped(self):
+        events = _overlay_events(
+            _overlay_shots(["Hook", "", "Beat"]), [5.0, 5.0, 5.0], ""
+        )
+        assert [e["text"] for e in events] == ["Hook", "Beat"]
+
+    def test_split_halves_with_same_text_merge_into_one_event(self):
+        events = _overlay_events(
+            _overlay_shots(["Same beat", "Same beat", "Next"]),
+            [4.0, 4.0, 4.0],
+            "",
+        )
+        assert len(events) == 2
+        assert events[0]["text"] == "Same beat"
+        assert events[0]["start"] == pytest.approx(0.2)
+        assert events[0]["end"] == pytest.approx(7.85)
+
+    def test_cta_spans_both_halves_of_a_split_final_shot(self):
+        # _split_to_min_shots halves the last planned beat into two rendered
+        # shots sharing plan index 2 — the CTA must cover BOTH, not just the
+        # trailing half.
+        shots = [
+            {"index": 1, "duration_s": 5.0, "overlay_text": "Hook"},
+            {"index": 1, "duration_s": 5.0, "overlay_text": "Hook"},
+            {"index": 2, "duration_s": 5.0, "overlay_text": "Payoff"},
+            {"index": 2, "duration_s": 5.0, "overlay_text": "Payoff"},
+        ]
+        events = _overlay_events(shots, [5.0, 5.0, 5.0, 5.0], "Shop now")
+        assert len(events) == 2
+        cta = events[-1]
+        assert cta["text"] == "Shop now"
+        assert cta["style"] == "CTA"
+        # Starts at the FIRST half of the split beat (10s), not 15s.
+        assert cta["start"] == pytest.approx(10.2)
+        assert cta["end"] == pytest.approx(19.85)
+
+    def test_cta_stays_on_the_last_shot_when_nothing_was_split(self):
+        events = _overlay_events(
+            _overlay_shots(["Hook", "Benefit", "Payoff"]),
+            [5.0, 5.0, 5.0],
+            "Shop now",
+        )
+        assert [e["style"] for e in events] == ["Overlay", "Overlay", "CTA"]
+        assert events[-1]["start"] == pytest.approx(10.2)
+
+    def test_sub_minimum_window_is_dropped(self):
+        events = _overlay_events(_overlay_shots(["Blink"]), [0.4], "")
+        assert events == []
+
+
+class TestBrandAccentHex:
+    def test_palette_accent_preferred(self):
+        brand = {"color_palette": {"primary": "#111111", "accent": "#f59e0b"}}
+        assert _brand_accent_hex(brand) == "#f59e0b"
+
+    def test_falls_back_to_primary_then_legacy_colors(self):
+        assert _brand_accent_hex({"color_palette": {"primary": "#222222"}}) == "#222222"
+        brand = {"brand_guidelines": {"colors": {"accent": "0b9ef5"}}}
+        assert _brand_accent_hex(brand) == "#0b9ef5"
+
+    def test_json_string_palette_and_missing(self):
+        assert _brand_accent_hex({"color_palette": '{"accent": "#abcdef"}'}) == "#abcdef"
+        assert _brand_accent_hex({}) is None
+        assert _brand_accent_hex({"color_palette": {"accent": "tomato"}}) is None
+
+
+class TestBuildOverlayAss:
+    def _events(self):
+        return _overlay_events(
+            _overlay_shots(["Hook line here", "Benefit beat"]),
+            [5.0, 5.0],
+            "Shop now",
+        )
+
+    def test_document_structure_and_animation_tags(self):
+        doc = _build_overlay_ass(self._events(), "#f59e0b")
+        assert "PlayResX: 1080" in doc
+        assert "PlayResY: 1920" in doc
+        assert "Style: Overlay,Poppins,76," in doc
+        assert "Style: CTA,Poppins,88,&H000B9EF5," in doc
+        assert doc.count("Dialogue:") == 2
+        assert "\\an5\\pos(540,1130)" in doc
+        assert "\\fad(250,250)" in doc
+        assert "\\fscx90\\fscy90\\t(0,250,\\fscx100\\fscy100)" in doc
+        assert "0:00:00.20" in doc
+        assert "0:00:04.85" in doc
+
+    def test_no_accent_falls_back_to_white_cta(self):
+        doc = _build_overlay_ass(self._events(), None)
+        assert "Style: CTA,Poppins,88,&H00FFFFFF," in doc
+
+    def test_metacharacters_escaped_in_dialogue(self):
+        events = _overlay_events(
+            _overlay_shots(["Buy {now} 50\\ off"]), [5.0], ""
+        )
+        doc = _build_overlay_ass(events)
+        dialogue = [ln for ln in doc.splitlines() if ln.startswith("Dialogue:")][0]
+        text_part = dialogue.split("}", 1)[1]
+        assert "{" not in text_part and "}" not in text_part
+        assert "\\" not in text_part.replace("\\N", "")
+
+
+class TestBurnCmd:
+    def test_master_spec_and_audio_copy(self):
+        cmd = _burn_cmd("/tmp/in.mp4", "/tmp/o.ass", "/tmp/out.mp4", "/fonts")
+        joined = " ".join(cmd)
+        assert "ass=/tmp/o.ass:fontsdir=/fonts,fps=30,format=yuv420p" in joined
+        assert "-crf 19" in joined
+        assert "-preset medium" in joined
+        assert "-profile:v high" in joined
+        assert "-g 60" in joined
+        assert "-c:a copy" in joined
+        assert "+faststart" in joined
+        assert cmd[-1] == "/tmp/out.mp4"
+
+    def test_fontsdir_omitted_when_none(self):
+        cmd = _burn_cmd("in.mp4", "o.ass", "out.mp4", None)
+        assert "fontsdir" not in " ".join(cmd)
+
+    def test_filter_path_escapes_colons_and_backslashes(self):
+        assert _filter_path("C:\\tmp\\o.ass") == "C\\:/tmp/o.ass"
+
+    def test_filter_path_escapes_commas_quotes_and_semicolons(self):
+        # An unescaped comma would split the -vf chain and make ffmpeg parse
+        # the rest of the path as another filter.
+        assert _filter_path("/tmp/a,b/o.ass") == "/tmp/a\\,b/o.ass"
+        assert _filter_path("/tmp/it's/o.ass") == "/tmp/it\\'s/o.ass"
+        assert _filter_path("/tmp/a;b/o.ass") == "/tmp/a\\;b/o.ass"
+
+    def test_comma_in_path_cannot_split_the_vf_chain(self):
+        cmd = _burn_cmd("in.mp4", "/tmp/reel,1/o.ass", "out.mp4", None)
+        vf = cmd[cmd.index("-vf") + 1]
+        # Exactly one unescaped comma: the one separating ass= from fps=.
+        unescaped = [
+            i
+            for i, ch in enumerate(vf)
+            if ch == "," and (i == 0 or vf[i - 1] != "\\")
+        ]
+        assert len(unescaped) == 2  # ass=...,fps=30,format=yuv420p
+        assert vf.startswith("ass=/tmp/reel\\,1/o.ass,")
+
+
+# ── Burn stage (ffmpeg mocked) ─────────────────────────────────────────────
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+class TestBurnOverlaysStage:
+    def test_ffmpeg_failure_keeps_unburned_master(self, monkeypatch):
+        monkeypatch.setattr(video_nodes, "_ffmpeg_ok", lambda: True)
+
+        def failing_ffmpeg(args, timeout=300):
+            return subprocess.CompletedProcess(
+                args=args, returncode=1, stdout=b"",
+                stderr=b"No such filter: 'ass'",
+            )
+
+        monkeypatch.setattr(video_nodes, "_run_ffmpeg", failing_ffmpeg)
+        out, meta = _run(
+            _burn_overlays(
+                b"MASTER",
+                _overlay_shots(["Hook", "Beat", "More", "End"]),
+                "Shop now",
+                {},
+                durations=[5.0, 5.0, 5.0, 5.0],
+            )
+        )
+        assert out == b"MASTER"
+        assert meta["overlay_burn"].startswith("failed:")
+        assert "ass" in meta["overlay_burn"]
+        assert "overlay_lines" not in meta
+
+    def test_ffmpeg_unavailable(self, monkeypatch):
+        monkeypatch.setattr(video_nodes, "_ffmpeg_ok", lambda: False)
+        out, meta = _run(
+            _burn_overlays(
+                b"MASTER", _overlay_shots(["Hook"]), "Go", {}, durations=[5.0]
+            )
+        )
+        assert out == b"MASTER"
+        assert meta["overlay_burn"] == "failed:ffmpeg unavailable"
+
+    def test_no_text_at_all_is_skipped_without_ffmpeg(self, monkeypatch):
+        monkeypatch.setattr(
+            video_nodes, "_ffmpeg_ok", lambda: pytest.fail("must not be called")
+        )
+        out, meta = _run(
+            _burn_overlays(b"MASTER", _overlay_shots(["", ""]), "", {})
+        )
+        assert out == b"MASTER"
+        assert meta["overlay_burn"].startswith("skipped:")
+
+    def test_success_returns_burned_bytes_and_line_count(self, monkeypatch):
+        monkeypatch.setattr(video_nodes, "_ffmpeg_ok", lambda: True)
+        captured = {}
+
+        def ok_ffmpeg(args, timeout=300):
+            captured["args"] = args
+            with open(args[-1], "wb") as fh:
+                fh.write(b"BURNED")
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout=b"", stderr=b""
+            )
+
+        monkeypatch.setattr(video_nodes, "_run_ffmpeg", ok_ffmpeg)
+        out, meta = _run(
+            _burn_overlays(
+                b"MASTER",
+                _overlay_shots(["Hook", "Beat", "More", "End"]),
+                "Shop now",
+                {"color_palette": {"accent": "#f59e0b"}},
+                durations=[5.0, 5.0, 5.0, 5.0],
+            )
+        )
+        assert out == b"BURNED"
+        assert meta == {"overlay_burn": "ok", "overlay_lines": 4}
+        vf = captured["args"][captured["args"].index("-vf") + 1]
+        assert vf.startswith("ass=")
+
+    def test_single_shot_distribution_uses_probed_duration(self, monkeypatch):
+        # durations=None → the planned beats are spread proportionally
+        # across the clip's REAL ffprobe duration (30s here, plan sums 10s).
+        monkeypatch.setattr(video_nodes, "_ffmpeg_ok", lambda: True)
+        monkeypatch.setattr(
+            video_nodes, "_probe_shot", lambda path: {"duration": 30.0}
+        )
+        written = {}
+
+        def ok_ffmpeg(args, timeout=300):
+            with open(args[-1], "wb") as fh:
+                fh.write(b"BURNED")
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout=b"", stderr=b""
+            )
+
+        real_write_text = video_nodes._write_text
+
+        def capture_write_text(path, text):
+            if path.endswith(".ass"):
+                written["ass"] = text
+            real_write_text(path, text)
+
+        monkeypatch.setattr(video_nodes, "_run_ffmpeg", ok_ffmpeg)
+        monkeypatch.setattr(video_nodes, "_write_text", capture_write_text)
+        shots = _overlay_shots(["Hook", "Beat", "End"], duration=0)
+        for s, d in zip(shots, (5.0, 3.0, 2.0)):
+            s["duration_s"] = d
+        out, meta = _run(_burn_overlays(b"MASTER", shots, "Shop now", {}))
+        assert meta["overlay_burn"] == "ok"
+        doc = written["ass"]
+        # Shot 1 spans 0..15s of the 30s clip → its line ends at 14.85s
+        assert "0:00:00.20" in doc
+        assert "0:00:14.85" in doc
+        # CTA (final 6s window: 24..30) → 24.2..29.85
+        assert "0:00:24.20" in doc
+        assert "0:00:29.85" in doc
+
+
+class TestRenderVideoOverlayWiring:
+    def test_multi_shot_master_gets_burn_pass(self, monkeypatch):
+        from tests.test_video_multishot import _Harness, _state
+
+        h = _Harness(monkeypatch)
+        state = _state([4, 4, 4, 4, 4])
+        for i, shot in enumerate(state["shot_plan"]["shots"]):
+            shot["overlay_text"] = f"Beat {i + 1}"
+        state["brand"] = {"color_palette": {"accent": "#f59e0b"}}
+        result = asyncio.run(video_nodes.render_video(state))
+
+        assert result.get("status") != "failed"
+        meta = result["video_meta"]
+        assert meta["overlay_burn"] == "ok"
+        # 4 shot lines + the CTA on the final shot = 5 events
+        assert meta["overlay_lines"] == 5
+        burn_calls = [
+            c
+            for c in h.ffmpeg_calls
+            if any(str(a).startswith("ass=") for a in c)
+        ]
+        assert len(burn_calls) == 1
+        assert "-c:a" in burn_calls[0]
+
+    def test_legacy_path_burn_failure_never_fails_item(self, monkeypatch):
+        from tests.test_video_multishot import _Harness, _state
+
+        h = _Harness(monkeypatch)
+        # No ffmpeg → degraded single-call render AND a failed (not fatal)
+        # burn pass: the item keeps the unburned clip.
+        monkeypatch.setattr(video_nodes, "_ffmpeg_ok", lambda: False)
+        state = _state([4, 4, 4, 4, 4])
+        state["shot_plan"]["shots"][0]["overlay_text"] = "Hook"
+        result = asyncio.run(video_nodes.render_video(state))
+
+        assert result.get("status") != "failed"
+        assert result["video_bytes"] == b"CLIP1"
+        meta = result["video_meta"]
+        assert meta["overlay_burn"] == "failed:ffmpeg unavailable"

@@ -2,11 +2,12 @@
 
 Reuses the content workflow's context/brief/product-image machinery
 (load_context, enrich_user_brief, source_product_image_node) and adds the
-video-specific stages: plan_shots (LLM shot list), make_keyframe (branded
-product keyframe at 9:16), render_video (one shared.video provider call per
-shot, chained i2v from the previous shot's last frame, ffmpeg concat into a
-20-35s master reel), and store_video (MinIO + video_jobs/media_assets/content
-persistence).
+video-specific stages: plan_shots (LLM shot list with per-shot on-screen
+overlay lines), make_keyframe (branded product keyframe at 9:16),
+render_video (one shared.video provider call per shot, chained i2v from the
+previous shot's last frame, ffmpeg concat into a 20-35s master reel, then a
+best-effort libass burn of the overlay text onto the master), and
+store_video (MinIO + video_jobs/media_assets/content persistence).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
+from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.llm import chat_completion, generate_image, parse_llm_json
 from shared.sanitize import sanitize_for_prompt
 from shared.tools.database import (
@@ -76,6 +78,29 @@ _VEO_SHOT_GRID_LONG = 6.0
 
 # Multi-shot progress: shots share 0..95, the concat/finishing pass gets the rest.
 _CONCAT_PROGRESS_START = 95
+
+# Burned-in overlay text: each planned shot carries an overlay_text line that
+# is composited onto the FINISHED master as an .ass subtitle track rendered by
+# ffmpeg's libass `ass` filter, using the brand fonts shipped in the agents
+# image. The pass is strictly best-effort — any failure keeps the unburned
+# master (see _burn_overlays).
+FONTS_DIR = "/usr/share/fonts/truetype/markai"
+MAX_OVERLAY_WORDS = 6
+_OVERLAY_WRAP_CHARS = 18  # ~18 chars/line at 76px keeps x within 65..1015
+_OVERLAY_MAX_LINES = 2
+# The whole box holds two 18-char lines — overlay_text is clamped to that
+# budget at plan normalization so _wrap_overlay_text rarely has to drop words
+# (it warns when it still does; a greedy wrap can waste part of a line).
+_OVERLAY_MAX_CHARS = _OVERLAY_WRAP_CHARS * _OVERLAY_MAX_LINES
+_OVERLAY_PAD_IN_S = 0.2  # a line appears 0.2s into its shot window
+_OVERLAY_PAD_OUT_S = 0.15  # and clears 0.15s before the cut
+_OVERLAY_MIN_EVENT_S = 0.3
+_OVERLAY_FONT_SIZE = 76
+_CTA_FONT_SIZE = 88
+# \an5 anchor on the 1080x1920 grid, inside the platform safe zones
+# (x 65..1015, y 270..1250) — clear of UI chrome top and bottom.
+_OVERLAY_POS_X = 540
+_OVERLAY_POS_Y = 1130
 
 # Step tracking: maps node key to index for progress reporting
 VIDEO_PIPELINE_STEPS = [
@@ -180,13 +205,40 @@ async def load_video_context(state: VideoState) -> dict[str, Any]:
     return out
 
 
+def _clean_overlay_text(value: Any) -> str:
+    """Normalize one shot's on-screen overlay line (pure function).
+
+    Strips newlines/extra whitespace, clamps to MAX_OVERLAY_WORDS words AND to
+    the _OVERLAY_MAX_CHARS box budget (two 18-char lines) — whole trailing
+    words are dropped here rather than left for _wrap_overlay_text to discard
+    silently at burn time, so what the plan stores is what the viewer sees.
+    Absent/None becomes '' so pre-overlay shot plans keep working unchanged.
+    """
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    words = text.split()[:MAX_OVERLAY_WORDS]
+    kept: list[str] = []
+    used = 0
+    for word in words:
+        cost = len(word) + (1 if kept else 0)
+        if used + cost > _OVERLAY_MAX_CHARS:
+            break
+        kept.append(word)
+        used += cost
+    if not kept and words:
+        # A single oversized word: keep a one-line truncation rather than
+        # losing the line entirely.
+        kept = [words[0][:_OVERLAY_WRAP_CHARS]]
+    return " ".join(kept)
+
+
 def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
     """Validate and normalize the LLM's shot plan JSON.
 
     Enforces: non-empty shots with scene text, per-shot duration >= 0.5s,
     first shot >= 2s, total duration <= 10s (proportional scale-down, then
-    trailing shots dropped if still over), at most MAX_SHOTS shots, and
-    cleaned hashtags (no '#', no spaces).
+    trailing shots dropped if still over), at most MAX_SHOTS shots, cleaned
+    per-shot overlay_text (<= MAX_OVERLAY_WORDS words, no newlines, '' when
+    absent), and cleaned hashtags (no '#', no spaces).
 
     Raises ValueError when the plan is unusable.
     """
@@ -213,6 +265,7 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
                 "index": i + 1,
                 "duration_s": max(MIN_SHOT_S, duration),
                 "scene": scene,
+                "overlay_text": _clean_overlay_text(raw.get("overlay_text")),
             }
         )
     if not shots:
@@ -291,6 +344,7 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             )
 
         system = (
+            f"{_ENGLISH_ONLY_RULE}\n\n"
             f"{voice_block}\n\n"
             f"{bible_section}"
             "You are a short-form video director planning a vertical (9:16) "
@@ -320,15 +374,26 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "STYLE: photographic/commercial style anchors\n"
             "LOCKS: what must stay true across the shot (product identity, "
             "palette, setting)\n\n"
+            "OVERLAY TEXT (burned onto the video in post — the ONLY text "
+            "that ever appears on screen):\n"
+            f"- Every shot has an \"overlay_text\": a punchy on-screen line, "
+            f"{MAX_OVERLAY_WORDS} words maximum, ALWAYS IN ENGLISH, "
+            "marketing-grade.\n"
+            "- The lines build a benefit/tension/payoff arc across the reel: "
+            "shot 1 carries the hook_line, middle shots carry one benefit "
+            "beat each, and the final shot hands off to the cta (the final "
+            "shot shows the cta on screen).\n"
+            "- Plain words only: no emojis, no hashtags, no quotation "
+            "marks.\n\n"
             "Return STRICT JSON only, with this exact shape:\n"
             "{\n"
-            '  "hook_line": "<scroll-stopping line under 8 words>",\n'
+            '  "hook_line": "<scroll-stopping line under 8 words, ENGLISH>",\n'
             '  "shots": [\n'
-            '    {"index": 1, "duration_s": 2.5, "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."}\n'
+            '    {"index": 1, "duration_s": 2.5, "overlay_text": "<on-screen line, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."}\n'
             "  ],\n"
-            '  "caption": "<post caption in the brand voice>",\n'
+            '  "caption": "<post caption in the brand voice, ENGLISH>",\n'
             '  "hashtags": ["tag1", "tag2"],\n'
-            '  "cta": "<short call to action>"\n'
+            '  "cta": "<short call to action, ENGLISH>"\n'
             "}\n\n"
             "Duration rules: durations sum to 10 seconds or less; the first "
             f"shot is at least 2 seconds; use 4 to {MAX_SHOTS} shots. Each "
@@ -337,7 +402,10 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "clear beat that can hold for a few seconds.\n"
             f"Caption rules: under {settings['max_words']} words, between "
             f"{settings['hashtags_min']} and {settings['hashtags_max']} hashtags, "
-            "no hashtags or URLs inside the caption body."
+            "no hashtags or URLs inside the caption body.\n"
+            "LANGUAGE: the OUTPUT LANGUAGE hard rule at the top of this prompt "
+            "applies to hook_line, every overlay_text, caption, and cta — "
+            "whatever language the brief uses."
         )
         user = (
             f"WHAT THIS REEL IS ABOUT (primary intent — never override):\n"
@@ -914,9 +982,396 @@ def _write_text(path: str, text: str) -> None:
         fh.write(text)
 
 
+# ── Burned-in overlay text (post pass) ─────────────────────────────────────
+#
+# After the final master exists (concat output or single-call legacy clip),
+# the plan's per-shot overlay_text lines are burned in via an .ass subtitle
+# track rendered by ffmpeg's libass `ass` filter (the agents image ships
+# ffmpeg with libass plus the brand fonts under FONTS_DIR). Filter
+# availability is verified by simply running it — any failure degrades to
+# the unburned master with overlay_burn='failed:<reason>'.
+
+
+def _ass_escape(text: str) -> str:
+    r"""Neutralize ASS metacharacters in overlay text (pure function).
+
+    '{'/'}' open/close override blocks and '\' starts escape sequences —
+    they are replaced rather than escaped (libass has no reliable literal
+    escape for them). Newlines collapse to spaces; _wrap_overlay_text adds
+    the only intentional '\N' breaks afterwards.
+    """
+    text = str(text or "")
+    text = text.replace("\\", "/").replace("{", "(").replace("}", ")")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _hex_to_ass_color(hex_color: str | None) -> str | None:
+    """Convert '#rrggbb' to the ASS '&HBBGGRR&' form (pure function)."""
+    match = re.fullmatch(r"#?([0-9a-fA-F]{6})", str(hex_color or "").strip())
+    if not match:
+        return None
+    rgb = match.group(1)
+    return f"&H{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}&".upper()
+
+
+def _wrap_overlay_text(
+    text: str,
+    max_chars: int = _OVERLAY_WRAP_CHARS,
+    max_lines: int = _OVERLAY_MAX_LINES,
+) -> str:
+    r"""Greedy word-wrap into at most *max_lines* lines of *max_chars*.
+
+    Lines are joined with the ASS hard break '\N'; words that cannot fit the
+    two-line box are dropped — the box must never overflow the safe zone.
+    Dropping is a last resort (_clean_overlay_text already clamps the plan to
+    the box budget) so it is logged as a WARNING: losing the tail of an
+    on-screen line is a visible content defect QA must see, not a silent trim.
+    """
+    words = str(text or "").split()
+    lines: list[str] = []
+    cur = ""
+    dropped: list[str] = []
+    truncated: list[str] = []
+    for i, raw in enumerate(words):
+        word = raw[:max_chars]
+        if word != raw:
+            truncated.append(raw)
+        candidate = f"{cur} {word}".strip() if cur else word
+        if len(candidate) <= max_chars:
+            cur = candidate
+            continue
+        lines.append(cur)
+        cur = word
+        if len(lines) == max_lines:
+            dropped = words[i:]
+            cur = ""
+            break
+    if cur:
+        lines.append(cur)
+    if dropped or truncated:
+        logger.warning(
+            "overlay text does not fit the %dx%d-char box — dropped %s, "
+            "truncated %s (source: %r)",
+            max_lines,
+            max_chars,
+            dropped or "nothing",
+            truncated or "nothing",
+            text,
+        )
+    return "\\N".join(lines[:max_lines])
+
+
+def _format_ass_time(seconds: float) -> str:
+    """Format seconds as the ASS 'H:MM:SS.CC' timestamp (pure function)."""
+    total_cs = max(0, int(round(float(seconds) * 100)))
+    cs = total_cs % 100
+    total = total_cs // 100
+    return f"{total // 3600}:{(total % 3600) // 60:02d}:{total % 60:02d}.{cs:02d}"
+
+
+def _distribute_durations(planned: list[float], total_s: float) -> list[float]:
+    """Scale planned beat durations proportionally onto a real clip length.
+
+    Pure function. Used by the single-call legacy path, where one clip covers
+    the whole plan: each planned duration becomes its proportional share of
+    the clip's real (ffprobe'd) duration. Zero/absent weights fall back to an
+    equal split; the last share absorbs rounding so the shares sum exactly to
+    total_s.
+    """
+    weights = [max(0.0, float(d or 0.0)) for d in planned]
+    if not weights or total_s <= 0:
+        return [0.0 for _ in weights]
+    total_w = sum(weights)
+    if total_w <= 0:
+        weights = [1.0] * len(weights)
+        total_w = float(len(weights))
+    shares = [round(w / total_w * float(total_s), 2) for w in weights]
+    shares[-1] = round(float(total_s) - sum(shares[:-1]), 2)
+    return shares
+
+
+def _overlay_events(
+    shots: list[dict[str, Any]],
+    durations: list[float],
+    cta: str,
+) -> list[dict[str, Any]]:
+    """Compute the timed overlay events for the finished reel (pure function).
+
+    Each shot's overlay_text spans that shot's ACTUAL time window, padded
+    _OVERLAY_PAD_IN_S in and _OVERLAY_PAD_OUT_S out so lines never sit on a
+    cut. The FINAL PLANNED shot shows the plan's cta (style 'CTA') instead of
+    its own line — matched by the shot's ORIGINAL plan index, not its rendered
+    position, because _split_to_min_shots can halve that last beat into two
+    rendered shots that both belong to it; keying off the rendered index alone
+    would leave the CTA covering only the second half. The merge below then
+    folds those halves back into one continuous CTA event. Consecutive windows
+    carrying the same text merge the same way (split-shot halves share their
+    line); empty texts and sub-minimum windows are skipped.
+    """
+    n = min(len(shots), len(durations))
+    cta_text = str(cta or "").strip()
+    # First rendered shot belonging to the final PLANNED beat.
+    cta_from = n
+    if cta_text and n:
+        cta_from = n - 1
+        final_index = shots[n - 1].get("index")
+        if final_index is not None:
+            while (
+                cta_from > 0 and shots[cta_from - 1].get("index") == final_index
+            ):
+                cta_from -= 1
+    entries: list[dict[str, Any]] = []
+    t = 0.0
+    for i in range(n):
+        text = str(shots[i].get("overlay_text") or "").strip()
+        style = "Overlay"
+        if i >= cta_from:
+            text = cta_text
+            style = "CTA"
+        end = t + max(0.0, float(durations[i] or 0.0))
+        entries.append({"text": text, "style": style, "start": t, "end": end})
+        t = end
+    merged: list[dict[str, Any]] = []
+    for entry in entries:
+        if (
+            merged
+            and merged[-1]["text"] == entry["text"]
+            and merged[-1]["style"] == entry["style"]
+        ):
+            merged[-1]["end"] = entry["end"]
+        else:
+            merged.append(dict(entry))
+    events: list[dict[str, Any]] = []
+    for entry in merged:
+        if not entry["text"]:
+            continue
+        start = entry["start"] + _OVERLAY_PAD_IN_S
+        end = entry["end"] - _OVERLAY_PAD_OUT_S
+        if end - start < _OVERLAY_MIN_EVENT_S:
+            continue
+        events.append(
+            {
+                "text": entry["text"],
+                "style": entry["style"],
+                "start": round(start, 2),
+                "end": round(end, 2),
+            }
+        )
+    return events
+
+
+def _brand_accent_hex(brand: dict[str, Any]) -> str | None:
+    """Pull the brand accent (fallback: primary) hex from the brand config.
+
+    Same color_palette / brand_guidelines.colors merge the content pipeline
+    uses; returns '#rrggbb' or None when no valid hex is configured.
+    """
+    palette = brand.get("color_palette") or {}
+    if isinstance(palette, str):
+        try:
+            palette = json.loads(palette)
+        except (json.JSONDecodeError, TypeError):
+            palette = {}
+    guidelines = brand.get("brand_guidelines") or {}
+    if isinstance(guidelines, str):
+        try:
+            guidelines = json.loads(guidelines)
+        except (json.JSONDecodeError, TypeError):
+            guidelines = {}
+    legacy = guidelines.get("colors") if isinstance(guidelines, dict) else {}
+    colors = {
+        **(legacy if isinstance(legacy, dict) else {}),
+        **(palette if isinstance(palette, dict) else {}),
+    }
+    for key in ("accent", "primary"):
+        value = str(colors.get(key) or "").strip()
+        if re.fullmatch(r"#?[0-9a-fA-F]{6}", value):
+            return value if value.startswith("#") else f"#{value}"
+    return None
+
+
+def _build_overlay_ass(
+    events: list[dict[str, Any]], accent_hex: str | None = None
+) -> str:
+    r"""Build the .ass subtitle document for the overlay events (pure).
+
+    1080x1920 play grid; 'Overlay' is Poppins Bold 76px white with a dark
+    outline and soft shadow, 'CTA' the same face at 88px in the brand accent
+    color. Every line fades in/out (\fad 250ms) and scales 90 → 100% over the
+    first 250ms, anchored \an5 at the safe-zone position.
+    """
+    accent = _hex_to_ass_color(accent_hex)
+    cta_color = f"&H00{accent[2:-1]}" if accent else "&H00FFFFFF"
+    tags = (
+        "{\\an5\\pos(%d,%d)\\fad(250,250)\\fscx90\\fscy90"
+        "\\t(0,250,\\fscx100\\fscy100)}" % (_OVERLAY_POS_X, _OVERLAY_POS_Y)
+    )
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1080",
+        "PlayResY: 1920",
+        "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Overlay,Poppins,{_OVERLAY_FONT_SIZE},&H00FFFFFF,&H00FFFFFF,"
+        "&H00141414,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,5,65,65,0,1",
+        f"Style: CTA,Poppins,{_CTA_FONT_SIZE},{cta_color},&H00FFFFFF,"
+        "&H00141414,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,5,65,65,0,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text",
+    ]
+    for event in events:
+        text = _wrap_overlay_text(_ass_escape(event["text"]))
+        if not text:
+            continue
+        lines.append(
+            f"Dialogue: 0,{_format_ass_time(event['start'])},"
+            f"{_format_ass_time(event['end'])},{event['style']},,0,0,0,,"
+            f"{tags}{text}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+# Characters that terminate or re-parse an ffmpeg filter option value and so
+# must be backslash-escaped inside one: ':' separates options within a filter,
+# ',' separates filters in a -vf chain, ';' separates chains in a filtergraph,
+# and "'" opens/closes ffmpeg's own quoting. Unescaped, a single comma in the
+# temp path would split the -vf argument and make ffmpeg parse the rest of the
+# path as another filter.
+_FILTER_ESCAPE_CHARS = (":", ",", ";", "'")
+
+
+def _filter_path(path: str) -> str:
+    r"""Escape a path for use as an ffmpeg filter option value (pure).
+
+    Backslashes become forward slashes (accepted on every platform, and it
+    removes Windows' own escape ambiguity), then every filtergraph
+    metacharacter is escaped — see _FILTER_ESCAPE_CHARS.
+    """
+    out = path.replace("\\", "/")
+    for ch in _FILTER_ESCAPE_CHARS:
+        out = out.replace(ch, f"\\{ch}")
+    return out
+
+
+def _burn_cmd(
+    src: str, ass_path: str, dst: str, fontsdir: str | None = None
+) -> list[str]:
+    """ffmpeg args burning the .ass overlay into the master (pure function).
+
+    The subtitle filter forces a video re-encode, so the pass re-applies the
+    master spec (libx264 CRF19 medium, high profile, yuv420p, 30fps CFR, 2s
+    closed GOPs, faststart) and stream-copies the audio untouched.
+    """
+    vf = f"ass={_filter_path(ass_path)}"
+    if fontsdir:
+        vf += f":fontsdir={_filter_path(fontsdir)}"
+    vf += ",fps=30,format=yuv420p"
+    return [
+        "ffmpeg", "-y", "-i", src,
+        "-vf", vf,
+        *_MASTER_VIDEO_ARGS,
+        "-profile:v", "high",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        dst,
+    ]
+
+
+async def _burn_overlays(
+    video_bytes: bytes,
+    shots: list[dict[str, Any]],
+    cta: str,
+    brand: dict[str, Any],
+    durations: list[float] | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+    """Composite the shot plan's overlay text onto the finished master.
+
+    *durations* are the per-shot lengths actually rendered (multi-shot
+    concat path); when None (single-call legacy path) the planned durations
+    are distributed proportionally across the clip's real ffprobe duration.
+    Best-effort by contract: ANY failure (no ffmpeg, ass filter or fonts
+    unavailable, encoder error) logs a warning and returns the ORIGINAL
+    bytes with overlay_burn='failed:<reason>' — text burning never fails
+    the item. Returns (video_bytes, meta_patch).
+    """
+    try:
+        has_text = any(
+            str(s.get("overlay_text") or "").strip() for s in shots
+        ) or bool(str(cta or "").strip())
+        if not has_text:
+            return video_bytes, {"overlay_burn": "skipped:no overlay text"}
+        if not _ffmpeg_ok():
+            logger.warning("overlay burn skipped — ffmpeg unavailable")
+            return video_bytes, {"overlay_burn": "failed:ffmpeg unavailable"}
+        with tempfile.TemporaryDirectory(prefix="overlay_") as workdir:
+            src = os.path.join(workdir, "master.mp4")
+            await asyncio.to_thread(_write_bytes, src, video_bytes)
+            if durations is None:
+                info = await asyncio.to_thread(_probe_shot, src)
+                total = float((info or {}).get("duration") or 0.0)
+                if total <= 0:
+                    total = sum(float(s.get("duration_s") or 0.0) for s in shots)
+                durations = _distribute_durations(
+                    [float(s.get("duration_s") or 0.0) for s in shots], total
+                )
+            events = _overlay_events(shots, durations, cta)
+            if not events:
+                return video_bytes, {
+                    "overlay_burn": "skipped:no renderable overlay events"
+                }
+            ass_path = os.path.join(workdir, "overlay.ass")
+            await asyncio.to_thread(
+                _write_text,
+                ass_path,
+                _build_overlay_ass(events, _brand_accent_hex(brand)),
+            )
+            fontsdir = FONTS_DIR if os.path.isdir(FONTS_DIR) else None
+            if fontsdir is None:
+                logger.warning(
+                    "overlay burn: fonts dir %s missing — relying on "
+                    "fontconfig fallback faces",
+                    FONTS_DIR,
+                )
+            dst = os.path.join(workdir, "master_overlay.mp4")
+            proc = await asyncio.to_thread(
+                _run_ffmpeg, _burn_cmd(src, ass_path, dst, fontsdir), 600
+            )
+            if (
+                proc.returncode != 0
+                or not os.path.exists(dst)
+                or os.path.getsize(dst) == 0
+            ):
+                reason = _stderr_tail(proc, 200) or f"ffmpeg exit {proc.returncode}"
+                logger.warning(
+                    "overlay burn failed — keeping unburned master: %s", reason
+                )
+                return video_bytes, {"overlay_burn": f"failed:{reason}"[:220]}
+            burned = await asyncio.to_thread(_read_bytes, dst)
+            logger.info(
+                "Burned %d overlay line(s) onto the master (%d → %d bytes)",
+                len(events),
+                len(video_bytes),
+                len(burned),
+            )
+            return burned, {"overlay_burn": "ok", "overlay_lines": len(events)}
+    except Exception as exc:
+        logger.warning("overlay burn failed — keeping unburned master: %s", exc)
+        return video_bytes, {"overlay_burn": f"failed:{exc}"[:220]}
+
+
 async def render_video(state: VideoState) -> dict[str, Any]:
     """Render the reel — one provider call per planned shot, chained i2v for
-    continuity, then an ffmpeg concat into the 20-35s master final.mp4.
+    continuity, an ffmpeg concat into the 20-35s master final.mp4, then a
+    best-effort overlay-text burn pass onto the finished master.
 
     Shot 1 is i2v from the branded keyframe; every later shot is i2v from the
     last frame of the previous shot's clip. Plans with fewer than
@@ -1048,8 +1503,18 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 meta["dropped_shots"] = dropped_indices
             if ffmpeg_missing:
                 meta["multi_shot_fallback"] = "ffmpeg/ffprobe unavailable"
+            # Burn the overlay text onto the clip (best-effort). No fitted
+            # durations exist for a single call — the planned beats are
+            # distributed proportionally across the clip's real duration.
+            video_bytes, overlay_meta = await _burn_overlays(
+                result.video_bytes,
+                fitted,
+                str(plan.get("cta") or ""),
+                state.get("brand") or {},
+            )
+            meta.update(overlay_meta)
             return {
-                "video_bytes": result.video_bytes,
+                "video_bytes": video_bytes,
                 "video_prompt": prompt,
                 "video_meta": meta,
             }
@@ -1265,6 +1730,23 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     )
             video_bytes = await asyncio.to_thread(_read_bytes, final_path)
             final_video = (final_info or {}).get("video") or {}
+
+            # ── Burn the overlay text onto the finished master ─────────────
+            # Timing windows use the durations actually rendered (probed per
+            # shot, falling back to the fitted request). Best-effort: failure
+            # keeps the unburned master.
+            await _progress(_CONCAT_PROGRESS_START + 3, "overlay:burn")
+            rendered_durations = [
+                float((p or {}).get("duration") or m["requested_s"])
+                for p, m in zip(probes, shot_metas)
+            ]
+            video_bytes, overlay_meta = await _burn_overlays(
+                video_bytes,
+                fitted,
+                str(plan.get("cta") or ""),
+                state.get("brand") or {},
+                durations=rendered_durations,
+            )
             await _progress(100, "render:complete")
     except Exception as exc:
         return await _fail_multi(f"render_video failed: {exc}")
@@ -1295,6 +1777,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         "dropped_shots": dropped_indices,
         "normalized_shots": normalized,
         "concat_mode": concat_mode,
+        **overlay_meta,
     }
     if split_shots:
         meta["split_to_min_shots"] = True
@@ -1406,6 +1889,8 @@ async def store_video(state: VideoState) -> dict[str, Any]:
                 "video_model": meta.get("model"),
                 "video_duration_s": meta.get("duration_s"),
                 "video_cost_usd": meta.get("cost_usd"),
+                "overlay_burn": meta.get("overlay_burn"),
+                "overlay_lines": meta.get("overlay_lines"),
             },
             "status": "in_review",
         }
@@ -1452,6 +1937,8 @@ async def store_video(state: VideoState) -> dict[str, Any]:
                         "shot_count": meta.get("shot_count"),
                         "concat_mode": meta.get("concat_mode"),
                         "dropped_shots": meta.get("dropped_shots"),
+                        "overlay_burn": meta.get("overlay_burn"),
+                        "overlay_lines": meta.get("overlay_lines"),
                     }
                 ),
                 "idempotency_key": (meta.get("idempotency_key") or "")[:128] or None,

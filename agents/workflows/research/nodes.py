@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.llm import (
     chat_completion,
     generate_executive_summary_plain,
@@ -130,7 +131,8 @@ async def analyze_social(state: ResearchState) -> dict[str, Any]:
         analysis_prompt = [
             {
                 "role": "system",
-                "content": "You are a social media analyst. Analyze the following social media data and provide insights on content performance, audience engagement patterns, posting frequency, and content themes. Include in your analysis: engagement_rate (current average engagement rate as a percentage), benchmark_comparison (how this compares to industry averages), top_content_types (ranked list of content types by engagement, e.g. Reel > Carousel > Static), peak_times (best posting times per platform with data-backed reasoning), content_gaps (what competitors post about that this brand doesn't), hashtag_analysis (top 10 hashtags by reach from recent posts), and 5 specific, actionable recommendations. HARD RULE: only cite metrics that actually appear in the provided profile/engagement data — never estimate or invent figures (site visits, conversion rates, reach, engagement rates, follower counts). If the data is empty or missing a metric, state explicitly that it was not available instead of estimating.",
+                "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                "You are a social media analyst. Analyze the following social media data and provide insights on content performance, audience engagement patterns, posting frequency, and content themes. Include in your analysis: engagement_rate (current average engagement rate as a percentage), benchmark_comparison (how this compares to industry averages), top_content_types (ranked list of content types by engagement, e.g. Reel > Carousel > Static), peak_times (best posting times per platform with data-backed reasoning), content_gaps (what competitors post about that this brand doesn't), hashtag_analysis (top 10 hashtags by reach from recent posts), and 5 specific, actionable recommendations. HARD RULE: only cite metrics that actually appear in the provided profile/engagement data — never estimate or invent figures (site visits, conversion rates, reach, engagement rates, follower counts). If the data is empty or missing a metric, state explicitly that it was not available instead of estimating.",
             },
             {
                 "role": "user",
@@ -186,7 +188,8 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
     identify_prompt = [
         {
             "role": "system",
-            "content": "You are a competitive intelligence analyst. Focus on direct competitors in the brand's market. Do NOT include comparison websites, blog sites, review aggregators, or unrelated international companies. Given the brand's website content, identify their top 5 competitors. For EACH competitor, provide a comprehensive profile. Return a JSON array where each object has: name (company name), website_url (their website), positioning (their brand positioning statement in 1 sentence), strengths (array of 3+ competitive strengths), weaknesses (array of 3+ competitive weaknesses), social_presence (object with platform names as keys and estimated follower counts as values), content_strategy (description of their social media content approach — frequency, content types, tone), threat_level ('high', 'medium', or 'low' based on market overlap and competitive strength).",
+            "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+            "You are a competitive intelligence analyst. Focus on direct competitors in the brand's market. Do NOT include comparison websites, blog sites, review aggregators, or unrelated international companies. Given the brand's website content, identify their top 5 competitors. For EACH competitor, provide a comprehensive profile. Return a JSON array where each object has: name (company name), website_url (their website), positioning (their brand positioning statement in 1 sentence), strengths (array of 3+ competitive strengths), weaknesses (array of 3+ competitive weaknesses), social_presence (object with platform names as keys and estimated follower counts as values), content_strategy (description of their social media content approach — frequency, content types, tone), threat_level ('high', 'medium', or 'low' based on market overlap and competitive strength).",
         },
         {
             "role": "user",
@@ -250,6 +253,7 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
                 {
                     "role": "system",
                     "content": (
+                        f"{_ENGLISH_ONLY_RULE}\n\n"
                         "You are a market analyst. From the search results below, "
                         "identify ONLY actual businesses that are direct competitors to the brand. "
                         "EXCLUDE: review sites, comparison sites, "
@@ -324,7 +328,8 @@ async def analyze_competitors(state: ResearchState) -> dict[str, Any]:
                     [
                         {
                             "role": "system",
-                            "content": "Write a one-sentence description of this business and what they sell. If you don't know, say 'Competitor'.",
+                            "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                            "Write a one-sentence description of this business and what they sell. If you don't know, say 'Competitor'.",
                         },
                         {
                             "role": "user",
@@ -391,7 +396,8 @@ async def identify_gaps(state: ResearchState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a strategic marketing analyst. Based on the brand's website, social media analysis, competitor analysis, and the events calendar, identify gaps and opportunities. When relevant, tie gaps and recommended_timeline to specific upcoming events (e.g. Mother's Day, awareness weeks, local holidays) from the events calendar. Return a JSON array where each gap has: title (short descriptive title), category (one of: content, positioning, digital, audience, product, channel), description (what the gap is), opportunity (how to exploit it), priority (high/medium/low), estimated_impact (expected business impact if addressed), implementation_effort (low/medium/high), recommended_timeline (when to implement, referencing specific event dates where relevant, e.g. 'Week of 2026-05-11 — Mother's Day'), target_audience (which persona(s) this gap affects most), success_metrics (array of 2-3 measurable KPIs to track).",
+                "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                "You are a strategic marketing analyst. Based on the brand's website, social media analysis, competitor analysis, and the events calendar, identify gaps and opportunities. When relevant, tie gaps and recommended_timeline to specific upcoming events (e.g. Mother's Day, awareness weeks, local holidays) from the events calendar. Return a JSON array where each gap has: title (short descriptive title), category (one of: content, positioning, digital, audience, product, channel), description (what the gap is), opportunity (how to exploit it), priority (high/medium/low), estimated_impact (expected business impact if addressed), implementation_effort (low/medium/high), recommended_timeline (when to implement, referencing specific event dates where relevant, e.g. 'Week of 2026-05-11 — Mother's Day'), target_audience (which persona(s) this gap affects most), success_metrics (array of 2-3 measurable KPIs to track).",
             },
             {
                 "role": "user",
@@ -440,7 +446,8 @@ async def build_personas(state: ResearchState) -> dict[str, Any]:
         prompt = [
             {
                 "role": "system",
-                "content": "You are a marketing strategist. Build 3-5 detailed audience personas based on the research data and the events calendar. Create personas that reflect the brand's target market. Use the events calendar to inform each persona's seasonal buying triggers and content preferences (e.g. which holidays/awareness periods drive engagement). Each persona should have: name (a memorable name and archetype, e.g. 'Sarah, the Wellness Enthusiast'), demographics (object with age range, gender, location, income level, education, occupation), psychographics (values, lifestyle, interests, media habits), pain_points (array of 3+ specific pain points related to the brand's industry), content_preferences (object with: formats — preferred content formats like Reels/Carousels/Stories/Static/Articles; topics — 5+ specific topic interests; tone — preferred communication tone; seasonal_moments — which calendar events most resonate with this persona), platforms (array of social platforms they use, ordered by preference), buying_triggers (array of 3+ triggers that drive purchase decisions, including relevant calendar events), best_engagement_times (specific times when this persona is most active), content_avoidance (array of what turns this persona off, e.g. 'hard sells', 'medical jargon'). Return a JSON array.",
+                "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                "You are a marketing strategist. Build 3-5 detailed audience personas based on the research data and the events calendar. Create personas that reflect the brand's target market. Use the events calendar to inform each persona's seasonal buying triggers and content preferences (e.g. which holidays/awareness periods drive engagement). Each persona should have: name (a memorable name and archetype, e.g. 'Sarah, the Wellness Enthusiast'), demographics (object with age range, gender, location, income level, education, occupation), psychographics (values, lifestyle, interests, media habits), pain_points (array of 3+ specific pain points related to the brand's industry), content_preferences (object with: formats — preferred content formats like Reels/Carousels/Stories/Static/Articles; topics — 5+ specific topic interests; tone — preferred communication tone; seasonal_moments — which calendar events most resonate with this persona), platforms (array of social platforms they use, ordered by preference), buying_triggers (array of 3+ triggers that drive purchase decisions, including relevant calendar events), best_engagement_times (specific times when this persona is most active), content_avoidance (array of what turns this persona off, e.g. 'hard sells', 'medical jargon'). Return a JSON array.",
             },
             {
                 "role": "user",

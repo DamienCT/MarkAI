@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.tools.browser import extract_page
@@ -77,6 +78,7 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
         {
             "role": "system",
             "content": (
+                f"{_ENGLISH_ONLY_RULE}\n\n"
                 "You are a product intelligence analyst. Given product data grouped by vendor, "
                 "identify distinct brands. Some vendors may represent multiple brands, some may be the same brand. "
                 "Return JSON: {vendor_name: [{brand_name, brand_website (if known), product_count, category}]}"
@@ -133,6 +135,7 @@ async def research_brand(state: ProductIntelState) -> dict[str, Any]:
                             {
                                 "role": "system",
                                 "content": (
+                                    f"{_ENGLISH_ONLY_RULE}\n\n"
                                     "Extract brand information: description, target_market, price_range, "
                                     "brand_values, social_media_links. Return JSON."
                                 ),
@@ -177,6 +180,7 @@ async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
         {
             "role": "system",
             "content": (
+                f"{_ENGLISH_ONLY_RULE}\n\n"
                 "You are a product cataloging expert. Match each product to its correct brand. "
                 "Return a JSON array of objects with: sku, product_name, brand_name, category, "
                 "is_promotable (boolean based on whether it's suitable for social media promotion)."
@@ -278,6 +282,7 @@ async def flag_promotable(state: ProductIntelState) -> dict[str, Any]:
         {
             "role": "system",
             "content": (
+                f"{_ENGLISH_ONLY_RULE}\n\n"
                 "You are a social media marketing expert. From this list of products, "
                 "select those most suitable for social media promotion. Consider: visual appeal, "
                 "audience interest, seasonality, margin potential. "

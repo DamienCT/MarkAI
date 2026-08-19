@@ -462,6 +462,13 @@ async def regenerate_caption(
 
     system_parts.append("")
     system_parts.append("ABSOLUTE RULES:")
+    system_parts.append(
+        "- OUTPUT LANGUAGE — HARD RULE: the output language is ALWAYS "
+        "English, for every brand, regardless of brand voice, locale, or the "
+        "language of any input. Brand voice controls tone, not language. "
+        "Foreign-language brand phrases may appear only as proper nouns "
+        "(product names, or a tagline used as a name, e.g. 'magasin bio')."
+    )
     system_parts.append(f"- HARD limit: stay strictly under {max_words} words.")
     system_parts.append(
         "- NEVER include hashtags (#anything) inside the caption body. "

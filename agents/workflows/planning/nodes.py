@@ -12,6 +12,7 @@ from pydantic import BaseModel, field_validator
 
 from shared.brand_context import (
     DEFAULT_BRAND_TIMEZONE,
+    ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE,
     build_brand_context_block,
     get_brand_timezone,
 )
@@ -58,6 +59,10 @@ VALID_CONTENT_TYPES = {
     "event",
     "other",
 }
+
+# _ENGLISH_ONLY_RULE (imported above from shared.brand_context) is injected
+# into every system prompt that produces user-facing text here: campaign
+# names/descriptions, strategy documents, calendar titles, themes, briefs.
 
 
 class CalendarItemValidator(BaseModel):
@@ -134,6 +139,155 @@ def _format_events_for_prompt(events: list[dict[str, Any]]) -> str:
         date_str = f"{start} → {end}" if end else start
         lines.append(f"- {date_str}: {title} ({category}, {scope})")
     return "\n".join(lines)
+
+
+# ── Product catalog helpers (pure — unit tested) ─────────────────────
+
+# Product names shown to the LLM per calendar batch. Large enough for real
+# variety, small enough to fit the prompt budget alongside strategy/events —
+# rendered as a plain "- name" list (not JSON), so 40 names cost roughly what
+# 20 cost as escaped JSON and the block never truncates mid-token.
+_PRODUCT_WINDOW = 40
+
+# Tokens ignored when scoring token-overlap product matches (articles and
+# connectors carry no product identity; EN + FR since catalogs are mixed).
+# NOTE: the English article "the" is deliberately NOT a stopword here — name
+# normalization strips accents, so French "thé" (tea) collapses to "the" and
+# filtering it would erase the head noun of every tea product, making them
+# unmatchable. Keeping "the" scoreable costs almost nothing (product names
+# rarely carry the article) and keeps tea matching consistent.
+_PRODUCT_MATCH_STOPWORDS = frozenset({
+    "a", "an", "and", "or", "of", "for", "with", "in", "on", "to",
+    "de", "la", "le", "les", "du", "des", "et", "en", "au", "aux",
+})
+
+
+def _catalog_sample(names: list[str], batch_idx: int, window: int = _PRODUCT_WINDOW) -> list[str]:
+    """Deterministic rotating slice of the catalog for one batch prompt.
+
+    Small catalogs (<= window) are always shown in full. Larger catalogs are
+    windowed by index — each batch advances ``window`` positions and wraps —
+    so different batches see different slices and coverage sweeps the whole
+    catalog over the horizon. No randomness: re-plans reproduce the same
+    slices.
+    """
+    if not names:
+        return []
+    n = len(names)
+    if n <= window:
+        return list(names)
+    start = (batch_idx * window) % n
+    return [names[(start + k) % n] for k in range(window)]
+
+
+def _format_catalog_for_prompt(names: list[str], max_length: int = 4000) -> str:
+    """Render a catalog slice as a plain newline-delimited "- name" list.
+
+    Pure function. A JSON dump of the same names costs ~2x the tokens (quotes,
+    commas, brackets, \\u escapes for accented names) and truncates mid-string,
+    leaving the model a broken half-name to copy "VERBATIM". One name per line
+    truncates cleanly at a line boundary instead.
+    """
+    lines: list[str] = []
+    used = 0
+    for name in names:
+        cleaned = sanitize_for_prompt(str(name or "").strip(), max_length=200)
+        cleaned = " ".join(cleaned.split())
+        if not cleaned:
+            continue
+        line = f"- {cleaned}"
+        if used + len(line) + 1 > max_length:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
+
+
+def _normalize_product_name(name: Any) -> str:
+    """Lowercase, replace punctuation with spaces, collapse whitespace."""
+    text = str(name or "").lower()
+    text = "".join(ch if (ch.isalnum() or ch.isspace()) else " " for ch in text)
+    return " ".join(text.split())
+
+
+def _significant_tokens(normalized: str) -> set[str]:
+    """Tokens of a normalized name that carry product identity."""
+    return {t for t in normalized.split() if t not in _PRODUCT_MATCH_STOPWORDS}
+
+
+def _match_product(
+    item_product_name: Any, products: list[dict[str, Any]]
+) -> tuple[Optional[dict[str, Any]], str]:
+    """Match an LLM-emitted product name against the catalog.
+
+    Match order:
+      1. exact normalized name;
+      2. normalized containment either direction, at token boundaries
+         (candidate closest in length to the query wins) — only for queries
+         carrying >= 2 significant tokens;
+      3. best token overlap — >= 60% of the shorter name's significant
+         tokens, ties broken by most shared tokens then longest match.
+
+    A query of a single significant token ("Huile", "Lavande", "Tea") is far
+    too weak to bind: it is contained in — and overlaps 100% with — a long
+    tail of unrelated catalog entries, so it would attach an arbitrary
+    product to the calendar item. Such queries must match EXACTLY (step 1)
+    or not at all.
+
+    Returns ``(product_or_None, outcome)`` where outcome is one of
+    "no_name", "exact", "containment", "token_overlap", "no_match".
+    Never raises on empty catalogs or garbage names.
+    """
+    query = _normalize_product_name(item_product_name)
+    if not query:
+        return None, "no_name"
+
+    normalized = [
+        (p, _normalize_product_name(p.get("name")))
+        for p in products
+        if p.get("name")
+    ]
+    normalized = [(p, norm) for p, norm in normalized if norm]
+    if not normalized:
+        return None, "no_match"
+
+    # 1. Exact normalized match
+    for p, norm in normalized:
+        if norm == query:
+            return p, "exact"
+
+    # Fuzzy matching (containment and token overlap) needs at least two
+    # significant tokens of evidence — see the docstring.
+    query_tokens = _significant_tokens(query)
+    if len(query_tokens) < 2:
+        return None, "no_match"
+
+    # 2. Containment either direction (whole-token, so "tea" never matches
+    # inside "steamer"). Prefer the candidate closest in length to the query.
+    containment = [
+        (p, norm)
+        for p, norm in normalized
+        if f" {query} " in f" {norm} " or f" {norm} " in f" {query} "
+    ]
+    if containment:
+        best_p, _ = min(containment, key=lambda pn: abs(len(pn[1]) - len(query)))
+        return best_p, "containment"
+
+    # 3. Token-overlap best match
+    best: Optional[dict[str, Any]] = None
+    best_key = (0.0, 0, 0)
+    for p, norm in normalized:
+        cand_tokens = _significant_tokens(norm)
+        if not cand_tokens:
+            continue
+        overlap = len(query_tokens & cand_tokens)
+        ratio = overlap / min(len(query_tokens), len(cand_tokens))
+        key = (ratio, overlap, len(norm))
+        if ratio >= 0.6 and key > best_key:
+            best, best_key = p, key
+    if best is not None:
+        return best, "token_overlap"
+    return None, "no_match"
 
 
 async def load_strategy(state: PlanningState) -> dict[str, Any]:
@@ -327,6 +481,7 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
         {
             "role": "system",
             "content": (
+                f"{_ENGLISH_ONLY_RULE}\n\n"
                 "You are a campaign planner. Based on the brand's target market and strategy, generate specific campaigns "
                 f"for the period {start_date} to {end_date} ({scope_weeks} weeks). "
                 f"Generate content ONLY for these platforms: {channels_str}. "
@@ -381,9 +536,9 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
         {
             "role": "system",
             "content": (
+                f"{_ENGLISH_ONLY_RULE}\n\n"
                 "You are a senior content strategist. Create a comprehensive Content Calendar Strategy Document "
-                "that covers the full year. This document will be the reference guide for daily content generation. "
-                "Write everything in English.\n\n"
+                "that covers the full year. This document will be the reference guide for daily content generation.\n\n"
                 "FORMATTING REQUIREMENTS (strict):\n"
                 "- Use '## ' for major section headers (e.g., '## Monthly Overview', '## Q1 Strategy')\n"
                 "- Use '### ' for month names (e.g., '### January', '### February')\n"
@@ -567,17 +722,12 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
     cadence_instruction = "\n".join(cadence_lines) if cadence_lines else "3 posts per week per channel."
 
-    # Load real products for product-aware content planning. Keep the FULL
-    # active catalog (no [:50] truncation) — each batch is shown a rotating
-    # window of it (see _run_batch) so coverage sweeps the whole catalog over
-    # the horizon instead of repeating only the first few products.
+    # Load real products ONCE per planning run for product-aware planning.
+    # Keep the FULL catalog — each batch is shown a deterministic rotating
+    # window of names (_catalog_sample) so coverage sweeps the whole catalog
+    # over the horizon instead of repeating only the first few products.
     products = await get_products(brand_id)
-    all_product_summary = [
-        {"name": p.get("name"), "sku": p.get("sku"), "vendor": p.get("vendor")}
-        for p in products
-        if p.get("name")
-    ]
-    _PRODUCT_WINDOW = 15  # products shown to the LLM per batch (fits the prompt budget)
+    catalog_names = [str(p["name"]).strip() for p in products if p.get("name")]
 
     channels_str = ", ".join(enabled_channels)
 
@@ -779,18 +929,10 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
             best_times = channel_best_times.get(channel, "")
 
             # Rotating product window: each batch sees a different slice of the
-            # catalog (advancing by batch_idx), wrapping around. Over all
-            # week×channel batches this sweeps the full catalog, so the planner
-            # isn't stuck recommending only the first products it ever saw.
-            if all_product_summary:
-                _n = len(all_product_summary)
-                _start = (batch_idx * _PRODUCT_WINDOW) % _n
-                batch_products = [
-                    all_product_summary[(_start + k) % _n]
-                    for k in range(min(_PRODUCT_WINDOW, _n))
-                ]
-            else:
-                batch_products = []
+            # catalog (advancing by batch_idx, deterministic — no random).
+            # Over all week×channel batches this sweeps the full catalog, so
+            # the planner isn't stuck on the first products it ever saw.
+            batch_products = _catalog_sample(catalog_names, batch_idx)
 
             # Dedup from DB-existing items only (no cross-batch deps in parallel mode)
             ch_existing = [
@@ -823,7 +965,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                 {
                     "role": "system",
                     "content": (
-                        "You are a content calendar planner. Write all content in English.\n\n"
+                        f"{_ENGLISH_ONLY_RULE}\n\n"
+                        "You are a content calendar planner.\n\n"
                         f"Generate EXACTLY {posts_needed} posts for {channel.upper()} "
                         f"for the week of {b_start_str} through {b_end_str}.\n\n"
                         "IMPORTANT: You MUST return a JSON array with the items. "
@@ -846,7 +989,19 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         "wellness/lifestyle filler that could fit any brand\n"
                         "- NEVER violate the brand's NEVER-guardrails: no item may "
                         "reference, script, or imply anything those guardrails forbid\n\n"
-                        "EVENT DATE RULES:\n"
+                        + (
+                            "PRODUCT RULES:\n"
+                            "- Product-focused items — roughly HALF of the posts and "
+                            "ALL reels — MUST include a \"product_name\" copied "
+                            "VERBATIM from the PRODUCT CATALOG list in the user "
+                            "message (exact spelling, no paraphrasing, no invented "
+                            "products)\n"
+                            "- Lifestyle/education items may set product_name to "
+                            "null\n\n"
+                            if batch_products
+                            else ""
+                        )
+                        + "EVENT DATE RULES:\n"
                         "- If the strategy mentions a specific event with a date (e.g., 'World Cancer Day (Feb 4)'), "
                         "content referencing that event should ONLY be scheduled on the event date itself or the day before/after\n"
                         "- Do NOT spread event-specific content across the entire week or month\n"
@@ -860,7 +1015,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         + _ctype_field
                         + "pillar, theme, weekly_sub_theme, target_audience, "
                         "content_brief (2-3 sentences), "
-                        "product_name (from products list or null), "
+                        "product_name (copied VERBATIM from the PRODUCT CATALOG, "
+                        "or null for lifestyle/education items), "
                         "visual_direction (1 sentence), "
                         "cta_type (shop/learn/engage/share).\n"
                         "Return a JSON array."
@@ -876,7 +1032,12 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                         f"{week_events_block}\n\n"
                         f"STRATEGY FOR {b_month.upper()} ({channel.upper()}):\n"
                         f"{sanitize_for_prompt(month_strategy, max_length=5000)}\n\n"
-                        f"Available products:\n{sanitize_json_for_prompt(batch_products, max_length=1500)}"
+                        + (
+                            "PRODUCT CATALOG (copy names VERBATIM into product_name):\n"
+                            f"{_format_catalog_for_prompt(batch_products)}"
+                            if batch_products
+                            else "PRODUCT CATALOG: (no products synced — set product_name to null)"
+                        )
                     ),
                 },
             ]
@@ -923,7 +1084,8 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
                                 f"Do NOT use these dates (already taken): {', '.join(used_dates)}. "
                                 f"Best days: {best_days or 'any remaining day'}. "
                                 f"Best times: {best_times or '07:00, 13:00, 20:00'}. "
-                                "Return a JSON array. Same fields as before."
+                                "Return a JSON array. Same fields as before. "
+                                f"{_ENGLISH_ONLY_RULE}"
                             ),
                         },
                         {"role": "user", "content": prompt[1]["content"]},
@@ -993,16 +1155,23 @@ async def assign_products(state: PlanningState) -> dict[str, Any]:
             logger.warning("Failed to load products for brand %s: %s", brand_id, exc)
             products = []
 
-        product_map = {p["name"].lower(): p for p in products if p.get("name")}
-
+        outcome_counts: dict[str, int] = {}
         updated_items = []
         for item in items:
-            product_name = (item.get("product_name") or "").lower()
-            if product_name and product_name in product_map:
-                item["product_id"] = product_map[product_name].get("id")
-                item["product_sku"] = product_map[product_name].get("sku")
+            product, outcome = _match_product(item.get("product_name"), products)
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+            if product is not None:
+                item["product_id"] = product.get("id")
+                item["product_sku"] = product.get("sku")
             updated_items.append(item)
 
+        logger.info(
+            "assign_products brand=%s items=%d catalog=%d outcomes: %s",
+            brand_id,
+            len(items),
+            len(products),
+            ", ".join(f"{k}={v}" for k, v in sorted(outcome_counts.items())) or "none",
+        )
         return {"calendar_items": updated_items}
     except Exception as exc:
         logger.error("assign_products failed: %s", exc)

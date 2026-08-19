@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { format } from "date-fns";
 import { api } from "@/lib/api";
+import { getStoredBrandValue } from "@/lib/brand-selection";
 import { formatDateTime } from "@/lib/utils";
 import { STATUS_COLORS, CHANNEL_COLORS, CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
 import { WorkingStageTracker } from "@/components/content/WorkingStageTracker";
@@ -118,6 +119,19 @@ export default function StagePage() {
       setDeleting(false);
     }
   };
+
+  // Follow the global sidebar brand selection: hydrate from localStorage after
+  // mount (client-only, avoids SSR mismatch) and update when it changes. The
+  // local dropdown still works; the global selection wins when the event fires.
+  useEffect(() => {
+    setBrandFilter(getStoredBrandValue());
+    const handler = (e: Event) => {
+      const brandId = (e as CustomEvent).detail?.brandId;
+      setBrandFilter(brandId || "all");
+    };
+    window.addEventListener("brand-changed", handler);
+    return () => window.removeEventListener("brand-changed", handler);
+  }, []);
 
   useEffect(() => {
     async function fetchData() {

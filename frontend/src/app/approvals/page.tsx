@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
 import { format } from "date-fns";
 import { api, fileUrl } from "@/lib/api";
+import { getStoredBrandValue } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
 import { formatRelativeTime, statusColor } from "@/lib/utils";
 import type { Approval } from "@/types";
@@ -33,9 +34,22 @@ export default function ApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("");
+  const [brandFilter, setBrandFilter] = useState<string>("all");
 
   useEffect(() => {
     fetchApprovals();
+  }, []);
+
+  // Follow the global sidebar brand selection: hydrate from localStorage after
+  // mount (client-only, avoids SSR mismatch) and update when it changes.
+  useEffect(() => {
+    setBrandFilter(getStoredBrandValue());
+    const handler = (e: Event) => {
+      const brandId = (e as CustomEvent).detail?.brandId;
+      setBrandFilter(brandId || "all");
+    };
+    window.addEventListener("brand-changed", handler);
+    return () => window.removeEventListener("brand-changed", handler);
   }, []);
 
   async function fetchApprovals() {
@@ -75,6 +89,7 @@ export default function ApprovalsPage() {
   // Filter approvals
   const filtered = useMemo(() => {
     return approvals.filter(a => {
+      if (brandFilter !== "all" && a.content?.brand_id !== brandFilter) return false;
       if (channelFilter !== "all" && a.calendar_item?.channel !== channelFilter) return false;
       if (dateFilter) {
         const scheduled = a.calendar_item?.scheduled_at;
@@ -83,7 +98,7 @@ export default function ApprovalsPage() {
       }
       return true;
     });
-  }, [approvals, channelFilter, dateFilter]);
+  }, [approvals, brandFilter, channelFilter, dateFilter]);
 
   return (
     <div className="space-y-6">

@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.llm import chat_completion, generate_image, get_model_for_category, parse_llm_json
 from shared.prompt_enhancer import enhance_image_prompt as enhance_image_prompt_fn
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
@@ -330,6 +331,11 @@ _PROMO_DIRECTIVE = (
     "- Keep the brand voice for TONE (warmth, language register) but the "
     "INTENT is conversion, not vibes.\n"
 )
+
+
+# _ENGLISH_ONLY_RULE (imported above from shared.brand_context) is injected
+# into every system prompt that produces user-facing text here: hooks,
+# captions, hashtags, adaptations, rewrites, enriched briefs.
 
 
 # Regional Indicator Symbols block: U+1F1E6 to U+1F1FF. A national flag is
@@ -657,6 +663,7 @@ async def enrich_user_brief(state: ContentState) -> dict[str, Any]:
     )
 
     system = (
+        f"{_ENGLISH_ONLY_RULE}\n\n"
         "You extract structured marketing-post fields from a user's free-form "
         "brief. You are NEVER creative — you only MATCH the user's intent to "
         "items from the provided brand catalogues, informed by the brand's "
@@ -955,6 +962,7 @@ async def generate_hook(state: ContentState) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
+                    f"{_ENGLISH_ONLY_RULE}\n\n"
                     f"{voice_block}\n\n"
                     f"{bible_section}"
                     f"{promo_section}"
@@ -1104,6 +1112,7 @@ async def generate_caption(state: ContentState) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
+                    f"{_ENGLISH_ONLY_RULE}\n\n"
                     f"{voice_block}\n\n"
                     f"{bible_section}"
                     f"{promo_section}"
@@ -1252,6 +1261,7 @@ async def generate_hashtags(state: ContentState) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
+                    f"{_ENGLISH_ONLY_RULE}\n\n"
                     "You generate hashtags for social posts.\n\n"
                     "PRIMARY RULE: Match the user BRIEF first. The brief tells "
                     "you the actual topic of this post. Pick hashtags that fit "
@@ -2062,6 +2072,7 @@ async def _shorten_caption_with_llm(
         {
             "role": "system",
             "content": (
+                f"{_ENGLISH_ONLY_RULE}\n\n"
                 f"{bible_section}"
                 "You compress social captions while preserving meaning, voice, "
                 "the call to action, AND the visual layout. Output ONLY the "
@@ -2232,6 +2243,7 @@ async def adapt_platforms(state: ContentState) -> dict[str, Any]:
         {
             "role": "system",
             "content": (
+                f"{_ENGLISH_ONLY_RULE}\n\n"
                 "You are a social media and content marketing expert. "
                 "Adapt the following content for each platform below, "
                 "respecting each platform's constraints AND the brand voice rules.\n\n"

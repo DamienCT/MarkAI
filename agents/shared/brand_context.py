@@ -14,6 +14,21 @@ from typing import Any
 
 DEFAULT_BRAND_TIMEZONE = "Indian/Mauritius"
 
+# Hard user directive: every piece of generated copy is English, for every
+# brand, always. This is the ONE canonical wording — every workflow module
+# imports it (as ``_ENGLISH_ONLY_RULE``) and injects it into every system
+# prompt that produces user-facing text (hooks, captions, briefs, calendar
+# items, campaigns, strategy documents, personas, competitor profiles, gaps,
+# research prose, shot plans, overlay lines, enhanced image prompts). Keep it
+# here so a drift in one module can't silently weaken the directive.
+ENGLISH_ONLY_RULE = (
+    "OUTPUT LANGUAGE — HARD RULE: the output language is ALWAYS English, for "
+    "every brand, regardless of brand voice, locale, or the language of any "
+    "input. Brand voice controls tone, not language. Foreign-language brand "
+    "phrases may appear only as proper nouns (product names, or a tagline "
+    "used as a name, e.g. 'magasin bio')."
+)
+
 
 def coerce_guidelines(brand_config: dict[str, Any] | None) -> dict[str, Any]:
     """brand_guidelines may arrive as a JSON string from the DB; normalize."""

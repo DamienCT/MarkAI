@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_for_prompt
 from shared.tools.database import execute_query, get_brand, store_competitors
@@ -63,6 +64,7 @@ async def discover_competitors_standalone(brand_id: str) -> int:
         {
             "role": "system",
             "content": (
+                f"{_ENGLISH_ONLY_RULE}\n\n"
                 "You are a market analyst. From the search results below, identify "
                 "ONLY actual businesses that are direct competitors to the brand. "
                 "EXCLUDE: review sites, comparison sites, directory listings, blog "

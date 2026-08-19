@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { getStoredBrandId } from "@/lib/brand-selection";
 import { statusColor, formatDate } from "@/lib/utils";
 import type { Product } from "@/types";
 
@@ -15,9 +16,12 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    async function fetchProducts() {
+    async function fetchProducts(brandId?: string | null) {
+      setLoading(true);
       try {
-        const data = await api.get<Product[]>("/api/v1/products", { limit: 100 });
+        const params: Record<string, string | number> = { limit: 100 };
+        if (brandId) params.brand_id = brandId;
+        const data = await api.get<Product[]>("/api/v1/products", params);
         setProducts(data);
       } catch {
         toast.error("Failed to load products");
@@ -25,7 +29,15 @@ export default function ProductsPage() {
         setLoading(false);
       }
     }
-    fetchProducts();
+    fetchProducts(getStoredBrandId());
+
+    // Follow the global sidebar brand selection.
+    const handler = (e: Event) => {
+      const brandId = (e as CustomEvent).detail?.brandId;
+      fetchProducts(brandId);
+    };
+    window.addEventListener("brand-changed", handler);
+    return () => window.removeEventListener("brand-changed", handler);
   }, []);
 
   const newArrivals = products.filter((p) => p.is_new);

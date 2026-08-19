@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 
+from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.llm import chat_completion
 from shared.sanitize import sanitize_for_prompt
 
@@ -26,6 +27,7 @@ SHORT_BRIEF_WORD_LIMIT = 50
 
 
 _ENHANCER_SYSTEM_PROMPT = (
+    f"{_ENGLISH_ONLY_RULE}\n\n"
     "You are an expert commercial photography art director. "
     "Your job is to transform a short marketing brief into a detailed, "
     "production-ready prompt for a text-to-image model (gpt-image / DALL-E class). "
