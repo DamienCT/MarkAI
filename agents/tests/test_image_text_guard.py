@@ -625,3 +625,50 @@ class TestVerdictHelpers:
         verdict = TextGuardVerdict(checked=False, reason="guard unavailable")
         assert verdict.flagged is False
         assert verdict.severity == 0
+
+
+class TestMirroredLettering:
+    """A flipped pack is a known editor failure with no detector.
+
+    shared/product_swap.py's own docstring lists "OIRETTIC" (CITTERIO,
+    mirrored) among the defects it exists to prevent, and the swap
+    instruction forbids mirroring outright — but nothing CHECKED for it. A
+    rendered reel carried a mirrored "MEISSE" on an olive-oil pack.
+
+    The risk is specifically that a vision model recognises the word and
+    silently transcribes it the right way round, so the prompt has to forbid
+    that.
+    """
+
+    def test_the_prompt_names_mirroring_as_a_defect(self):
+        from shared.image_text_guard import _TEXT_GUARD_PROMPT
+
+        assert "MIRRORED LETTERING" in _TEXT_GUARD_PROMPT
+        assert "gibberish_text" in _TEXT_GUARD_PROMPT
+
+    def test_the_prompt_forbids_silently_un_mirroring(self):
+        from shared.image_text_guard import _TEXT_GUARD_PROMPT
+
+        assert "do NOT silently un-mirror" in _TEXT_GUARD_PROMPT
+
+    def test_the_schema_line_lists_mirrored_among_gibberish(self):
+        from shared.image_text_guard import _TEXT_GUARD_PROMPT
+
+        line = next(
+            ln for ln in _TEXT_GUARD_PROMPT.splitlines()
+            if '"gibberish_text"' in ln
+        )
+        assert "mirrored" in line
+
+    def test_a_mirrored_wordmark_lands_in_fabricated(self):
+        from shared.image_text_guard import verdict_from_payload
+
+        verdict = verdict_from_payload({
+            "visible_text": ["OIRETTIC"],
+            "unintended_text": ["OIRETTIC"],
+            "gibberish_text": ["OIRETTIC"],
+            "has_unintended_text": True,
+        })
+        # fabricated is what the swap loop rejects on, so a mirrored pack
+        # must reach it — not merely `flagged`.
+        assert verdict.fabricated == ["OIRETTIC"]

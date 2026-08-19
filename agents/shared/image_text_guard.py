@@ -248,10 +248,17 @@ NOT a defect, and NOT to be reported:
 
 Judge each surface at the size and focus it actually appears at.
 
+MIRRORED LETTERING is a defect and belongs in gibberish_text. Generative
+editors flip pack artwork: a real wordmark comes back reversed, reading
+"OIRETTIC" for CITTERIO or "ƎSSIƎM" for MEISSE. Transcribe what is actually
+printed, left to right, exactly as it appears — do NOT silently un-mirror it
+into the word you recognise. Printed copy that does not read left to right is
+garbled no matter how cleanly it is rendered.
+
 Answer STRICT JSON only:
 {{"visible_text": ["<each distinct piece of lettering you CAN read, transcribed verbatim>"],
   "unintended_text": ["<the subset NOT covered by the legitimate list>"],
-  "gibberish_text": ["<the subset that is garbled, misspelled, invented or nonsense>"],
+  "gibberish_text": ["<the subset that is garbled, misspelled, invented, mirrored/reversed or nonsense>"],
   "illegible_text_marks": ["<each PROMINENT surface carrying letter-like marks you could NOT resolve, named by where it is, e.g. 'chalk board behind the counter', 'label on the left jar'. Omit distant/soft background lettering and anything genuinely blank.>"],
   "has_unintended_text": true|false,
   "reason": "<one short sentence>"}}"""
