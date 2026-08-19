@@ -104,12 +104,35 @@ class TestBedSelection:
         ) is None
         assert nodes._pick_music_bed("", [], "i") is None
 
-    def test_moods_are_slugged_and_ordered_most_specific_first(self):
+    def test_the_plan_mood_wins_over_the_brand_default(self):
         moods = nodes._music_moods(
-            {"music_mood": "Warm & Uplifting", "mood": "calm"},
+            {"music_mood": "Upbeat"},
             {"brand_voice": {"music_mood": "calm"}},
         )
-        assert moods == ["warm-uplifting", "calm"]
+        assert moods == ["upbeat", "calm"]
+
+    def test_the_vocabulary_is_closed(self):
+        # An open vocabulary names folders the operator cannot predict, so
+        # every reel falls through to the top-level pool and the mood is
+        # decoration.
+        assert nodes._music_moods({"music_mood": "Warm & Uplifting"}, {}) == []
+        assert nodes._normalize_music_mood("cinematic-tension") == ""
+        for mood in nodes.MUSIC_MOODS:
+            assert nodes._normalize_music_mood(mood.upper()) == mood
+
+    def test_the_plan_always_carries_a_mood_field(self):
+        plan = nodes._normalize_shot_plan({
+            "shots": [{"index": 1, "duration_s": 4.0, "scene": "a kitchen"}],
+            "music_mood": "Calm",
+        })
+        assert plan["music_mood"] == "calm"
+
+    def test_an_unrecognised_mood_degrades_to_the_shared_pool(self):
+        plan = nodes._normalize_shot_plan({
+            "shots": [{"index": 1, "duration_s": 4.0, "scene": "a kitchen"}],
+            "music_mood": "epic trailer",
+        })
+        assert plan["music_mood"] == ""
 
     def test_no_mood_anywhere_is_an_empty_list_not_a_crash(self):
         assert nodes._music_moods({}, {}) == []

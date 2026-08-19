@@ -64,5 +64,12 @@ USER appuser
 COPY shared/ shared/
 COPY workflows/ workflows/
 COPY worker.py .
+# Reel music beds (VIDEO_MUSIC_DIR). Ships empty — see assets/music/README.md:
+# licensing is the operator's call, so the pipeline plays only what is put
+# here. Without this COPY the directory simply does not exist in the image and
+# every reel reports "no bed available", which is the honest outcome but not
+# an obvious one to diagnose. Bind-mount over /app/assets/music instead if you
+# would rather add tracks without a rebuild.
+COPY assets/ assets/
 
 CMD ["python", "-m", "worker"]

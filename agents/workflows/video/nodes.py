@@ -536,7 +536,22 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
         "cta": _clean_overlay_text(
             plan.get("cta"), _CTA_MAX_CHARS, _CTA_WRAP_CHARS
         ),
+        "music_mood": _normalize_music_mood(plan.get("music_mood")),
     }
+
+
+# The music bed is chosen from <VIDEO_MUSIC_DIR>/<mood>/, so the vocabulary
+# has to be CLOSED — an open-ended mood string means the operator cannot know
+# which folders to create, and every reel silently falls through to the
+# top-level pool. Five moods is enough to separate a calm provenance film
+# from a fast promotional cut.
+MUSIC_MOODS = ("warm", "upbeat", "calm", "bold", "elegant")
+
+
+def _normalize_music_mood(value: Any) -> str:
+    """One of MUSIC_MOODS, or '' when the plan named something else (pure)."""
+    slug = re.sub(r"[^a-z]+", "", str(value or "").strip().lower())
+    return slug if slug in MUSIC_MOODS else ""
 
 
 # A MAX_SHOTS-beat plan carries a 7-label structured `scene` per shot plus
@@ -830,6 +845,7 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             '    {"index": 1, "duration_s": 3.0, "overlay_text": "<on-screen line, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."},\n'
             '    {"index": 2, "duration_s": 5.0, "overlay_text": "<...>", "scene": "..."}\n'
             "  ],\n"
+            '  "music_mood": "<one of: ' + "|".join(MUSIC_MOODS) + '>",\n'
             '  "caption": "<post caption in the brand voice, ENGLISH>",\n'
             '  "hashtags": ["tag1", "tag2"],\n'
             f'  "cta": "<call to action, ENGLISH, at most {_CTA_MAX_CHARS} '
@@ -2554,17 +2570,21 @@ def _has_real_audio(peak_db: float | None) -> bool:
 
 
 def _music_moods(plan: dict[str, Any], brand: dict[str, Any]) -> list[str]:
-    """Mood folder names to try, most specific first (pure function)."""
+    """Mood folder names to try, most specific first (pure function).
+
+    Restricted to MUSIC_MOODS. An open vocabulary would name folders the
+    operator has no way to predict, so every reel would fall through to the
+    top-level pool and the mood would be decoration.
+    """
     candidates = [
         plan.get("music_mood"),
-        plan.get("mood"),
         (brand.get("brand_voice") or {}).get("music_mood")
         if isinstance(brand.get("brand_voice"), dict)
         else None,
     ]
     out: list[str] = []
     for c in candidates:
-        slug = re.sub(r"[^a-z0-9_-]+", "-", str(c or "").strip().lower()).strip("-")
+        slug = _normalize_music_mood(c)
         if slug and slug not in out:
             out.append(slug)
     return out
