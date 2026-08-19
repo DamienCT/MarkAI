@@ -3969,8 +3969,13 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                         f"luma {picture['YAVG']:.0f}/sat "
                         f"{picture.get('SATAVG', 0.0):.1f}"
                         + (
+                            # The black point is logged because without it a
+                            # short-landing mean is indistinguishable from a
+                            # grade that did not apply — which cost a whole
+                            # render to work out once.
                             f" → grade γ{grade['gamma']:.2f} "
-                            f"×{grade['saturation']:.2f}"
+                            f"×{grade['saturation']:.2f} "
+                            f"−{grade.get('black', 0.0):.3f}"
                             if grade
                             else " (on target)"
                         )
