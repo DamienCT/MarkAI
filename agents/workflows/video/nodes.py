@@ -147,10 +147,23 @@ _CONCAT_PROGRESS_START = 95
 # construction — while a re-anchor scores 0.44 to 0.75. Eight of the nine
 # reels in the bucket had NO change above the 0.3 cut threshold anywhere.
 #
-# At 2, a 7-shot reel gets two cuts and three ~13s acts. Lowering it to 1
-# gives three cuts and ~8s acts; 0 gives a cut at every boundary and every
-# shot at generation 0. _MAX_ANCHOR_FRAMES bounds the resulting fan-out.
-_MAX_CHAIN_DEPTH = 2
+# Set by A/B on the same calendar item, three renders, one variable moved:
+#
+#                              mean SSIM   worst pair   cuts
+#   one shared keyframe, cap 2     0.467        0.750      2
+#   per-cut anchors,     cap 2     0.427        0.711      2
+#   per-cut anchors,     cap 1     0.292        0.481      3
+#
+# Nine delivered reels have a median internal SSIM of 0.258, so cap 1 is the
+# first setting that takes this reel off the repetitive tail and back to the
+# population — while adding a third cut to a format that had none.
+#
+# The look does NOT come apart at four independently generated anchors, which
+# was the risk: measured chroma deviation from the reel's own mean runs 1.1
+# to 3.3 on a 0-255 scale across all seven shots. So the argument against
+# going further to 0 (a cut at every boundary, every shot generation 0) is
+# not coherence — that is untested, and worth one render to settle.
+_MAX_CHAIN_DEPTH = 1
 
 # ── Motion floor ──────────────────────────────────────────────────────────
 # Nothing measured whether a rendered shot actually moved. i2v models fail by
