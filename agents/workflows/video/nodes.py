@@ -3124,13 +3124,29 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         # every exit path (success, _fail, unexpected exception).
         with tempfile.TemporaryDirectory(prefix=f"reel_{item_id}_") as workdir:
             chain_image = keyframe
-            # Depth of the CURRENT chain_image: 0 = the branded keyframe,
+            # The frame every re-anchor returns to. Normally the branded
+            # keyframe — but make_keyframe drops it and falls back to t2v
+            # whenever the product swap did not fire, and gating the cap on
+            # `keyframe` alone left THAT reel chaining unbounded: shot 7 sat
+            # six generations downstream with nothing to cut back to, which
+            # is precisely the case where drift is worst. When there is no
+            # keyframe, shot 1's own last frame becomes the anchor.
+            anchor_image = keyframe
+            # Depth of the CURRENT chain_image: 0 = the anchor itself,
             # 1 = one i2v hop downstream of it, and so on.
             chain_depth = 0
             motion_retries = 0
             shot_paths: list[str] = []
             for i, (shot, shot_prompt) in enumerate(zip(fitted, shot_prompts)):
-                anchor = "keyframe" if chain_depth == 0 else f"chain+{chain_depth}"
+                if chain_image is None:
+                    # No keyframe and no chain yet: this is a text-to-video
+                    # shot. Labelling it "keyframe" claimed an anchor that
+                    # does not exist.
+                    anchor = "t2v"
+                elif chain_depth == 0:
+                    anchor = "keyframe" if chain_image is keyframe else "anchor"
+                else:
+                    anchor = f"chain+{chain_depth}"
                 req = VideoRequest(
                     mode="i2v" if chain_image else "t2v",
                     prompt=shot_prompt,
@@ -3192,7 +3208,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 verdict = _motion_verdict(motion)
                 if (
                     verdict
-                    and keyframe
+                    and anchor_image
                     and chain_depth > 0
                     and motion_retries < _MAX_MOTION_RETRIES
                 ):
@@ -3202,14 +3218,14 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     motion_retries += 1
                     logger.warning(
                         "Shot %d/%d looks %s (motion %.2f) — re-rendering from "
-                        "the keyframe (retry %d/%d)",
+                        "the anchor (retry %d/%d)",
                         i + 1, num, verdict, motion or 0.0,
                         motion_retries, _MAX_MOTION_RETRIES,
                     )
                     retry_req = replace(
                         req,
                         mode="i2v",
-                        image_bytes=keyframe,
+                        image_bytes=anchor_image,
                         # A fresh key, or a caching provider hands back the
                         # same frozen clip.
                         idempotency_key=f"{base_key}:s{i + 1}:r2"[:128],
@@ -3251,7 +3267,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                             path, result = retry_path, retry
                             motion, verdict = retry_motion, None
                             chain_depth = 0
-                            anchor = "keyframe:retry"
+                            anchor = "anchor:retry"
                         else:
                             logger.warning(
                                 "Shot %d/%d retry still %s (motion %.2f) — "
@@ -3316,12 +3332,12 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                         reanchor = f"shot {i + 1} looks {verdict}"
                     elif chain_depth >= _MAX_CHAIN_DEPTH:
                         reanchor = f"chain depth {chain_depth} reached the cap"
-                    if reanchor and keyframe:
+                    if reanchor and anchor_image:
                         logger.info(
-                            "Shot %d/%d will re-anchor on the keyframe (%s)",
+                            "Shot %d/%d will re-anchor (%s)",
                             i + 2, num, reanchor,
                         )
-                        chain_image, chain_depth = keyframe, 0
+                        chain_image, chain_depth = anchor_image, 0
                         continue
                     chain_image = await asyncio.to_thread(
                         _extract_last_frame, path, workdir, i + 1
@@ -3332,6 +3348,18 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                             f"shot {i + 1}/{num}"
                         )
                     chain_depth += 1
+                    if anchor_image is None:
+                        # No keyframe: adopt shot 1's last frame as the fixed
+                        # reference so later shots have somewhere to cut back
+                        # to. It is one generation old rather than zero, but
+                        # it bounds the drift instead of letting it compound
+                        # across the whole reel.
+                        anchor_image = chain_image
+                        chain_depth = 0
+                        logger.info(
+                            "No keyframe — anchoring the reel on shot 1's "
+                            "last frame"
+                        )
 
             # ── Normalize non-master shots, then concat ────────────────────
             await _progress(_CONCAT_PROGRESS_START + 1, "concat:normalize")

@@ -89,3 +89,67 @@ class TestChainDepthCap:
 
     def test_retries_cannot_double_the_render_bill(self):
         assert nodes._MAX_MOTION_RETRIES < nodes.MAX_SHOTS / 2
+
+
+class TestChainCapWithoutAKeyframe:
+    """The cap was gated on the keyframe, so it never fired without one.
+
+    make_keyframe drops the keyframe and falls back to t2v whenever the
+    product swap did not fire. A live reel rendered that way and shot 4 came
+    back "from chain+3" — the chain ran unbounded on exactly the reel where
+    drift is worst, because re-anchoring had nothing to return to.
+    """
+
+    def test_a_no_keyframe_reel_still_caps_its_chain(self, monkeypatch):
+        import asyncio
+        import sys
+        import os
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from tests.test_video_multishot import _Harness, _state
+        from workflows.video.nodes import render_video
+
+        h = _Harness(monkeypatch)
+        result = asyncio.run(render_video(_state([4] * 6, keyframe=None)))
+
+        assert result.get("status") != "failed"
+        anchors = [
+            entry.get("anchor")
+            for entry in result["video_meta"]["ledger"]
+        ]
+        # Shot 1 is genuinely text-to-video: nothing to anchor on yet.
+        assert anchors[0] == "t2v"
+        # Every later shot must be within the cap of the adopted anchor.
+        depths = [
+            int(a.split("+")[1]) if a and a.startswith("chain+") else 0
+            for a in anchors
+        ]
+        assert max(depths) <= nodes._MAX_CHAIN_DEPTH, anchors
+        assert "anchor" in anchors, (
+            f"the reel never re-anchored: {anchors}"
+        )
+
+    def test_shot_one_is_not_labelled_as_having_a_keyframe(self, monkeypatch):
+        import asyncio
+
+        from tests.test_video_multishot import _Harness, _state
+        from workflows.video.nodes import render_video
+
+        h = _Harness(monkeypatch)
+        result = asyncio.run(render_video(_state([4] * 4, keyframe=None)))
+        anchors = [e.get("anchor") for e in result["video_meta"]["ledger"]]
+        assert anchors[0] != "keyframe", (
+            "the label claimed an anchor that did not exist"
+        )
+
+    def test_a_keyframe_reel_still_returns_to_the_keyframe(self, monkeypatch):
+        import asyncio
+
+        from tests.test_video_multishot import _Harness, _state
+        from workflows.video.nodes import render_video
+
+        h = _Harness(monkeypatch)
+        result = asyncio.run(render_video(_state([4] * 6)))
+        anchors = [e.get("anchor") for e in result["video_meta"]["ledger"]]
+        assert anchors[0] == "keyframe"
+        assert "keyframe" in anchors[1:], anchors
