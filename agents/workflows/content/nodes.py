@@ -2744,6 +2744,7 @@ async def _resolve_logo_placement(
     available_logos: dict[str, str],
     proposed_xy: tuple[float, float] | None,
     text_kwargs: dict[str, Any],
+    product_box: tuple[float, float, float, float] | None = None,
 ) -> tuple[bytes, str, tuple[float, float]]:
     """Settle WHERE the logo goes and WHICH variant it uses, by measurement.
 
@@ -2771,6 +2772,20 @@ async def _resolve_logo_placement(
 
     reserved = compute_text_region(img_w, img_h, **text_kwargs)
 
+    # The product's own pixels are protected exactly like the text block:
+    # high contrast against a pack's white label is precisely how the logo
+    # ended up centred ON a jam jar in a delivered post.
+    if product_box is None:
+        from shared.placement import DEFAULT_PRODUCT_BOX
+
+        product_box = DEFAULT_PRODUCT_BOX
+    product_rect = (
+        int(product_box[0] * img_w),
+        int(product_box[1] * img_h),
+        int(product_box[2] * img_w),
+        int(product_box[3] * img_h),
+    )
+
     def _logo_box(png: bytes, label: str) -> tuple[int, int, tuple]:
         """(width, height, ink_rgb) of *png* rendered at *label*'s scale."""
         with _PILImage.open(_BytesIO(png)) as lg:
@@ -2794,6 +2809,7 @@ async def _resolve_logo_placement(
     best_xy, info = choose_logo_placement(
         image_data, logo_w, logo_h, ink,
         proposed_xy=proposed_xy, avoid_rect=reserved,
+        avoid_rects=[product_rect],
     )
     if info.get("changed"):
         logger.info("apply_branding: %s", info.get("reason"))
@@ -2814,6 +2830,7 @@ async def _resolve_logo_placement(
                 alt_xy, alt_info = choose_logo_placement(
                     image_data, alt_w, alt_h, alt_ink,
                     proposed_xy=proposed_xy, avoid_rect=reserved,
+                    avoid_rects=[product_rect],
                 )
             except Exception as exc:
                 logger.warning("variant contrast probe failed for %s: %s", label, exc)
@@ -2996,6 +3013,14 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         ad_headline_colors: dict | None = None
         ad_font_family = "Montserrat"
         ad_logo_xy: tuple[float, float] | None = None
+        # The hero product's protected region (normalized x0,y0,x1,y1). The
+        # vision planner measures it; when nothing measured it, the
+        # conservative central default applies — a delivered post shipped
+        # with the brand mark stamped on the jam jar because nothing told
+        # the placer the product was off-limits.
+        from shared.placement import DEFAULT_PRODUCT_BOX
+
+        product_box: tuple[float, float, float, float] = DEFAULT_PRODUCT_BOX
         if image_format == "ad":
             from shared.placement import plan_headline_placement
             # Brand palette so the AI can emphasize a key word on-brand.
@@ -3008,9 +3033,12 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             _brand_colors = {**(brand_guidelines.get("colors") or {}), **_cp}
             try:
                 (ad_text_xy, ad_text_scale, ad_text_width,
-                 ad_headline_colors, ad_font_family, ad_logo_xy) = (
+                 ad_headline_colors, ad_font_family, ad_logo_xy,
+                 _seen_box) = (
                     await plan_headline_placement(image_data, text_line1, _brand_colors)
                 )
+                if _seen_box is not None:
+                    product_box = _seen_box
             except Exception as _exc:
                 logger.warning("Headline placement failed, using default: %s", _exc)
 
@@ -3120,6 +3148,7 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             logo_png, chosen_label, plan_logo_xy = await _resolve_logo_placement(
                 image_data, logo_png, chosen_label, available_logos,
                 plan_logo_xy, _text_kwargs,
+                product_box=product_box,
             )
         except Exception as _exc:
             logger.warning("Logo placement resolution failed: %s", _exc)

@@ -11,13 +11,21 @@ picks a good spot + size:
   3. ``plan_headline_placement`` — tries vision first, falls back to variance.
 
 All return ``(text_xy, text_scale, text_width, headline_colors, font_family,
-logo_xy)``: text_xy is a normalized (x, y) center in 0..1, text_scale multiplies
-the headline font size, text_width is the wrap width as a fraction of image
-width (so the text re-flows to fit the chosen empty area), headline_colors maps
-a word index (as a string) to a "#RRGGBB" color for emphasized words (empty =
-all white), font_family is one of the bundled headline fonts, and logo_xy is a
-normalized (x, y) center for the brand logo placed CLEAR of the headline so the
-two never overlap (None → caller uses its own heuristic).
+logo_xy, product_box)``: text_xy is a normalized (x, y) center in 0..1,
+text_scale multiplies the headline font size, text_width is the wrap width as
+a fraction of image width (so the text re-flows to fit the chosen empty area),
+headline_colors maps a word index (as a string) to a "#RRGGBB" color for
+emphasized words (always empty from the pipeline now — see below), font_family
+is one of the bundled headline fonts, logo_xy is a normalized (x, y) center
+for the brand logo placed CLEAR of the headline (None → caller's heuristic),
+and product_box is the hero product's normalized (x0, y0, x1, y1) bounding
+box — the one region the logo placer must NEVER cover (None → caller uses a
+conservative central region).
+
+Per-word colors were retired from the automatic path on 2026-08-19: a
+delivered Naturespan ad shipped with white/green/near-black words in one
+headline, the dark word unreadable over a plant. The vision model chose all
+three. The editor can still set colors by hand; the pipeline ships one ink.
 """
 
 from __future__ import annotations
@@ -56,9 +64,19 @@ def _norm_hex(v) -> str | None:
     return None
 
 
+# When nobody measured where the product is, assume it is where ad
+# compositions put it: the central band down to near the bottom. The eight
+# conventional logo spots this excludes are exactly the ones that landed a
+# logo ON a swapped jam jar (centre-bottom) in a delivered post; corners and
+# edge midpoints stay available.
+DEFAULT_PRODUCT_BOX = (0.28, 0.30, 0.72, 0.92)
+
+
 def variance_headline_placement(
     image_data: bytes,
-) -> tuple[tuple[float, float], float, float, dict, str, tuple[float, float]]:
+) -> tuple[
+    tuple[float, float], float, float, dict, str, tuple[float, float], None
+]:
     """Pick the cleanest horizontal band for the headline (no LLM).
 
     Scans candidate bands and returns the center of the one with the lowest
@@ -71,12 +89,12 @@ def variance_headline_placement(
         img = Image.open(BytesIO(image_data)).convert("L")
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("variance placement: cannot open image (%s)", exc)
-        return ((0.5, 0.15), _DEFAULT_SCALE, _DEFAULT_WIDTH, {}, _DEFAULT_FONT, (0.85, 0.88))
+        return ((0.5, 0.15), _DEFAULT_SCALE, _DEFAULT_WIDTH, {}, _DEFAULT_FONT, (0.85, 0.88), None)
 
     arr = np.asarray(img, dtype=np.float32)
     h, w = arr.shape
     if h == 0 or w == 0:
-        return ((0.5, 0.15), _DEFAULT_SCALE, _DEFAULT_WIDTH, {}, _DEFAULT_FONT, (0.85, 0.88))
+        return ((0.5, 0.15), _DEFAULT_SCALE, _DEFAULT_WIDTH, {}, _DEFAULT_FONT, (0.85, 0.88), None)
 
     # Sample the central 86% of the width (where the text would sit).
     x0, x1 = int(w * 0.07), int(w * 0.93)
@@ -123,32 +141,31 @@ def variance_headline_placement(
     logo_xy = (0.85, 0.88) if best_y < 0.5 else (0.85, 0.12)
 
     # No semantic color/font choice without an LLM — white text, default font.
-    return ((0.5, best_y), _DEFAULT_SCALE, width_frac, {}, _DEFAULT_FONT, logo_xy)
+    return ((0.5, best_y), _DEFAULT_SCALE, width_frac, {}, _DEFAULT_FONT, logo_xy, None)
 
 
 async def vision_headline_placement(
     image_data: bytes,
     headline_text: str,
     brand_colors: dict | None = None,
-) -> tuple[tuple[float, float], float, float, dict, str, tuple[float, float] | None] | None:
+) -> (
+    tuple[
+        tuple[float, float], float, float, dict, str,
+        tuple[float, float] | None, tuple[float, float, float, float] | None,
+    ]
+    | None
+):
     """Ask a vision LLM where a big headline should go, how big, how wide,
-    which word(s) to color, which font, and where the logo goes (clear of it).
+    which font, where the logo goes, and WHERE THE PRODUCT IS (so nothing is
+    ever composited over it).
 
     Returns ``(text_xy, text_scale, text_width, headline_colors, font_family,
-    logo_xy)`` or ``None`` on any failure (caller falls back to variance).
+    logo_xy, product_box)`` or ``None`` on any failure (caller falls back to
+    variance). headline_colors is always {} — one ink, chosen at draw time by
+    measured contrast.
     """
     from shared.llm import chat_completion, parse_llm_json
     from shared.image_processing import HEADLINE_FONTS
-
-    words = (headline_text or "").split()
-    n_words = len(words)
-    # Brand palette the model may use for emphasis (legibility permitting).
-    palette = []
-    for key in ("primary", "secondary", "accent"):
-        hx = _norm_hex((brand_colors or {}).get(key))
-        if hx:
-            palette.append(f"{key} {hx}")
-    palette_str = ", ".join(palette) if palette else "(no brand palette — use white or a clearly legible color)"
 
     try:
         b64 = _b64.b64encode(image_data).decode("ascii")
@@ -174,12 +191,6 @@ async def vision_headline_placement(
         "(0.3-0.95), matching the WIDTH of the empty area so the text wraps to "
         "fit it and never overlaps the product. Use a small value for a narrow "
         "empty column, a large value for a wide-open area.\n"
-        "- text_colors: OPTIONALLY emphasize 1 or 2 KEY words by coloring them. "
-        f"The headline has {n_words} words (0-indexed when split on spaces). "
-        f"Brand palette for emphasis: {palette_str}. Only color a word if the "
-        "color stays clearly legible on the background at that spot; the rest "
-        "stay white. Default to NO colors (empty) if unsure. Map word index "
-        '(as a string) to a "#RRGGBB" hex.\n'
         "- font_family: pick ONE font that matches the brand/product mood: "
         "'Montserrat' (modern, clean, versatile), 'Poppins' (friendly, rounded, "
         "approachable), 'Oswald' (bold, condensed, high-impact), 'Playfair "
@@ -188,13 +199,18 @@ async def vision_headline_placement(
         "- logo_xy: the CENTER of the brand logo as x and y fractions 0..1, in a "
         "clean area in a DIFFERENT part of the image from the headline so the "
         "logo and headline NEVER overlap (a corner far from the headline is "
-        "ideal). Avoid the hero product, faces, and packaging.\n\n"
+        "ideal). Avoid the hero product, faces, and packaging.\n"
+        "- product_box: the BOUNDING BOX of the hero product/packaging (the "
+        "jar, bottle, box, plate — the thing being sold) as fractions x0, y0, "
+        "x1, y1 of the image (x0<x1, y0<y1). Include the whole product plus a "
+        "small margin. This region is protected: nothing will ever be drawn "
+        "over it.\n\n"
         "Return strict JSON only:\n"
         '{"text_xy": {"x": 0.0-1.0, "y": 0.0-1.0}, '
         '"text_size": "s"|"m"|"l", "text_width": 0.3-0.95, '
-        '"text_colors": {"<word_index>": "#RRGGBB"}, '
         '"font_family": "Montserrat", '
         '"logo_xy": {"x": 0.0-1.0, "y": 0.0-1.0}, '
+        '"product_box": {"x0": 0.0-1.0, "y0": 0.0-1.0, "x1": 0.0-1.0, "y1": 0.0-1.0}, '
         '"reason": "where the empty area is"}'
     )
     user_text = (
@@ -250,18 +266,9 @@ async def vision_headline_placement(
     except (TypeError, ValueError):
         width = _DEFAULT_WIDTH
 
-    # Per-word colors: keep only valid hex on in-range word indices.
+    # One ink for the whole headline — per-word colors are an editor-only
+    # feature now (see module docstring).
     colors: dict[str, str] = {}
-    raw_colors = plan.get("text_colors")
-    if isinstance(raw_colors, dict):
-        for k, v in raw_colors.items():
-            try:
-                idx = int(k)
-            except (TypeError, ValueError):
-                continue
-            hx = _norm_hex(v)
-            if hx and 0 <= idx < n_words:
-                colors[str(idx)] = hx
 
     # Font: must be one of the bundled headline fonts (case-insensitive match).
     font = _DEFAULT_FONT
@@ -284,22 +291,42 @@ async def vision_headline_placement(
     except (TypeError, ValueError):
         logo_xy = None
 
+    # The hero product's protected region. A degenerate or missing box comes
+    # back as None and the caller substitutes DEFAULT_PRODUCT_BOX.
+    product_box: tuple[float, float, float, float] | None = None
+    pbox = plan.get("product_box")
+    if isinstance(pbox, dict):
+        try:
+            bx0 = _clamp(float(pbox.get("x0")), 0.0, 1.0)
+            by0 = _clamp(float(pbox.get("y0")), 0.0, 1.0)
+            bx1 = _clamp(float(pbox.get("x1")), 0.0, 1.0)
+            by1 = _clamp(float(pbox.get("y1")), 0.0, 1.0)
+            if bx1 - bx0 >= 0.05 and by1 - by0 >= 0.05:
+                product_box = (bx0, by0, bx1, by1)
+        except (TypeError, ValueError):
+            product_box = None
+
     logger.info(
-        "vision headline placement: xy=(%.2f,%.2f) size=%s width=%.2f colors=%s font=%s logo=%s (%s)",
-        cx, cy, size, width, colors, font, logo_xy, str(plan.get("reason", ""))[:120],
+        "vision headline placement: xy=(%.2f,%.2f) size=%s width=%.2f font=%s "
+        "logo=%s product=%s (%s)",
+        cx, cy, size, width, font, logo_xy, product_box,
+        str(plan.get("reason", ""))[:120],
     )
-    return ((cx, cy), scale, width, colors, font, logo_xy)
+    return ((cx, cy), scale, width, colors, font, logo_xy, product_box)
 
 
 async def plan_headline_placement(
     image_data: bytes,
     headline_text: str,
     brand_colors: dict | None = None,
-) -> tuple[tuple[float, float], float, float, dict, str, tuple[float, float] | None]:
+) -> tuple[
+    tuple[float, float], float, float, dict, str,
+    tuple[float, float] | None, tuple[float, float, float, float] | None,
+]:
     """Vision first, deterministic variance band as a fallback.
 
     Always returns ``(text_xy, text_scale, text_width, headline_colors,
-    font_family, logo_xy)``.
+    font_family, logo_xy, product_box)``.
     """
     plan = await vision_headline_placement(image_data, headline_text, brand_colors)
     if plan is not None:

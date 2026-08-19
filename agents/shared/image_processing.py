@@ -559,28 +559,35 @@ def choose_logo_placement(
     proposed_xy: tuple[float, float],
     avoid_rect: tuple[int, int, int, int] | None = None,
     min_contrast: float = MIN_LOGO_CONTRAST,
+    avoid_rects: list[tuple[int, int, int, int]] | None = None,
 ) -> tuple[tuple[float, float], dict]:
     """Keep *proposed_xy* unless it is measurably bad, else relocate.
 
-    A proposal is rejected when it collides with *avoid_rect* (the text card /
-    headline block) or when the ink would not reach *min_contrast* against the
-    backdrop it lands on. Only then do we fall back to the conventional spots,
-    preferring the NEAREST one that both clears the text and reads, so the art
-    direction is disturbed as little as the measurements allow.
+    A proposal is rejected when it collides with ANY protected rect — the
+    text card / headline block (*avoid_rect*) or the extra *avoid_rects*
+    (above all the PRODUCT's bounding box: a delivered post shipped with the
+    brand mark stamped dead-centre on the jam jar, because the jar's white
+    label was the highest-contrast backdrop in frame and nothing said the
+    product was off-limits) — or when the ink would not reach *min_contrast*
+    against the backdrop it lands on. Only then do we fall back to the
+    conventional spots, preferring the NEAREST one that clears everything and
+    reads, so the art direction is disturbed as little as the measurements
+    allow.
 
     Returns ``(xy, info)``; ``info["changed"]`` says whether it moved.
     """
     lum = luminance_map(image_data)
     img_h, img_w = lum.shape[:2]
     gap = max(4, int(img_w * _LOGO_TEXT_GAP_FRAC))
+    protected = [r for r in [avoid_rect, *(avoid_rects or [])] if r]
 
     def _evaluate(xy):
         box = logo_box_at(xy[0], xy[1], logo_w, logo_h, img_w, img_h)
-        collides = bool(avoid_rect) and rects_overlap(box, avoid_rect, gap)
+        collides = any(rects_overlap(box, r, gap) for r in protected)
         return {
             "contrast": logo_contrast_at(lum, xy[0], xy[1], logo_w, logo_h, ink_rgb),
             "collides": collides,
-            "overlap": _overlap_area(box, avoid_rect) if avoid_rect else 0,
+            "overlap": sum(_overlap_area(box, r) for r in protected),
         }
 
     proposal = _evaluate(proposed_xy)
@@ -1226,8 +1233,24 @@ def overlay_logo_and_text(
         _adv = layout["advance"]
         colors = headline_colors if isinstance(headline_colors, dict) else {}
 
+        # One ink, chosen by measuring the pixels the words actually land on.
+        # White-with-dark-shadow washed out over a pale wall in a delivered
+        # ad; on a bright band the ink flips to near-black with a light
+        # shadow. (Per-word colors remain an editor-only override.)
+        rx0, ry0, rx1, ry1 = layout["rect"]
+        band = np.asarray(base.convert("L"), dtype=np.float32)[
+            max(0, ry0):max(0, ry1), max(0, rx0):max(0, rx1)
+        ]
+        band_luma = float(band.mean()) if band.size else 0.0
+        if band_luma > 175.0:
+            default_ink = (26, 26, 26, 255)
+            shadow_fill = (255, 255, 255, 90)
+        else:
+            default_ink = (255, 255, 255, 255)
+            shadow_fill = (0, 0, 0, 110)
+
         def _color_for(idx: int) -> tuple:
-            """Per-word color from the editor (index → '#RRGGBB'); white default."""
+            """Editor override (index → '#RRGGBB'); measured ink otherwise."""
             hexv = colors.get(str(idx)) or colors.get(idx)
             if isinstance(hexv, str):
                 h = hexv.lstrip("#")
@@ -1236,7 +1259,7 @@ def overlay_logo_and_text(
                         return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
                     except ValueError:
                         pass
-            return (255, 255, 255, 255)
+            return default_ink
 
         shadow_off = max(1, int(h_font.size * 0.04))
 
@@ -1248,7 +1271,7 @@ def overlay_logo_and_text(
             for idx, w in line:
                 fill = _color_for(idx)
                 # soft drop shadow (not an outline) for legibility on any backdrop
-                draw.text((x + shadow_off, y + shadow_off), w, font=h_font, fill=(0, 0, 0, 110))
+                draw.text((x + shadow_off, y + shadow_off), w, font=h_font, fill=shadow_fill)
                 draw.text((x, y), w, font=h_font, fill=fill)
                 x += _adv(w) + space_w
             y += lh + gap
@@ -1360,6 +1383,39 @@ def overlay_logo_and_text(
 
 
 # ── Social platform mockups ──────────────────────────────────────
+
+
+def _fit_feed_aspect(
+    img: Image.Image,
+    target_w: int,
+    min_hw: float = 0.5236,
+    max_hw: float = 1.25,
+) -> Image.Image:
+    """Scale a post image to the mockup width AT ITS OWN ASPECT, clamped to
+    what the platform's feed actually renders (~1.91:1 wide … 4:5 tall).
+
+    The old square center-crop was a lie with consequences: a reviewer
+    approved a landscape ad whose headline sat at x≈0.73, the Instagram
+    mockup chopped both sides off, and the crop read as "the headline runs
+    off the frame" — reported by the user as unacceptable. Feeds do not
+    square-crop posts; the preview must not either. Only aspect beyond the
+    platform's own display bounds is center-cropped, because the platform
+    itself does that.
+    """
+    w, h = img.width, img.height
+    if not w or not h:
+        return img.resize((target_w, target_w))
+    hw = h / w
+    if hw > max_hw:  # taller than the feed shows: platform center-crops
+        new_h = int(w * max_hw)
+        top = (h - new_h) // 2
+        img = img.crop((0, top, w, top + new_h))
+    elif hw < min_hw:  # wider than the feed shows
+        new_w = int(h / min_hw)
+        left = (w - new_w) // 2
+        img = img.crop((left, 0, left + new_w, h))
+    scale = target_w / img.width
+    return img.resize((target_w, max(1, int(img.height * scale))))
 
 
 def _center_crop_square(img: Image.Image, target_size: int) -> Image.Image:
@@ -1623,9 +1679,9 @@ def _mockup_instagram(
     y += 56
 
     # Post image
-    post_img = _center_crop_square(post_img, W)
+    post_img = _fit_feed_aspect(post_img, W)
     img.paste(post_img, (0, y))
-    y += W
+    y += post_img.height
 
     # Actions + likes
     draw.text(
@@ -1732,9 +1788,9 @@ def _mockup_facebook(
     y += 8
 
     # Image
-    post_img = _center_crop_square(post_img, W)
+    post_img = _fit_feed_aspect(post_img, W)
     img.paste(post_img, (0, y))
-    y += W
+    y += post_img.height
 
     # Reactions
     draw.rectangle([0, y, W, y + 36], fill=(255, 255, 255))
@@ -1824,9 +1880,9 @@ def _mockup_linkedin(
         y += 20
     y += 8
 
-    post_img = _center_crop_square(post_img, W)
+    post_img = _fit_feed_aspect(post_img, W)
     img.paste(post_img, (0, y))
-    y += W
+    y += post_img.height
 
     draw.rectangle([0, y, W, y + 36], fill=(255, 255, 255))
     draw.text(
@@ -1927,13 +1983,14 @@ def _mockup_x(
 
     # Image with rounded corners
     img_w = W - 80
-    post_img = _center_crop_square(post_img, img_w)
-    mask = Image.new("L", (img_w, img_w), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, img_w, img_w], radius=16, fill=255)
-    rounded = Image.new("RGB", (img_w, img_w), (255, 255, 255))
+    post_img = _fit_feed_aspect(post_img, img_w)
+    img_h2 = post_img.height
+    mask = Image.new("L", (img_w, img_h2), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, img_w, img_h2], radius=16, fill=255)
+    rounded = Image.new("RGB", (img_w, img_h2), (255, 255, 255))
     rounded.paste(post_img, (0, 0))
     img.paste(rounded, (16, y), mask)
-    y += img_w + 12
+    y += img_h2 + 12
 
     af = _load_font(13)
     for label, ox in [
