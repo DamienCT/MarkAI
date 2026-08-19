@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 
@@ -367,15 +368,85 @@ class FetchImagesResponse(BaseModel):
     images: list[dict]
 
 
+_IMAGE_VERIFY_PROMPT = """You are auditing a product photo for a marketing agency.
+
+The catalogue calls this product:
+  {name}
+
+Read any text visible on the packaging.
+
+Answer STRICT JSON only:
+{{"depicts": "<what the packaging says it is>",
+  "same_brand": true|false,
+  "same_product_type": true|false,
+  "reason": "<one short sentence>"}}
+
+same_brand: the manufacturer on the pack is the same brand.
+same_product_type: the same KIND of product. Hemp flour vs wheat flour are
+DIFFERENT. Coffee pods vs coffee beans are DIFFERENT. Peanut puree vs almond
+puree are DIFFERENT. The same jam in a different jar size is the SAME."""
+
+
+async def _image_depicts_product(image_data: bytes, content_type: str, name: str) -> tuple[bool, str]:
+    """Vision-check that a sourced photo really shows the named product.
+
+    Web image search matches on brand and keywords, so it happily returns a
+    different item from the same maker — a marketing post captioned "Hemp
+    Flour 250g" showing a 1kg wheat flour pack is a publishable-accuracy
+    failure. Pack SIZE may differ (stock photos show one of many BC pack
+    sizes); brand and product type may not.
+
+    Returns ``(usable, description)``. Fails open (usable) when the vision
+    check itself errors, so image sourcing never hard-depends on it.
+    """
+    import base64
+
+    import httpx
+
+    try:
+        b64 = base64.b64encode(image_data).decode()
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(
+                f"{settings.LITELLM_BASE_URL.rstrip('/')}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}"},
+                json={
+                    "model": "gpt-5.4",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": _IMAGE_VERIFY_PROMPT.format(name=name)},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{content_type};base64,{b64}"},
+                                },
+                            ],
+                        }
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0,
+                },
+            )
+            resp.raise_for_status()
+            verdict = json.loads(resp.json()["choices"][0]["message"]["content"])
+    except Exception as exc:
+        logger.warning("Product image verification failed for '%s': %s", name, exc)
+        return True, "verification unavailable"
+
+    usable = bool(verdict.get("same_brand")) and bool(verdict.get("same_product_type"))
+    return usable, str(verdict.get("depicts") or "")
+
+
 async def _fetch_one_product_image_via_worker(
     product,
 ) -> dict | None:
     """Ask the browser worker for one validated image, then download the bytes.
 
     Returns ``{"url", "content_type", "size_bytes", "image_data"}`` on success
-    or ``None`` if no image could be found and downloaded. Keeps the
-    browser-worker call and the byte download in one place so both the
-    single-product and batch endpoints share the same recipe.
+    or ``None`` if no image could be found, downloaded, or verified to show
+    the product. Keeps the browser-worker call, the byte download and the
+    vision check in one place so both the single-product and batch endpoints
+    share the same recipe.
     """
     import httpx
 
@@ -425,11 +496,21 @@ async def _fetch_one_product_image_via_worker(
         if resp.status_code != 200 or len(resp.content) <= 5000:
             return None
         ct = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+        usable, depicts = await _image_depicts_product(resp.content, ct, product.name)
+        if not usable:
+            logger.warning(
+                "Rejected image for '%s' — it depicts %s (%s)",
+                product.name,
+                depicts or "a different product",
+                image_url,
+            )
+            return None
         return {
             "url": image_url,
             "content_type": ct,
             "size_bytes": len(resp.content),
             "image_data": resp.content,
+            "verified_depicts": depicts,
         }
     except Exception as exc:
         logger.warning("Failed to download image from %s: %s", image_url, exc)
