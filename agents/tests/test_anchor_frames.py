@@ -101,6 +101,11 @@ def _first(xs):
     return xs[0] if xs else None
 
 
+def _full_set(num):
+    """One distinct frame per anchored shot, whatever the cap is set to."""
+    return {i: b"ANCHOR%d" % i for i in nodes._anchor_indices(num)}
+
+
 class TestTheRenderLoopCutsToTheFreshFrame:
     """A re-anchor prefers the frame generated FOR the shot it starts."""
 
@@ -118,23 +123,25 @@ class TestTheRenderLoopCutsToTheFreshFrame:
         return [e.get("anchor") for e in result["video_meta"]["ledger"]]
 
     def test_each_re_anchor_lands_on_its_own_frame(self, monkeypatch):
-        anchors = {0: b"KEYFRAME", 3: b"ANCHOR4", 6: b"ANCHOR7"}
-        got = self._run(monkeypatch, anchors)
+        got = self._run(monkeypatch, _full_set(7))
         assert got[0] == "keyframe"
-        assert got[3] == "anchor#4", got
-        assert got[6] == "anchor#7", got
+        for i in nodes._anchor_indices(7)[1:]:
+            assert got[i] == f"anchor#{i + 1}", got
 
     def test_the_reel_no_longer_cuts_back_to_the_opening_frame(self, monkeypatch):
-        got = self._run(monkeypatch, {0: b"KEYFRAME", 3: b"ANCHOR4", 6: b"ANCHOR7"})
+        got = self._run(monkeypatch, _full_set(7))
         # Exactly one shot may start on the keyframe: the first.
         assert got.count("keyframe") == 1, got
 
     def test_a_missing_anchor_falls_back_rather_than_failing(self, monkeypatch):
         # One generation failed. The reel still renders, re-anchoring on the
         # opening frame the way it always used to.
-        got = self._run(monkeypatch, {0: b"KEYFRAME", 6: b"ANCHOR7"})
-        assert got[3] in ("keyframe", "anchor"), got
-        assert got[6] == "anchor#7", got
+        idx = nodes._anchor_indices(7)
+        missing = idx[1]
+        anchors = {i: b"A%d" % i for i in idx if i != missing}
+        got = self._run(monkeypatch, anchors)
+        assert got[missing] in ("keyframe", "anchor"), got
+        assert got[idx[-1]] == f"anchor#{idx[-1] + 1}", got
 
     def test_no_anchor_frames_at_all_is_the_old_behaviour(self, monkeypatch):
         got = self._run(monkeypatch, {})
@@ -247,11 +254,12 @@ class TestMakeKeyframeGeneratesTheSet:
 
     def test_each_uses_its_own_shot_scene(self, monkeypatch):
         _, seen = self._run(monkeypatch)
-        # Shot 1, 4 and 7's own first-frame lines, not the opening one three
+        # Each anchored shot's OWN first-frame line, not the opening one N
         # times over — which would rebuild the repetition in a new place.
-        assert any("frame 1" in p for p in seen["prompts"])
-        assert any("frame 4" in p for p in seen["prompts"])
-        assert any("frame 7" in p for p in seen["prompts"])
+        # _prompt_for extracts the scene's FIRST FRAME line, so that is what
+        # reaches the model.
+        for i in nodes._anchor_indices(7):
+            assert any(f"frame {i + 1}" in p for p in seen["prompts"]), i + 1
 
     def test_every_anchor_carries_the_exposure_and_look_rules(self, monkeypatch):
         _, seen = self._run(monkeypatch)
@@ -262,13 +270,13 @@ class TestMakeKeyframeGeneratesTheSet:
     def test_later_anchors_are_stored_for_review(self, monkeypatch):
         _, seen = self._run(monkeypatch)
         assert "b/c/keyframe.png" in seen["uploads"]
-        assert "b/c/anchor_04.png" in seen["uploads"]
-        assert "b/c/anchor_07.png" in seen["uploads"]
+        for i in nodes._anchor_indices(7)[1:]:
+            assert f"b/c/anchor_{i + 1:02d}.png" in seen["uploads"], i + 1
 
     def test_a_failed_later_anchor_does_not_fail_the_reel(self, monkeypatch):
         out, _ = self._run(monkeypatch, fail_indices=(1,))
         assert out["keyframe_bytes"] == b"hi"
-        assert len(out["anchor_frames"]) == 2
+        assert len(out["anchor_frames"]) == len(nodes._anchor_indices(7)) - 1
 
     def test_a_failed_opening_anchor_does(self, monkeypatch):
         # Without an opening frame there is nothing to fall back to, and the

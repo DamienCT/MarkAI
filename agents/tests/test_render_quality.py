@@ -83,9 +83,19 @@ class TestMotionParsing:
 
 class TestChainDepthCap:
     def test_the_cap_bounds_generational_drift(self):
-        # 1 would forbid chaining outright and lose all shot-to-shot
-        # continuity; 4+ is the depth the pack name was already mutating at.
-        assert 2 <= nodes._MAX_CHAIN_DEPTH <= 3
+        """4+ is the depth the pack name was already mutating at.
+
+        The lower bound this test used to assert — "1 would forbid chaining
+        outright and lose all shot-to-shot continuity" — was written before
+        re-anchoring had anywhere to go except the one opening frame. It no
+        longer holds: each re-anchor now cuts to a frame generated for that
+        shot, so a cap of 1 buys two-shot acts with a real cut between them
+        rather than losing continuity, and a cap of 0 gives every shot a
+        generation-0 frame of its own. The cap is a cut-rhythm choice now,
+        priced at one image generation per cut, and only the upper bound is
+        a correctness constraint.
+        """
+        assert 0 <= nodes._MAX_CHAIN_DEPTH <= 3
 
     def test_retries_cannot_double_the_render_bill(self):
         assert nodes._MAX_MOTION_RETRIES < nodes.MAX_SHOTS / 2

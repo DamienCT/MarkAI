@@ -558,14 +558,17 @@ class TestRenderVideoMultiShot:
         assert h.requests[0].mode == "i2v"
         assert h.requests[0].image_bytes == b"KEYFRAME"
         assert all(r.mode == "i2v" for r in h.requests)
+        # Derived from the cap rather than written out, because the cap is a
+        # cut-rhythm choice now — spelling one setting into the expectation
+        # made the dial untestable at any other value. This state supplies no
+        # per-shot anchor frames, so every re-anchor returns to the keyframe.
         sources = [r.image_bytes for r in h.requests]
-        assert sources == [
-            b"KEYFRAME",  # depth 0
-            b"PNGFRAME",  # depth 1
-            b"PNGFRAME",  # depth 2 — the cap
-            b"KEYFRAME",  # re-anchored
-            b"PNGFRAME",  # depth 1 again
+        expected = [
+            b"KEYFRAME" if i % (video_nodes._MAX_CHAIN_DEPTH + 1) == 0
+            else b"PNGFRAME"
+            for i in range(5)
         ]
+        assert sources == expected, sources
         # Per-shot idempotency keys are distinct
         keys = [r.idempotency_key for r in h.requests]
         assert len(set(keys)) == 5
@@ -574,10 +577,15 @@ class TestRenderVideoMultiShot:
         # the closest they can get to the 30s target.
         assert all(r.duration_s == MAX_SHOT_RENDER_S for r in h.requests)
         # A re-anchored shot needs no last frame from its predecessor, so the
-        # extraction count drops with the re-anchors.
+        # extraction count drops with the re-anchors: one per shot that both
+        # has a successor AND is not the last before a re-anchor. Lowering the
+        # cap buys cuts and saves extractions at the same time.
         png_calls = [c for c in h.ffmpeg_calls if c[-1].endswith(".png")]
         mp4_calls = [c for c in h.ffmpeg_calls if c[-1].endswith("final.mp4")]
-        assert len(png_calls) == 3
+        step = video_nodes._MAX_CHAIN_DEPTH + 1
+        assert len(png_calls) == sum(
+            1 for i in range(4) if (i + 1) % step != 0
+        ), len(png_calls)
         assert len(mp4_calls) == 1
         assert "copy" in mp4_calls[0]
         # Final bytes come from the concat output
@@ -670,9 +678,12 @@ class TestRenderVideoMultiShot:
             assert meta["split_to_min_shots"] is True
             assert meta["duration_s"] >= TARGET_MIN_TOTAL_S
             # Chained i2v carries the beat across the split halves, until the
-            # depth cap cuts back to the keyframe.
+            # depth cap cuts back. Derived from the cap, not written out —
+            # see test_five_shots_chained_and_concatenated.
             assert [r.image_bytes for r in h.requests] == [
-                b"KEYFRAME", b"PNGFRAME", b"PNGFRAME", b"KEYFRAME",
+                b"KEYFRAME" if i % (video_nodes._MAX_CHAIN_DEPTH + 1) == 0
+                else b"PNGFRAME"
+                for i in range(MIN_RENDER_SHOTS)
             ]
 
     @pytest.mark.parametrize("count", [6, 7, 8])
