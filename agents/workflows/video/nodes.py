@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -359,7 +360,27 @@ async def load_video_context(state: VideoState) -> dict[str, Any]:
         "UPDATE calendar_items SET status = 'rendering' WHERE id = :id",
         {"id": state["calendar_item_id"]},
     )
-    return out
+    # Settle pack provenance HERE, before a single beat is planned. One HTTP
+    # fetch answers whether the gallery photo can carry a faithful swap, and
+    # the answer changes what the reel should be ABOUT: a plan whose REVEAL
+    # beat asks for a hero bottle at product-shot distance will get one, and
+    # with nothing real to copy from the model prints invented lettering on
+    # it. Rewriting those scenes afterwards fights the plan instead of not
+    # writing it — measured on a Naturespan reel where the delabel pass
+    # rewrote all seven scenes and shots 3, 4 and 6 still came back with
+    # legible nonsense copy ("SCNE CONFEXT", "CIABE INN TEHMTS").
+    ref = str(out.get("product_image") or state.get("product_image") or "")
+    verifiable = bool(ref) and not out.get(
+        "is_lifestyle_only", state.get("is_lifestyle_only", True)
+    )
+    if verifiable:
+        verifiable = await product_photo_is_swappable(ref)
+        if not verifiable:
+            logger.info(
+                "Pack provenance: the gallery photo cannot carry a faithful "
+                "swap — planning this reel without a hero-pack beat"
+            )
+    return {**out, "product_pack_verifiable": verifiable}
 
 
 def _clean_overlay_text(
@@ -741,6 +762,34 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
                 f"  Name: {sanitize_for_prompt(product.get('name', ''))}\n"
                 f"  Description: {sanitize_for_prompt(product.get('description', ''))}\n\n"
             )
+        # Pack provenance was settled in load_video_context, one HTTP fetch
+        # ago. Say it HERE, where the beats are chosen, rather than rewriting
+        # scenes at render time: a REVEAL beat that asks for "the bottle
+        # revealed whole at natural distance, label to camera" gets exactly
+        # that, and with no real pack to copy from the model prints invented
+        # lettering on it. Rewriting the scene afterwards fights the plan; a
+        # measured reel where all seven scenes were rewritten still came back
+        # reading "SCNE CONFEXT" and "CIABE INN TEHMTS" on the hero bottle.
+        pack_block = ""
+        if product.get("name") and not state.get("product_pack_verifiable"):
+            pack_block = (
+                "PACKAGING — READ THIS BEFORE WRITING THE REVEAL BEAT:\n"
+                "There is no usable photograph of this product's packaging, "
+                "so nothing in this reel can show its label truthfully. Any "
+                "printed copy the video model draws will be invented, and "
+                "invented copy on a real brand's pack is worse than no pack "
+                "at all.\n"
+                "- Do NOT plan a hero product beat that frames the pack "
+                "front-on, holds it to camera, or lingers on the label.\n"
+                "- The REVEAL beat reveals the product's CONTENT instead: "
+                "the pour, the texture, the colour, the cut surface, the "
+                "steam, what it does on the plate.\n"
+                "- Packs may appear in the background or in a hand, angled "
+                "away, soft, or cropped by the frame edge.\n"
+                "- Every LOCKS line must say the packaging stays unreadable. "
+                "Never write 'label visible', 'bottle whole and visible', or "
+                "'product-shot distance'.\n\n"
+            )
 
         system = (
             f"{_ENGLISH_ONLY_RULE}\n\n"
@@ -884,6 +933,7 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             f"PLATFORM: {sanitize_for_prompt(channel or 'instagram')}\n"
             f"THEME: {sanitize_for_prompt(item.get('theme', ''))}\n\n"
             f"{product_section}"
+            f"{pack_block}"
             f"BRAND VOICE REFERENCE: "
             f"{sanitize_for_prompt(str(positioning.get('brand_voice', '')))}\n"
             f"AUDIENCE: {sanitize_for_prompt(relevant_audience.get('name', ''))}"
@@ -1734,6 +1784,184 @@ def _motion_verdict(score: float | None) -> str | None:
     return None
 
 
+# ── Picture grade ──────────────────────────────────────────────────────────
+#
+# The reels came back reading murky and flat next to this app's own stills,
+# and for a long time that stayed an impression. It is now a measurement.
+#
+# Thirty gpt-image-2 stills sampled from the gallery — the reference the
+# operator named as the quality bar — measure (medians):
+#
+#     YLOW 60      YAVG 140      YHIGH 214      SATAVG 19.2
+#
+# The same measurement, per second, on a delivered 7-shot Naturespan reel:
+#
+#     YLOW 26      YAVG  91      YHIGH 194      SATAVG 10.4
+#
+# So the footage is ~35% darker than the stills and carries roughly HALF
+# their colour. That is the "not professional" feeling, and neither number
+# is a matter of taste: nothing in the reel clips (YHIGH never reaches 235,
+# and falls to 139 across the last shots as the i2v chain washes contrast
+# out), so the headroom to fix it is simply unused.
+#
+# The correction is per shot, not global, precisely because of that decay —
+# one curve for the whole master would over-lift the opening and still leave
+# the closing shots flat. It rides along in the overlay burn's encode, so it
+# costs no extra pass, and it is applied to the PICTURE before the text is
+# composited so captions keep the colour they were designed with.
+_GRADE_TARGET_YAVG = 140.0
+_GRADE_TARGET_SATAVG = 19.0
+_GRADE_ANALYSIS_W = 240
+#: Inside this band the shot already matches the stills — leave it alone.
+_GRADE_YAVG_TOLERANCE = 8.0
+#: Only ever LIFT. A shot that comes back brighter than the stills is a
+#: deliberate high-key beat, not a defect, and darkening it is a taste call
+#: nothing here has grounds to make.
+_GRADE_MAX_GAMMA = 1.85
+_GRADE_MAX_SATURATION = 1.9
+#: Predicted YHIGH above this would start clipping highlights, so the gamma
+#: is backed off until it doesn't. Real specular highlights on oil and glass
+#: are the most expensive thing in these frames to lose.
+_GRADE_MAX_YHIGH = 246.0
+
+_PICTURE_KEYS = ("YAVG", "YHIGH", "YLOW", "SATAVG")
+_PICTURE_RE = re.compile(
+    r"lavfi\.signalstats\.(YAVG|YHIGH|YLOW|SATAVG)=\s*([0-9.]+)"
+)
+
+
+def _picture_cmd(path: str) -> list[str]:
+    """ffmpeg args printing per-frame tone and saturation stats (pure).
+
+    Decoded at _GRADE_ANALYSIS_W and written to null — nothing is encoded.
+    Downscaling leaves YAVG and SATAVG essentially unchanged (both are frame
+    means) and makes the pass cheap enough to run on every shot.
+    """
+    return [
+        "ffmpeg", "-v", "info", "-nostats", "-i", path,
+        "-vf",
+        f"scale={_GRADE_ANALYSIS_W}:-2,signalstats,metadata=print",
+        "-an", "-f", "null", "-",
+    ]
+
+
+def _picture_from_stderr(stderr: str) -> dict[str, float] | None:
+    """Mean of each printed signalstats key, or None if nothing parsed (pure)."""
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for key, value in _PICTURE_RE.findall(stderr or ""):
+        sums[key] = sums.get(key, 0.0) + float(value)
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return {k: sums[k] / counts[k] for k in sums}
+
+
+def _measure_picture(path: str) -> dict[str, float] | None:
+    """Tone and saturation for one clip, or None if unmeasurable.
+
+    Runs in a worker thread. None means ffmpeg is unavailable or the filter
+    failed — callers must treat that as "unknown" and grade nothing, never as
+    "black", which would blow a good shot out.
+    """
+    if not _ffmpeg_ok():
+        return None
+    try:
+        proc = _run_ffmpeg(_picture_cmd(path), timeout=120)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    except AttributeError:  # already str (mocked runs)
+        stderr = str(proc.stderr or "")
+    return _picture_from_stderr(stderr)
+
+
+def _gamma_for(measured: float, target: float) -> float:
+    """Gamma that maps *measured* mean luma onto *target* (pure).
+
+    ffmpeg's eq filter computes ``out = 255 * (in/255) ** (1/gamma)``, so
+    solving for the exponent that lands the mean on the target gives
+    ``gamma = ln(measured/255) / ln(target/255)``.
+    """
+    if measured <= 0.0 or measured >= 255.0 or target <= 0.0 or target >= 255.0:
+        return 1.0
+    return math.log(measured / 255.0) / math.log(target / 255.0)
+
+
+def _grade_params(stats: dict[str, float] | None) -> dict[str, float] | None:
+    """Gamma and saturation for one shot, or None to leave it untouched (pure).
+
+    Returns None whenever the shot is unmeasurable, already on target, or
+    already brighter than the stills — in every one of those cases the honest
+    move is to ship what was rendered.
+    """
+    if not stats:
+        return None
+    yavg = float(stats.get("YAVG") or 0.0)
+    if yavg <= 0.0:
+        return None
+
+    gamma = 1.0
+    if yavg < _GRADE_TARGET_YAVG - _GRADE_YAVG_TOLERANCE:
+        gamma = min(_GRADE_MAX_GAMMA, _gamma_for(yavg, _GRADE_TARGET_YAVG))
+        # Back the lift off until the predicted 90th-percentile highlight
+        # stays out of clipping. Losing the specular on oil and glass costs
+        # more than the remaining stop of exposure buys.
+        yhigh = float(stats.get("YHIGH") or 0.0)
+        if yhigh > 0.0:
+            while gamma > 1.0 and 255.0 * (yhigh / 255.0) ** (1.0 / gamma) > (
+                _GRADE_MAX_YHIGH
+            ):
+                gamma -= 0.05
+        gamma = max(1.0, round(gamma, 3))
+
+    saturation = 1.0
+    satavg = float(stats.get("SATAVG") or 0.0)
+    if satavg > 0.5:
+        saturation = min(
+            _GRADE_MAX_SATURATION, max(1.0, _GRADE_TARGET_SATAVG / satavg)
+        )
+        saturation = round(saturation, 3)
+
+    if gamma <= 1.0 and saturation <= 1.0:
+        return None
+    return {"gamma": gamma, "saturation": saturation}
+
+
+def _grade_chain(
+    params: list[dict[str, float] | None], durations: list[float]
+) -> str:
+    """One eq filter per graded shot, time-gated to that shot (pure).
+
+    Returns "" when nothing needs grading. Each filter passes frames outside
+    its own window through untouched, so chaining them applies exactly one
+    correction per shot in a single encode.
+    """
+    parts: list[str] = []
+    start = 0.0
+    for i, dur in enumerate(durations):
+        end = start + float(dur or 0.0)
+        p = params[i] if i < len(params) else None
+        if p:
+            parts.append(
+                f"eq=gamma={p['gamma']:.3f}:saturation={p['saturation']:.3f}"
+                # Escaped commas, NOT quotes. Verified against ffmpeg 6:
+                # `enable=between(t\,0\,3)` initialises, while the form the
+                # docs show for a shell — `enable='between(t,0,3)'` — reaches
+                # the filtergraph parser with its quotes already consumed and
+                # fails with "No such filter: '0'".
+                #
+                # The window is half-open on the right so neighbouring shots
+                # never both claim the frame on the boundary.
+                f":enable=between(t\\,{start:.3f}\\,{end - 0.001:.3f})"
+            )
+        start = end
+    return ",".join(parts)
+
+
 def _probe_shot(path: str) -> dict[str, Any] | None:
     """ffprobe one clip: {duration, video: {...}, audio: {...}} or None.
 
@@ -2216,18 +2444,34 @@ def _filter_path(path: str) -> str:
 
 
 def _burn_cmd(
-    src: str, ass_path: str, dst: str, fontsdir: str | None = None
+    src: str,
+    ass_path: str | None,
+    dst: str,
+    fontsdir: str | None = None,
+    grade: str = "",
 ) -> list[str]:
     """ffmpeg args burning the .ass overlay into the master (pure function).
 
     The subtitle filter forces a video re-encode, so the pass re-applies the
     master spec (libx264 CRF19 medium, high profile, yuv420p, 30fps CFR, 2s
     closed GOPs, faststart) and stream-copies the audio untouched.
+
+    *grade* is the per-shot picture correction (see _grade_chain) and rides
+    along in this same encode — it is free here and would otherwise cost a
+    whole extra pass over the master. It runs BEFORE the subtitle filter, so
+    the captions keep exactly the colour and contrast they were designed
+    with instead of being lifted along with the footage.
     """
-    vf = f"ass={_filter_path(ass_path)}"
-    if fontsdir:
-        vf += f":fontsdir={_filter_path(fontsdir)}"
-    vf += ",fps=30,format=yuv420p"
+    parts = []
+    if grade:
+        parts.append(grade)
+    if ass_path:
+        sub = f"ass={_filter_path(ass_path)}"
+        if fontsdir:
+            sub += f":fontsdir={_filter_path(fontsdir)}"
+        parts.append(sub)
+    vf = ",".join(parts)
+    vf += ",fps=30,format=yuv420p" if vf else "fps=30,format=yuv420p"
     return [
         "ffmpeg", "-y", "-i", src,
         "-vf", vf,
@@ -2245,12 +2489,19 @@ async def _burn_overlays(
     cta: str,
     brand: dict[str, Any],
     durations: list[float] | None = None,
+    grade_params: list[dict[str, float] | None] | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     """Composite the shot plan's overlay text onto the finished master.
 
     *durations* are the per-shot lengths actually rendered (multi-shot
     concat path); when None (single-call legacy path) the planned durations
     are distributed proportionally across the clip's real ffprobe duration.
+
+    *grade_params* is the per-shot picture correction measured during the
+    render (see _grade_params). It is applied in this pass's encode because
+    the pass is already happening; when there is no overlay text but there
+    IS a grade, the pass still runs, with the grade alone.
+
     Best-effort by contract: ANY failure (no ffmpeg, ass filter or fonts
     unavailable, encoder error) logs a warning and returns the ORIGINAL
     bytes with overlay_burn='failed:<reason>' — text burning never fails
@@ -2260,7 +2511,8 @@ async def _burn_overlays(
         has_text = any(
             str(s.get("overlay_text") or "").strip() for s in shots
         ) or bool(str(cta or "").strip())
-        if not has_text:
+        has_grade = any(grade_params or [])
+        if not has_text and not has_grade:
             return video_bytes, {"overlay_burn": "skipped:no overlay text"}
         if not _ffmpeg_ok():
             logger.warning("overlay burn skipped — ffmpeg unavailable")
@@ -2276,19 +2528,24 @@ async def _burn_overlays(
                 durations = _distribute_durations(
                     [float(s.get("duration_s") or 0.0) for s in shots], total
                 )
+            grade = (
+                _grade_chain(grade_params, durations) if grade_params else ""
+            )
             events = _overlay_events(shots, durations, cta)
-            if not events:
+            if not events and not grade:
                 return video_bytes, {
                     "overlay_burn": "skipped:no renderable overlay events"
                 }
-            ass_path = os.path.join(workdir, "overlay.ass")
-            await asyncio.to_thread(
-                _write_text,
-                ass_path,
-                _build_overlay_ass(events, _brand_accent_hex(brand)),
-            )
+            ass_path: str | None = None
+            if events:
+                ass_path = os.path.join(workdir, "overlay.ass")
+                await asyncio.to_thread(
+                    _write_text,
+                    ass_path,
+                    _build_overlay_ass(events, _brand_accent_hex(brand)),
+                )
             fontsdir = FONTS_DIR if os.path.isdir(FONTS_DIR) else None
-            if fontsdir is None:
+            if fontsdir is None and ass_path:
                 logger.warning(
                     "overlay burn: fonts dir %s missing — relying on "
                     "fontconfig fallback faces",
@@ -2297,7 +2554,7 @@ async def _burn_overlays(
             dst = os.path.join(workdir, "master_overlay.mp4")
             proc = await asyncio.to_thread(
                 _run_ffmpeg,
-                _burn_cmd(src, ass_path, dst, fontsdir),
+                _burn_cmd(src, ass_path, dst, fontsdir, grade=grade),
                 VIDEO_BURN_TIMEOUT_S,
             )
             if (
@@ -2311,13 +2568,20 @@ async def _burn_overlays(
                 )
                 return video_bytes, {"overlay_burn": f"failed:{reason}"[:220]}
             burned = await asyncio.to_thread(_read_bytes, dst)
+            graded = sum(1 for p in (grade_params or []) if p)
             logger.info(
-                "Burned %d overlay line(s) onto the master (%d → %d bytes)",
+                "Burned %d overlay line(s) onto the master, graded %d shot(s) "
+                "(%d → %d bytes)",
                 len(events),
+                graded,
                 len(video_bytes),
                 len(burned),
             )
-            return burned, {"overlay_burn": "ok", "overlay_lines": len(events)}
+            return burned, {
+                "overlay_burn": "ok",
+                "overlay_lines": len(events),
+                "graded_shots": graded,
+            }
     except Exception as exc:
         logger.warning("overlay burn failed — keeping unburned master: %s", exc)
         return video_bytes, {"overlay_burn": f"failed:{exc}"[:220]}
@@ -3377,6 +3641,9 @@ async def render_video(state: VideoState) -> dict[str, Any]:
             chain_depth = 0
             motion_retries = 0
             shot_paths: list[str] = []
+            # One entry per shot, aligned with shot_paths: the picture
+            # correction that shot needs, or None to leave it as rendered.
+            grade_params: list[dict[str, float] | None] = []
             for i, (shot, shot_prompt) in enumerate(zip(fitted, shot_prompts)):
                 if chain_image is None:
                     # No keyframe and no chain yet: this is a text-to-video
@@ -3517,6 +3784,13 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                             )
 
                 shot_paths.append(path)
+                # ── How does this shot sit against the gold-standard stills? ─
+                # Measured here, on the shot that will actually ship (after
+                # any motion retry), and applied later in the overlay burn's
+                # encode so the reel pays for no extra pass.
+                picture = await asyncio.to_thread(_measure_picture, path)
+                grade = _grade_params(picture)
+                grade_params.append(grade)
                 shot_metas.append(
                     {
                         "index": shot.get("index", i + 1),
@@ -3528,6 +3802,12 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                         "anchor": anchor,
                         "motion": round(motion, 2) if motion is not None else None,
                         "motion_verdict": verdict,
+                        "picture": (
+                            {k: round(v, 1) for k, v in picture.items()}
+                            if picture
+                            else None
+                        ),
+                        "grade": grade,
                     }
                 )
                 shot_ledgers.append(
@@ -3542,8 +3822,8 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     }
                 )
                 logger.info(
-                    "Shot %d/%d rendered: %s/%s %.1fs from %s, motion %s "
-                    "(%d bytes, $%.4f)",
+                    "Shot %d/%d rendered: %s/%s %.1fs from %s, motion %s, "
+                    "%s (%d bytes, $%.4f)",
                     i + 1,
                     num,
                     result.provider,
@@ -3551,6 +3831,18 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     result.duration_s,
                     anchor,
                     "n/a" if motion is None else f"{motion:.2f}",
+                    (
+                        f"luma {picture['YAVG']:.0f}/sat "
+                        f"{picture.get('SATAVG', 0.0):.1f}"
+                        + (
+                            f" → grade γ{grade['gamma']:.2f} "
+                            f"×{grade['saturation']:.2f}"
+                            if grade
+                            else " (on target)"
+                        )
+                        if picture
+                        else "picture n/a"
+                    ),
                     len(result.video_bytes),
                     result.cost_usd,
                 )
@@ -3728,6 +4020,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 "" if card_path else cta_text,
                 state.get("brand") or {},
                 durations=rendered_durations,
+                grade_params=grade_params,
             )
             overlay_meta = {**overlay_meta, **card_meta}
             if card_path:

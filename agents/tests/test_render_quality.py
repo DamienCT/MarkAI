@@ -506,3 +506,100 @@ class TestAKeptKeyframeDoesNotSilenceTheDirective:
         result = asyncio.run(render_video(_state([4] * 5)))
         assert result["video_meta"]["unverified_pack"] is False
         assert "PACKAGING (hard constraint" not in result["video_prompt"]
+
+
+class TestThePlanKnowsAboutPackProvenance:
+    """The delabel pass runs too late to prevent the beat it is fixing.
+
+    Measured: a reel where _delabel_shot_scenes rewrote all 7 scenes still
+    came back with "SCNE CONFEXT" and "CIABE INN TEHMTS" printed on a hero
+    bottle held to camera. The stored plan explains why — the REVEAL beat
+    read "the bottle is revealed whole at natural distance ... LOCKS: bottle
+    whole and visible". A rewrite fights that; not writing it is cheaper and
+    works. The swappability check is one HTTP fetch, so it can run in
+    load_video_context, before a single beat exists.
+    """
+
+    def _prompts(self, monkeypatch, *, verifiable):
+        import asyncio
+
+        seen = {}
+
+        async def fake_chat(messages, **kw):
+            seen["system"] = messages[0]["content"]
+            seen["user"] = messages[1]["content"]
+            raise RuntimeError("stop after capturing the prompt")
+
+        async def noop(*a, **kw):
+            return None
+
+        monkeypatch.setattr(nodes, "chat_completion", fake_chat)
+        monkeypatch.setattr(nodes, "update_agent_run_step", noop)
+        monkeypatch.setattr(nodes, "_fail", lambda s, m: _done(m))
+
+        async def _done(m):
+            return {"status": "failed", "errors": [m]}
+
+        state = {
+            "brand_id": "b",
+            "calendar_item_id": "c",
+            "run_id": "",
+            "brand": {"name": "Naturespan"},
+            "calendar_item": {"channel": "instagram", "theme": "olive oil"},
+            "product": {"name": "Emile Noel Mild Olive Oil"},
+            "product_pack_verifiable": verifiable,
+        }
+        try:
+            asyncio.run(nodes.plan_shots(state))
+        except Exception:
+            pass
+        return seen
+
+    def test_an_unverifiable_pack_bans_the_hero_label_beat(self, monkeypatch):
+        seen = self._prompts(monkeypatch, verifiable=False)
+        text = seen["user"]
+        assert "PACKAGING — READ THIS BEFORE WRITING THE REVEAL BEAT" in text
+        # The exact phrases the failing plan used, named so the model cannot
+        # satisfy the rule while writing them anyway.
+        assert "bottle whole and visible" in text
+        assert "product-shot distance" in text
+
+    def test_and_redirects_the_reveal_to_the_content(self, monkeypatch):
+        text = self._prompts(monkeypatch, verifiable=False)["user"]
+        assert "reveals the product's CONTENT instead" in text
+
+    def test_a_verified_pack_plans_normally(self, monkeypatch):
+        text = self._prompts(monkeypatch, verifiable=True)["user"]
+        assert "PACKAGING — READ THIS" not in text
+
+    def test_a_reel_with_no_product_says_nothing_about_packs(self, monkeypatch):
+        import asyncio
+
+        seen = {}
+
+        async def fake_chat(messages, **kw):
+            seen["user"] = messages[1]["content"]
+            raise RuntimeError("stop")
+
+        async def noop(*a, **kw):
+            return None
+
+        async def fail(state, message):
+            # Unstubbed, plan_shots' error path writes to the database and
+            # spends five seconds timing out on a connection tests don't have.
+            return {"status": "failed", "errors": [message]}
+
+        monkeypatch.setattr(nodes, "chat_completion", fake_chat)
+        monkeypatch.setattr(nodes, "update_agent_run_step", noop)
+        monkeypatch.setattr(nodes, "_fail", fail)
+        try:
+            asyncio.run(nodes.plan_shots({
+                "brand_id": "b", "calendar_item_id": "c", "run_id": "",
+                "brand": {"name": "Naturespan"},
+                "calendar_item": {"channel": "instagram"},
+                "product": {},
+                "product_pack_verifiable": False,
+            }))
+        except Exception:
+            pass
+        assert "PACKAGING — READ THIS" not in seen.get("user", "")

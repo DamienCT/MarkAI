@@ -515,7 +515,12 @@ class TestBurnOverlaysStage:
             )
         )
         assert out == b"BURNED"
-        assert meta == {"overlay_burn": "ok", "overlay_lines": 4}
+        assert meta == {
+            "overlay_burn": "ok",
+            "overlay_lines": 4,
+            # No grade_params passed, so nothing was graded in this pass.
+            "graded_shots": 0,
+        }
         vf = captured["args"][captured["args"].index("-vf") + 1]
         assert vf.startswith("ass=")
 

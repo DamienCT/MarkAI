@@ -1,0 +1,234 @@
+"""The picture grade, calibrated against this app's own gold-standard stills.
+
+"The videos are not great" stayed an impression for several cycles. It is now
+a measurement, taken two ways with the same tool (ffmpeg signalstats):
+
+  30 gpt-image-2 stills sampled from the gallery — the reference the operator
+  named as the quality bar — measure, as medians:
+
+      YLOW 60      YAVG 140      YHIGH 214      SATAVG 19.2
+
+  A delivered 7-shot Naturespan reel, sampled once per second:
+
+      YLOW 26      YAVG  91      YHIGH 194      SATAVG 10.4
+
+The footage is about 35% darker than the stills and carries roughly half
+their colour, and none of it clips — YHIGH never reaches even 235, and decays
+to 139 across the closing shots as the i2v chain washes contrast out. The
+headroom to fix it was simply unused.
+
+Every number in this file is one of those measurements.
+"""
+
+import pytest
+
+from workflows.video import nodes
+
+
+# Gold standard: medians over 30 gpt-image-2 stills.
+GOLD_YAVG = 140.0
+GOLD_SATAVG = 19.2
+GOLD_YHIGH = 214.0
+
+# The delivered reel, per second. Opening and closing shown separately
+# because the decay across the reel is the reason the grade is per shot.
+REEL_OPENING = {"YAVG": 95.8, "YHIGH": 201.0, "YLOW": 32.0, "SATAVG": 11.0}
+REEL_MIDDLE = {"YAVG": 91.3, "YHIGH": 193.0, "YLOW": 24.0, "SATAVG": 9.6}
+REEL_CLOSING = {"YAVG": 80.8, "YHIGH": 139.0, "YLOW": 30.0, "SATAVG": 12.0}
+
+
+class TestTheTargetsAreTheMeasurements:
+    def test_the_luma_target_is_the_stills_median(self):
+        assert nodes._GRADE_TARGET_YAVG == pytest.approx(GOLD_YAVG, abs=1.0)
+
+    def test_the_saturation_target_is_the_stills_median(self):
+        assert nodes._GRADE_TARGET_SATAVG == pytest.approx(GOLD_SATAVG, abs=1.0)
+
+    def test_the_clipping_ceiling_sits_above_the_stills_highlights(self):
+        # Grading a shot INTO the stills' highlight range must not be
+        # mistaken for clipping, or the lift backs off on every shot.
+        assert nodes._GRADE_MAX_YHIGH > GOLD_YHIGH
+
+
+class TestGammaMath:
+    @pytest.mark.parametrize("measured", (60.0, 80.8, 91.3, 120.0))
+    def test_it_lands_the_mean_on_the_target(self, measured):
+        g = nodes._gamma_for(measured, GOLD_YAVG)
+        landed = 255.0 * (measured / 255.0) ** (1.0 / g)
+        assert landed == pytest.approx(GOLD_YAVG, abs=0.5)
+
+    def test_a_shot_already_on_target_needs_no_lift(self):
+        assert nodes._gamma_for(GOLD_YAVG, GOLD_YAVG) == pytest.approx(1.0)
+
+    def test_degenerate_inputs_are_a_no_op_not_a_crash(self):
+        for bad in (0.0, -5.0, 255.0, 300.0):
+            assert nodes._gamma_for(bad, GOLD_YAVG) == 1.0
+            assert nodes._gamma_for(100.0, bad) == 1.0
+
+
+class TestGradeParams:
+    def test_the_measured_reel_is_lifted_toward_the_stills(self):
+        p = nodes._grade_params(REEL_MIDDLE)
+        assert p is not None
+        landed = 255.0 * (REEL_MIDDLE["YAVG"] / 255.0) ** (1.0 / p["gamma"])
+        assert landed == pytest.approx(GOLD_YAVG, abs=2.0)
+
+    def test_and_its_colour_is_brought_back(self):
+        p = nodes._grade_params(REEL_MIDDLE)
+        landed = REEL_MIDDLE["SATAVG"] * p["saturation"]
+        assert landed == pytest.approx(GOLD_SATAVG, abs=1.0)
+
+    def test_the_flattest_closing_shot_is_lifted_hardest(self):
+        opening = nodes._grade_params(REEL_OPENING)
+        closing = nodes._grade_params(REEL_CLOSING)
+        assert closing["gamma"] > opening["gamma"], (
+            "a global curve would leave the decayed shots flat — this is "
+            "why the grade is per shot"
+        )
+
+    def test_a_shot_already_matching_the_stills_is_left_alone(self):
+        on_target = {"YAVG": GOLD_YAVG, "YHIGH": GOLD_YHIGH,
+                     "SATAVG": GOLD_SATAVG}
+        assert nodes._grade_params(on_target) is None
+
+    def test_a_brighter_than_gold_shot_is_never_darkened(self):
+        # A high-key beat is a decision, not a defect.
+        bright = {"YAVG": 190.0, "YHIGH": 240.0, "SATAVG": GOLD_SATAVG}
+        p = nodes._grade_params(bright)
+        assert p is None or p["gamma"] == 1.0
+
+    def test_an_unmeasurable_shot_is_never_graded(self):
+        # None means ffmpeg failed. Treating that as "black" would blow a
+        # perfectly good shot out.
+        assert nodes._grade_params(None) is None
+        assert nodes._grade_params({}) is None
+        assert nodes._grade_params({"YAVG": 0.0}) is None
+
+    def test_a_nearly_black_shot_cannot_be_lifted_without_bound(self):
+        p = nodes._grade_params({"YAVG": 4.0, "YHIGH": 20.0, "SATAVG": 1.0})
+        assert p["gamma"] <= nodes._GRADE_MAX_GAMMA
+        assert p["saturation"] <= nodes._GRADE_MAX_SATURATION
+
+    def test_highlights_are_protected_from_clipping(self):
+        # Dark overall but with a hot specular already near the top — the
+        # oil-and-glass case. The lift must back off rather than burn it.
+        hot = {"YAVG": 70.0, "YHIGH": 232.0, "SATAVG": 12.0}
+        p = nodes._grade_params(hot)
+        landed = 255.0 * (hot["YHIGH"] / 255.0) ** (1.0 / p["gamma"])
+        assert landed <= nodes._GRADE_MAX_YHIGH
+
+    def test_a_grey_shot_is_saturated_but_not_beyond_the_cap(self):
+        p = nodes._grade_params({"YAVG": GOLD_YAVG, "YHIGH": GOLD_YHIGH,
+                                 "SATAVG": 2.0})
+        assert p["saturation"] == nodes._GRADE_MAX_SATURATION
+        assert p["gamma"] == 1.0
+
+
+class TestGradeChain:
+    PARAMS = [
+        {"gamma": 1.6, "saturation": 1.8},
+        None,
+        {"gamma": 1.2, "saturation": 1.1},
+    ]
+    DURATIONS = [5.0, 3.0, 4.0]
+
+    def test_each_graded_shot_gets_its_own_time_window(self):
+        chain = nodes._grade_chain(self.PARAMS, self.DURATIONS)
+        assert chain.count("eq=") == 2
+        # Shot 1 spans 0-5s, shot 3 spans 8-12s. Shot 2 is untouched.
+        assert "between(t\\,0.000\\," in chain
+        assert "between(t\\,8.000\\," in chain
+        assert "between(t\\,5.000\\," not in chain
+
+    def test_the_windows_do_not_overlap_on_the_boundary(self):
+        chain = nodes._grade_chain(
+            [{"gamma": 1.5, "saturation": 1.0}] * 2, [4.0, 4.0]
+        )
+        assert "between(t\\,0.000\\,3.999)" in chain
+        assert "between(t\\,4.000\\,7.999)" in chain
+
+    def test_the_expression_is_escaped_not_quoted(self):
+        """Verified against ffmpeg 6, not inferred from the docs.
+
+        `enable='between(t,0,3)'` is the form the ffmpeg docs show, but the
+        docs are showing a SHELL command line: the shell consumes the quotes
+        and the filtergraph parser then splits on the commas, failing with
+        "No such filter: '0'". Passed as one argv element the quotes survive
+        to the expression evaluator and break it there instead. Escaped
+        commas with no quotes is the form that initialises.
+        """
+        chain = nodes._grade_chain(
+            [{"gamma": 1.5, "saturation": 1.0}], [4.0]
+        )
+        assert "enable=between(" in chain
+        assert "'" not in chain
+
+    def test_nothing_to_grade_produces_no_filter(self):
+        assert nodes._grade_chain([None, None], [4.0, 4.0]) == ""
+        assert nodes._grade_chain([], []) == ""
+
+    def test_a_short_params_list_never_indexes_off_the_end(self):
+        # Defensive: a dropped shot must not raise mid-render.
+        assert nodes._grade_chain([None], [4.0, 4.0, 4.0]) == ""
+
+
+class TestItRidesAlongInTheBurn:
+    def test_the_grade_runs_before_the_subtitles(self):
+        cmd = nodes._burn_cmd("in.mp4", "ov.ass", "out.mp4",
+                              grade="eq=gamma=1.5")
+        vf = cmd[cmd.index("-vf") + 1]
+        # Captions were designed at a chosen colour and contrast; lifting
+        # them along with the footage would undo that design.
+        assert vf.index("eq=gamma=1.5") < vf.index("ass=")
+
+    def test_no_grade_leaves_the_filter_chain_as_it_was(self):
+        cmd = nodes._burn_cmd("in.mp4", "ov.ass", "out.mp4")
+        vf = cmd[cmd.index("-vf") + 1]
+        assert vf.startswith("ass=")
+        assert "eq=" not in vf
+
+    def test_a_grade_with_no_subtitles_still_encodes(self):
+        cmd = nodes._burn_cmd("in.mp4", None, "out.mp4", grade="eq=gamma=1.5")
+        vf = cmd[cmd.index("-vf") + 1]
+        assert vf == "eq=gamma=1.5,fps=30,format=yuv420p"
+
+    def test_neither_still_produces_a_valid_chain(self):
+        cmd = nodes._burn_cmd("in.mp4", None, "out.mp4")
+        vf = cmd[cmd.index("-vf") + 1]
+        assert vf == "fps=30,format=yuv420p"
+        assert not vf.startswith(",")
+
+    def test_the_master_spec_is_still_applied(self):
+        cmd = nodes._burn_cmd("in.mp4", "ov.ass", "out.mp4",
+                              grade="eq=gamma=1.5")
+        assert "-c:a" in cmd and cmd[cmd.index("-c:a") + 1] == "copy"
+        assert "+faststart" in cmd
+
+
+class TestPictureMeasurement:
+    def test_it_parses_the_keys_it_needs(self):
+        stderr = "\n".join([
+            "lavfi.signalstats.YAVG=90.5",
+            "lavfi.signalstats.YHIGH=194.0",
+            "lavfi.signalstats.YLOW=26.0",
+            "lavfi.signalstats.SATAVG=10.4",
+            "lavfi.signalstats.YAVG=92.5",
+            "lavfi.signalstats.YHIGH=196.0",
+            "lavfi.signalstats.YLOW=28.0",
+            "lavfi.signalstats.SATAVG=10.8",
+        ])
+        out = nodes._picture_from_stderr(stderr)
+        assert out["YAVG"] == pytest.approx(91.5)
+        assert out["SATAVG"] == pytest.approx(10.6)
+
+    def test_nothing_parsed_is_unknown_not_black(self):
+        assert nodes._picture_from_stderr("") is None
+        assert nodes._picture_from_stderr("ffmpeg version 6.1") is None
+
+    def test_the_analysis_pass_encodes_nothing(self):
+        cmd = nodes._picture_cmd("/tmp/shot.mp4")
+        assert cmd[-3:] == ["-f", "null", "-"]
+        assert "-an" in cmd
+        assert f"scale={nodes._GRADE_ANALYSIS_W}:-2" in " ".join(cmd)
+        # tblend would turn this into a motion measurement, not a tone one.
+        assert "tblend" not in " ".join(cmd)
