@@ -284,3 +284,83 @@ brand/legal question, not a rendering bug.
 defect class), logo/headline collision on 1536×1024, `visual_direction` validated
 against `item_type` at planning time, n8n workflow import (the instance has zero
 workflows), observability, token encryption, Qdrant learning loop.
+
+## Cycle 6 — 2026-08-19
+
+**Healthspan repointed and re-catalogued.** The user chose the `Healthspan` BC
+company. Its items carry an **empty `itemCategoryCode` and mostly empty
+`vendorNo`**, so the Barcode.mu-era vendor/category filters would have zeroed it
+out a second time; they were cleared and `ALBION` added to the locations.
+`sync_bc_products()` produced 28 products. Six heroes are active and 22
+RingConn size/colour variants stay inactive — but the first pass activated the
+*Counter Display Unit* and the *Ring Sizing Kit* rather than a ring, because the
+variant regex stripped `, Size 10 Black` and the display unit formed its own
+family. Corrected: a real ring is the hero, the retail fixture is not.
+
+The 456 dangling `product_ids` were dangling because the sync replaced the
+catalogue outright. 488 items were re-attached by **health signal** (glucose,
+blood pressure, temperature, sleep) rather than by supplier brand word, which is
+how Naturespan's backfill works — Healthspan's copy names the *signal*, not the
+supplier. 188 awareness items were deliberately left product-free: attaching a
+sensor to "three practical signals caregivers can monitor" puts a product claim
+into a post that is not making one.
+
+This also resolves the item flagged in cycle 5. The generator printing
+"Healthspan" onto a blood-pressure monitor is **not** an implied own-brand
+claim: the BC catalogue names them `Healthspan, Digital Upper Arm Blood Pressure
+Monitor, Model D5819`. It is their private label.
+
+**English enforcement rebuilt after French shipped to customers.** Five
+Naturespan calendar items and 32 content rows came back in French; one reel was
+mid-render with a French CTA burned onto the master. The root cause was not the
+prompt. The **brand record instructed French**: `dos[1]` licensed "the French
+term magasin bio", `donts[5]` said to "say 'livrés régulièrement'", and
+`voice_style` restated the language rule with the same escape hatch the global
+rule had. A brand-specific instruction beats a global one, so no amount of
+prompt tightening could have fixed it. All three are now English, plus
+FancyFinds' "apéro".
+
+`ENGLISH_ONLY_RULE` lost its escape hatch and now names both what qualifies
+(company, supplier, product, certification, place) and what does not, by
+example. `shared/language_guard.py` (new) detects French deterministically —
+markers with no English homograph, plus accented spellings outside a loanword
+allowlist, with proper nouns masked first. Planning gained a fourth
+post-generation pass that reports but never rewrites; the video graph checks the
+shot plan **before** the render and re-asks once, because a wrong-language plan
+costs one text call while the render it precedes costs tens of GPU-minutes.
+
+**Measurement correction worth recording.** The first sweep counted 32 French
+content rows and 9 French reels, and ~5.5 GPU-hours of re-render were queued on
+that basis. `content` is **versioned** — `store_content` flips prior rows to
+`is_current = false` — so 21 of those were superseded versions nobody sees.
+Filtering on `is_current` gives **4** genuinely affected items. The batch was
+stopped after one reel. Any future content-quality sweep must filter on
+`is_current` or it will measure history.
+
+**Image text guard: two independent failures found by the gate study.** The
+request pinned `"temperature": 0`, which the default vision model rejects (HTTP
+400); it worked only because litellm's `drop_params` strips it, so any
+direct-to-provider guard model silently failed open on **every image** while
+reporting itself enabled. Separately, the prompt asked only about lettering "you
+can read" and excused unresolvable blur — so all five of one candidate's
+invented-text failures were recorded as "none resolvable" and passed. The schema
+gained `illegible_text_marks`. Note that 40 stubbed unit tests passed throughout
+against a detector that missed the defect it exists to catch.
+
+**Local image models.** Bake-off complete on the hex-free suite;
+`docs/LOCAL_IMAGE_MODELS.md` carries the verdicts and licence audit.
+`LOCAL_IMAGES=1` routes stills through the Video Forge (Z-Image base,
+Apache-2.0), off by default with the cloud cascade intact. Honest ceiling: no
+candidate yet clears `ai_artefact_absence >= 3 on every prompt`, so this is a
+cost lever to evaluate, not a replacement.
+
+**Still blocked on the user:** BC API admin grant (app
+`47d43367-a8d9-4d61-9c9a-1678a508ebc7`, tenant
+`33b8e89b-0b2f-42b1-b59c-835bd0c2ce3c`) — `API.ReadWrite.All` + admin consent,
+then the app registered inside BC `Production` with D365 BASIC + D365 READ.
+Healthspan product photos are deliberately **not** web-sourced pending it.
+
+**Cycle-7 backlog:** unchanged from cycle 6 — product-swap lettering contract,
+logo/headline collision on 1536×1024, `visual_direction` validated against
+`item_type` at planning time, n8n workflow import, observability, token
+encryption, Qdrant learning loop.
