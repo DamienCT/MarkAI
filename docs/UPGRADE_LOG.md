@@ -767,3 +767,33 @@ avatar work), Chatterbox VO lane, per-platform image composition (the
 landscape master is the wrong shape for IG portrait), pack-weight claim vs
 pack-photo verification (copy said 690g, jar read 260g), blank-prop negative
 prompts for scene generation.
+
+## Cycle 10.1 — 2026-08-19 (same evening): the re-render, measured
+
+The 70036111 re-render survived contact with reality on the third attempt.
+Attempt 2 taught the expensive lesson: a live desktop had ~2.7GB of VRAM in
+use by another signed-in profile (compositor + a game), the 22B int8 model
+oversubscribed the card, and WDDM demand-paging turned a 69-SECOND shot into
+a 30-minute forge timeout at 100% GPU. Fixes: ComfyUI `--reserve-vram 3.0`
+(deterministic streamed offload instead of surprise paging), forge
+`JOB_TIMEOUT_S` 1800→3600, and the second profile signed out. Attempt 3:
+all 7 shots in 5.8 min, full reel in 14 min end-to-end.
+
+**Measured on the v2 master** (joins_v2.py, same probes as the autopsy):
+end-card audio step −54.9 → **−5.0dB** (ambience tail works), chain-join
+luma worst +22.3 → **+10.2** (halved; the real fix stays cycle-11 native
+multishot), seams click-free (60/80ms fades) with integrated LUFS matched
+(clamped ±9dB). Still honest about: instantaneous RMS steps between shots
+whose *content* differs (a near-silent pour into a sizzle) — that is what
+the music bed is for.
+
+**Hook wrap bug, caught on the frame check:** the plan clamped shot 1's
+overlay against the 20-char Overlay budget, the burn wrapped it at the Hook
+style's 16 — "Certified organic starts here" shipped as "Certified /
+organic starts". The clamp, the style table and the plan prompt now share
+`_HOOK_WRAP_CHARS`; regression test pins plan text == burned text.
+
+**Bed library shipped:** ACE-Step 1.5 (MIT) generated 15 instrumental beds
+(5 moods × 3 variants, 34s) on the 4090; installed as 192k AAC under
+`agents/assets/music/<mood>/` (13MB; FLAC masters in the forge workspace).
+`_pick_music_bed` finds them by mood folder — next render carries music.

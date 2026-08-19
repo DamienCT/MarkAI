@@ -185,6 +185,47 @@ class TestCleanOverlayText:
         # Old plans without the field still work — default ''
         assert normalized["shots"][1]["overlay_text"] == ""
 
+    def test_the_hook_is_clamped_to_the_hook_budget_not_the_overlay_one(self):
+        # A finished master burned "Certified / organic starts": the plan
+        # cleaned the hook against the 20-char Overlay wrap while the burn
+        # wrapped it at the Hook style's 16 — "here" vanished at render time.
+        # The plan must clamp shot 1 with the SAME budget the burn will use.
+        from workflows.video.nodes import (
+            _HOOK_WRAP_CHARS,
+            _STYLE_LAYOUT,
+            _wrap_overlay_text,
+        )
+
+        plan = {
+            "hook_line": "Hook",
+            "shots": [
+                {
+                    "index": 1,
+                    "duration_s": 3,
+                    "scene": "SCENE CONTEXT: open",
+                    "overlay_text": "Certified organic starts here",
+                },
+                {
+                    "index": 2,
+                    "duration_s": 3,
+                    "scene": "SCENE CONTEXT: mid",
+                    # A mid overlay keeps the roomier Overlay budget.
+                    "overlay_text": "Certified organic starts here",
+                },
+            ],
+            "caption": "cap",
+            "hashtags": [],
+            "cta": "Shop now",
+        }
+        normalized = _normalize_shot_plan(plan)
+        hook = normalized["shots"][0]["overlay_text"]
+        # What the plan stores is exactly what the Hook-style burn shows.
+        assert _wrap_overlay_text(hook, _HOOK_WRAP_CHARS).replace("\\N", " ") == hook
+        assert hook == "Certified organic starts"
+        assert normalized["shots"][1]["overlay_text"] == "Certified organic starts here"
+        # The burn side reads its wrap from the same constant.
+        assert _STYLE_LAYOUT["Hook"][1] == _HOOK_WRAP_CHARS
+
 
 class TestDistributeDurations:
     def test_proportional_and_sums_exactly(self):

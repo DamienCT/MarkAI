@@ -289,6 +289,13 @@ _FADE_OUT_MS = 260  # 200-300ms reads as a cut choice; sub-100ms as a glitch
 # clear of a centred product (frame centre ~y960) and the top chrome (240).
 _HOOK_FONT_SIZE = 92
 _HOOK_POS = (540, 620)
+# The hook is set at 92px, so it fits fewer characters per line than the
+# standard overlay. The plan-side clamp MUST use this same budget: shot 1 of a
+# finished master burned "Certified / organic starts" because the plan cleaned
+# the hook against the 20-char Overlay budget while the burn wrapped it at 16
+# — the mismatch silently dropped "here" at render time.
+_HOOK_WRAP_CHARS = 16
+_HOOK_MAX_CHARS = _HOOK_WRAP_CHARS * _OVERLAY_MAX_LINES
 # On-screen text is a few discrete BEATS, not subtitles: hook (first shot),
 # ONE mid-reel proof line, CTA (end card / final beat). Everything else is
 # clean footage. "when I said to put these caption in the video, should
@@ -568,12 +575,22 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
             duration = float(raw.get("duration_s", 0))
         except (TypeError, ValueError):
             duration = 0.0
+        # The first kept shot carries the hook, which is set larger and so
+        # fits fewer characters per line — clamp it against the Hook budget
+        # or the burn drops the trailing words the plan promised.
+        overlay = (
+            _clean_overlay_text(
+                raw.get("overlay_text"), _HOOK_MAX_CHARS, _HOOK_WRAP_CHARS
+            )
+            if not shots
+            else _clean_overlay_text(raw.get("overlay_text"))
+        )
         shots.append(
             {
                 "index": i + 1,
                 "duration_s": max(MIN_SHOT_S, duration),
                 "scene": scene,
-                "overlay_text": _clean_overlay_text(raw.get("overlay_text")),
+                "overlay_text": overlay,
             }
         )
     if not shots:
@@ -1001,6 +1018,10 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             f"overlay lines, so it must fit {_OVERLAY_MAX_LINES} lines of "
             f"{_CTA_WRAP_CHARS} characters. Anything longer is cut, which "
             "leaves half a sentence on the finished reel.\n"
+            f"Shot 1's overlay_text is the hook, set larger still: it must "
+            f"fit {_OVERLAY_MAX_LINES} lines of {_HOOK_WRAP_CHARS} characters "
+            f"(no single word over {_HOOK_WRAP_CHARS}). A hook that misses "
+            "this budget loses its last words on screen.\n"
             f"Duration rules: return {MIN_PLAN_SHOTS} to {MAX_SHOTS} shots. "
             f"Every duration_s is between {MIN_SHOT_RENDER_S:.0f} and "
             f"{MAX_SHOT_RENDER_S:.0f} seconds and the durations sum to about "
@@ -2931,7 +2952,7 @@ def _card_dialogue(
 # high-centre where all three platforms leave the frame clean; the proof line
 # and CTA sit lower-third, bottom-left anchored so extra lines grow upward.
 _STYLE_LAYOUT: dict[str, tuple[int, int, str, tuple[int, int]]] = {
-    "Hook": (_HOOK_FONT_SIZE, 16, "center", _HOOK_POS),
+    "Hook": (_HOOK_FONT_SIZE, _HOOK_WRAP_CHARS, "center", _HOOK_POS),
     "Overlay": (_OVERLAY_FONT_SIZE, _OVERLAY_WRAP_CHARS, "bl",
                 (_OVERLAY_POS_X, _OVERLAY_POS_Y)),
     "CTA": (_CTA_FONT_SIZE, _CTA_WRAP_CHARS, "bl",
