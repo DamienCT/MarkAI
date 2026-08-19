@@ -229,10 +229,26 @@ async def _replace_product_in_image(
         )
 
         from shared.llm import get_model_for_category
+        from shared.product_swap import (
+            build_swap_instruction,
+            prepare_product_reference,
+            reference_supports_swap,
+        )
 
         gemini_client = genai.Client(api_key=_settings.GEMINI_API_KEY)
         marketing_img = PILImage.open(BytesIO(image_data))
+        # Same reference discipline as the content workflow: the editor redraws
+        # the pack, so crop the flat catalogue background away first and skip
+        # the swap outright when the reference is too small to carry lettering.
+        product_image_data = prepare_product_reference(product_image_data)
         product_img = PILImage.open(BytesIO(product_image_data))
+        if not reference_supports_swap(product_img):
+            logger.warning(
+                "Product reference too small (%s) for a faithful swap on regen "
+                "— keeping the unlabeled placeholder",
+                product_img.size,
+            )
+            return image_data
         input_size = marketing_img.size
         aspect_hint = aspect_hint_for_size(input_size)
 
@@ -242,10 +258,7 @@ async def _replace_product_in_image(
             gemini_client.models.generate_content,
             model=swap_model,
             contents=[
-                f"Replace the generic product in Image 1 with the real product from Image 2 "
-                f"('{product_name or 'product'}'). Keep everything else exactly the same. "
-                f"Match lighting and perspective. "
-                f"{aspect_hint}",
+                build_swap_instruction(product_name, aspect_hint),
                 marketing_img,
                 product_img,
             ],
@@ -609,7 +622,15 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         else:
             image_size = "1024x1024"
 
-        image_url = await generate_image(image_prompt, size=image_size, channel=cal_channel)
+        # The prompt above already forbids all lettering (no_text_rule), so the
+        # guard's default "no text is legitimate" is the right rule here; the
+        # real product packaging is composited in afterwards.
+        image_url = await generate_image(
+            image_prompt,
+            size=image_size,
+            channel=cal_channel,
+            guard_label=f"regen:{cal_channel or 'default'}:{image_format}",
+        )
         logger.info(
             "Image generated for content %s (channel=%s, size=%s): %s chars",
             content_id, cal_channel or "default", image_size, len(image_url),
@@ -1192,6 +1213,10 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                         text_xy=text_xy,
                         text_scale=float(text_scale or 1.0),
                         text_style=text_style,
+                        # Manual editor: the user dragged the logo there on
+                        # purpose, so the automatic clearance/contrast gate
+                        # must not second-guess them.
+                        enforce_logo_clearance=(logo_xy is None),
                         text_anchor=gen_meta.get("text_anchor_used"),
                         font_family=font_family or gen_meta.get("font_family"),
                         headline_colors=(

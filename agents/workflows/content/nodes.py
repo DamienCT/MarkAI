@@ -11,10 +11,27 @@ from datetime import datetime
 from typing import Any
 
 from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
+from shared.color_names import describe_palette
 from shared.editorial import build_temporal_block, scrub_brief_meta
 from shared.llm import chat_completion, generate_image, get_model_for_category, parse_llm_json
+from shared.product_swap import pack_framing_directive
 from shared.prompt_enhancer import enhance_image_prompt as enhance_image_prompt_fn
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
+from shared.image_subject import (
+    build_art_direction_block,
+    build_still_frame_directive,
+    build_subject_floor_block,
+    extract_subject_terms,
+)
+from shared.visual_brief import (
+    brand_visual_rules,
+    build_copy_contract_block,
+    build_critic_contract_block,
+    build_scene_block,
+    build_visual_guardrail_block,
+    extract_promised_props,
+    resolve_scene_text,
+)
 from shared.tools.database import (
     build_brand_intelligence,
     execute_update,
@@ -38,6 +55,12 @@ from shared.image_processing import (
     select_logo_variant,
     resize_preserve_aspect,
     aspect_hint_for_size,
+    MIN_LOGO_CONTRAST,
+    choose_logo_placement,
+    compute_text_region,
+    find_best_logo_position,
+    logo_ink_rgb,
+    same_logo_mark,
 )
 
 from pydantic import BaseModel, field_validator
@@ -1673,6 +1696,12 @@ async def enhance_image_prompt(state: ContentState) -> dict[str, Any]:
         visual_style=str(visual_style),
         has_product_image=has_product_image,
         is_lifestyle_only=is_lifestyle_only,
+        # generate_hook / generate_caption already ran, so the words that will
+        # be printed on this image exist. Feeding them back is what keeps the
+        # scene and the copy talking about the same thing.
+        headline=state.get("hook", "") or "",
+        caption=state.get("caption", "") or "",
+        brand_rules_block=build_visual_guardrail_block(brand),
     )
 
     return {"enhanced_image_prompt": enhanced}
@@ -1763,13 +1792,29 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         "visual_style", "modern, clean, tropical warmth"
     )
 
-    # Build color palette directive
-    color_directive = (
-        f"Brand color palette: Primary {colors.get('primary', '#3b82f6')}, "
-        f"Secondary {colors.get('secondary', '#22c55e')}, "
-        f"Accent {colors.get('accent', '#f59e0b')}. "
-        f"Subtly incorporate these brand colors into the scene (backgrounds, props, lighting tones). "
+    # Build color palette directive — in WORDS, never hex.
+    #
+    # Image models cannot read a hex triplet as a colour, and some of them read
+    # it as text to render: a bake-off run caught a model typesetting the
+    # literal string "Primary #1F6B3B | Secondary #8CC63F | Accent #E8DCCC"
+    # along the bottom of the frame as gibberish lettering. A negative prompt
+    # listing "text, words, letters, numbers, typography" did not suppress it,
+    # because the model was regurgitating a string we handed it. Describing the
+    # palette instead gives the model something it can act on and nothing it
+    # can spell.
+    palette_phrase = describe_palette(
+        colors,
+        defaults={
+            "primary": "#3b82f6",
+            "secondary": "#22c55e",
+            "accent": "#f59e0b",
+        },
     )
+    color_directive = (
+        f"Brand colours — {palette_phrase}. "
+        "Subtly incorporate these colours into the scene (backgrounds, props, "
+        "lighting tones). "
+    ) if palette_phrase else ""
 
     # Visual style directive
     style_directive = f"Visual style: {sanitize_for_prompt(str(visual_style))}. "
@@ -1851,20 +1896,93 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         "NO dreamy soft filter, NO bloom effect, NO over-stylized lighting. "
     )
 
+    # ---- copy → image contract -------------------------------------------
+    # The picture and the words printed on it must agree. The scene is the
+    # art-director prompt or the planner's brief — never `theme`, which is a
+    # campaign label ("Indulgent Everyday Pairings & Social Treat Moments")
+    # and yields free association rather than the briefed scene. must-show
+    # props, the lighting/time-of-day directive and the brand's own dos/donts
+    # are all derived deterministically in shared.visual_brief.
+    briefed_scene_text = resolve_scene_text(item, enhanced_prompt)
+    briefed_scene_block = build_scene_block(
+        sanitize_for_prompt(briefed_scene_text, max_length=4000)
+    )
+    contract_block = sanitize_for_prompt(
+        build_copy_contract_block(
+            headline=state.get("hook", "") or "",
+            caption=state.get("caption", "") or "",
+            scene_text=briefed_scene_text,
+            brand=brand,
+            # A studio poster is lit for the product, not for the hour — a
+            # time-of-day mandate would fight the "even commercial lighting"
+            # line the ad treatment sets two sentences earlier.
+            apply_time_of_day=image_format != "ad",
+        ),
+        max_length=6000,
+    )
+
+    # ---- subject floor ----------------------------------------------------
+    # The contract above binds the picture to the words. It cannot require that
+    # the frame contain anything at all, and five Naturespan posts cleared every
+    # check above while shipping a bare wall, an open doorway or a plank. Each
+    # of them was an `ad` post on a calendar item with no product_ids — the one
+    # combination whose prompt asked for "lots of negative space" and then
+    # closed with "Do NOT include any products. Focus on a clean branded
+    # backdrop." All four branches below now carry an unconditional floor
+    # instead, with the subject named from the brief where the brief names one,
+    # the planner's per-item visual_direction (previously read by nothing) and
+    # a single-frame directive for the reel scripts most briefs actually are.
+    wants_placeholder = bool(has_product_image and not is_lifestyle_only)
+    subject_contract = sanitize_for_prompt(
+        build_art_direction_block(item.get("visual_direction"))
+        + build_still_frame_directive(
+            briefed_scene_text, item.get("visual_direction") or ""
+        )
+        + build_subject_floor_block(
+            extract_subject_terms(
+                briefed_scene_text,
+                item.get("visual_direction") or "",
+                state.get("hook", "") or "",
+                has_product_placeholder=wants_placeholder,
+            ),
+            has_product_placeholder=wants_placeholder,
+        ),
+        max_length=3000,
+    )
+
     if image_format == "ad":
         # Studio commercial advertisement (poster look) — mirrors the Pub
         # regeneration path. Clean minimal backdrop with negative space for the
         # big headline + logo; product placeholder added only if we have a real
         # product to swap in via Gemini.
+        #
+        # The studio treatment is the ONLY thing "ad" changes. The subject still
+        # comes from the brief: this branch used to pass nothing but `theme`, so
+        # a brief reading "sharing board with crisp toasts, olives and cheese"
+        # rendered as chocolate truffles and cashews with no board, under a
+        # headline promising one.
         theme = item.get("theme", "")
+        theme_line = (
+            f"Campaign theme (context only — shoot the SCENE above): "
+            f"{sanitize_for_prompt(theme)}. "
+            if briefed_scene_block
+            else f"Theme: {sanitize_for_prompt(theme)}. "
+        )
         ad_base = (
             f"Create a clean, professional PRODUCT ADVERTISEMENT image in a studio "
-            f"commercial style. Theme: {sanitize_for_prompt(theme)}. "
+            f"commercial style.\n\n"
+            f"{briefed_scene_block}"
+            f"{theme_line}"
             f"Premium minimal background: a smooth gradient or subtle textured surface "
             f"(brushed metal, soft seamless studio backdrop, or a clean colour wash), "
-            f"even commercial lighting, strong product focus and lots of negative space "
-            f"for a short tagline and brand logos. "
+            f"even commercial lighting, strong product focus and lots of empty "
+            f"negative space — leave that space genuinely blank; the tagline and "
+            f"the logos are composited onto it afterwards and must NOT be drawn "
+            f"into the photograph. "
+            f"Every prop in frame must come from the SCENE — do not invent "
+            f"accompaniments the brief did not ask for. "
             f"{color_directive}"
+            f"{contract_block}"
         )
         if has_product_image and not is_lifestyle_only:
             prompt_text = (
@@ -1874,15 +1992,22 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
                 f"FULLY visible within the frame, centered with clear margin from every "
                 f"edge — never cropped. The container must be completely blank — it will "
                 f"be digitally replaced later. "
+                f"{pack_framing_directive()}"
+                f"{subject_contract}"
                 f"{composition_rules}"
                 f"{negative_directive}"
             )
         else:
+            # No product to swap in. This arm used to end on "Do NOT include any
+            # products. Focus on a clean branded backdrop." — which, on an item
+            # with nothing else to show, is an instruction to photograph an empty
+            # wall, and is exactly what came back five times. The subject floor
+            # replaces it: still a studio poster, but with a real subject in it.
             prompt_text = (
                 f"{ad_base}"
+                f"{subject_contract}"
                 f"{composition_rules}"
                 f"{negative_directive}"
-                f"Do NOT include any products. Focus on a clean branded backdrop."
             )
     elif enhanced_prompt:
         # The art-director LLM has produced a self-contained scene description.
@@ -1897,6 +2022,8 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "
             f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post.\n\n"
             f"SCENE:\n{sanitize_for_prompt(enhanced_prompt, max_length=4000)}\n\n"
+            f"{contract_block}"
+            f"{subject_contract}"
             f"{camera_directive}"
             f"{realism_directive}"
             f"Real shadows. Authentic textures. Natural depth of field. "
@@ -1928,6 +2055,8 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"{style_directive}"
             f"{audience_directive}"
             f"{seasonal_directive}"
+            f"{contract_block}"
+            f"{subject_contract}"
             f"{camera_directive}"
             f"{realism_directive}"
             f"Real shadows. Authentic textures. Natural depth of field. "
@@ -1935,7 +2064,12 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"{negative_directive}"
             f"The image MUST look like a documentary photograph captured with a "
             f"real DSLR camera, NOT an artwork, NOT a rendering, NOT an illustration. "
-            f"Do NOT include any products. Focus on the lifestyle and mood."
+            # Previously "Do NOT include any products. Focus on the lifestyle and
+            # mood." The intent was to stop the model fabricating branded packs,
+            # but as written it also forbade the shelf, the pack and the produce
+            # a lifestyle brief asks for, leaving mood and nothing else. The
+            # subject floor above carries the narrower anti-fabrication rule.
+            f"Focus on the lifestyle and mood around a real subject."
         )
     else:
         # Scene with generic product placeholder — will be replaced by Gemini later.
@@ -1960,10 +2094,13 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"The product container MUST be FULLY visible within the frame, positioned "
             f"in the central area with clear margin from every edge — never cropped, "
             f"never touching or running off the edges of the image. "
+            f"{pack_framing_directive()}"
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"
             f"{seasonal_directive}"
+            f"{contract_block}"
+            f"{subject_contract}"
             f"{camera_directive}"
             f"{realism_directive}"
             f"Real shadows. Authentic textures. Natural depth of field. "
@@ -1984,8 +2121,15 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         image_size = "1024x1024"  # square (instagram, x, default)
 
     try:
+        # No `allowed_text`: at this stage the frame must carry no lettering at
+        # all. The product container is deliberately blank here — the real
+        # packaging (with its legitimate text) is composited in later by
+        # _replace_product_in_generated_image, after this check has run.
         image_url = await generate_image(
-            prompt_text, size=image_size, channel=channel_lower or None
+            prompt_text,
+            size=image_size,
+            channel=channel_lower or None,
+            guard_label=f"content:{channel_lower or 'default'}:{image_format}",
         )
         return {"generated_image": image_url, "image_format": image_format}
     except Exception:
@@ -2462,11 +2606,39 @@ async def _replace_product_in_generated_image(
         from PIL import Image as PILImage
         from io import BytesIO
 
+        from shared.product_swap import (
+            build_swap_instruction,
+            prepare_product_reference,
+            reference_supports_swap,
+        )
+
         gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         marketing_img = PILImage.open(BytesIO(image_data))
+
+        # The editor re-synthesises every pixel of the pack, so what it can
+        # SEE of the reference decides whether the pack's printed copy comes
+        # back faithful or as invented letterforms. Crop the flat catalogue
+        # background away and rescale so the editor's fixed input budget is
+        # spent on the pack rather than on white margin.
+        product_image_data = prepare_product_reference(product_image_data)
         product_img = PILImage.open(BytesIO(product_image_data))
 
+        # A thumbnail reference simply does not contain the pack's lettering.
+        # Publishing a clean unlabeled container beats publishing a fabricated
+        # third-party pack, so skip the swap entirely in that case.
+        if not reference_supports_swap(product_img):
+            logger.warning(
+                "Product reference too small (%s) for a faithful swap — "
+                "keeping the unlabeled placeholder",
+                product_img.size,
+            )
+            return image_data
+
         product_name = state.get("calendar_item", {}).get("product_name", "product")
+        _prod = state.get("product")
+        vendor_name = (
+            (_prod.get("vendor_name") or "") if isinstance(_prod, dict) else ""
+        )
 
         input_size = marketing_img.size  # preserve original dimensions (e.g. 1024x1024)
         aspect_hint = aspect_hint_for_size(input_size)
@@ -2477,9 +2649,9 @@ async def _replace_product_in_generated_image(
             gemini_client.models.generate_content,
             model=swap_model,
             contents=[
-                f"Replace the generic product in Image 1 with the real product from Image 2 ('{product_name}'). "
-                f"Keep everything else exactly the same. Match lighting and perspective. "
-                f"{aspect_hint}",
+                build_swap_instruction(
+                    product_name, aspect_hint, vendor_name=vendor_name
+                ),
                 marketing_img,
                 product_img,
             ],
@@ -2543,6 +2715,98 @@ def _bytes_to_logo_png(raw: bytes) -> bytes | None:
     if is_svg:
         return render_logo_png(raw)
     return raw
+
+
+async def _resolve_logo_placement(
+    image_data: bytes,
+    logo_png: bytes,
+    chosen_label: str,
+    available_logos: dict[str, str],
+    proposed_xy: tuple[float, float] | None,
+    text_kwargs: dict[str, Any],
+) -> tuple[bytes, str, tuple[float, float]]:
+    """Settle WHERE the logo goes and WHICH variant it uses, by measurement.
+
+    Everything upstream picks a spot without ever checking the result: the
+    vision planner returns a free (x, y) it never scores, the corner heuristic
+    ranks candidates on pixel variance (a dark logo on a dark shadow wins that
+    contest), and neither of them knows where the text overlay will land. This
+    reconciles all three by measuring:
+
+    * the box the text overlay will occupy, so the logo can never be stamped
+      through the headline or the glass card;
+    * the WCAG contrast the logo's own ink achieves on the pixels underneath,
+      so a mark that would fade out gets moved;
+    * the same for the OTHER colour variants, so when no position rescues the
+      current variant we swap to one that reads instead of shipping a ghost.
+
+    Returns ``(logo_png, chosen_label, logo_xy)`` — the caller renders with
+    these AND persists the xy, so the manual editor opens on the real spot.
+    """
+    from PIL import Image as _PILImage
+    from io import BytesIO as _BytesIO
+
+    with _PILImage.open(_BytesIO(image_data)) as _img:
+        img_w, img_h = _img.width, _img.height
+
+    reserved = compute_text_region(img_w, img_h, **text_kwargs)
+
+    def _logo_box(png: bytes, label: str) -> tuple[int, int, tuple]:
+        """(width, height, ink_rgb) of *png* rendered at *label*'s scale."""
+        with _PILImage.open(_BytesIO(png)) as lg:
+            lg = lg.convert("RGBA")
+            bbox = lg.getbbox()
+            if bbox:
+                lg = lg.crop(bbox)
+            w = max(1, int(img_w * scale_for_logo_variant(label)))
+            h = max(1, int(lg.height * (w / lg.width))) if lg.width else 1
+            return w, h, logo_ink_rgb(lg)
+
+    logo_w, logo_h, ink = _logo_box(logo_png, chosen_label)
+
+    if proposed_xy is None:
+        # Match the renderer's own fallback so both agree on the starting point.
+        fx, fy = find_best_logo_position(
+            image_data, logo_w, logo_h, margin=int(img_w * 0.06)
+        )
+        proposed_xy = ((fx + logo_w / 2) / img_w, (fy + logo_h / 2) / img_h)
+
+    best_xy, info = choose_logo_placement(
+        image_data, logo_w, logo_h, ink,
+        proposed_xy=proposed_xy, avoid_rect=reserved,
+    )
+    if info.get("changed"):
+        logger.info("apply_branding: %s", info.get("reason"))
+
+    # Still unreadable at the best available spot? The problem is the ink, not
+    # the geometry — try the other variants before giving up.
+    if info.get("contrast", 0.0) < MIN_LOGO_CONTRAST:
+        best_contrast = info.get("contrast", 0.0)
+        for label, url in available_logos.items():
+            if label == chosen_label:
+                continue
+            raw = await _download_logo_bytes(url)
+            alt_png = _bytes_to_logo_png(raw) if raw else None
+            if not alt_png:
+                continue
+            try:
+                alt_w, alt_h, alt_ink = _logo_box(alt_png, label)
+                alt_xy, alt_info = choose_logo_placement(
+                    image_data, alt_w, alt_h, alt_ink,
+                    proposed_xy=proposed_xy, avoid_rect=reserved,
+                )
+            except Exception as exc:
+                logger.warning("variant contrast probe failed for %s: %s", label, exc)
+                continue
+            if alt_info.get("contrast", 0.0) > best_contrast:
+                best_contrast = alt_info["contrast"]
+                logo_png, chosen_label, best_xy = alt_png, label, alt_xy
+        logger.info(
+            "apply_branding: variant after contrast probe = %s (%.2f:1)",
+            chosen_label, best_contrast,
+        )
+
+    return logo_png, chosen_label, best_xy
 
 
 async def apply_branding(state: ContentState) -> dict[str, Any]:
@@ -2772,6 +3036,26 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         # only when BOTH exist; with a single version it's always used.
         pl_bytes = pl_light or pl_dark
         pl_dark_bytes = pl_dark if (pl_light and pl_dark) else None
+
+        # A category/vendor logo that IS the brand's own logo would stamp the
+        # brand mark a second time, in a second size and sometimes a second
+        # colour variant (the 'two Healthspan logos' defect). Drop it: the
+        # brand logo is already on the frame.
+        if pl_bytes and logo_png:
+            try:
+                if same_logo_mark(pl_bytes, logo_png) or (
+                    pl_dark_bytes and same_logo_mark(pl_dark_bytes, logo_png)
+                ):
+                    logger.warning(
+                        "Product logo (%s) is the brand's own mark — dropping "
+                        "it so the logo is not stamped twice",
+                        _pl_light_obj or _pl_dark_obj,
+                    )
+                    pl_bytes = pl_dark_bytes = None
+                    pl_enabled = False
+            except Exception as exc:
+                logger.warning("Duplicate-logo check failed: %s", exc)
+
         _pl_xy = state.get("product_logo_xy")
         # In ads, keep the vendor logo clear of the headline (opposite vertical
         # half) and the brand logo (opposite horizontal side) when the user
@@ -2789,6 +3073,36 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
             "product_logo_xy": tuple(_pl_xy) if _pl_xy else None,
             "product_logo_scale": state.get("product_logo_scale"),
         }
+
+        # Final gate before anything is drawn: measure the spot the logo was
+        # given (by the vision planner, the headline planner, or the variance
+        # heuristic) and move/recolour it if it would land on the text or
+        # disappear into the backdrop. Resolved HERE rather than only inside
+        # the renderer so the xy we persist below is the xy actually drawn —
+        # the manual editor seeds its handles from it.
+        _text_kwargs = (
+            {
+                "text_line1": text_line1,
+                "text_style": "headline",
+                "text_scale": ad_text_scale or 1.0,
+                "text_xy": ad_text_xy,
+                "text_width": ad_text_width,
+                "font_family": ad_font_family or "Montserrat",
+            }
+            if image_format == "ad"
+            else {
+                "text_line1": text_line1,
+                "text_style": "glass",
+                "text_anchor": plan_text_anchor,
+            }
+        )
+        try:
+            logo_png, chosen_label, plan_logo_xy = await _resolve_logo_placement(
+                image_data, logo_png, chosen_label, available_logos,
+                plan_logo_xy, _text_kwargs,
+            )
+        except Exception as _exc:
+            logger.warning("Logo placement resolution failed: %s", _exc)
 
         if image_format == "ad":
             branded_bytes = overlay_logo_and_text(
@@ -2985,6 +3299,10 @@ async def _vision_plan_placement(
 async def _vision_review_branding(
     branded_image_data: bytes,
     available_logo_variants: list[str],
+    *,
+    headline: str = "",
+    required_props: list[str] | None = None,
+    forbidden_rules: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Ask a vision LLM whether the fully-branded image is acceptable.
 
@@ -2992,6 +3310,12 @@ async def _vision_review_branding(
     returns ``{"ok": bool, "new_text_anchor", "new_logo_xy",
     "new_logo_variant", "reason"}``. ``new_logo_xy`` is a free normalized
     (x, y) center (or None); text anchor + variant are validated.
+
+    When ``required_props``/``forbidden_rules`` are supplied the critic also
+    reports ``missing_subjects`` and ``violated_rules`` — the copy contract.
+    Those are reported separately and never flip ``ok``: ``ok`` stays a pure
+    placement verdict, because the only repair this node can perform is
+    re-compositing the overlay, which cannot add a missing prop to a photo.
     """
     import base64 as _b64
 
@@ -3039,6 +3363,7 @@ async def _vision_review_branding(
         "- Keep the logo (new_logo_xy) clear of the text card so they don't "
         "  overlap (the card can span up to 72% of the image width).\n"
         "- Only suggest a variant that's in the provided list."
+        + build_critic_contract_block(headline, required_props, forbidden_rules)
     )
 
     messages = [
@@ -3096,12 +3421,21 @@ async def _vision_review_branding(
     if new_variant and new_variant not in (available_logo_variants or []):
         new_variant = ""
 
+    def _str_list(value: Any) -> list[str]:
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [" ".join(str(v).split())[:160] for v in value if str(v).strip()][:10]
+
     return {
         "ok": ok,
         "new_text_anchor": new_text,
         "new_logo_xy": new_logo_xy,
         "new_logo_variant": new_variant,
         "reason": str(review.get("reason", ""))[:300],
+        "missing_subjects": _str_list(review.get("missing_subjects")),
+        "violated_rules": _str_list(review.get("violated_rules")),
     }
 
 
@@ -3113,13 +3447,6 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
     await update_agent_run_step(
         state.get("run_id", ""), "review_branding", _STEP_INDEX["review_branding"],
     )
-
-    # Ad posts use the big headline overlay whose position/size/width were already
-    # AI-chosen on clean negative space. The review re-render below is built for
-    # the glass card (text_anchor) and would clobber the headline — so skip it.
-    if state.get("image_format", "lifestyle") == "ad":
-        logger.info("review_branding: skipped for ad/headline post")
-        return {"branding_review": {"ok": True, "reason": "ad headline (AI-placed)"}}
 
     branded_url = state.get("branded_image")
     composed_url = state.get("composed_image")
@@ -3135,6 +3462,28 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
     logos_cfg = brand_guidelines.get("logos", {}) or {}
     available_variants = list(logos_cfg.keys())
 
+    # The copy contract: what the headline promised and what the brand forbids.
+    # Derived deterministically so the critic is asked about specific, checkable
+    # things ("is there a board in this frame?") rather than general vibes.
+    is_ad = state.get("image_format", "lifestyle") == "ad"
+    headline_text = state.get("hook", "") or ""
+    scene_text = resolve_scene_text(
+        state.get("calendar_item", {}), state.get("enhanced_image_prompt")
+    )
+    required_props = extract_promised_props(headline_text, scene_text)
+    forbidden_rules = brand_visual_rules(brand)
+    has_contract = bool(required_props or forbidden_rules)
+
+    # Ad posts use the big headline overlay whose position/size/width were already
+    # AI-chosen on clean negative space. The review re-render below is built for
+    # the glass card (text_anchor) and would clobber the headline — so the
+    # placement half of the review stays skipped. The copy contract still gets
+    # checked: ad posts were where the frames that contradicted their own
+    # headline came from, and they were shipping as {"ok": true}.
+    if is_ad and not has_contract:
+        logger.info("review_branding: skipped for ad/headline post (no contract)")
+        return {"branding_review": {"ok": True, "reason": "ad headline (AI-placed)"}}
+
     if not branded_url or not branded_url.startswith("content-images/"):
         return {}
 
@@ -3146,7 +3495,42 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
         logger.warning("review_branding: failed to load branded image: %s", exc)
         return {}
 
-    review = await _vision_review_branding(branded_bytes, available_variants)
+    review = await _vision_review_branding(
+        branded_bytes,
+        available_variants,
+        headline=headline_text,
+        required_props=required_props,
+        forbidden_rules=forbidden_rules,
+    )
+    if has_contract and isinstance(review, dict):
+        missing = review.get("missing_subjects") or []
+        violated = review.get("violated_rules") or []
+        review["copy_contract_ok"] = not (missing or violated)
+        if missing or violated:
+            logger.warning(
+                "review_branding: copy contract breached — missing=%r violated=%r "
+                "(headline=%r)",
+                missing, violated, headline_text[:80],
+            )
+
+    if is_ad:
+        # Report-only: never re-render an AI-placed headline post.
+        out: dict[str, Any] = {"ok": True, "reason": "ad headline (AI-placed)"}
+        if isinstance(review, dict):
+            for key in ("copy_contract_ok", "missing_subjects", "violated_rules"):
+                if key in review:
+                    out[key] = review[key]
+            if out.get("copy_contract_ok") is False:
+                breaches = [
+                    *(f"missing: {m}" for m in out.get("missing_subjects") or []),
+                    *(out.get("violated_rules") or []),
+                ]
+                out["reason"] = (
+                    "ad headline (AI-placed); copy contract breached — "
+                    + "; ".join(breaches)
+                )[:300]
+        return {"branding_review": out}
+
     if review is None or review.get("ok"):
         if review:
             logger.info("review_branding: approved (%s)", review.get("reason", ""))
@@ -3204,47 +3588,39 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
     effective_xy = new_logo_xy or current_xy
     effective_text = new_text or current_text or None
 
-    # Re-pick the color variant for the EXACT spot the logo will occupy, so a
-    # relocated logo never blends into its new backdrop (e.g. a white wordmark
-    # landing on a light surface — the FancyFinds failure).
-    if effective_xy:
-        try:
-            from PIL import Image as _PILImage
-            from io import BytesIO as _BytesIO
-            _ci = _PILImage.open(_BytesIO(composed_bytes))
-            _cw = _ci.width
-            _ci.close()
-            _lw = int(_cw * scale_for_logo_variant(current_variant))
-            _lh = int(_lw * 0.5)
-            _ex, _ey = effective_xy
-            b_at, v_at = analyze_brightness_at_xy(composed_bytes, _ex, _ey, _lw, _lh)
-            region_variant = select_logo_variant(b_at, v_at, available_variants)
-            if region_variant and region_variant != current_variant:
-                from shared.config import settings as _settings
-                _api_base = getattr(_settings, "BACKEND_URL", "") or "http://backend:8000"
-                _info = logos_cfg.get(region_variant) or {}
-                _url = _info.get("url") if isinstance(_info, dict) else None
-                if _url and _url.startswith("/"):
-                    _url = f"{_api_base}{_url}"
-                if _url:
-                    _raw = await _download_logo_bytes(_url)
-                    if _raw:
-                        _conv = _bytes_to_logo_png(_raw)
-                        if _conv:
-                            logo_png = _conv
-                            current_variant = region_variant
-                            logger.info(
-                                "review_branding: re-picked variant at xy=%s "
-                                "-> %s (brightness=%.0f)",
-                                effective_xy, region_variant, b_at,
-                            )
-        except Exception as exc:
-            logger.warning("review_branding: region variant re-pick failed: %s", exc)
+    headline_text = state.get("hook", "") or state.get("calendar_item", {}).get("theme", "")
+
+    # The critic proposes a spot by eye; it has repeatedly proposed one that
+    # sits under the very text card it just moved. Re-measure its suggestion
+    # (clearance + ink contrast, swapping the colour variant if no position
+    # rescues the current one) before anything is drawn.
+    from shared.config import settings as _settings
+    _api_base = getattr(_settings, "BACKEND_URL", "") or "http://backend:8000"
+    _available: dict[str, str] = {}
+    for _label in available_variants:
+        _info = logos_cfg.get(_label) or {}
+        _url = _info.get("url") if isinstance(_info, dict) else None
+        if _url and _url.startswith("/"):
+            _url = f"{_api_base}{_url}"
+        if _url:
+            _available[_label] = _url
+    try:
+        logo_png, current_variant, effective_xy = await _resolve_logo_placement(
+            composed_bytes, logo_png, current_variant, _available,
+            effective_xy,
+            {
+                "text_line1": headline_text,
+                "text_style": "glass",
+                "text_anchor": effective_text,
+            },
+        )
+    except Exception as exc:
+        logger.warning("review_branding: placement resolution failed: %s", exc)
 
     new_branded = overlay_logo_and_text(
         composed_bytes,
         logo_png,
-        text_line1=state.get("hook", "") or state.get("calendar_item", {}).get("theme", ""),
+        text_line1=headline_text,
         text_line2=_clean_website_for_overlay(brand.get("website_url")),
         logo_scale=scale_for_logo_variant(current_variant),
         logo_xy=effective_xy,

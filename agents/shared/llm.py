@@ -7,6 +7,11 @@ provider mapping (OpenAI, Gemini, Anthropic, local GPU), so switching
 providers is config-only. Image generation is the exception: it calls the
 provider APIs directly (OpenAI images endpoint / Gemini generate_content)
 because the pinned proxy doesn't reliably route image payloads.
+
+``generate_image`` additionally runs every rendered frame through
+``shared.image_text_guard`` and re-rolls frames that contain hallucinated
+lettering — see that module for why the defence lives in the app rather than
+in the prompt.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -515,7 +521,7 @@ async def _get_channel_fallback_model(channel: str, category: str) -> str | None
     retry=_retry_on_transient,
     reraise=True,
 )
-async def generate_image(
+async def _generate_image_once(
     prompt: str,
     model: str | None = None,
     category: str = "image",
@@ -523,7 +529,11 @@ async def generate_image(
     n: int = 1,
     channel: str | None = None,
 ) -> str:
-    """Generate an image and return the first image URL or data URI.
+    """One render: the provider cascade, with no text guard around it.
+
+    ``generate_image`` is the public entry point — it wraps this in the
+    hallucinated-text guard. Call this directly only when a caller genuinely
+    must bypass the guard.
 
     Tries LiteLLM proxy first; falls back to direct OpenAI API if proxy returns 400.
     Handles both url and b64_json response formats.
@@ -645,3 +655,98 @@ async def generate_image(
                 break
 
     raise RuntimeError(f"All image models failed. Last error: {last_error}")
+
+
+async def generate_image(
+    prompt: str,
+    model: str | None = None,
+    category: str = "image",
+    size: str = "1024x1024",
+    n: int = 1,
+    channel: str | None = None,
+    *,
+    allowed_text: Sequence[str] | str | None = None,
+    text_guard: bool | None = None,
+    guard_label: str | None = None,
+) -> str:
+    """Generate an image, re-rolling frames that contain hallucinated text.
+
+    Every image path in the app funnels through here, so this is the single
+    place the app defends itself against the one defect that makes a generated
+    frame unpublishable: lettering the brief never asked for. Image models
+    invent labels on blank containers and garble signage, and neither a
+    negative prompt nor a higher CFG reliably suppresses it — so a rendered
+    frame is vision-checked (``shared.image_text_guard``) and, if it trips,
+    re-rendered with a strengthened no-text instruction and a fresh variation
+    seed.
+
+    ``allowed_text`` declares what lettering is legitimate for THIS image — a
+    real product's own packaging, a storefront the brief specified. The default
+    ``None`` means none is, which matches every prompt template in this repo
+    (they all say "NO text, NO words, NO letters"). Garbled or misspelled
+    lettering is rejected either way, even on a legitimate label.
+
+    Cost is bounded twice over: by ``IMAGE_TEXT_GUARD_MAX_RETRIES`` and by the
+    hard ``image_text_guard.MAX_RETRY_CAP``. Once the budget is spent the least
+    bad attempt is returned rather than raising — a post with a flawed image
+    still beats no post, and the rejection is in the logs either way.
+
+    Pass ``text_guard=False`` (or set ``IMAGE_TEXT_GUARD_ENABLED=false``) to
+    skip the check entirely and get a single plain render.
+    """
+    from shared import image_text_guard as guard  # lazy — avoids an import cycle
+
+    enabled = guard.guard_enabled() if text_guard is None else bool(text_guard)
+    if not enabled:
+        return await _generate_image_once(prompt, model, category, size, n, channel)
+
+    label = guard_label or category
+    retries = guard.retry_cap()
+    max_attempts = retries + 1
+
+    best_ref: str | None = None
+    best_severity: int | None = None
+    attempt_prompt = prompt
+    seed: int | None = None
+
+    for attempt in range(max_attempts):
+        image_ref = await _generate_image_once(
+            attempt_prompt, model, category, size, n, channel
+        )
+        verdict = await guard.inspect_image(
+            image_ref, allowed_text=allowed_text, label=label
+        )
+
+        if not verdict.flagged:
+            if attempt:
+                logger.info(
+                    "image_text_guard.recovered label=%s attempt=%d/%d",
+                    label,
+                    attempt + 1,
+                    max_attempts,
+                )
+            return image_ref
+
+        guard.log_rejection(
+            label=label,
+            attempt=attempt + 1,
+            max_attempts=max_attempts,
+            verdict=verdict,
+            model=model or category,
+            seed=seed,
+        )
+
+        if best_severity is None or verdict.severity < best_severity:
+            best_ref, best_severity = image_ref, verdict.severity
+
+        if attempt < max_attempts - 1:
+            attempt_prompt, seed = guard.strengthen_prompt(prompt, verdict, attempt + 1)
+
+    logger.warning(
+        "image_text_guard.exhausted label=%s attempts=%d — publishing best "
+        "attempt (severity=%s)",
+        label,
+        max_attempts,
+        best_severity,
+    )
+    return best_ref  # type: ignore[return-value]

@@ -48,6 +48,18 @@ class Settings(BaseSettings):
     FABRIC_SQL_ENDPOINT: str = ""
     FABRIC_LAKEHOUSE_NAME: str = "lh_bronze"
 
+    # ── Business Central API v2.0 (item-card pictures) ───────────────────
+    # The Fabric lakehouse mirror carries no item pictures, so product photos
+    # come from the BC API directly. Credentials default to the Fabric service
+    # principal; override only if a separate app registration holds the BC
+    # API.ReadWrite.All grant.
+    BC_API_ENABLED: bool = True
+    BC_API_BASE_URL: str = "https://api.businesscentral.dynamics.com"
+    BC_API_ENVIRONMENT: str = "Production"
+    BC_API_TENANT_ID: str = ""
+    BC_API_CLIENT_ID: str = ""
+    BC_API_CLIENT_SECRET: str = ""
+
     # ── LangChain / LangSmith ────────────────────────────────────────────
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_API_KEY: str = ""
@@ -68,6 +80,22 @@ class Settings(BaseSettings):
     VIDEO_RENDER_TIMEOUT_S: int = 2400
     FAL_COST_PER_S: float = 0.06
     VEO_COST_PER_S: float = 0.15
+
+    # ── Generated-image text guard ───────────────────────────────────────
+    # Image models hallucinate lettering — invented labels on unlabelled jars,
+    # garbled signage, misspelled words on packaging — and no amount of
+    # negative prompting reliably stops it. Every generated image is therefore
+    # vision-checked for text the brief did not ask for, and a flagged frame is
+    # re-rolled with a strengthened no-text instruction. Set
+    # IMAGE_TEXT_GUARD_ENABLED=false to bypass the whole path.
+    # Retries are additionally clamped by shared.image_text_guard.MAX_RETRY_CAP
+    # so a misconfigured value here cannot multiply image-generation spend.
+    IMAGE_TEXT_GUARD_ENABLED: bool = True
+    IMAGE_TEXT_GUARD_MAX_RETRIES: int = 2
+    IMAGE_TEXT_GUARD_TIMEOUT_S: int = 90
+    # Blank → the active "vision" model from the backend's model selections.
+    IMAGE_TEXT_GUARD_MODEL: str = ""
+    IMAGE_TEXT_GUARD_MAX_IMAGE_MB: int = 20
 
     # ── Social API Tokens ────────────────────────────────────────────────
     META_ACCESS_TOKEN: str = ""  # Shared token for Instagram + Facebook Graph API

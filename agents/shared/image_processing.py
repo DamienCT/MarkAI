@@ -366,6 +366,585 @@ def _anchor_to_position(
     return (margin, margin)
 
 
+# ── Logo contrast scoring ────────────────────────────────────────
+#
+# ``find_best_logo_position`` and ``select_logo_variant`` score a region on
+# BRIGHTNESS and VARIANCE. Neither measures the thing that actually decides
+# whether a mark reads: the contrast between the logo's own ink and the pixels
+# it lands on. A dark-green wordmark on a dark shadowed plank has low variance
+# (so the heuristic loves it) and almost no contrast (so it vanishes). The
+# free-placement path is worse still — a vision LLM picks (x, y) and nothing
+# ever checks the result.
+#
+# These helpers measure real WCAG contrast so a placement can be rejected on
+# evidence rather than on hope.
+
+#: WCAG 2.1 asks for 3:1 on large text and graphical objects. A brand mark is
+#: a graphical object, so 3:1 is the floor for "reads at a glance".
+MIN_LOGO_CONTRAST = 3.0
+
+#: The backdrop is scored at this percentile, so up to 10% of the patch may
+#: fall below the floor (a thin shadow edge clipping a corner is tolerable)
+#: before the spot is rejected.
+_CONTRAST_PERCENTILE = 10
+
+#: Same edge inset ``overlay_logo_and_text`` clamps free logo_xy against.
+_LOGO_EDGE_FRAC = 0.02
+
+#: Same margin ``overlay_logo_and_text`` uses for anchored logo placement.
+_LOGO_MARGIN_FRAC = 0.06
+
+#: Gap kept between the logo box and the text box, as a fraction of width.
+_LOGO_TEXT_GAP_FRAC = 0.015
+
+
+def _srgb_to_linear(channel):
+    """Gamma-expand sRGB 0-255 values to linear 0..1 (WCAG 2.1 §relative luminance)."""
+    c = np.asarray(channel, dtype=np.float32) / 255.0
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+_SRGB_LUT: np.ndarray | None = None
+
+
+def _srgb_lut() -> np.ndarray:
+    """256-entry gamma-expansion table — indexing beats a per-pixel ``** 2.4``."""
+    global _SRGB_LUT
+    if _SRGB_LUT is None:
+        _SRGB_LUT = _srgb_to_linear(np.arange(256, dtype=np.float32)).astype(np.float32)
+    return _SRGB_LUT
+
+
+def relative_luminance(rgb) -> float:
+    """WCAG relative luminance (0..1) of an ``(r, g, b)`` 0-255 triple."""
+    lin = _srgb_to_linear(np.asarray(rgb, dtype=np.float32))
+    return float(0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2])
+
+
+def contrast_ratio(lum_a: float, lum_b: float) -> float:
+    """WCAG contrast ratio (1.0 … 21.0) between two relative luminances."""
+    hi, lo = max(lum_a, lum_b), min(lum_a, lum_b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def logo_ink_rgb(logo: Image.Image) -> tuple[float, float, float]:
+    """Mean RGB of a logo's opaque pixels — the ink that has to read.
+
+    Transparent padding is excluded, so a white wordmark on a transparent
+    canvas reports white rather than a washed-out average.
+    """
+    rgba = logo.convert("RGBA")
+    rgb = np.asarray(rgba.convert("RGB"), dtype=np.float32)
+    a = np.asarray(rgba.split()[3], dtype=np.float32)
+    opaque = a > 24
+    if not opaque.any():
+        return (128.0, 128.0, 128.0)
+    return (
+        float(rgb[..., 0][opaque].mean()),
+        float(rgb[..., 1][opaque].mean()),
+        float(rgb[..., 2][opaque].mean()),
+    )
+
+
+def luminance_map(image_data: bytes | np.ndarray) -> np.ndarray:
+    """Per-pixel WCAG relative luminance (H×W float32) for an image.
+
+    Accepts an already-computed map so a grid search pays the decode +
+    gamma-expansion cost once.
+    """
+    if isinstance(image_data, np.ndarray):
+        return image_data
+    img = Image.open(BytesIO(image_data)).convert("RGB")
+    lin = _srgb_lut()[np.asarray(img, dtype=np.uint8)]
+    return (
+        0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]
+    ).astype(np.float32)
+
+
+def logo_box_at(
+    x: float, y: float, logo_w: int, logo_h: int, img_w: int, img_h: int
+) -> tuple[int, int, int, int]:
+    """Pixel box a logo of *logo_w*×*logo_h* occupies when centred at (x, y).
+
+    Mirrors the clamping ``overlay_logo_and_text`` applies to free ``logo_xy``
+    so callers can reason about the box that will actually be drawn.
+    """
+    lx = int(x * img_w - logo_w / 2)
+    ly = int(y * img_h - logo_h / 2)
+    edge = max(8, int(img_w * _LOGO_EDGE_FRAC))
+    lx = max(edge, min(lx, img_w - logo_w - edge))
+    ly = max(edge, min(ly, img_h - logo_h - edge))
+    return (lx, ly, lx + logo_w, ly + logo_h)
+
+
+def logo_contrast_at(
+    image_data: bytes | np.ndarray,
+    x: float,
+    y: float,
+    logo_w: int,
+    logo_h: int,
+    ink_rgb,
+) -> float:
+    """Contrast ratio the ink would achieve at normalized centre ``(x, y)``.
+
+    Returns the 10th-percentile PER-PIXEL contrast over the patch the logo
+    covers — how the mark reads on its worst tenth, not on a flattering
+    average. A same-tone patch scores low, and so does a busy patch that
+    happens to average out, which is exactly the signal variance misses.
+    """
+    lum = luminance_map(image_data)
+    h, w = lum.shape[:2]
+    lx, ly, lx2, ly2 = logo_box_at(x, y, logo_w, logo_h, w, h)
+    patch = lum[max(0, ly) : min(h, ly2), max(0, lx) : min(w, lx2)]
+    if patch.size == 0:
+        return 1.0
+    ink = relative_luminance(ink_rgb)
+    hi = np.maximum(patch, ink)
+    lo = np.minimum(patch, ink)
+    ratios = (hi + 0.05) / (lo + 0.05)
+    return float(np.percentile(ratios, _CONTRAST_PERCENTILE))
+
+
+def rects_overlap(
+    a: tuple[int, int, int, int], b: tuple[int, int, int, int], gap: int = 0
+) -> bool:
+    """True when two ``(x1, y1, x2, y2)`` boxes intersect, inflated by *gap*."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    return not (
+        ax2 + gap <= bx1 or bx2 + gap <= ax1 or ay2 + gap <= by1 or by2 + gap <= ay1
+    )
+
+
+def _overlap_area(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> int:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    return max(0, min(ax2, bx2) - max(ax1, bx1)) * max(
+        0, min(ay2, by2) - max(ay1, by1)
+    )
+
+
+def candidate_logo_centers(
+    img_w: int, img_h: int, logo_w: int, logo_h: int
+) -> list[tuple[float, float]]:
+    """The eight conventional logo spots: 4 corners + 4 edge midpoints.
+
+    Deliberately NOT a dense grid — a logo floating mid-frame reads as a
+    mistake even when the contrast is perfect. Bottom corners are included:
+    unlike ``find_best_logo_position``, which blanket-banned them because the
+    text bar *might* be there, callers now pass the text box explicitly.
+    """
+    margin = int(img_w * _LOGO_MARGIN_FRAC)
+    left = (margin + logo_w / 2) / img_w
+    right = (img_w - margin - logo_w / 2) / img_w
+    top = (margin + logo_h / 2) / img_h
+    bottom = (img_h - margin - logo_h / 2) / img_h
+    return [
+        (left, top),
+        (right, top),
+        (left, bottom),
+        (right, bottom),
+        (0.5, top),
+        (0.5, bottom),
+        (left, 0.5),
+        (right, 0.5),
+    ]
+
+
+def choose_logo_placement(
+    image_data: bytes,
+    logo_w: int,
+    logo_h: int,
+    ink_rgb,
+    proposed_xy: tuple[float, float],
+    avoid_rect: tuple[int, int, int, int] | None = None,
+    min_contrast: float = MIN_LOGO_CONTRAST,
+) -> tuple[tuple[float, float], dict]:
+    """Keep *proposed_xy* unless it is measurably bad, else relocate.
+
+    A proposal is rejected when it collides with *avoid_rect* (the text card /
+    headline block) or when the ink would not reach *min_contrast* against the
+    backdrop it lands on. Only then do we fall back to the conventional spots,
+    picking the highest-contrast one that is clear of the text — ties broken
+    toward the original proposal so the vision agent keeps its intent whenever
+    the numbers allow.
+
+    Returns ``(xy, info)``; ``info["changed"]`` says whether it moved.
+    """
+    lum = luminance_map(image_data)
+    img_h, img_w = lum.shape[:2]
+    gap = max(4, int(img_w * _LOGO_TEXT_GAP_FRAC))
+
+    def _evaluate(xy):
+        box = logo_box_at(xy[0], xy[1], logo_w, logo_h, img_w, img_h)
+        collides = bool(avoid_rect) and rects_overlap(box, avoid_rect, gap)
+        return {
+            "contrast": logo_contrast_at(lum, xy[0], xy[1], logo_w, logo_h, ink_rgb),
+            "collides": collides,
+            "overlap": _overlap_area(box, avoid_rect) if avoid_rect else 0,
+        }
+
+    proposal = _evaluate(proposed_xy)
+    if not proposal["collides"] and proposal["contrast"] >= min_contrast:
+        return proposed_xy, {
+            "changed": False,
+            "contrast": proposal["contrast"],
+            "reason": "proposed placement passes",
+        }
+
+    px, py = proposed_xy
+    clear_and_readable: list = []
+    clear_only: list = []
+    colliding: list = []
+    for cand in candidate_logo_centers(img_w, img_h, logo_w, logo_h):
+        ev = _evaluate(cand)
+        distance = ((cand[0] - px) ** 2 + (cand[1] - py) ** 2) ** 0.5
+        if ev["collides"]:
+            colliding.append(((ev["overlap"], -ev["contrast"]), cand, ev))
+        elif ev["contrast"] >= min_contrast:
+            clear_and_readable.append(((distance,), cand, ev))
+        else:
+            clear_only.append(((-ev["contrast"],), cand, ev))
+
+    # A spot that is both clear and readable is good enough — take the one
+    # NEAREST the proposal so the vision agent's composition is disturbed as
+    # little as possible. Only when nothing reaches the floor do we chase the
+    # highest contrast, and only when everything collides do we settle for the
+    # least-bad overlap.
+    ranked = clear_and_readable or clear_only or colliding
+    ranked.sort(key=lambda s: s[0])
+    _, best_xy, best_ev = ranked[0]
+
+    # Never trade a passing spot for a worse one: if the proposal only failed
+    # on contrast and nothing beats it, leave it where the agent put it.
+    if not proposal["collides"] and best_ev["contrast"] <= proposal["contrast"]:
+        return proposed_xy, {
+            "changed": False,
+            "contrast": proposal["contrast"],
+            "reason": "low contrast but no better spot available",
+        }
+
+    why = "overlapped the text" if proposal["collides"] else "low contrast"
+    return best_xy, {
+        "changed": True,
+        "contrast": best_ev["contrast"],
+        "proposed_contrast": proposal["contrast"],
+        "reason": (
+            f"logo moved from {proposed_xy[0]:.2f},{proposed_xy[1]:.2f} "
+            f"({why}, {proposal['contrast']:.2f}:1) to "
+            f"{best_xy[0]:.2f},{best_xy[1]:.2f} ({best_ev['contrast']:.2f}:1)"
+        ),
+    }
+
+
+# ── Duplicate-mark detection ─────────────────────────────────────
+
+
+def _mark_silhouette(blob: bytes, size: int = 128):
+    """Normalized alpha silhouette of a logo file, or None if undecodable.
+
+    Colour is discarded on purpose: a brand's dark and light variants are the
+    same artwork in different ink, and they must compare as equal.
+    """
+    try:
+        im = Image.open(BytesIO(blob)).convert("RGBA")
+    except Exception:
+        return None
+    a = np.asarray(im.split()[3], dtype=np.uint8)
+    if a.size and a.min() >= 250:
+        # Opaque file (JPEG / PNG on a white card) — key out the white card so
+        # the silhouette is the mark, not the whole rectangle.
+        rgb = np.asarray(im.convert("RGB"), dtype=np.uint8)
+        wht = (rgb[..., 0] >= 245) & (rgb[..., 1] >= 245) & (rgb[..., 2] >= 245)
+        if wht.any() and not wht.all():
+            im.putalpha(Image.fromarray(np.where(wht, 0, 255).astype(np.uint8)))
+    bb = im.getbbox()
+    if bb:
+        im = im.crop(bb)
+    if im.width < 2 or im.height < 2:
+        return None
+    mask = im.split()[3].resize((size, size), Image.LANCZOS)
+    return (
+        np.asarray(mask, dtype=np.float32) / 255.0,
+        im.width / im.height,
+    )
+
+
+def same_logo_mark(a: bytes, b: bytes) -> bool:
+    """True when two logo files carry the SAME artwork, ignoring ink colour.
+
+    Exists because a brand's own logo sometimes gets registered as a category
+    or vendor logo, and the renderer then stamps the brand mark twice — once
+    as the brand logo and once as the "product" logo, in two sizes and
+    sometimes two colour variants. Byte-identical files are caught outright;
+    re-uploads of the same artwork are caught by comparing aspect ratio,
+    ink coverage and silhouette overlap, all of which survive recolouring.
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+
+    sil_a = _mark_silhouette(a)
+    sil_b = _mark_silhouette(b)
+    if sil_a is None or sil_b is None:
+        return False
+    mask_a, aspect_a = sil_a
+    mask_b, aspect_b = sil_b
+
+    # Different proportions => different lockup (icon vs wordmark, say).
+    if abs(aspect_a - aspect_b) > 0.08 * max(aspect_a, aspect_b):
+        return False
+    # Different amount of ink => different artwork.
+    cov_a, cov_b = float(mask_a.mean()), float(mask_b.mean())
+    if abs(cov_a - cov_b) > 0.12 * max(cov_a, cov_b, 1e-6):
+        return False
+
+    intersection = float(np.minimum(mask_a, mask_b).sum())
+    union = float(np.maximum(mask_a, mask_b).sum())
+    return union > 0 and (intersection / union) >= 0.93
+
+
+# ── Text-overlay geometry (shared by the renderer and the logo placer) ──
+
+
+def _fit_text(text: str, font, max_w: int, draw: ImageDraw.ImageDraw) -> str:
+    """Truncate *text* with an ellipsis so it fits inside *max_w* pixels."""
+    if not text:
+        return text
+    if draw.textbbox((0, 0), text, font=font)[2] <= max_w:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = text[:mid].rstrip() + "…"
+        if draw.textbbox((0, 0), candidate, font=font)[2] <= max_w:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + "…" if lo < len(text) else text
+
+
+def _measure_draw() -> ImageDraw.ImageDraw:
+    """A throwaway draw context for font metrics (no pixels are written)."""
+    return ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+
+def glass_card_layout(
+    img_w: int,
+    img_h: int,
+    text_line1: str,
+    text_scale: float = 1.0,
+    text_anchor: str | None = None,
+    text_xy: tuple[float, float] | None = None,
+    font_family: str | None = None,
+) -> dict:
+    """Geometry of the frosted-glass / solid text card.
+
+    The single source of truth for the card rect: ``overlay_logo_and_text``
+    draws from it, and the logo placer reserves it so the mark is never
+    stamped through the card.
+    """
+    _ts = max(0.5, min(2.5, text_scale or 1.0))
+    if (font_family or "").strip() in _HEADLINE_FONT_FILES:
+        # Honor the editor's chosen font for glass/solid cards too (lighter
+        # weights than a headline so the card stays subtle).
+        font_large = _load_headline_font(int(img_w * 0.030 * _ts), font_family, weight=600)
+        font_small = _load_headline_font(int(img_w * 0.019 * _ts), font_family, weight=400)
+    else:
+        font_large = _load_font(int(img_w * 0.030 * _ts), "regular")
+        font_small = _load_font(int(img_w * 0.019 * _ts), "light")
+
+    margin = int(img_w * 0.04)
+    pad_x = max(14, int(img_w * 0.014))
+    pad_y = max(10, int(img_w * 0.010))
+    radius = max(12, int(img_w * 0.011))
+    max_text_w = int(img_w * 0.72) - 2 * pad_x  # cap card to ~72% of image width
+
+    draw = _measure_draw()
+    line1 = _fit_text(text_line1 or "", font_large, max_text_w, draw)
+    bbox1 = draw.textbbox((0, 0), line1, font=font_large)
+    text_w1, text_h1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
+
+    card_w_full = text_w1 + 2 * pad_x
+    card_h_full = text_h1 + 2 * pad_y
+
+    if text_xy is not None:
+        # Free placement: text_xy is the normalized (0..1) CENTER of the card.
+        tx, ty = text_xy
+        card_x1 = int(tx * img_w - card_w_full / 2)
+        card_y1 = int(ty * img_h - card_h_full / 2)
+        edge = max(4, int(img_w * 0.01))
+        card_x1 = max(edge, min(card_x1, img_w - card_w_full - edge))
+        card_y1 = max(edge, min(card_y1, img_h - card_h_full - edge))
+    else:
+        anchor = text_anchor if text_anchor in _TEXT_ANCHORS else "bottom-left"
+        if anchor == "bottom-left":
+            card_x1, card_y1 = margin, img_h - margin - card_h_full
+        elif anchor == "bottom-right":
+            card_x1 = img_w - margin - card_w_full
+            card_y1 = img_h - margin - card_h_full
+        elif anchor == "top-left":
+            card_x1, card_y1 = margin, margin
+        else:  # top-right
+            card_x1, card_y1 = img_w - margin - card_w_full, margin
+
+    # Clamp to image bounds defensively
+    card_x2 = min(card_x1 + card_w_full, img_w)
+    card_y2 = min(card_y1 + card_h_full, img_h)
+    card_x1 = max(card_x1, 0)
+    card_y1 = max(card_y1, 0)
+
+    return {
+        "rect": (card_x1, card_y1, card_x2, card_y2),
+        "font_large": font_large,
+        "font_small": font_small,
+        "line1": line1,
+        "text_h1": text_h1,
+        "pad_x": pad_x,
+        "pad_y": pad_y,
+        "radius": radius,
+        "max_text_w": max_text_w,
+    }
+
+
+def headline_layout(
+    img_w: int,
+    img_h: int,
+    text_line1: str,
+    text_scale: float = 1.0,
+    text_width: float | None = None,
+    font_family: str | None = None,
+    text_xy: tuple[float, float] | None = None,
+) -> dict:
+    """Wrapped-line layout for the big ad/poster headline.
+
+    Returns the font, the wrapped lines (each word keeps its GLOBAL index so
+    per-word colors survive wrapping), the per-line origin, and the bounding
+    rect of the whole block so the logo placer can reserve it.
+    """
+    _hs = max(0.5, min(3.0, text_scale or 1.0))
+    h_font = _load_headline_font(max(18, int(img_w * 0.060 * _hs)), font_family)
+
+    # Wrap width as a fraction of image width — the editor's right-edge handle
+    # drives this so the text re-flows onto more/fewer lines. The editor uses
+    # the SAME fraction for its fixed-width preview box, so the wrap point
+    # matches (edit == render). Default 0.86.
+    _wfrac = 0.86
+    try:
+        if text_width is not None:
+            _wfrac = max(0.3, min(0.98, float(text_width)))
+    except (TypeError, ValueError):
+        _wfrac = 0.86
+    max_w = int(img_w * _wfrac)
+
+    draw = _measure_draw()
+
+    def _adv(s: str) -> float:
+        return draw.textlength(s, font=h_font)
+
+    space_w = _adv(" ")
+    words = list(enumerate((text_line1 or "").split()))
+    lines: list[list[tuple]] = []
+    cur: list[tuple] = []
+    cur_w = 0.0
+    for i, word in words:
+        ww = _adv(word)
+        add = ww if not cur else cur_w + space_w + ww
+        if not cur or add <= max_w:
+            cur.append((i, word))
+            cur_w = add
+        else:
+            lines.append(cur)
+            cur = [(i, word)]
+            cur_w = ww
+    if cur:
+        lines.append(cur)
+    if not lines:
+        lines = [[(0, "")]]
+
+    def _line_width(line: list[tuple]) -> float:
+        if not line:
+            return 0.0
+        return sum(_adv(w) for _, w in line) + space_w * (len(line) - 1)
+
+    gap = int(h_font.size * 0.18)
+    line_hs = []
+    for line in lines:
+        txt = " ".join(w for _, w in line) or " "
+        bb = draw.textbbox((0, 0), txt, font=h_font)
+        line_hs.append(bb[3] - bb[1])
+    total_h = sum(line_hs) + gap * (len(lines) - 1)
+
+    if text_xy is not None:
+        cx = int(text_xy[0] * img_w)
+        cy = int(text_xy[1] * img_h)
+    else:
+        cx = img_w // 2
+        cy = int(img_h * 0.15) + total_h // 2
+    edge = int(img_w * 0.03)
+    start_y = max(edge, min(cy - total_h // 2, img_h - total_h - edge))
+
+    placed: list[tuple[list[tuple], float, float, int]] = []
+    ink: list[tuple[int, int, int, int]] = []
+    y = start_y
+    for line, lh in zip(lines, line_hs):
+        lw = _line_width(line)
+        x = cx - lw / 2
+        x = max(float(edge), min(x, img_w - lw - edge))
+        placed.append((line, x, lw, lh))
+        # Reserve where the GLYPHS actually land, not the metric box: textbbox
+        # from the origin carries a top-side bearing, so a rect built from
+        # start_y + total_h stops short of the last line's descenders.
+        ink.append(draw.textbbox((x, y), " ".join(w for _, w in line) or " ", font=h_font))
+        y += lh + gap
+
+    shadow_off = max(1, int(h_font.size * 0.04))
+    return {
+        "rect": (
+            int(min(b[0] for b in ink)),
+            int(min(b[1] for b in ink)),
+            int(max(b[2] for b in ink)) + shadow_off,
+            int(max(b[3] for b in ink)) + shadow_off,
+        ),
+        "font": h_font,
+        "space_w": space_w,
+        "gap": gap,
+        "start_y": start_y,
+        "advance": _adv,
+        "placed": placed,
+    }
+
+
+def compute_text_region(
+    img_w: int,
+    img_h: int,
+    text_line1: str,
+    text_style: str = "glass",
+    text_scale: float = 1.0,
+    text_anchor: str | None = None,
+    text_xy: tuple[float, float] | None = None,
+    text_width: float | None = None,
+    font_family: str | None = None,
+) -> tuple[int, int, int, int] | None:
+    """Pixel box the text overlay will occupy, or None when there is no text.
+
+    Exposed so callers that persist ``logo_xy`` (the content pipeline, which
+    seeds the manual editor from it) can resolve the placement themselves and
+    store the corrected value instead of a stale one.
+    """
+    style = (text_style or "glass").lower()
+    if style == "none" or not (text_line1 or "").strip():
+        return None
+    if style == "headline":
+        return headline_layout(
+            img_w, img_h, text_line1, text_scale, text_width, font_family, text_xy
+        )["rect"]
+    return glass_card_layout(
+        img_w, img_h, text_line1, text_scale, text_anchor, text_xy, font_family
+    )["rect"]
+
+
 def overlay_logo_and_text(
     image_data: bytes,
     logo_data: bytes,
@@ -386,6 +965,7 @@ def overlay_logo_and_text(
     product_logo_dark_data: bytes | None = None,
     product_logo_xy: tuple[float, float] | None = None,
     product_logo_scale: float | None = None,
+    enforce_logo_clearance: bool = True,
 ) -> bytes:
     """Overlay a transparent logo on the best monotone area + text bar.
 
@@ -408,6 +988,11 @@ def overlay_logo_and_text(
     by the vision-critic step. When all are unset, the legacy heuristics are
     used: variance-based corner selection for the logo, and bottom-left for
     the text bar.
+
+    ``enforce_logo_clearance`` (default on) measures the chosen logo spot and
+    relocates it when it would collide with the text overlay or when the logo
+    ink would not reach ``MIN_LOGO_CONTRAST`` against the pixels underneath.
+    Pass ``False`` for the manual editor, where the user's drag is final.
 
     Returns the composited image as PNG bytes.
     """
@@ -462,6 +1047,45 @@ def overlay_logo_and_text(
             )
         else:
             lx, ly = find_best_logo_position(image_data, logo_w, logo_h, margin=logo_margin)
+
+        # --- Clearance + contrast gate ---
+        # Whatever picked the spot above — a vision LLM, a corner keyword, or
+        # the variance heuristic — none of them checked whether the mark can
+        # actually be seen there, and none of them knew where the text lands.
+        # Measure both and relocate if the numbers say so.
+        if enforce_logo_clearance:
+            try:
+                reserved = compute_text_region(
+                    base.width,
+                    base.height,
+                    text_line1,
+                    text_style=text_style,
+                    text_scale=text_scale,
+                    text_anchor=text_anchor,
+                    text_xy=text_xy,
+                    text_width=text_width,
+                    font_family=font_family,
+                )
+                proposed = (
+                    (lx + logo_w / 2) / base.width,
+                    (ly + logo_h / 2) / base.height,
+                )
+                fixed_xy, info = choose_logo_placement(
+                    image_data,
+                    logo_w,
+                    logo_h,
+                    logo_ink_rgb(logo),
+                    proposed_xy=proposed,
+                    avoid_rect=reserved,
+                )
+                if info.get("changed"):
+                    lx, ly, _, _ = logo_box_at(
+                        fixed_xy[0], fixed_xy[1], logo_w, logo_h,
+                        base.width, base.height,
+                    )
+                    logger.info("Logo placement corrected: %s", info.get("reason"))
+            except Exception as exc:  # never fail the render over a measurement
+                logger.warning("Logo clearance check failed: %s", exc)
 
         # --- Adaptive contrast halo ---
         # Keeps the "no plate" look but guarantees the logo reads on any
@@ -585,19 +1209,16 @@ def overlay_logo_and_text(
     # exactly like the glass card. Only the title is drawn (no brand/website
     # line) with a soft drop shadow for legibility. Returns early.
     if (text_style or "").lower() == "headline":
-        _hs = max(0.5, min(3.0, text_scale or 1.0))
-        h_font = _load_headline_font(max(18, int(base.width * 0.060 * _hs)), font_family)
-        # Wrap width as a fraction of image width — the editor's right-edge
-        # handle drives this so the text re-flows onto more/fewer lines. The
-        # editor uses the SAME fraction for its fixed-width preview box, so the
-        # wrap point matches (edit == render). Default 0.86.
-        _wfrac = 0.86
-        try:
-            if text_width is not None:
-                _wfrac = max(0.3, min(0.98, float(text_width)))
-        except (TypeError, ValueError):
-            _wfrac = 0.86
-        max_w = int(base.width * _wfrac)
+        # Layout (wrap width, line breaks, per-line origin) comes from the
+        # shared helper so the logo placer above reserved the exact same block.
+        layout = headline_layout(
+            base.width, base.height, text_line1, text_scale,
+            text_width, font_family, text_xy,
+        )
+        h_font = layout["font"]
+        space_w = layout["space_w"]
+        gap = layout["gap"]
+        _adv = layout["advance"]
         colors = headline_colors if isinstance(headline_colors, dict) else {}
 
         def _color_for(idx: int) -> tuple:
@@ -612,61 +1233,13 @@ def overlay_logo_and_text(
                         pass
             return (255, 255, 255, 255)
 
-        def _adv(s: str) -> float:
-            return draw.textlength(s, font=h_font)
-
-        space_w = _adv(" ")
-        # Words carry their GLOBAL index so per-word colors survive line wrapping.
-        words = list(enumerate((text_line1 or "").split()))
-        lines: list[list[tuple]] = []
-        cur: list[tuple] = []
-        cur_w = 0.0
-        for i, w in words:
-            ww = _adv(w)
-            add = ww if not cur else cur_w + space_w + ww
-            if not cur or add <= max_w:
-                cur.append((i, w))
-                cur_w = add
-            else:
-                lines.append(cur)
-                cur = [(i, w)]
-                cur_w = ww
-        if cur:
-            lines.append(cur)
-        if not lines:
-            lines = [[(0, "")]]
-
-        def _line_width(line: list[tuple]) -> float:
-            if not line:
-                return 0.0
-            return sum(_adv(w) for _, w in line) + space_w * (len(line) - 1)
-
-        gap = int(h_font.size * 0.18)
-        line_hs = []
-        for line in lines:
-            txt = " ".join(w for _, w in line) or " "
-            bb = draw.textbbox((0, 0), txt, font=h_font)
-            line_hs.append(bb[3] - bb[1])
-        total_h = sum(line_hs) + gap * (len(lines) - 1)
-
-        if text_xy is not None:
-            cx = int(text_xy[0] * base.width)
-            cy = int(text_xy[1] * base.height)
-        else:
-            cx = base.width // 2
-            cy = int(base.height * 0.15) + total_h // 2
-        edge = int(base.width * 0.03)
-        start_y = max(edge, min(cy - total_h // 2, base.height - total_h - edge))
-
         shadow_off = max(1, int(h_font.size * 0.04))
 
         # Draw each wrapped line centered on cx, word-by-word so per-word colors
         # apply. No distortion — the text simply re-flows at the wrap width.
-        y = start_y
-        for line, lh in zip(lines, line_hs):
-            lw = _line_width(line)
-            x = cx - lw / 2
-            x = max(float(edge), min(x, base.width - lw - edge))
+        y = layout["start_y"]
+        for line, x0, _lw, lh in layout["placed"]:
+            x = x0
             for idx, w in line:
                 fill = _color_for(idx)
                 # soft drop shadow (not an outline) for legibility on any backdrop
@@ -686,91 +1259,25 @@ def overlay_logo_and_text(
     # legible across very different scenes without us having to hand-tune
     # opacity per image. Sizing trimmed down from the original spec — the
     # earlier card was visually overpowering the product.
-    _ts = max(0.5, min(2.5, text_scale or 1.0))
-    if (font_family or "").strip() in _HEADLINE_FONT_FILES:
-        # Honor the editor's chosen font for glass/solid cards too (lighter
-        # weights than a headline so the card stays subtle).
-        font_large = _load_headline_font(int(base.width * 0.030 * _ts), font_family, weight=600)
-        font_small = _load_headline_font(int(base.width * 0.019 * _ts), font_family, weight=400)
-    else:
-        font_large = _load_font(int(base.width * 0.030 * _ts), "regular")
-        font_small = _load_font(int(base.width * 0.019 * _ts), "light")
-    margin = int(base.width * 0.04)
-    pad_x = max(14, int(base.width * 0.014))
-    pad_y = max(10, int(base.width * 0.010))
-    radius = max(12, int(base.width * 0.011))
-    max_text_w = int(base.width * 0.72) - 2 * pad_x  # cap card to ~72% of image width
-
-    # Truncate text to fit within image width
-    def _fit_text(text: str, font) -> str:
-        if not text:
-            return text
-        w = draw.textbbox((0, 0), text, font=font)[2]
-        if w <= max_text_w:
-            return text
-        lo, hi = 0, len(text)
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            candidate = text[:mid].rstrip() + "\u2026"
-            if draw.textbbox((0, 0), candidate, font=font)[2] <= max_text_w:
-                lo = mid
-            else:
-                hi = mid - 1
-        return text[:lo].rstrip() + "\u2026" if lo < len(text) else text
+    # Card geometry comes from the shared helper so the logo placer above
+    # reserved exactly the rect that gets drawn here.
+    layout = glass_card_layout(
+        base.width, base.height, text_line1, text_scale,
+        text_anchor, text_xy, font_family,
+    )
+    font_large = layout["font_large"]
+    font_small = layout["font_small"]
+    pad_x, pad_y = layout["pad_x"], layout["pad_y"]
+    radius = layout["radius"]
 
     # Glass & solid cards show only the headline line — the brand/website
     # subtitle ("link") is intentionally dropped.
+    text_line1 = layout["line1"]
     text_line2 = ""
-    text_line1 = _fit_text(text_line1, font_large)
-    if text_line2:
-        text_line2 = _fit_text(text_line2, font_small)
-
-    bbox1 = draw.textbbox((0, 0), text_line1, font=font_large)
-    text_w1, text_h1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
+    text_h1 = layout["text_h1"]
     line_gap = max(6, int(base.width * 0.006))
-    text_w2, text_h2 = 0, 0
-    if text_line2:
-        bbox2 = draw.textbbox((0, 0), text_line2, font=font_small)
-        text_w2, text_h2 = bbox2[2] - bbox2[0], bbox2[3] - bbox2[1]
 
-    total_w = max(text_w1, text_w2)
-    total_h = text_h1 + (text_h2 + line_gap if text_line2 else 0)
-
-    card_w_full = total_w + 2 * pad_x
-    card_h_full = total_h + 2 * pad_y
-
-    if text_xy is not None:
-        # Free placement: text_xy is the normalized (0..1) CENTER of the card.
-        # Convert to a top-left pixel coord and clamp so the whole card stays
-        # on-canvas (manual editor path). Takes precedence over text_anchor.
-        tx, ty = text_xy
-        card_x1 = int(tx * base.width - card_w_full / 2)
-        card_y1 = int(ty * base.height - card_h_full / 2)
-        edge = max(4, int(base.width * 0.01))
-        card_x1 = max(edge, min(card_x1, base.width - card_w_full - edge))
-        card_y1 = max(edge, min(card_y1, base.height - card_h_full - edge))
-    else:
-        anchor = text_anchor if text_anchor in _TEXT_ANCHORS else "bottom-left"
-        if anchor == "bottom-left":
-            card_x1 = margin
-            card_y1 = base.height - margin - card_h_full
-        elif anchor == "bottom-right":
-            card_x1 = base.width - margin - card_w_full
-            card_y1 = base.height - margin - card_h_full
-        elif anchor == "top-left":
-            card_x1 = margin
-            card_y1 = margin
-        else:  # top-right
-            card_x1 = base.width - margin - card_w_full
-            card_y1 = margin
-
-    card_x2 = card_x1 + card_w_full
-    card_y2 = card_y1 + card_h_full
-    # Clamp to image bounds defensively
-    card_x1 = max(card_x1, 0)
-    card_y1 = max(card_y1, 0)
-    card_x2 = min(card_x2, base.width)
-    card_y2 = min(card_y2, base.height)
+    card_x1, card_y1, card_x2, card_y2 = layout["rect"]
     card_w = card_x2 - card_x1
     card_h = card_y2 - card_y1
 

@@ -15,6 +15,7 @@ import logging
 
 from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.llm import chat_completion
+from shared.product_swap import pack_framing_directive
 from shared.sanitize import sanitize_for_prompt
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,19 @@ _ENHANCER_SYSTEM_PROMPT = (
     "  monotone surface) and leave the bottom-left somewhat open for text overlay.\n"
     "- Never invent product packaging, never include text/letters/numbers in the "
     "  image, never add logos or watermarks.\n"
+    "- Never make a product's LABEL the subject, and never frame a product so "
+    "  close that its front panel or printed copy fills the frame. The pack is "
+    "  repainted by a generative image editor downstream, so any lettering it is "
+    "  asked to hold comes back as convincing gibberish — a garbled brand name is "
+    "  worse than no product shot at all. Go tight on TEXTURE instead (the grain, "
+    "  the crumb, the leaf, the pour), never on printed words.\n"
+    "- The finished post prints the HEADLINE over this photograph. Every concrete "
+    "  noun in the headline and every prop the brief names must be physically "
+    "  present in the scene you describe. If the headline says 'board', stage a "
+    "  board; if it says 'chocolate', put chocolate in frame. Never substitute a "
+    "  loosely related prop for a named one.\n"
+    "- Obey the BRAND RULES block as visual constraints. A claim the brand may "
+    "  not make in words must not be asserted by the staging or casting either.\n"
 )
 
 
@@ -63,6 +77,9 @@ def _build_user_message(
     visual_style: str,
     has_product_image: bool,
     is_lifestyle_only: bool,
+    headline: str = "",
+    caption: str = "",
+    brand_rules_block: str = "",
 ) -> str:
     """Compose the user-side context block fed to the enhancer."""
     primary = brand_colors.get("primary", "") if isinstance(brand_colors, dict) else ""
@@ -81,12 +98,33 @@ def _build_user_message(
             "Include a generic unlabeled neutral product container (matte plastic "
             "or paperboard, slight wear, natural shadows, completely blank — NO "
             "writing on it) placed naturally in the scene. The container will be "
-            "digitally replaced later with the real product photo."
+            "digitally replaced later with the real product photo. "
+            + pack_framing_directive()
         )
+
+    # The copy is written before the picture. Feeding it back in is what stops
+    # the art director inventing props the caption never promised (and stops it
+    # omitting the ones the caption does promise).
+    copy_block = ""
+    if headline and headline.strip():
+        copy_block += (
+            f"HEADLINE PRINTED ON THIS IMAGE (the picture must depict it):\n"
+            f"{sanitize_for_prompt(headline, max_length=400)}\n\n"
+        )
+    if caption and caption.strip():
+        copy_block += (
+            f"CAPTION PUBLISHED WITH THIS IMAGE (every concrete item it names "
+            f"must be in frame):\n{sanitize_for_prompt(caption, max_length=1500)}\n\n"
+        )
+    rules_block = ""
+    if brand_rules_block and brand_rules_block.strip():
+        rules_block = f"{sanitize_for_prompt(brand_rules_block, max_length=4000)}\n\n"
 
     return (
         f"USER BRIEF (this is what the campaign is about):\n"
         f"{sanitize_for_prompt(brief)}\n\n"
+        f"{copy_block}"
+        f"{rules_block}"
         f"BRAND CONTEXT:\n"
         f"  Brand: {sanitize_for_prompt(brand_name)}\n"
         f"  Product: {sanitize_for_prompt(product_name) or 'N/A'}\n"
@@ -124,6 +162,9 @@ async def enhance_image_prompt(
     visual_style: str = "",
     has_product_image: bool = False,
     is_lifestyle_only: bool = True,
+    headline: str = "",
+    caption: str = "",
+    brand_rules_block: str = "",
 ) -> str | None:
     """Expand a short user brief into an expert photographic prompt.
 
@@ -155,6 +196,9 @@ async def enhance_image_prompt(
         visual_style=visual_style,
         has_product_image=has_product_image,
         is_lifestyle_only=is_lifestyle_only,
+        headline=headline,
+        caption=caption,
+        brand_rules_block=brand_rules_block,
     )
 
     messages = [

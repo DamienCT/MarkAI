@@ -133,6 +133,18 @@ class Settings(BaseSettings):
     BC_TABLE_VENDORS: str = "vendors"
     BC_TABLE_ITEM_LEDGER_ENTRIES: str = "item_ledger_entries"
 
+    # --- Business Central API v2.0 (item-card pictures) ---
+    # The Fabric lakehouse mirror carries no item pictures, so product photos
+    # come from the BC API directly. Credentials default to the Fabric service
+    # principal; override only if a separate app registration holds the BC
+    # API.ReadWrite.All grant.
+    BC_API_ENABLED: bool = True
+    BC_API_BASE_URL: str = "https://api.businesscentral.dynamics.com"
+    BC_API_ENVIRONMENT: str = "Production"
+    BC_API_TENANT_ID: str = ""
+    BC_API_CLIENT_ID: str = ""
+    BC_API_CLIENT_SECRET: str = ""
+
 
 settings = Settings()
 

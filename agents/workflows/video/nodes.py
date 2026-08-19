@@ -687,8 +687,14 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
 
     try:
         channel = (item.get("channel", "") or "").lower()
+        # The keyframe seeds every downstream shot, so hallucinated lettering
+        # here propagates through the whole reel. No text is legitimate in it —
+        # the real product (with its own packaging text) is composited in below.
         image_url = await generate_image(
-            prompt_text, size="1024x1792", channel=channel or None
+            prompt_text,
+            size="1024x1792",
+            channel=channel or None,
+            guard_label=f"video:keyframe:{channel or 'default'}",
         )
 
         import base64 as _b64

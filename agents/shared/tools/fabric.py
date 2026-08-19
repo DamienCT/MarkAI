@@ -106,14 +106,25 @@ async def execute_sql(query: str, params: tuple | None = None) -> list[dict[str,
     return await asyncio.to_thread(_execute_sql_sync, conn, query, params)
 
 
-async def get_product_image_from_bc(product_sku: str) -> str | None:
-    """Look up a product image URL from Business Central data in Fabric.
+async def get_product_image_from_bc(
+    product_sku: str,
+    bc_company: str | None = None,
+    product_id: str | None = None,
+) -> str | None:
+    """Look up a product image from the Business Central item card.
 
-    BC item images are not available in the lakehouse SQL endpoint tables.
-    Product images are sourced via supplier websites and web search instead
-    (see agents/workflows/content/image_sourcing.py).
+    NOT from Fabric: the lakehouse mirror does not replicate BC item pictures
+    (``itemmodule_item`` has no picture/media/image column at all — BC keeps
+    them as Tenant Media blobs). They come from the Business Central API v2.0
+    instead; see :mod:`shared.tools.bc_images` and :mod:`shared.tools.bc_api`.
+
+    Kept here so the existing import site
+    (``workflows/content/image_sourcing.py``) keeps working. Returns a MinIO
+    object path, or ``None`` when BC has no picture / is unconfigured / errors.
     """
-    return None
+    from shared.tools.bc_images import get_product_image_from_bc as _from_bc
+
+    return await _from_bc(product_sku, bc_company=bc_company, product_id=product_id)
 
 
 async def get_product_inventory(product_sku: str) -> dict[str, Any] | None:

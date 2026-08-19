@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
@@ -13,7 +14,12 @@ from app.config import settings
 from app.deps import get_current_user, get_db
 from app.scheduler.bc_sync import _canonicalize_vendor_name
 from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
-from app.services import fabric_service, minio_service, product_service
+from app.services import (
+    bc_image_service,
+    fabric_service,
+    minio_service,
+    product_service,
+)
 from app.services.brand_service import get_brand
 from app.services.product_service import upsert_from_bc
 from slowapi import Limiter
@@ -517,6 +523,42 @@ async def _fetch_one_product_image_via_worker(
         return None
 
 
+async def _fetch_one_product_image(product) -> dict | None:
+    """Source one product image, Business Central item card FIRST.
+
+    Order: (1) the BC item-card picture — the photo the client attached to
+    that exact item No. in their own ERP; (2) the browser-worker web search.
+    Only step 2 goes through the ``_image_depicts_product`` vision gate: web
+    search matches on brand + keywords and readily returns a different item
+    from the same maker, whereas a BC picture is authoritative by construction
+    and needs no second-guessing.
+
+    A BC failure of any kind (unconfigured, unauthorised, no picture on the
+    card) returns None from the service and simply falls through to the web
+    path — it never fails the request.
+    """
+    if bc_image_service.has_bc_image(product):
+        # The item card was already pulled in; re-downloading the same bytes
+        # would just rewrite the same object. A repeat call here means "find
+        # me another image", so go to the web path.
+        logger.info(
+            "Product %s already has its BC item-card image — searching the web "
+            "for an additional one",
+            product.id,
+        )
+    else:
+        bc_img = await bc_image_service.fetch_product_image_from_bc(product)
+        if bc_img:
+            logger.info(
+                "Using Business Central item-card image for product %s (%s)",
+                product.id,
+                product.name,
+            )
+            return bc_img
+
+    return await _fetch_one_product_image_via_worker(product)
+
+
 async def _save_image_to_gallery(
     db: AsyncSession, product, img: dict
 ) -> dict:
@@ -527,14 +569,26 @@ async def _save_image_to_gallery(
     if isinstance(product.image_urls, dict):
         gallery = list(product.image_urls.values()) if product.image_urls else []
 
-    ext = (
+    ext = img.get("extension") or (
         "jpg"
         if "jpeg" in img["content_type"]
         else img["content_type"].split("/")[-1]
     )
-    object_name = (
-        f"products/{product.id}/gallery/web_{len(gallery) + 1}.{ext}"
-    )
+    source = img.get("source") or "web_search"
+    is_bc = source == "business_central"
+    if is_bc:
+        # Deterministic key: re-fetching an item card replaces the picture
+        # instead of piling up bc_1/bc_2/... copies of the same photo.
+        # Dots are excluded so a BC item number can never form a '..' segment.
+        safe_sku = (
+            re.sub(r"[^A-Za-z0-9_-]+", "-", img.get("bc_item_no", "") or "item").strip("-")
+            or "item"
+        )
+        object_name = f"products/{product.id}/gallery/bc_{safe_sku[:80]}.{ext}"
+    else:
+        object_name = (
+            f"products/{product.id}/gallery/web_{len(gallery) + 1}.{ext}"
+        )
 
     await minio_service.ensure_bucket()
     await minio_service.upload_file(
@@ -544,15 +598,24 @@ async def _save_image_to_gallery(
     entry = {
         "url": object_name,
         "object_name": object_name,
-        "source": "web_search",
+        "source": source,
         "source_url": img["url"],
         "size_bytes": img["size_bytes"],
     }
+    # Replace any previous entry for the same object so a re-fetched BC
+    # picture updates in place rather than duplicating the gallery row.
+    gallery = [
+        e
+        for e in gallery
+        if not (isinstance(e, dict) and e.get("object_name") == object_name)
+    ]
     gallery.append(entry)
 
     product.image_urls = gallery
     flag_modified(product, "image_urls")
-    if not product.primary_image_url:
+    # A BC item-card picture outranks whatever was found on the web, so it
+    # becomes primary; web results only fill an empty slot.
+    if is_bc or not product.primary_image_url:
         product.primary_image_url = object_name
     await db.commit()
     await db.refresh(product)
@@ -565,7 +628,10 @@ async def fetch_product_images(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Search the web for a real product image and save it to the product gallery."""
+    """Source a real product image and save it to the gallery.
+
+    Business Central item card first, web search only as a fallback.
+    """
     if not role_has_access(current_user.role, "editor"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -573,16 +639,22 @@ async def fetch_product_images(
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    img = await _fetch_one_product_image_via_worker(product)
+    img = await _fetch_one_product_image(product)
     entry = None
     if img:
         entry = await _save_image_to_gallery(db, product, img)
-        logger.info("Fetched 1 web image for product %s (%s)", product_id, product.name)
+        logger.info(
+            "Fetched 1 %s image for product %s (%s)",
+            entry["source"],
+            product_id,
+            product.name,
+        )
 
     return {
         "product_id": str(product_id),
         "images_found": 1 if entry else 0,
         "images": [entry] if entry else [],
+        "source": entry["source"] if entry else None,
     }
 
 
@@ -592,7 +664,7 @@ async def batch_fetch_product_images(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Fetch images for multiple products at once via the browser worker."""
+    """Fetch images for multiple products at once — BC item card first."""
     if len(req.product_ids) > 20:
         raise HTTPException(
             status_code=400, detail="Maximum 20 product IDs per batch request"
@@ -613,14 +685,16 @@ async def batch_fetch_product_images(
             )
             continue
 
-        img = await _fetch_one_product_image_via_worker(product)
+        img = await _fetch_one_product_image(product)
+        entry = None
         if img:
-            await _save_image_to_gallery(db, product, img)
+            entry = await _save_image_to_gallery(db, product, img)
 
         results.append(
             {
                 "product_id": str(pid),
-                "images_found": 1 if img else 0,
+                "images_found": 1 if entry else 0,
+                "source": entry["source"] if entry else None,
             }
         )
 

@@ -1,7 +1,7 @@
 """Real product image sourcing pipeline.
 
 Priority order:
-  1. Business Central (via Fabric DAX query)
+  1. Business Central item card (via the BC API v2.0 — shared/tools/bc_api.py)
   2. Supplier website (via browser-worker scraping)
   3. Web search (DuckDuckGo + browser-worker)
 
@@ -40,7 +40,9 @@ async def source_product_image(
     Returns the best real product image found, or flags that manual
     sourcing is required.  Never generates AI images for products.
     """
-    # ── 1. Business Central via Fabric ─────────────────────────────────
+    # ── 1. Business Central item card (authoritative) ──────────────────
+    # The client's own ERP picture outranks anything scraped or searched, so
+    # it short-circuits the rest of the chain at confidence 1.0.
     if product_sku:
         try:
             bc_url = await get_product_image_from_bc(product_sku)
