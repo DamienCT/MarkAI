@@ -424,3 +424,29 @@ class TestThePlannerDoesNotContradictItself:
         assert "hero framing" in seen["system"]
         assert "Show the product whole" in seen["system"]
         assert "PACKAGING — READ THIS" not in seen["user"]
+
+
+class TestTheDialIsCoherentAcrossItsRange:
+    """A limit below the shot count silently rebuilds the repetition.
+
+    _anchor_indices truncates to the limit, and render_video falls back to
+    the OPENING frame for any re-anchor with no frame of its own. So a limit
+    of 4 at cap 0 gives anchors for shots 1-4 and sends shots 5, 6 and 7 back
+    to shot 1's frame — which is the defect per-shot anchors exist to remove,
+    reappearing at the setting meant to fix it hardest.
+    """
+
+    def test_the_limit_tracks_the_shot_cap(self):
+        assert nodes._MAX_ANCHOR_FRAMES >= nodes.MAX_SHOTS
+
+    @pytest.mark.parametrize("cap", (0, 1, 2))
+    def test_every_shot_that_re_anchors_has_a_frame_of_its_own(self, cap):
+        num = nodes.MAX_SHOTS
+        idx = set(nodes._anchor_indices(num, cap=cap))
+        # These are precisely the shots the render loop will re-anchor at.
+        expected = set(range(0, num, cap + 1))
+        assert idx == expected, (cap, sorted(idx), sorted(expected))
+
+    def test_lowering_the_cap_never_reduces_the_cut_count(self):
+        counts = [len(nodes._anchor_indices(7, cap=c)) for c in (2, 1, 0)]
+        assert counts == sorted(counts), counts

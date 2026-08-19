@@ -136,9 +136,20 @@ _CONCAT_PROGRESS_START = 95
 # washed and the bottle had changed shape.
 #
 # Capping the depth bounds that: after _MAX_CHAIN_DEPTH consecutive chained
-# shots the next one re-anchors on the branded keyframe, which is also the
-# grammar real product ads use — they CUT back to the hero rather than
-# holding one unbroken take for 30s.
+# shots the next one re-anchors on a freshly generated frame, which is also
+# the grammar real product ads use — they CUT rather than holding one
+# unbroken take for 30s.
+#
+# This is now the CUT-RHYTHM DIAL, not only a drift bound, and it costs one
+# image generation per cut. Measured: a chained shot boundary scores 0.000
+# to 0.194 on ffmpeg's scene detector — invisible, because a chained shot
+# starts from the previous shot's last frame and is continuous with it by
+# construction — while a re-anchor scores 0.44 to 0.75. Eight of the nine
+# reels in the bucket had NO change above the 0.3 cut threshold anywhere.
+#
+# At 2, a 7-shot reel gets two cuts and three ~13s acts. Lowering it to 1
+# gives three cuts and ~8s acts; 0 gives a cut at every boundary and every
+# shot at generation 0. _MAX_ANCHOR_FRAMES bounds the resulting fan-out.
 _MAX_CHAIN_DEPTH = 2
 
 # ── Motion floor ──────────────────────────────────────────────────────────
@@ -1050,10 +1061,13 @@ _KEYFRAME_EXPOSURE_RULE = (
 )
 
 
-#: Upper bound on anchor frames per reel. Each is an image generation, so a
-#: long plan must not fan out without limit. Four covers a 7-8 shot reel at
-#: _MAX_CHAIN_DEPTH 2 with room to lower the cap one notch.
-_MAX_ANCHOR_FRAMES = 4
+#: Upper bound on anchor frames per reel. Each is an image generation (~$0.04,
+#: and they run concurrently so the wall clock is one of them), and this must
+#: track MAX_SHOTS rather than sit below it: a limit under the shot count
+#: silently truncates the anchor list, and every re-anchor past the truncation
+#: falls back to the OPENING frame — which is exactly the repetition per-shot
+#: anchors exist to remove. At _MAX_CHAIN_DEPTH 0 a 7-shot reel wants 7.
+_MAX_ANCHOR_FRAMES = MAX_SHOTS
 
 # Seven frames generated from seven separate prompts can read as seven
 # different films — the opposite defect to the one being fixed. The plan's
