@@ -565,9 +565,8 @@ def choose_logo_placement(
     A proposal is rejected when it collides with *avoid_rect* (the text card /
     headline block) or when the ink would not reach *min_contrast* against the
     backdrop it lands on. Only then do we fall back to the conventional spots,
-    picking the highest-contrast one that is clear of the text — ties broken
-    toward the original proposal so the vision agent keeps its intent whenever
-    the numbers allow.
+    preferring the NEAREST one that both clears the text and reads, so the art
+    direction is disturbed as little as the measurements allow.
 
     Returns ``(xy, info)``; ``info["changed"]`` says whether it moved.
     """
@@ -612,6 +611,12 @@ def choose_logo_placement(
     # highest contrast, and only when everything collides do we settle for the
     # least-bad overlap.
     ranked = clear_and_readable or clear_only or colliding
+    if not ranked:  # pragma: no cover — candidate list is never empty
+        return proposed_xy, {
+            "changed": False,
+            "contrast": proposal["contrast"],
+            "reason": "no candidate positions",
+        }
     ranked.sort(key=lambda s: s[0])
     _, best_xy, best_ev = ranked[0]
 

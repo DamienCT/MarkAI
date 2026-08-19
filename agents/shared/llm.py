@@ -12,6 +12,10 @@ because the pinned proxy doesn't reliably route image payloads.
 ``shared.image_text_guard`` and re-rolls frames that contain hallucinated
 lettering — see that module for why the defence lives in the app rather than
 in the prompt.
+
+Set ``LOCAL_IMAGES=1`` to render post images on our own GPU (the Video Forge
+gateway, Z-Image base) before touching a paid provider; it falls back to the
+cloud cascade on any failure. Default OFF — see docs/LOCAL_IMAGE_MODELS.md.
 """
 
 from __future__ import annotations
@@ -426,6 +430,112 @@ _TRANSIENT_IMAGE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524
 _IMAGE_SUBATTEMPTS = 3
 
 
+# ── Local image generation (Video Forge on the GPU box) ──────────────────
+# The same gateway that already renders video (see shared.video.ForgeProvider)
+# also serves still images from a local diffusion model — Z-Image base bf16,
+# Apache-2.0, on an RTX 4090. See docs/LOCAL_IMAGE_MODELS.md.
+#
+# OFF by default. Nothing changes until LOCAL_IMAGES is switched on, and even
+# then a local failure is never fatal: the cloud cascade below runs exactly as
+# it does today, so the worst case is a slower image, not a missing one.
+_LOCAL_IMAGE_MODEL = "z-image-base"
+# The forge exposes named aspects, not pixel sizes; 2:3 / 3:2 are the same
+# canvases gpt-image-2 renders, so a switch does not change the crop.
+_LOCAL_IMAGE_ASPECTS = {"square": "1:1", "landscape": "3:2", "portrait": "2:3"}
+_LOCAL_IMAGE_POLL_S = 3.0
+# A cold model load plus a 1024x1536 render is ~60 s, and the job may queue
+# behind a reel shot on the shared GPU. Past this we give up and use the cloud.
+_LOCAL_IMAGE_TIMEOUT_S = 300
+
+
+def local_images_enabled() -> bool:
+    """True when image generation should try the local GPU first.
+
+    Reads the LOCAL_IMAGES setting if the config carries one, otherwise the
+    environment variable. Default OFF — flipping this is the single switch that
+    moves post images off the OpenAI/Gemini spend line and onto the 4090.
+    """
+    raw = getattr(settings, "LOCAL_IMAGES", None)
+    if raw is None:
+        raw = os.environ.get("LOCAL_IMAGES", "")
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _cancel_local_forge_image(base: str, headers: dict[str, str], job_id: str) -> None:
+    """Best-effort cancel of a timed-out forge image job, so the GPU is freed
+    for the video pipeline instead of finishing a render nobody will collect."""
+    try:
+        await get_http_client().delete(
+            f"{base}/v1/images/{job_id}", headers=headers, timeout=10
+        )
+    except Exception as exc:
+        logger.debug("Forge image cancel of %s failed: %s", job_id, exc)
+
+
+async def _generate_image_local_forge(prompt: str, size: str, n: int = 1) -> str:
+    """Render an image on the local GPU via the Video Forge gateway.
+
+    Async job API, same shape as the video path: POST /v1/images → 202
+    {job_id}; GET /v1/images/{id} until terminal; GET /v1/images/{id}/result
+    for the raw PNG bytes. Returns a ``data:image/png;base64,...`` URI — the
+    same shape ``_generate_image_gemini`` returns and that every caller of
+    ``generate_image`` already handles.
+    """
+    base = (settings.VIDEO_FORGE_URL or "").rstrip("/")
+    api_key = settings.VIDEO_FORGE_API_KEY or ""
+    if not base or not api_key:
+        raise RuntimeError(
+            "VIDEO_FORGE_URL / VIDEO_FORGE_API_KEY not set — local image path unavailable"
+        )
+    headers = {"X-API-Key": api_key}
+    aspect = _LOCAL_IMAGE_ASPECTS[_aspect_of(size)]
+    client = get_http_client()
+
+    # No `preset` and no `negative_prompt`: the gateway owns both. It resolves
+    # the preset from IMAGE_PRESET (the bake-off winner) and appends its own
+    # tuned negative tail, so swapping the local model is an ops change there
+    # rather than a deploy here.
+    resp = await client.post(
+        f"{base}/v1/images",
+        json={"prompt": prompt, "aspect": aspect, "n": max(int(n), 1)},
+        headers=headers,
+        timeout=60,
+    )
+    resp.raise_for_status()  # 202 accepted, or 200 on duplicate idempotency_key
+    job_id = (resp.json() or {}).get("job_id")
+    if not job_id:
+        raise RuntimeError("forge returned no job_id for the image job")
+
+    deadline = time.monotonic() + _LOCAL_IMAGE_TIMEOUT_S
+    while True:
+        poll = await client.get(f"{base}/v1/images/{job_id}", headers=headers, timeout=30)
+        poll.raise_for_status()
+        status = poll.json() or {}
+        state = status.get("status", "")
+        if state == "succeeded":
+            break
+        if state in ("failed", "cancelled"):
+            raise RuntimeError(
+                f"forge image job {job_id} {state}: {status.get('error') or 'no detail'}"
+            )
+        if time.monotonic() >= deadline:
+            await _cancel_local_forge_image(base, headers, job_id)
+            raise TimeoutError(
+                f"forge image job {job_id} timed out after {_LOCAL_IMAGE_TIMEOUT_S}s"
+            )
+        await asyncio.sleep(_LOCAL_IMAGE_POLL_S)
+
+    result = await client.get(
+        f"{base}/v1/images/{job_id}/result", headers=headers, timeout=300
+    )
+    result.raise_for_status()
+    if not result.content:
+        raise ValueError(f"forge image job {job_id} returned an empty body")
+    media_type = (result.headers.get("content-type") or "image/png").split(";")[0].strip()
+    b64 = base64.b64encode(result.content).decode()
+    return f"data:{media_type or 'image/png'};base64,{b64}"
+
+
 def _aspect_of(size: str) -> str:
     """Classify a 'WxH' size string as square / landscape / portrait."""
     try:
@@ -539,12 +649,36 @@ async def _generate_image_once(
     Handles both url and b64_json response formats.
 
     The fallback cascade, in order:
+      0. LOCAL GPU (Video Forge) — only when LOCAL_IMAGES is enabled, no
+         explicit `model` was requested, and this is a plain `image` job.
+         Any failure falls straight through to the cloud cascade below.
       1. primary model (param `model` or the active model for `category`)
       2. per-channel fallback (if `channel` supplied and a row exists in
          channel_model_fallbacks with is_active=true)
       3. hardcoded ultimate safety net `gpt-image-1`
     Duplicates are removed so we never retry the same model twice.
     """
+    # ── 0. local GPU first, when enabled ────────────────────────────────
+    # Skipped when the caller named a model (an explicit choice is honoured)
+    # or asked for a category the local preset does not serve — `image-edit`
+    # is a reference-image edit and the local preset is text-to-image only.
+    if local_images_enabled() and model is None and category == "image":
+        started = time.monotonic()
+        try:
+            image_ref = await _generate_image_local_forge(prompt, size, n)
+            logger.info(
+                "Image generated LOCALLY via Video Forge model=%s size=%s in %.1fs "
+                "(no cloud spend)",
+                _LOCAL_IMAGE_MODEL, size, time.monotonic() - started,
+            )
+            return image_ref
+        except Exception as exc:
+            logger.warning(
+                "LOCAL_IMAGES is on but the local image path failed after %.1fs "
+                "(%s: %s) — falling back to the cloud cascade",
+                time.monotonic() - started, type(exc).__name__, exc,
+            )
+
     if model is None:
         model = await get_model_for_category(category)
 
