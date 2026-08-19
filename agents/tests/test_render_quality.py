@@ -91,6 +91,19 @@ class TestChainDepthCap:
         assert nodes._MAX_MOTION_RETRIES < nodes.MAX_SHOTS / 2
 
 
+def _stub_delabel(monkeypatch):
+    """Keep the scene rewrite off the network in render tests.
+
+    It runs on every keyframeless reel and would otherwise make a real
+    chat_completion call — slow, non-hermetic, and passing only because the
+    failure path falls back to the original scenes.
+    """
+    async def _passthrough(shots):
+        return shots, True
+
+    monkeypatch.setattr(nodes, "_delabel_shot_scenes", _passthrough)
+
+
 class TestChainCapWithoutAKeyframe:
     """The cap was gated on the keyframe, so it never fired without one.
 
@@ -110,6 +123,7 @@ class TestChainCapWithoutAKeyframe:
         from workflows.video.nodes import render_video
 
         h = _Harness(monkeypatch)
+        _stub_delabel(monkeypatch)
         result = asyncio.run(render_video(_state([4] * 6, keyframe=None)))
 
         assert result.get("status") != "failed"
@@ -136,6 +150,7 @@ class TestChainCapWithoutAKeyframe:
         from workflows.video.nodes import render_video
 
         h = _Harness(monkeypatch)
+        _stub_delabel(monkeypatch)
         result = asyncio.run(render_video(_state([4] * 4, keyframe=None)))
         anchors = [e.get("anchor") for e in result["video_meta"]["ledger"]]
         assert anchors[0] != "keyframe", (
@@ -206,3 +221,110 @@ class TestUnverifiedPackLettering:
         src = inspect.getsource(nodes.render_video)
         assert "unverified_pack = not keyframe" in src
         assert "unverified_pack=not keyframe" in src
+
+
+class TestScenesAreRewrittenNotJustWarnedAbout:
+    """The directive alone did not work, and a rendered reel proved it.
+
+    With _UNVERIFIED_PACK_DIRECTIVE appended to every shot prompt, the reel
+    still came back reading "FIRLINIE ORIE OIL", "FIRIE NOSI" and "2HE G OIL"
+    on the hero bottle. The shot plan was still describing a hero pack with
+    its label to camera, and a negation appended after a scene loses to the
+    scene — the scene is what the model is being asked to make.
+    """
+
+    SHOTS = [
+        {"index": 1, "duration_s": 4.0,
+         "scene": "SCENE CONTEXT: hero bottle, label square to camera"},
+        {"index": 2, "duration_s": 4.0,
+         "scene": "SCENE CONTEXT: macro on the printed label"},
+    ]
+
+    def _stub(self, monkeypatch, payload):
+        async def fake(messages, **kw):
+            self.system = messages[0]["content"]
+            return payload
+
+        monkeypatch.setattr(nodes, "chat_completion", fake)
+
+    def test_the_revision_replaces_the_scenes(self, monkeypatch):
+        import asyncio
+        import json
+
+        self._stub(monkeypatch, json.dumps({"shots": [
+            {"index": 1, "scene": "SCENE CONTEXT: the pour onto warm bread"},
+            {"index": 2, "scene": "SCENE CONTEXT: hands at a shared table"},
+        ]}))
+        out, rewritten = asyncio.run(nodes._delabel_shot_scenes(self.SHOTS))
+        assert rewritten is True
+        assert "pour onto warm bread" in out[0]["scene"]
+        assert "hands at a shared table" in out[1]["scene"]
+        # Everything else about the beat survives.
+        assert out[0]["duration_s"] == 4.0
+        assert out[0]["index"] == 1
+
+    def test_it_asks_for_the_same_beat_not_a_new_plan(self, monkeypatch):
+        import asyncio
+        import json
+
+        self._stub(monkeypatch, json.dumps({"shots": [
+            {"index": 1, "scene": "x"}, {"index": 2, "scene": "y"},
+        ]}))
+        asyncio.run(nodes._delabel_shot_scenes(self.SHOTS))
+        assert "SAME beat" in self.system
+        assert "NO PRODUCT LABEL IN THIS REEL MAY BE LEGIBLE" in self.system
+        # And it must say what to shoot INSTEAD, not only what to avoid.
+        assert "product IN USE" in self.system
+
+    def test_a_failed_revision_keeps_the_original_scenes(self, monkeypatch):
+        import asyncio
+
+        async def boom(messages, **kw):
+            raise RuntimeError("model unavailable")
+
+        monkeypatch.setattr(nodes, "chat_completion", boom)
+        out, rewritten = asyncio.run(nodes._delabel_shot_scenes(self.SHOTS))
+        assert rewritten is False
+        assert out == self.SHOTS, "a failed rewrite must not lose the plan"
+
+    def test_an_unusable_revision_keeps_the_original_scenes(self, monkeypatch):
+        import asyncio
+        import json
+
+        for payload in ('{"shots": []}', "not json", json.dumps({"shots": [
+            {"index": 99, "scene": "wrong index"}
+        ]})):
+            self._stub(monkeypatch, payload)
+            out, rewritten = asyncio.run(
+                nodes._delabel_shot_scenes(self.SHOTS)
+            )
+            assert rewritten is False, payload
+            assert out == self.SHOTS
+
+    def test_a_partial_revision_keeps_the_shots_it_missed(self, monkeypatch):
+        import asyncio
+        import json
+
+        self._stub(monkeypatch, json.dumps({"shots": [
+            {"index": 1, "scene": "SCENE CONTEXT: the pour"},
+        ]}))
+        out, rewritten = asyncio.run(nodes._delabel_shot_scenes(self.SHOTS))
+        assert rewritten is True
+        assert out[0]["scene"] == "SCENE CONTEXT: the pour"
+        assert out[1] == self.SHOTS[1]
+
+    def test_it_only_runs_when_no_pack_is_verified(self):
+        import inspect
+
+        src = inspect.getsource(nodes.render_video)
+        head = src[:src.index("_delabel_shot_scenes")]
+        assert "if unverified_pack:" in head
+
+    def test_an_empty_plan_is_not_sent_to_the_model(self, monkeypatch):
+        import asyncio
+
+        async def boom(messages, **kw):
+            raise AssertionError("should not be called")
+
+        monkeypatch.setattr(nodes, "chat_completion", boom)
+        assert asyncio.run(nodes._delabel_shot_scenes([])) == ([], False)

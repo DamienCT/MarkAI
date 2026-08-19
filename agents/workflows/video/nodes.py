@@ -1315,6 +1315,106 @@ _UNVERIFIED_PACK_DIRECTIVE = (
 )
 
 
+async def _delabel_shot_scenes(
+    shots: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Rewrite scene descriptions so no pack label can be legible.
+
+    Appending _UNVERIFIED_PACK_DIRECTIVE to the prompt was not enough, and a
+    rendered reel proved it: the shot plan still described a hero bottle with
+    its label to camera, and the model rendered exactly that — "FIRLINIE ORIE
+    OIL", "FIRIE NOSI", "2HE G OIL". A negation appended after a scene loses
+    to the scene, because the scene is what the model is being asked to make.
+
+    So the scene changes instead. One text call rewrites the beats to carry
+    the same story through texture, hands, pour, food, room and people, with
+    packs present only where they cannot be read. That call costs a fraction
+    of the seven GPU renders it protects.
+
+    Returns (shots, rewritten). Best-effort: any failure returns the ORIGINAL
+    shots with rewritten=False, and the prompt directive still applies.
+    """
+    if not shots:
+        return shots, False
+    payload = [
+        {"index": s.get("index", i + 1), "scene": str(s.get("scene") or "")}
+        for i, s in enumerate(shots)
+    ]
+    system = (
+        "You are a short-form commercial director revising your own shot "
+        "list under one hard constraint: NO PRODUCT LABEL IN THIS REEL MAY "
+        "BE LEGIBLE. There is no verified photograph of the pack, so any "
+        "lettering the camera resolves will be invented, and an invented "
+        "brand name on a finished ad is worse than no pack shot at all.\n\n"
+        "Revise each shot so it carries the SAME beat and the same story "
+        "position, but the frame never presents readable printed copy:\n"
+        "- Replace hero pack shots and label close-ups with the product IN "
+        "USE — the pour, the hand, the food it lands on, the room, the "
+        "people at the table.\n"
+        "- Where a pack must appear, put it turned partly away from camera, "
+        "well behind the focal plane, or cropped by the frame edge.\n"
+        "- Keep the same labelled sections, the same lighting and style "
+        "anchors, and the same overall look. Change framing and subject, not "
+        "the brand's world.\n"
+        "- Never introduce on-screen text, signage or logos.\n\n"
+        'Return STRICT JSON: {"shots": [{"index": <int>, "scene": '
+        '"<revised scene, same labelled sections>"}]}'
+    )
+    try:
+        raw = await chat_completion(
+            [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": sanitize_for_prompt(
+                        json.dumps({"shots": payload}), max_length=12000
+                    ),
+                },
+            ],
+            category="text",
+            temperature=0.3,
+            max_tokens=_SHOT_PLAN_MAX_TOKENS,
+            response_format={"type": "json_object"},
+        )
+        parsed = parse_llm_json(str(raw), fallback=None)
+        # parse_llm_json unwraps a single-key wrapper, so the revision can
+        # arrive as either {"shots": [...]} or the bare list.
+        revised = parsed.get("shots") if isinstance(parsed, dict) else parsed
+        if not isinstance(revised, list) or not revised:
+            raise ValueError("no shots in the revision")
+        by_index = {
+            r.get("index"): str(r.get("scene") or "").strip()
+            for r in revised
+            if isinstance(r, dict) and str(r.get("scene") or "").strip()
+        }
+        out: list[dict[str, Any]] = []
+        replaced = 0
+        for i, shot in enumerate(shots):
+            scene = by_index.get(shot.get("index", i + 1))
+            if scene:
+                out.append({**shot, "scene": scene})
+                replaced += 1
+            else:
+                out.append(shot)
+        if not replaced:
+            raise ValueError("the revision matched no shot indices")
+        logger.info(
+            "Rewrote %d/%d scenes to keep pack lettering illegible",
+            replaced,
+            len(shots),
+        )
+        return out, True
+    except Exception as exc:
+        # The prompt directive still ships; this only removes the scene text
+        # working against it.
+        logger.warning(
+            "Could not rewrite scenes for the unverified pack (%s) — "
+            "relying on the prompt directive alone",
+            exc,
+        )
+        return shots, False
+
+
 def _build_shot_prompt(
     shot: dict[str, Any],
     position: int,
@@ -3162,11 +3262,16 @@ async def render_video(state: VideoState) -> dict[str, Any]:
     # invented. Say so in every shot prompt rather than once at planning
     # time, which runs before make_keyframe and cannot know.
     unverified_pack = not keyframe
+    scenes_rewritten = False
     if unverified_pack:
         logger.info(
             "No verified pack for this reel — every shot prompt forbids "
             "readable label copy"
         )
+        # The directive alone loses to a scene that asks for a hero bottle
+        # with its label to camera; rewrite the scenes so nothing is asking
+        # for the frame that produces invented lettering.
+        fitted, scenes_rewritten = await _delabel_shot_scenes(fitted)
     shot_prompts = [
         _build_shot_prompt(s, i, num, unverified_pack=unverified_pack)
         for i, s in enumerate(fitted)
@@ -3612,6 +3717,10 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         "dropped_shots": dropped_indices,
         "normalized_shots": normalized,
         "concat_mode": concat_mode,
+        # Recorded because it changes what the reel SHOWS, not just how it was
+        # made: an unverified-pack reel deliberately has no legible pack.
+        "unverified_pack": unverified_pack,
+        "scenes_delabelled": scenes_rewritten,
         **overlay_meta,
     }
     if split_shots:
