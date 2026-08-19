@@ -200,17 +200,19 @@ class TestRegenerationIsGuardedToo:
         assert "inline_data" not in src
         assert "generate_content" not in src
 
-    def test_the_vendor_reaches_the_guards_allow_list(self):
+    def test_the_pack_owner_reaches_the_guards_allow_list(self):
         import inspect
 
         import worker
 
         src = inspect.getsource(worker._handle_image_regeneration)
-        # Regen resolved the vendor for the logo overlay but never passed it
-        # to the swap, so a faithful pack carrying the vendor's own wordmark
-        # could be reported as invented copy.
-        assert "product_vendor" in src
-        assert "product_name, product_vendor" in src
+        # The guard's allow-list needs the name printed ON the pack so a
+        # faithful copy of the maker's own wordmark is not reported as
+        # invented. That name comes from the item name itself (pack_owner) —
+        # NOT from products.vendor_name, which is a supplier and banned from
+        # prompts outright (shared.suppliers, user directive 2026-08-19).
+        assert "_pack_owner(product_name)" in src
+        assert "product_name, product_vendor" not in src
 
     def test_both_callers_get_the_same_attempt_budget(self):
         from shared.product_swap import SWAP_ATTEMPTS

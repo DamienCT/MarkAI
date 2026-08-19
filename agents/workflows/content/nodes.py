@@ -161,18 +161,28 @@ def _find_product(products: list[dict], calendar_item: dict) -> dict:
 def _resolve_sub_brand(product: dict, brand: dict) -> str:
     """Resolve the speaking sub-brand for a post.
 
-    For distributor brands (one parent brand selling products under multiple
-    sub-brands), the product's vendor_name is the sub-brand that should hold
-    the consumer voice. For single-identity brands the vendor_name typically
-    matches the brand itself, in which case we just return brand.name.
+    vendor_name is a PURCHASING relationship, not a voice. The old logic
+    handed the consumer voice to any vendor whose name differed from the
+    brand's — which for real data meant posts speaking as "Biodis" or
+    "Segafredo Zanetti S.P.A": wholesale suppliers, the exact names the
+    supplier-silence rule exists to keep out of public copy.
 
-    Returns brand.name as a safe default whenever no usable vendor_name exists.
+    A vendor now speaks only when a human has listed it under
+    ``brand_guidelines.sub_brand_voices`` — an explicit opt-in for the
+    distributor-with-house-brands case. Everything else speaks as the brand.
     """
     brand_name = (brand.get("name") or "").strip()
     if not product:
         return brand_name
     vendor = (product.get("vendor_name") or "").strip()
-    if vendor and vendor.lower() not in brand_name.lower():
+    if not vendor:
+        return brand_name
+    from shared.brand_context import coerce_guidelines
+
+    allowed = coerce_guidelines(brand).get("sub_brand_voices") or []
+    if isinstance(allowed, str):
+        allowed = [allowed]
+    if any(vendor.lower() == str(a).strip().lower() for a in allowed):
         return vendor
     return brand_name
 
@@ -2673,15 +2683,19 @@ async def _replace_product_in_generated_image(
             or (state.get("calendar_item", {}).get("title") or "").strip()
             or "product"
         )
-        vendor_name = (_prod.get("vendor_name") or "").strip()
-
+        # The pack artwork belongs to the manufacturer named in the item name
+        # itself ("Coteaux Nantais, Apricot Jam, 690g" → Coteaux Nantais).
+        # products.vendor_name is who the company BUYS from — a supplier,
+        # often not the name on the pack at all — and supplier names stay out
+        # of prompts.
         from shared.product_swap import swap_product_into_image
+        from shared.suppliers import pack_owner
 
         return await swap_product_into_image(
             image_data,
             product_image_data,
             product_name,
-            vendor_name=vendor_name,
+            vendor_name=pack_owner(product_name),
             label=product_name[:40],
         )
 
@@ -3825,16 +3839,47 @@ async def store_content_node(state: ContentState) -> dict[str, Any]:
     # Use branded image as primary if available, fall back to raw generated
     primary_image = state.get("branded_image") or generated_image_url
 
+    # Belt-and-braces supplier scrub on everything a customer could read.
+    # The prompt side never saw supplier names (the DB layer scrubs brand
+    # context), but a model can still know a distributor from pretraining —
+    # measured on 2026-08-19, when "sourced through ACCORD BIO" reached
+    # review in every platform caption of a Naturespan post.
+    from shared.suppliers import (
+        product_own_terms,
+        scrub_content_payload,
+        supplier_terms_for_brand,
+    )
+
+    _terms = await supplier_terms_for_brand(brand_id, state.get("brand"))
+    _keep = product_own_terms((state.get("product") or {}).get("name", ""))
+    _copy_fields, _supplier_hits = scrub_content_payload(
+        {
+            "hook": state.get("hook", ""),
+            "caption": state.get("caption", ""),
+            "hashtags": state.get("hashtags", []),
+            "cta": state.get("cta", ""),
+            "platform_adaptations": state.get("platform_adaptations", {}),
+        },
+        _terms,
+        keep=_keep,
+    )
+    if _supplier_hits:
+        logger.warning(
+            "store_content: scrubbed supplier mention(s) %s from item %s",
+            _supplier_hits,
+            state.get("calendar_item_id"),
+        )
+
     content_record = {
         "brand_id": brand_id,
         "calendar_item_id": state["calendar_item_id"],
-        "hook": state.get("hook", ""),
-        "caption": state.get("caption", ""),
-        "hashtags": json.dumps(state.get("hashtags", [])),
-        "cta": state.get("cta", ""),
+        "hook": _copy_fields["hook"],
+        "caption": _copy_fields["caption"],
+        "hashtags": json.dumps(_copy_fields["hashtags"]),
+        "cta": _copy_fields["cta"],
         "product_image_url": state.get("product_image"),
         "generated_image_url": primary_image,
-        "platform_adaptations": json.dumps(state.get("platform_adaptations", {})),
+        "platform_adaptations": json.dumps(_copy_fields["platform_adaptations"]),
         # Extra metadata merged into generation_metadata by store_content()
         "metadata": {
             "raw_image": generated_image_url,

@@ -1027,6 +1027,23 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             user,
             allow=[product.get("name", ""), brand.get("name", ""), sub_brand],
         )
+        # Supplier names never reach a burned overlay or published caption.
+        # Prompt context is scrubbed at the DB layer; this catches what the
+        # model knows from pretraining.
+        from shared.suppliers import (
+            product_own_terms,
+            scrub_content_payload,
+            supplier_terms_for_brand,
+        )
+
+        _sup_terms = await supplier_terms_for_brand(
+            str(state.get("brand_id", "")), brand
+        )
+        plan, _sup_hits = scrub_content_payload(
+            plan, _sup_terms, keep=product_own_terms(product.get("name", ""))
+        )
+        if _sup_hits:
+            logger.warning("plan_shots: scrubbed supplier mention(s) %s", _sup_hits)
         logger.info(
             "Shot plan: %d shots, %.1fs total",
             len(plan["shots"]),

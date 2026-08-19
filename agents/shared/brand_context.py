@@ -27,9 +27,10 @@ ENGLISH_ONLY_RULE = (
     "input. Brand voice controls tone, not language.\n"
     "The ONLY foreign words permitted are names that identify a specific "
     "thing and cannot be translated without naming something else: a company, "
-    "a supplier, a product, a certification, a place — 'Moulin des Moines', "
+    "a product, a certification, a place — 'Moulin des Moines', "
     "'Le Pain des Fleurs', 'Ecocert', 'Grand Baie'. Write them exactly as the "
-    "owner writes them.\n"
+    "owner writes them. (This licence is about LANGUAGE only — supplier "
+    "names are banned outright by the supplier rule, in any language.)\n"
     "Everything else is translated, including ordinary foreign nouns for "
     "seasons, meals, shops and people. Write 'back to school', not 'rentrée'; "
     "'after-school snack', not 'goûter'; 'organic shop', not 'magasin bio'; "
@@ -123,6 +124,13 @@ def build_brand_context_block(brand_config: dict[str, Any] | None) -> str:
         "\nEnabled platforms (reference ONLY these; no other platform may "
         "appear anywhere in the output): " + ", ".join(enabled)
     )
+
+    # Suppliers are scrubbed from this block's inputs upstream (the DB layer
+    # neutralises them before the brand dict reaches any workflow); the rule
+    # is stated anyway so a name the model knows from PRETRAINING stays out.
+    from shared.suppliers import SUPPLIER_SILENCE_RULE
+
+    lines.append("\n" + SUPPLIER_SILENCE_RULE)
 
     lines.append(
         "\nDATES: only use dates that appear in the significant-events list "

@@ -33,13 +33,34 @@ async def get_session() -> AsyncSession:
 # ── Brand operations ─────────────────────────────────────────────────────
 
 
+async def _scrubbed(brand: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Brand rows leave this module with supplier names already neutralised.
+
+    The 2026-08-19 "sourced through ACCORD BIO" leak came from the brand's own
+    description and proof points flowing verbatim into prompts. Every workflow
+    loads its brand through these two functions, so scrubbing here means no
+    prompt anywhere can carry a supplier name. The unscrubbed row never leaves
+    this module.
+    """
+    if not brand:
+        return brand
+    try:
+        from shared.suppliers import scrub_brand_dict, supplier_terms_for_brand
+
+        terms = await supplier_terms_for_brand(str(brand.get("id", "")), brand)
+        return scrub_brand_dict(brand, terms)
+    except Exception:  # a broken guard list must not take brand loading down
+        logger.warning("supplier scrub failed for brand %s", brand.get("id"), exc_info=True)
+        return brand
+
+
 async def get_brand(brand_id: str) -> dict[str, Any] | None:
     async with async_session_factory() as session:
         result = await session.execute(
             text("SELECT * FROM brands WHERE id = :id"), {"id": brand_id}
         )
         row = result.mappings().first()
-        return dict(row) if row else None
+        return await _scrubbed(dict(row)) if row else None
 
 
 async def get_brand_config(brand_id: str) -> dict[str, Any] | None:
@@ -51,7 +72,7 @@ async def get_brand_config(brand_id: str) -> dict[str, Any] | None:
             {"id": brand_id},
         )
         row = result.mappings().first()
-        return dict(row) if row else None
+        return await _scrubbed(dict(row)) if row else None
 
 
 # ── Agent Run operations (store all workflow results here) ────────────────

@@ -620,8 +620,14 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
 
         # ── 1b. Replace generic placeholder with real product via Gemini ──
         if product_image_url:
+            # Pack owner comes from the item name itself, never from
+            # products.vendor_name — the vendor is a supplier and supplier
+            # names stay out of prompts (shared.suppliers).
+            from shared.suppliers import pack_owner as _pack_owner
+
             image_data = await _replace_product_in_image(
-                image_data, product_image_url, product_name, product_vendor
+                image_data, product_image_url, product_name,
+                _pack_owner(product_name),
             )
 
         raw_obj = f"{brand_id}/{calendar_item_id}/background.png"
