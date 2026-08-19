@@ -8,16 +8,34 @@ a measurement, taken two ways with the same tool (ffmpeg signalstats):
 
       YLOW 60      YAVG 140      YHIGH 214      SATAVG 19.2
 
-  A delivered 7-shot Naturespan reel, sampled once per second:
+  A DELIVERED 7-shot Naturespan reel, sampled once per second:
 
       YLOW 26      YAVG  91      YHIGH 194      SATAVG 10.4
 
-The footage is about 35% darker than the stills and carries roughly half
-their colour, and none of it clips — YHIGH never reaches even 235, and decays
-to 139 across the closing shots as the i2v chain washes contrast out. The
-headroom to fix it was simply unused.
+READ THE SECOND SET AS SCRIMMED, NOT AS FOOTAGE. The lower ~49% of every
+delivered frame sits under the burned caption plate (_SCRIM_TOP_Y 980,
+measured ~53% opaque), so those four figures are not comparable to the
+stills above and an earlier claim that "the footage is ~35% darker" was
+comparing two different stages. Measured on flat clips through the real ASS
+and the real _burn_cmd: above y=850 the burn changes luma by 0.00%; a plain
+re-encode of the master reproduced 132.8 -> 132.8, so there is no global
+encode shift and no colour-range conversion.
 
-Every number in this file is one of those measurements.
+The comparable measurement is pre-burn, where _measure_picture actually
+runs: that reel's shot files read YAVG 71-89, mean 77.6, against the stills'
+140 — so the defect was real and LARGER than the retracted figure said.
+
+The REEL_* fixtures below keep their scrimmed values on purpose. _grade_params
+is a pure function of four numbers, so their provenance does not change what
+they test; and they are the numbers that produced the wash the black-point
+solve exists to remove. They are labelled, not laundered. Legitimate pre-burn
+fixtures need the per-shot quartet the render now persists to
+generation_metadata["shots"], which is a measurement for the next cycle, not
+a value to reconstruct here — cropping a delivered master above the scrim
+does not recover it, because the top 900px of a 9:16 food frame is
+systematically brighter than the whole.
+
+Every number in this file is one of those measurements, at the stage named.
 """
 
 import pytest
@@ -30,8 +48,12 @@ GOLD_YAVG = 140.0
 GOLD_SATAVG = 19.2
 GOLD_YHIGH = 214.0
 
-# The delivered reel, per second. Opening and closing shown separately
-# because the decay across the reel is the reason the grade is per shot.
+# The delivered reel, per second — SCRIMMED (see the module docstring).
+# Opening and closing shown separately because the decay across the reel is
+# the reason the grade is per shot. The scrim only ever darkens, so each of
+# these is a lower bound on the footage it came from; every conclusion drawn
+# from them therefore errs toward under-correcting, which is the safe way
+# round for a lift.
 REEL_OPENING = {"YAVG": 95.8, "YHIGH": 201.0, "YLOW": 32.0, "SATAVG": 11.0}
 REEL_MIDDLE = {"YAVG": 91.3, "YHIGH": 193.0, "YLOW": 24.0, "SATAVG": 9.6}
 REEL_CLOSING = {"YAVG": 80.8, "YHIGH": 139.0, "YLOW": 30.0, "SATAVG": 12.0}
@@ -325,7 +347,9 @@ class TestTheTwoGoalsCompeteOnDarkFootage:
     Past _GRADE_MAX_GAMMA there is none to give, so the shadow lands on
     target while the mean stays short. Measured on a live shot: at YAVG 81
     the solved black point costs about 13 points of mean the capped gamma
-    cannot recover, where r=0 would have landed 141.6.
+    cannot recover, where r=0 would have landed 140.0 — at r=0 the solve
+    asks for gamma 1.913, under the cap, so the cap only bites once the
+    black point has lowered the mean.
 
     The mean is the bigger defect — 35% off, against a shadow off by a fifth
     of that — so the black point is what gives way.

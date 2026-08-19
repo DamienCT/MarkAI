@@ -493,14 +493,37 @@ than from a number someone picked. Thirty stills sampled from
 | | YLOW | YAVG | YHIGH | SATAVG |
 |---|---|---|---|---|
 | gpt-image-2 stills (n=30) | 60 | 140 | 214 | 19.2 |
-| delivered reel, per second | 26 | 91 | 194 | 10.4 |
+| delivered reel, per second *(scrimmed — see below)* | 26 | 91 | 194 | 10.4 |
+| **the same reel, pre-burn per shot** | — | **77.6** | — | — |
 
-The footage is **~35% darker** than the stills and carries **roughly half**
-their colour. Neither is a taste call: nothing in the reel clips — YHIGH
-never reaches even 235 — so the headroom was simply unused. YHIGH also
-**decays from 207 to 139** across the reel as the i2v chain washes contrast
-out, which is why the correction is per shot. One curve for the whole master
-would over-lift the opening and still leave the ending flat.
+> **Correction, made later in the cycle.** This section first read "the
+> footage is ~35% darker than the stills", derived from the middle row. That
+> compared two different stages: the lower ~49% of every *delivered* frame
+> sits under the burned caption plate (`_SCRIM_TOP_Y` 980, measured ~53%
+> opaque), while the stills are unscrimmed. Measured on flat clips through
+> the real ASS and the real `_burn_cmd`, above y=850 the burn changes luma by
+> **0.00%**, and a plain re-encode of the master reproduced 132.8 → 132.8 —
+> so there is no global encode shift and no colour-range conversion. The
+> whole drop is the scrim, which is deliberate and exists for caption
+> legibility.
+>
+> The comparable number is the bottom row, taken where `_measure_picture`
+> actually runs: **77.6 against the stills' 140**. The defect was real and
+> *larger* than the retracted figure claimed, so the grade was not built on
+> sand — but the number quoted for it was not measuring what it said.
+>
+> Two consequences worth carrying forward. First, "nothing in the reel clips"
+> was also read off a scrimmed sample, and the scrim can only push YHIGH
+> *down*, so that argument errs in the unsafe direction and
+> `_GRADE_MAX_YHIGH`'s rationale wants re-measuring pre-burn. Second, the
+> pre-burn quartet cannot be reconstructed from a delivered master by
+> cropping above the scrim — that measures the top 900px of a 9:16 frame,
+> whose background is systematically brighter than the whole. The render now
+> persists the per-shot quartet to `generation_metadata["shots"]` instead.
+
+YHIGH **decays from 207 to 139** across the reel as the i2v chain washes
+contrast out, which is why the correction is per shot. One curve for the
+whole master would over-lift the opening and still leave the ending flat.
 
 **Gamma alone was not enough, and the first pass proved it on screen.**
 Lifting YAVG 92.8 → 132.8 also dragged YLOW 31.5 → 72.6 against the stills'

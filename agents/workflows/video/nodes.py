@@ -2004,15 +2004,32 @@ def _motion_verdict(score: float | None) -> str | None:
 #
 #     YLOW 60      YAVG 140      YHIGH 214      SATAVG 19.2
 #
-# The same measurement, per second, on a delivered 7-shot Naturespan reel:
+# The same measurement, per second, on a DELIVERED 7-shot Naturespan reel —
+# and "delivered" is load-bearing. The lower ~49% of every frame sits under
+# the burned caption scrim (_SCRIM_TOP_Y 980, measured ~53% opaque), so none
+# of these figures is comparable to the stills above:
 #
 #     YLOW 26      YAVG  91      YHIGH 194      SATAVG 10.4
 #
-# So the footage is ~35% darker than the stills and carries roughly HALF
-# their colour. That is the "not professional" feeling, and neither number
-# is a matter of taste: nothing in the reel clips (YHIGH never reaches 235,
-# and falls to 139 across the last shots as the i2v chain washes contrast
-# out), so the headroom to fix it is simply unused.
+# Measured on flat test clips through the real ASS and the real _burn_cmd:
+# above y=850 the burn changes luma by 0.00%, and the whole-frame transfer
+# is Y_out = 0.774*Y_in + 4.76. A plain re-encode of the master reproduced
+# 132.8 → 132.8, so there is no global encode shift and no colour-range
+# conversion — the entire drop is the scrim, which is deliberate.
+#
+# THE COMPARABLE NUMBER IS PRE-BURN, taken where _measure_picture actually
+# runs: per shot, on the raw provider file. That same reel measured YAVG
+# 71-89, mean 77.6, against the stills' 140 — so the footage defect was real
+# and LARGER than the retracted "~35% darker" figure claimed, which had
+# compared a scrimmed master against unscrimmed stills. There is no single
+# factor converting one into the other: the scrim hits YLOW hardest (its
+# decile sits entirely under the plate) and YHIGH least (the white caption
+# glyphs push YHIGH back up).
+#
+# Nothing in the reel clips — but that too was read off a scrimmed sample,
+# and the scrim can only push YHIGH DOWN, so true pre-burn YHIGH is higher
+# than 194 and the headroom argument errs in the unsafe direction.
+# _GRADE_MAX_YHIGH's rationale wants re-measuring pre-burn.
 #
 # The correction is per shot, not global, precisely because of that decay —
 # one curve for the whole master would over-lift the opening and still leave
@@ -2135,7 +2152,11 @@ def _grade_params(stats: dict[str, float] | None) -> dict[str, float] | None:
     everything, and lifting a shot from YAVG 93 to 140 also drags YLOW from
     31 to 73 against the stills' 60. That extra 13 points of raised black is
     exactly what "washed out" looks like, and it was visible on the first
-    graded pass. Subtracting a black point FIRST gives a second control, and
+    graded pass. (Those two figures were read off a DELIVERED master, one
+    stage past what this function is fed. The scrim only ever darkens, so a
+    scrimmed YLOW is a LOWER bound on the footage's true shadow: the wash
+    the black point removes is at least as large as stated. Unlike the
+    retracted "35% darker" figure, this one errs safe.) Subtracting a black point FIRST gives a second control, and
     with two controls both landmarks land: on the measured reel r=0.06 with
     gamma 1.88 puts YAVG on 140, YLOW on 61 and — for free, because the same
     curve steepens the top — YHIGH on 213 against the stills' 214.
@@ -2192,7 +2213,9 @@ def _grade_params(stats: dict[str, float] | None) -> dict[str, float] | None:
         # _GRADE_MAX_GAMMA there is none to give — so the shadow lands on
         # target while the mean stays short. Measured on a live shot: at
         # YAVG 81 the solved black point costs ~13 points of mean that the
-        # capped gamma cannot recover, when r=0 would have landed 141.6.
+        # capped gamma cannot recover, when r=0 would have landed 140.0 —
+        # at r=0 the solve asks for gamma 1.913, which is UNDER the cap, so
+        # the cap only bites once the black point has lowered the mean.
         #
         # The mean is the bigger defect (35% off, against a shadow that is
         # off by a fifth of that), so when the cap bites the black point is
@@ -4530,6 +4553,17 @@ async def store_video(state: VideoState) -> dict[str, Any]:
                 "video_cost_usd": meta.get("cost_usd"),
                 "overlay_burn": meta.get("overlay_burn"),
                 "overlay_lines": meta.get("overlay_lines"),
+                # Per-shot anchor, motion, tone and grade — measured PRE-BURN,
+                # which is the only stage comparable to an unscrimmed still.
+                # Reconstructing these from a delivered master does not work:
+                # the caption scrim darkens the lower half, and cropping above
+                # it measures the top 900px of a 9:16 frame, whose background
+                # is systematically brighter than the whole. Persisting what
+                # the render already measured is the only honest source, and
+                # it makes the next cycle's calibration free.
+                "shots": meta.get("shots"),
+                "unverified_pack": meta.get("unverified_pack"),
+                "graded_shots": meta.get("graded_shots"),
             },
             "status": "in_review",
         }
