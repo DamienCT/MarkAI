@@ -233,7 +233,11 @@ services:
     volumes:
       - n8n_data:/home/node/.n8n
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5678/healthz || exit 1"]
+      # wget, not curl — the n8n image ships busybox wget and no curl, so the
+      # curl form failed every 15s since deploy while n8n itself was healthy.
+      # 127.0.0.1, not localhost — n8n binds IPv4 only and localhost resolves
+      # to ::1 first in this image, which refuses the connection.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5678/healthz || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
