@@ -52,6 +52,7 @@ from shared.tools.database import (
     store_content,
     update_agent_run_step,
 )
+from shared.product_swap import product_photo_is_swappable
 from shared.tools.storage import async_download_file, async_upload_file
 
 from workflows.content.nodes import (
@@ -274,6 +275,11 @@ class VideoState(ContentState, total=False):
     video_prompt: str
     keyframe_bytes: bytes | None
     keyframe_object: str | None
+    #: True only when the keyframe's hero pack came from a real gallery photo.
+    #: A keyframe can exist WITHOUT a verified pack (product-free or
+    #: deliberately unreadable packaging), so render_video reads this rather
+    #: than inferring pack provenance from the keyframe's existence.
+    keyframe_verified_pack: bool
     video_bytes: bytes | None
     video_meta: dict[str, Any]
     video_object: str | None
@@ -959,12 +965,33 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
     has_product_image = state.get("product_image") is not None
     is_lifestyle_only = state.get("is_lifestyle_only", True)
 
+    # Ask BEFORE spending a generation whether the gallery photo can actually
+    # carry a faithful swap. It used to be asked afterwards: the pipeline
+    # rendered a 1024x1792 frame built around a blank placeholder, ran the
+    # swap, watched it refuse on a 1200x630 share banner, and threw the whole
+    # frame away — paying for an image and ~2 minutes to learn what one HTTP
+    # fetch answers, and losing the chain anchor in the bargain. Asking first
+    # turns that into a product-free frame we keep.
+    swap_ready = has_product_image and not is_lifestyle_only
+    if swap_ready and not await product_photo_is_swappable(
+        str(state.get("product_image") or "")
+    ):
+        logger.warning(
+            "make_keyframe: the gallery photo for %s/%s is too small to carry "
+            "a faithful swap — composing a keyframe with no readable pack "
+            "instead of building one around a placeholder we would discard",
+            brand_id,
+            item_id,
+        )
+        swap_ready = False
+
     no_text_rule = (
         "CRITICAL: ABSOLUTELY NO TEXT, WORDS, LETTERS, NUMBERS, LOGOS, "
         "WATERMARKS, LABELS, SIGNS, or TYPOGRAPHY of any kind. "
         "This is a photograph, not a graphic. "
     )
-    if has_product_image and not is_lifestyle_only:
+    pack_directive = ""
+    if swap_ready:
         product_rule = (
             "Include a simple generic unlabeled product container (plain matte "
             "box or pouch with NO writing on it) placed naturally, FULLY "
@@ -972,6 +999,16 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
             "never cropped. The container must be completely blank — it will "
             "be digitally replaced later. "
         )
+    elif has_product_image and not is_lifestyle_only:
+        # Still a product reel, but nothing will anchor the pack on a real
+        # photo, so the keyframe follows the same contract the shots will:
+        # packaging as colour, shape and material, never as readable copy.
+        product_rule = (
+            "Packaging may appear but reads as colour, shape and material "
+            "only — turned partly away from camera, softened by shallow depth "
+            "of field, or cropped by the frame edge. "
+        )
+        pack_directive = "\n\n" + _UNVERIFIED_PACK_DIRECTIVE
     else:
         product_rule = "Do NOT include any products. Focus on the scene and mood. "
 
@@ -990,6 +1027,7 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
         f"{no_text_rule}"
         f"The image MUST look like a photograph captured with a real camera, "
         f"NOT an artwork, NOT a rendering, NOT an illustration."
+        f"{pack_directive}"
     )
 
     try:
@@ -1024,8 +1062,12 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
         # the signal: every no-op path inside the swap returns the SAME bytes
         # object it was handed, so `is` separates "swapped" from "kept the
         # placeholder" without changing the swap's bytes-in/bytes-out contract.
-        swapped = await _replace_product_in_generated_image(state, image_data)
-        if swapped is image_data and has_product_image and not is_lifestyle_only:
+        swapped = (
+            await _replace_product_in_generated_image(state, image_data)
+            if swap_ready
+            else image_data
+        )
+        if swapped is image_data and swap_ready:
             # Keeping the placeholder is a sound outcome for a still post,
             # where a blank matte box is an inert prop. It is not sound here:
             # this frame seeds shot 1 and, through the i2v chain, every shot
@@ -1039,16 +1081,33 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
                 brand_id,
                 item_id,
             )
-            return {"keyframe_bytes": None, "keyframe_object": None}
+            return {
+                "keyframe_bytes": None,
+                "keyframe_object": None,
+                "keyframe_verified_pack": False,
+            }
         image_data = swapped
 
         keyframe_object = f"{brand_id}/{item_id}/keyframe.png"
         await async_upload_file(VIDEO_BUCKET, keyframe_object, image_data, "image/png")
-        logger.info("Keyframe stored at %s/%s", VIDEO_BUCKET, keyframe_object)
-        return {"keyframe_bytes": image_data, "keyframe_object": keyframe_object}
+        logger.info(
+            "Keyframe stored at %s/%s (%s)",
+            VIDEO_BUCKET,
+            keyframe_object,
+            "real pack swapped in" if swap_ready else "no readable pack",
+        )
+        return {
+            "keyframe_bytes": image_data,
+            "keyframe_object": keyframe_object,
+            "keyframe_verified_pack": swap_ready,
+        }
     except Exception as exc:
         logger.warning("make_keyframe failed (%s) — falling back to t2v", exc)
-        return {"keyframe_bytes": None, "keyframe_object": None}
+        return {
+            "keyframe_bytes": None,
+            "keyframe_object": None,
+            "keyframe_verified_pack": False,
+        }
 
 
 def _build_video_prompt(
@@ -3156,7 +3215,8 @@ async def render_video(state: VideoState) -> dict[str, Any]:
     # ── Legacy single-call path: 1-shot plan, or no ffmpeg to chain/concat ──
     if not multi or ffmpeg_missing:
         prompt = _build_video_prompt(
-            {**plan, "shots": fitted}, unverified_pack=not keyframe
+            {**plan, "shots": fitted},
+            unverified_pack=not state.get("keyframe_verified_pack"),
         )
         duration_s = (
             fitted[0]["duration_s"]
@@ -3257,11 +3317,13 @@ async def render_video(state: VideoState) -> dict[str, Any]:
 
     # ── Multi-shot path: N provider calls chained i2v, then ffmpeg concat ──
     num = len(fitted)
-    # No keyframe means the product swap did not fire, so nothing in this
-    # reel is anchored on a real pack and every label the model draws is
-    # invented. Say so in every shot prompt rather than once at planning
-    # time, which runs before make_keyframe and cannot know.
-    unverified_pack = not keyframe
+    # No VERIFIED pack means nothing in this reel is anchored on a real
+    # product photo, so every label the model draws is invented. A keyframe
+    # may still exist — make_keyframe now keeps a deliberately unreadable one
+    # rather than discarding the frame — so ask the flag, not the bytes. Said
+    # in every shot prompt rather than once at planning time, which runs
+    # before make_keyframe and cannot know.
+    unverified_pack = not state.get("keyframe_verified_pack")
     scenes_rewritten = False
     if unverified_pack:
         logger.info(

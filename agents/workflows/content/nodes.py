@@ -2652,38 +2652,14 @@ async def _replace_product_in_generated_image(
         return image_data  # No replacement needed
 
     try:
-        import httpx as _httpx
+        # Gallery references arrive as http(s) URLs, backend API paths or MinIO
+        # object paths. resolve_product_image_bytes handles all three; the video
+        # keyframe path calls it too, so both pipelines see the same bytes.
+        from shared.product_swap import resolve_product_image_bytes
 
-        # Download the product image from gallery
-        # Product image URLs may be: full http(s) URLs, MinIO bucket paths, or backend API paths
-        if product_image_url.startswith("http://") or product_image_url.startswith("https://"):
-            async with _httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(product_image_url)
-                resp.raise_for_status()
-                product_image_data = resp.content
-        elif product_image_url.startswith("/"):
-            # Relative API path — resolve via backend
-            from shared.config import settings as _cfg
-            full_url = f"{_cfg.BACKEND_URL}{product_image_url}"
-            async with _httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(full_url)
-                resp.raise_for_status()
-                product_image_data = resp.content
-        else:
-            # MinIO object path (e.g., "products/brand_id/image.png")
-            # These are stored in the default bucket, not in a bucket named "products"
-            from shared.config import settings as _storage_cfg
-            default_bucket = _storage_cfg.MINIO_BUCKET if hasattr(_storage_cfg, "MINIO_BUCKET") else "markai-assets"
-            try:
-                product_image_data = await async_download_file(default_bucket, product_image_url)
-            except Exception:
-                # Fallback: try via backend file proxy
-                from shared.config import settings as _cfg
-                full_url = f"{_cfg.BACKEND_URL}/api/v1/files/{product_image_url}"
-                async with _httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.get(full_url)
-                    resp.raise_for_status()
-                    product_image_data = resp.content
+        product_image_data = await resolve_product_image_bytes(product_image_url)
+        if not product_image_data:
+            return image_data
 
         _prod = state.get("product")
         _prod = _prod if isinstance(_prod, dict) else {}

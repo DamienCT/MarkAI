@@ -215,12 +215,24 @@ class TestUnverifiedPackLettering:
             plan, unverified_pack=True
         )
 
-    def test_both_paths_derive_the_flag_from_the_keyframe(self):
+    def test_both_paths_derive_the_flag_from_pack_provenance(self):
+        """Not from whether a keyframe exists.
+
+        make_keyframe used to answer both questions at once: it discarded the
+        frame whenever the swap did not fire, so "no keyframe" meant "no real
+        pack". It now keeps a deliberately unreadable frame instead — which is
+        a better anchor — so a keyframe can exist with no verified pack behind
+        it. Reading the bytes would silently switch the directive OFF for
+        exactly the reels that need it.
+        """
         import inspect
 
         src = inspect.getsource(nodes.render_video)
-        assert "unverified_pack = not keyframe" in src
-        assert "unverified_pack=not keyframe" in src
+        assert 'unverified_pack = not state.get("keyframe_verified_pack")' in src
+        assert 'unverified_pack=not state.get("keyframe_verified_pack")' in src
+        # The bytes must not be what decides it, in either path.
+        assert "unverified_pack = not keyframe" not in src
+        assert "unverified_pack=not keyframe" not in src
 
 
 class TestScenesAreRewrittenNotJustWarnedAbout:
@@ -328,3 +340,169 @@ class TestScenesAreRewrittenNotJustWarnedAbout:
 
         monkeypatch.setattr(nodes, "chat_completion", boom)
         assert asyncio.run(nodes._delabel_shot_scenes([])) == ([], False)
+
+
+class TestKeyframeSwapPreCheck:
+    """Ask whether the swap CAN work before paying to find out that it can't.
+
+    Measured on a live Naturespan reel: the pipeline generated a 1024x1792
+    frame whose hero was a blank placeholder container, ran the swap against
+    the product's only gallery photo — a 1200x630 share banner — watched it
+    refuse, and discarded the frame. That cost one image generation and about
+    two minutes, and left the reel with no anchor at all, so shot 1 rendered
+    t2v and every later shot chained off it.
+
+    One HTTP fetch answers the same question first.
+    """
+
+    def _state(self):
+        return {
+            "brand_id": "b",
+            "calendar_item_id": "c",
+            "calendar_item": {"channel": "instagram"},
+            "shot_plan": {"shots": [{"index": 1, "scene": "SCENE: a kitchen"}]},
+            "product_image": "products/b/banner.png",
+            "is_lifestyle_only": False,
+        }
+
+    def _run(self, monkeypatch, *, swappable):
+        import asyncio
+
+        captured = {}
+
+        async def fake_swappable(url):
+            captured["asked"] = url
+            return swappable
+
+        async def fake_generate(prompt, **kw):
+            captured["prompt"] = prompt
+            return "data:image/png;base64,aGk="
+
+        async def fake_swap(state, data):
+            captured["swap_ran"] = True
+            return data  # refuses — returns the same object
+
+        async def noop(*a, **kw):
+            return None
+
+        monkeypatch.setattr(nodes, "product_photo_is_swappable", fake_swappable)
+        monkeypatch.setattr(nodes, "generate_image", fake_generate)
+        monkeypatch.setattr(nodes, "_replace_product_in_generated_image", fake_swap)
+        monkeypatch.setattr(nodes, "async_upload_file", noop)
+        monkeypatch.setattr(nodes, "update_agent_run_step", noop)
+        return asyncio.run(nodes.make_keyframe(self._state())), captured
+
+    def test_an_unswappable_photo_never_reaches_the_swap(self, monkeypatch):
+        out, cap = self._run(monkeypatch, swappable=False)
+        assert cap["asked"] == "products/b/banner.png"
+        assert "swap_ran" not in cap
+
+    def test_and_the_frame_is_kept_as_an_anchor(self, monkeypatch):
+        out, _ = self._run(monkeypatch, swappable=False)
+        assert out["keyframe_bytes"] == b"hi"
+        assert out["keyframe_object"] == "b/c/keyframe.png"
+        # Kept, but honest about what it shows.
+        assert out["keyframe_verified_pack"] is False
+
+    def test_it_asks_for_unreadable_packaging_not_a_blank_placeholder(
+        self, monkeypatch
+    ):
+        _, cap = self._run(monkeypatch, swappable=False)
+        prompt = cap["prompt"]
+        assert "completely blank" not in prompt
+        assert "digitally replaced later" not in prompt
+        assert "PACKAGING (hard constraint" in prompt
+
+    def test_a_swappable_photo_still_takes_the_placeholder_path(self, monkeypatch):
+        out, cap = self._run(monkeypatch, swappable=True)
+        assert cap["swap_ran"] is True
+        assert "completely blank" in cap["prompt"]
+        assert "PACKAGING (hard constraint" not in cap["prompt"]
+        # The swap refused in this stub, so the placeholder frame is dropped.
+        assert out["keyframe_bytes"] is None
+        assert out["keyframe_verified_pack"] is False
+
+    def test_a_lifestyle_reel_asks_nothing_and_shows_no_product(self, monkeypatch):
+        import asyncio
+
+        captured = {}
+
+        async def boom(url):
+            raise AssertionError("no product photo to check")
+
+        async def fake_generate(prompt, **kw):
+            captured["prompt"] = prompt
+            return "data:image/png;base64,aGk="
+
+        async def noop(*a, **kw):
+            return None
+
+        monkeypatch.setattr(nodes, "product_photo_is_swappable", boom)
+        monkeypatch.setattr(nodes, "generate_image", fake_generate)
+        monkeypatch.setattr(nodes, "async_upload_file", noop)
+        monkeypatch.setattr(nodes, "update_agent_run_step", noop)
+        state = self._state() | {"is_lifestyle_only": True}
+        out = asyncio.run(nodes.make_keyframe(state))
+        assert "Do NOT include any products" in captured["prompt"]
+        assert out["keyframe_verified_pack"] is False
+
+
+class TestAKeptKeyframeDoesNotSilenceTheDirective:
+    """The regression the pre-check could have introduced.
+
+    render_video read `not keyframe`, which worked only because the two facts
+    were fused: no keyframe meant no verified pack. Keeping an unreadable-pack
+    keyframe as an anchor separates them, and reading the bytes would switch
+    the directive OFF for exactly the reels that need it most.
+    """
+
+    def _anchored_but_unverified(self, monkeypatch):
+        import asyncio
+
+        from tests.test_video_multishot import _Harness, _state
+        from workflows.video.nodes import render_video
+
+        h = _Harness(monkeypatch)
+        seen = {}
+
+        async def spy(shots):
+            seen["ran"] = True
+            return shots, True
+
+        monkeypatch.setattr(nodes, "_delabel_shot_scenes", spy)
+        result = asyncio.run(
+            render_video(_state([4] * 5, verified_pack=False))
+        )
+        return result, seen
+
+    def test_the_scenes_are_still_rewritten(self, monkeypatch):
+        _, seen = self._anchored_but_unverified(monkeypatch)
+        assert seen.get("ran") is True
+
+    def test_and_every_shot_prompt_still_carries_the_directive(self, monkeypatch):
+        result, _ = self._anchored_but_unverified(monkeypatch)
+        assert result["video_meta"]["unverified_pack"] is True
+        assert result["video_prompt"].count("PACKAGING (hard constraint") == 5
+
+    def test_the_anchor_is_used_all_the_same(self, monkeypatch):
+        result, _ = self._anchored_but_unverified(monkeypatch)
+        anchors = [e.get("anchor") for e in result["video_meta"]["ledger"]]
+        # The frame is unverified, not useless: shot 1 still starts from it
+        # rather than falling back to t2v.
+        assert anchors[0] == "keyframe", anchors
+
+    def test_a_verified_reel_is_left_alone(self, monkeypatch):
+        import asyncio
+
+        from tests.test_video_multishot import _Harness, _state
+        from workflows.video.nodes import render_video
+
+        h = _Harness(monkeypatch)
+
+        async def boom(shots):
+            raise AssertionError("the pack is verified — nothing to delabel")
+
+        monkeypatch.setattr(nodes, "_delabel_shot_scenes", boom)
+        result = asyncio.run(render_video(_state([4] * 5)))
+        assert result["video_meta"]["unverified_pack"] is False
+        assert "PACKAGING (hard constraint" not in result["video_prompt"]

@@ -459,3 +459,63 @@ async def swap_product_into_image(
     except Exception as exc:
         logger.warning("Product swap failed: %s — using the original image", exc)
     return image_data
+
+
+async def resolve_product_image_bytes(url: str) -> bytes | None:
+    """Fetch a product photo from an http URL, a backend path, or MinIO.
+
+    Gallery references arrive in three shapes and every caller was resolving
+    all three itself. Returns None when the reference is missing or cannot be
+    fetched — callers treat that as "no product photo", never as an error.
+    """
+    ref = str(url or "").strip()
+    if not ref:
+        return None
+    try:
+        import httpx
+
+        from shared.config import settings
+
+        if ref.startswith(("http://", "https://")):
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(ref)
+                resp.raise_for_status()
+                return resp.content
+        backend = getattr(settings, "BACKEND_URL", "") or "http://backend:8000"
+        if ref.startswith("/"):
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{backend}{ref}")
+                resp.raise_for_status()
+                return resp.content
+        # MinIO object path, e.g. "products/<brand>/<file>.png". These live in
+        # the default bucket rather than one named after the first segment.
+        from shared.tools.storage import async_download_file
+
+        bucket = getattr(settings, "MINIO_BUCKET", "markai-assets")
+        try:
+            return await async_download_file(bucket, ref)
+        except Exception:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{backend}/api/v1/files/{ref}")
+                resp.raise_for_status()
+                return resp.content
+    except Exception as exc:
+        logger.warning("Could not resolve product image %s: %s", ref[:120], exc)
+        return None
+
+
+async def product_photo_is_swappable(url: str) -> bool:
+    """True when the gallery photo behind *url* could carry a faithful swap.
+
+    Cheap enough to ask BEFORE spending a generation. make_keyframe used to
+    render a 1024x1792 frame built around a blank placeholder container, run
+    the swap, watch it refuse, and throw the whole frame away — paying for an
+    image and roughly two minutes to learn something one HTTP fetch answers.
+    """
+    raw = await resolve_product_image_bytes(url)
+    if not raw:
+        return False
+    try:
+        return reference_supports_swap(Image.open(BytesIO(raw)))
+    except Exception:
+        return False

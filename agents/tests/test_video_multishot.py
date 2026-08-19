@@ -460,13 +460,19 @@ def _plan(durations):
     }
 
 
-def _state(durations, keyframe=b"KEYFRAME", quality_tier="standard"):
+def _state(durations, keyframe=b"KEYFRAME", quality_tier="standard",
+           verified_pack=None):
     # No run_id on purpose: update_agent_run_step no-ops without one.
+    # A keyframe implies a verified pack unless a test says otherwise —
+    # make_keyframe only reaches the swap when the gallery photo can carry it.
     return {
         "brand_id": "brand-1",
         "calendar_item_id": "item-1",
         "shot_plan": _plan(durations),
         "keyframe_bytes": keyframe,
+        "keyframe_verified_pack": (
+            keyframe is not None if verified_pack is None else verified_pack
+        ),
         "quality_tier": quality_tier,
     }
 
