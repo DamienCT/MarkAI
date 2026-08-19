@@ -140,3 +140,63 @@ future reels render 20–30s.
 check, proof-point repetition damping, meta-language leak in briefs, franglais tuning,
 planner MAX_SHOTS=6 (35s top end unreachable), "Mauritius Health Week" authenticity (user),
 n8n workflow re-import, observability, token encryption, engagement 2.0, Qdrant learning loop.
+
+---
+
+## Cycle 4 — 30s reels, campaign integrity, English-only enforcement (2026-08-19)
+
+**Shipped (`c68ef5b`, deployed):**
+- **30s reel targeting.** Reels now plan 6–8 beats against `TARGET_TOTAL_S = 30.0` instead of
+  a single ~5s clip. `MIN_PLAN_SHOTS=6` guarantees the fitter can reach the target; 6–10 beats
+  land exactly on 30.0s. First validated render: **7 shots, 30.00s, all on the local 4090 via
+  forge at $0.0000**.
+- **Render budgets unified.** `shared/config.video_workflow_timeout_s()` is now the single
+  source for both the worker's `asyncio.wait_for` and JetStream's `ack_wait`, so they cannot
+  drift. `video.render` gets its own hours-long ack_wait (25620s) while the other subjects keep
+  the short one (5520s) — previously the long video budget was applied to *every* subject,
+  which would have left a planning message unredelivered for hours after a worker died.
+  JetStream does not always re-apply a changed `ack_wait` to an existing durable, so the
+  consumer now reports drift; both durables were verified live at the new values.
+- **Campaign integrity.** Campaigns and the strategy document are generated in quarterly chunks
+  behind a post-assembly validation gate. The raw-string fallback that produced the
+  "General Campaign" blob is deleted — corrupt output now fails the node loudly rather than
+  persisting a truncated array as one campaign.
+- **Brief hygiene + temporal guard.** Generator meta-language ("This post should…") is scrubbed
+  before the brief reaches the writer; a temporal block tells the hook which listed events are
+  already past on its own publish date.
+
+**Bugs found and fixed:**
+- `_release_stuck_calendar_item` used `:reason::text`. SQLAlchemy's bind-param regex has a
+  negative lookahead on `:`, so `:reason` was never bound and the literal shipped to Postgres,
+  killing every release attempt on a syntax error. **Consequence: any item whose workflow died
+  stranded in `working`/`rendering` forever.** Fixed with `CAST(:reason AS text)`; swept the
+  codebase for the same pattern (no other occurrences).
+- **The reverse SSH tunnel was down**, so the VPS could not reach the 4090 and every reel
+  render failed with `forge: unavailable; fal: unavailable` while the forge was healthy
+  locally. Restarted, and `MarkAIForge-{ComfyUI,Gateway,Tunnel}` are now registered as
+  scheduled tasks so it survives a logon.
+
+**QA findings on the live review queue (Naturespan, 24 items):**
+- 16 posts are clean English; the 8 reels were French **and** 5.01s single-shot — they predate
+  both fixes and are being re-rendered.
+- `content.image_urls` is a dead column. Post images live at
+  `generation_metadata->>'generated_image_url'`, which is what the frontend reads. Anything
+  auditing "posts with images" against `image_urls` will report a false zero.
+- Image quality is genuinely mixed and is the next cycle's focus: the family/lagoon and
+  Pranarom-bottle frames are publishable, but one frame is empty set-dressing with the dark
+  wordmark placed on a dark shadow band, and the Favrichon frame has the headline overflowing
+  the right edge across the product plus **hallucinated garbled French** on the packaging.
+  That last one is gpt-image-2 output — the gold standard hallucinates text too, which is why
+  the fix is an app-level reject-and-retry gate rather than a model swap.
+
+**Local image models (bake-off slot 1):** Qwen/Qwen-Image-2512, Apache-2.0, ~86s per
+1024×1536 render, 23.7 GB peak. Median weighted 31.25, publish rate 0.70 — both numeric bars
+met, but **SHORTLIST not production**: it fails the hard rule `ai_artefact_absence >= 3 on
+every prompt` by rendering gibberish labels on props (P05, P10). cfg 5.0 did not suppress it.
+Being the best open-weights *text* renderer is precisely why it invents text. Slot 2 candidates
+and the text-reject gate are in flight.
+
+**Cycle-5 backlog:** logo variant/contrast selection against the region actually chosen,
+headline overflow + product occlusion, empty-frame briefs, hallucinated-text gate rollout,
+n8n workflow re-import, observability, token encryption, engagement 2.0, Qdrant learning loop,
+"Mauritius Health Week" authenticity (user).
