@@ -200,3 +200,87 @@ and the text-reject gate are in flight.
 headline overflow + product occlusion, empty-frame briefs, hallucinated-text gate rollout,
 n8n workflow re-import, observability, token encryption, engagement 2.0, Qdrant learning loop,
 "Mauritius Health Week" authenticity (user).
+
+---
+
+## Cycle 5 — Image quality: why the pictures were wrong (2026-08-19)
+
+Every `in_review` post across all three brands was vision-audited and re-checked
+by hand (`AUDIT_ARTIFACTS/image_qa_*.md`): **Naturespan 4/16 clean, Healthspan
+6/13, FancyFinds 4/10.** 51 defects, and they collapse into a small number of
+causes — most of them not where they appeared to be.
+
+**Hallucinated text (14 defects) does not come from the image generator.**
+`background.png` is clean — the negative directive works. The invented lettering
+appears in `composed.png`, i.e. it is introduced by the Gemini product-swap step
+(`_replace_product_in_generated_image`), which is a *generative* editor and
+re-synthesises every pixel of the pack including its printed copy. On one item it
+also turned one pouch into four. The prompt carried no "this is a copy job"
+contract, and the reference is starved — the pack's body copy is ~8px tall in an
+800×800 catalogue JPEG. Verbatim output: `Une recette croortillante an blé
+fomgnis`, `RICHE ao FER MACROUOM ur PHOESNORE`, `1B%ARA&BICA`.
+
+**Half of every brand's posts were photographed from a five-word campaign label.**
+`generate_background` branched on `image_format == "ad"` FIRST, so an ad post's
+prompt was built from `calendar_items.theme` alone — both the art-director's
+enhanced prompt and the planner's brief were discarded. `_decide_image_format()`
+picks "ad" ~50% of the time globally. A brief asking for "a sharing board — crisp
+toasts, olives, and cheese" delivered chocolate chunks and cashews, because the
+model was given "Indulgent Everyday Pairings & Social Treat Moments" and nothing
+else. `visual_direction` was written by the planner on every row and read by
+nothing; `brand_guidelines.donts` reached every copy prompt and no image prompt.
+
+**Empty frames were what the prompt asked for.** `image_format == "ad"` AND no
+`product_ids` took an else-arm ending in the literal instruction *"Do NOT include
+any products. Focus on a clean branded backdrop."* With no product there is
+nothing else to show, so the backdrop IS the picture. That combination predicted
+all 5 empty frames with 100% precision and recall. Aggravated by 4 of 5 briefs
+being reel scripts ("montage of shelf details…") that a still model cannot render.
+
+**Logo illegibility had two compounding faults.** Naturespan carried only a
+`primary` (dark-ink) logo — no light variant — so `select_logo_variant`, whose
+entire job is to return a light logo when the region is dark, had nothing to
+return; all 16 items recorded `logo_variant_used='primary'`. And
+`review_branding` returned early for every ad-format post, which are exactly the
+posts where the art-director LLM places the logo at the bottom of the frame.
+Measured: the three failures are 2.15:1, 2.69:1 and 1.82:1 while every scanned
+top-corner placement measures 4.5–7.5:1. On "One week to shop with ease" the
+background under the wordmark swings 1.82–7.72:1 — it was placed on the least
+uniform band in the frame (spread 5.91) while the calm pale wall (3.43) went
+unused. **No clipping defects exist in this batch** — an earlier by-eye call of
+mine was wrong and every margin was re-measured.
+
+**Fixed:** the text-reject gate (`shared/image_text_guard.py`) at the single
+`generate_image` choke point; hex removed from image prompts
+(`shared/color_names.py`); WCAG contrast measurement replacing the ad-post skip,
+scoring the logo ink's *10th-percentile* contrast against the patch it covers;
+a light Naturespan logo generated and registered; product backfill taking
+Naturespan planned coverage 0% → 91%, which is also the empty-frame fix.
+
+**Healthspan data defects fixed:** `category_logos['SUP-TOOLS']` held the
+Healthspan logo itself, so every SUP-TOOLS post composited the brand mark twice
+in opposite corners — entry removed. The REUS-WEAR (RingConn) and DISP-WEAR
+(SIBIONICS) "dark" variants were **knockouts**, not artwork: an opaque black
+plate with the mark punched out as transparency, which paints a black plaque on a
+photo. Both inverted to white ink on transparency; originals kept as
+`*-knockout.png`.
+
+**Healthspan has 0 products and 456 dangling `product_ids` — root cause found,
+needs a decision.** Its `bc_company` is `Barcode.mu`, and that company has
+**3140 item-ledger rows of which ZERO have positive `remainingQuantity`** (sum
+0.0, max 0.0). `get_active_stock` gates on `SUM(remainingQuantity) > 0`, so the
+sync returns nothing. Every other trading company has real stock (Naturespan
+1182 positive rows, Food-Cosmetic 1988, Medical-Ortho 9037). Separately there IS
+a BC company literally named `Healthspan` with 31 items and 78 positive rows.
+Open question for the user: is Barcode.mu genuinely out of stock / not
+inventory-tracked, should the brand point at the `Healthspan` company, or should
+the stock gate be relaxed for catalogue-only brands?
+
+**Flagged, not fixed:** the generator prints "Healthspan" onto the blood-pressure
+monitors themselves — an implied own-brand claim for a retailer. That is a
+brand/legal question, not a rendering bug.
+
+**Cycle-6 backlog:** product-swap lettering contract (the biggest remaining
+defect class), logo/headline collision on 1536×1024, `visual_direction` validated
+against `item_type` at planning time, n8n workflow import (the instance has zero
+workflows), observability, token encryption, Qdrant learning loop.
