@@ -690,17 +690,63 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     # For ad/headline posts, let the AI pick a good spot + size +
                     # width + colors + font for the big title (clean negative
                     # space, off the product). Vision first, variance fallback.
+                    _product_box = None
                     if image_format == "ad":
                         from shared.placement import plan_headline_placement
                         try:
                             (ad_text_xy, ad_text_scale, ad_text_width,
-                             ad_headline_colors, ad_font_family, ad_logo_xy) = (
+                             ad_headline_colors, ad_font_family, ad_logo_xy,
+                             _product_box) = (
                                 await plan_headline_placement(
                                     image_data, text_line1, brand_colors
                                 )
                             )
                         except Exception as exc:
                             logger.warning("Headline placement failed, using default: %s", exc)
+                        # Regen used to trust the planner's logo spot unread.
+                        # Gate it like the first render does: never on the
+                        # text block, never on the product.
+                        try:
+                            from io import BytesIO as _BytesIO
+
+                            from PIL import Image as _PILImage
+
+                            from shared.image_processing import (
+                                choose_logo_placement as _choose,
+                                compute_text_region as _text_region,
+                                logo_ink_rgb as _ink_of,
+                            )
+                            from shared.placement import DEFAULT_PRODUCT_BOX
+
+                            with _PILImage.open(_BytesIO(image_data)) as _im:
+                                _iw, _ih = _im.width, _im.height
+                            with _PILImage.open(_BytesIO(logo_png)) as _lg:
+                                _lg = _lg.convert("RGBA")
+                                _lb = _lg.getbbox()
+                                if _lb:
+                                    _lg = _lg.crop(_lb)
+                                _lw = max(1, int(_iw * scale_for_logo_variant(chosen_label)))
+                                _lh = max(1, int(_lg.height * (_lw / _lg.width))) if _lg.width else 1
+                                _lg_ink = _ink_of(_lg)
+                            _pb = _product_box or DEFAULT_PRODUCT_BOX
+                            _reserved = _text_region(
+                                _iw, _ih, text_line1, "headline",
+                                ad_text_scale, None, ad_text_xy,
+                                ad_text_width, ad_font_family or "Montserrat",
+                            )
+                            ad_logo_xy, _gate = _choose(
+                                image_data, _lw, _lh, _lg_ink,
+                                proposed_xy=ad_logo_xy or (0.85, 0.12),
+                                avoid_rect=_reserved,
+                                avoid_rects=[(
+                                    int(_pb[0] * _iw), int(_pb[1] * _ih),
+                                    int(_pb[2] * _iw), int(_pb[3] * _ih),
+                                )],
+                            )
+                            if _gate.get("changed"):
+                                logger.info("regen branding: %s", _gate.get("reason"))
+                        except Exception as exc:
+                            logger.warning("regen logo gate failed: %s", exc)
                     # User's manual choices win; otherwise use the AI's (first render).
                     headline_font = gen_meta.get("font_family") or ad_font_family or "Montserrat"
                     effective_colors = gen_meta.get("headline_colors") or ad_headline_colors

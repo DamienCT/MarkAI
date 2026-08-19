@@ -75,6 +75,20 @@ class TestLogoAvoidsTheProduct:
         src = inspect.getsource(content_nodes.apply_branding)
         assert "product_box=product_box" in src
 
+    def test_the_regen_path_unpacks_the_box_and_gates_the_logo(self):
+        # plan_headline_placement grew a 7th element; the regen path's
+        # 6-tuple unpack raised ValueError into its except and silently
+        # disabled placement on every ad regen. It must unpack the box AND
+        # gate the planner's logo spot like the first render does.
+        import inspect
+
+        import worker
+
+        src = inspect.getsource(worker._handle_image_regeneration)
+        assert "_product_box)" in src
+        assert "choose_logo_placement" in src
+        assert "DEFAULT_PRODUCT_BOX" in src
+
 
 class TestVisionPlannerProductBox:
     def _plan(self, monkeypatch, payload: dict):
