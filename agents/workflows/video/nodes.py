@@ -1958,6 +1958,11 @@ def _grade_params(stats: dict[str, float] | None) -> dict[str, float] | None:
             landed = 255.0 * (low / 255.0) ** (1.0 / g) if low > 0.0 else 0.0
             return g, landed
 
+        def _landed_mean(r: float) -> float:
+            g = _solve(r)[0]
+            mean = _black_point(yavg, r)
+            return 255.0 * (mean / 255.0) ** (1.0 / g) if mean > 0.0 else 0.0
+
         # Raising r pushes the landed shadow DOWN monotonically, so bisect
         # for the r that lands it on the stills' black level. r=0 is the
         # milky end; _GRADE_MAX_BLACK_POINT bounds how much shadow detail
@@ -1971,6 +1976,27 @@ def _grade_params(stats: dict[str, float] | None) -> dict[str, float] | None:
                 else:
                     hi = mid
             black = round((lo + hi) / 2.0, 4)
+
+        # On very dark footage the two goals compete. Subtracting a black
+        # point lowers the mean, which asks for more gamma, and past
+        # _GRADE_MAX_GAMMA there is none to give — so the shadow lands on
+        # target while the mean stays short. Measured on a live shot: at
+        # YAVG 81 the solved black point costs ~13 points of mean that the
+        # capped gamma cannot recover, when r=0 would have landed 141.6.
+        #
+        # The mean is the bigger defect (35% off, against a shadow that is
+        # off by a fifth of that), so when the cap bites the black point is
+        # given back until the mean lands or reaches zero. The landed mean
+        # falls monotonically as r rises, which makes this one more bisection.
+        if black > 0.0 and _landed_mean(black) < _GRADE_TARGET_YAVG - 1.0:
+            lo, hi = 0.0, black
+            for _ in range(20):
+                mid = (lo + hi) / 2.0
+                if _landed_mean(mid) >= _GRADE_TARGET_YAVG - 1.0:
+                    lo = mid
+                else:
+                    hi = mid
+            black = round(lo, 4)
         gamma = _solve(black)[0]
         # Back the lift off until the predicted 90th-percentile highlight
         # stays out of clipping. Losing the specular on oil and glass costs

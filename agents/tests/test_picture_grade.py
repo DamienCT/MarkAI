@@ -317,3 +317,47 @@ class TestTheBlackPointStopsTheWash:
         )
         assert "colorlevels" not in chain
         assert "eq=gamma=1.500" in chain
+
+
+class TestTheTwoGoalsCompeteOnDarkFootage:
+    """Subtracting a black point lowers the mean, which asks for more gamma.
+
+    Past _GRADE_MAX_GAMMA there is none to give, so the shadow lands on
+    target while the mean stays short. Measured on a live shot: at YAVG 81
+    the solved black point costs about 13 points of mean the capped gamma
+    cannot recover, where r=0 would have landed 141.6.
+
+    The mean is the bigger defect — 35% off, against a shadow off by a fifth
+    of that — so the black point is what gives way.
+    """
+
+    DARK = {"YAVG": 81.0, "YHIGH": 180.0, "YLOW": 22.0, "SATAVG": 15.8}
+
+    def test_the_black_point_gives_way_so_the_mean_can_land(self):
+        p = nodes._grade_params(self.DARK)
+        assert p["gamma"] == pytest.approx(nodes._GRADE_MAX_GAMMA, abs=0.01)
+        assert _apply(self.DARK, p, "YAVG") == pytest.approx(GOLD_YAVG, abs=2.0)
+
+    def test_it_gives_back_only_what_it_has_to(self):
+        p = nodes._grade_params(self.DARK)
+        # Not all the way to zero — the shadow still lands close to the
+        # stills rather than being abandoned.
+        assert 0.0 < p["black"] < 0.05
+        assert _apply(self.DARK, p, "YLOW") == pytest.approx(60.0, abs=8.0)
+
+    def test_a_shot_that_does_not_hit_the_cap_keeps_its_full_black_point(self):
+        mild = {"YAVG": 120.0, "YHIGH": 200.0, "YLOW": 45.0, "SATAVG": 16.0}
+        p = nodes._grade_params(mild)
+        assert p["gamma"] < nodes._GRADE_MAX_GAMMA
+        assert _apply(mild, p, "YLOW") == pytest.approx(60.0, abs=2.0)
+        assert _apply(mild, p, "YAVG") == pytest.approx(GOLD_YAVG, abs=2.0)
+
+    def test_footage_too_dark_to_rescue_is_lifted_as_far_as_the_cap_allows(self):
+        # Not "as far as it takes" — beyond the cap a lift stops being
+        # exposure and starts being amplified noise.
+        murk = {"YAVG": 60.0, "YHIGH": 150.0, "YLOW": 15.0, "SATAVG": 9.0}
+        p = nodes._grade_params(murk)
+        assert p["gamma"] == pytest.approx(nodes._GRADE_MAX_GAMMA, abs=0.01)
+        assert p["black"] == 0.0
+        landed = _apply(murk, p, "YAVG")
+        assert GOLD_YAVG > landed > murk["YAVG"] * 1.9
