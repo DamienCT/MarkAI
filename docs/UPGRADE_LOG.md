@@ -479,3 +479,92 @@ global grade would damage, so this needs the per-reel measure-then-correct
 treatment the audio got, not a blanket curve); logo/headline collision on
 1536×1024; `visual_direction` validated against `item_type` at planning time;
 n8n workflow import; observability; token encryption; Qdrant learning loop.
+
+## Cycle 8 — The picture, measured against our own stills (2026-08-19)
+
+Cycle 7's backlog said a picture grade needed measurement, not a blanket
+curve. This cycle took the measurement, and it settled the question.
+
+**The gold standard was already in the app.** The operator named the
+gpt-image-2 stills as the quality bar, so the target came from them rather
+than from a number someone picked. Thirty stills sampled from
+`content-images`, medians:
+
+| | YLOW | YAVG | YHIGH | SATAVG |
+|---|---|---|---|---|
+| gpt-image-2 stills (n=30) | 60 | 140 | 214 | 19.2 |
+| delivered reel, per second | 26 | 91 | 194 | 10.4 |
+
+The footage is **~35% darker** than the stills and carries **roughly half**
+their colour. Neither is a taste call: nothing in the reel clips — YHIGH
+never reaches even 235 — so the headroom was simply unused. YHIGH also
+**decays from 207 to 139** across the reel as the i2v chain washes contrast
+out, which is why the correction is per shot. One curve for the whole master
+would over-lift the opening and still leave the ending flat.
+
+**Gamma alone was not enough, and the first pass proved it on screen.**
+Lifting YAVG 92.8 → 132.8 also dragged YLOW 31.5 → 72.6 against the stills'
+60. Thirteen points of raised black is what "washed out" looks like, and it
+was visible on the contact sheet — the numbers had improved and the picture
+had not. Gamma has one control and there are two targets. Subtracting a black
+point first (`colorlevels`, all three channels together so shadows stay
+neutral) supplies the second, and the gamma is then solved for what that
+leaves. Measured on the real master:
+
+| | YLOW | YAVG | YHIGH | SATAVG |
+|---|---|---|---|---|
+| before | 31.5 | 92.8 | 186.5 | 11.1 |
+| after | **63.3** | **128.5** | **211.5** | **19.4** |
+| stills | 60 | 140 | 214 | 19.2 |
+
+Three of four land. YAVG stops 11 short because two shots hit the gamma cap
+of 1.95 — the flattest ones — and pushing past that to chase the last 8% of
+mean would spend the tonal separation the black point just bought. Clipping
+went *down*: 433 frames at ≥254 against 739 in the source (white captions and
+real speculars, both already there).
+
+The chain rides along in the overlay burn's encode, so the reel pays for no
+extra pass, and runs before the subtitle filter so captions keep the contrast
+they were designed with. The `enable` expression is **escaped, not quoted** —
+verified in the deployed container: the form the ffmpeg docs show is a *shell*
+command line, and passed as one argv element its quotes reach the expression
+evaluator and break it.
+
+**The delabel pass was fixing a beat that should never have been planned.**
+It rewrote all seven scenes of a reel and the render still came back reading
+"SCNE CONFEXT" and "CIABE INN TEHMTS" on a hero bottle. The stored plan says
+why: the REVEAL beat asked for "the bottle revealed whole at natural distance
+… LOCKS: bottle whole and visible", and a rewrite appended after a scene
+loses to the scene. Swappability is one HTTP fetch, so it is now settled
+between `source_product_image` and `plan_shots` and the planner is told not
+to write a hero-pack beat it cannot back. The check landed a node too early
+on the first attempt — in `load_context` there is no `product_image` yet, so
+it read "no pack" on *every* reel; the live log caught it by the absence of
+the line it should have printed. The graph test now asserts the wiring, not
+just the function.
+
+**A discarded keyframe was a wasted generation and a lost anchor.**
+`make_keyframe` asked "did the swap work?" only after paying for the answer:
+it generated a 1024×1792 frame built around a blank placeholder, ran the swap,
+watched it refuse on a 1200×630 share banner, and threw the frame away — one
+image call and ~2 minutes to learn what one fetch answers, leaving shot 1 to
+render t2v. It now asks first and, when the answer is no, composes a frame
+with deliberately unreadable packaging and **keeps** it. That split two facts
+`render_video` had fused, so `unverified_pack` reads a state flag instead of
+the keyframe bytes — reading the bytes would have switched the directive off
+for exactly the reels that need it.
+
+**Measured but not shipped: subject presence.** Several beats are 4–5 seconds
+of an out-of-focus bowl. They pass the motion check (they move) and the tone
+check (they are exposed). Edge energy does separate them — 3.32 for the empty
+bowl against 4.4–5.9 for real shots — but 1.3× on a single reel is not a
+calibration. The motion floor was calibrated against four reels before it
+shipped; this gets the same treatment or none.
+
+**Still blocked on the user:** BC API admin grant (unchanged from cycles 6–7).
+
+**Cycle-9 backlog:** subject-presence detection once there are enough reels to
+calibrate against; music beds once licensing is decided; logo/headline
+collision on 1536×1024; `visual_direction` validated against `item_type` at
+planning time; n8n workflow import; observability; token encryption; Qdrant
+learning loop.
