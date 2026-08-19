@@ -102,6 +102,28 @@ class TestEnglishIsNotFlagged:
     def test_naturalised_loanwords_pass(self, text):
         assert detect_non_english(text, allow=NAMES) == [], text
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Every one of these was flagged by an earlier marker list. They
+            # are ordinary English, and on a food and retail brand they appear
+            # constantly — the fastest way to make the guard ignorable.
+            "Mediterranean cuisine, done simply",
+            "Our boutique reopens Monday",
+            "A gourmand's guide to the aisle",
+            "Free during the pendant sale",
+            "This certifies every batch",
+            "Verifiable at every step",
+        ],
+    )
+    def test_english_words_that_look_french_are_not_flagged(self, text):
+        assert detect_non_english(text, allow=NAMES) == [], text
+
+    def test_the_accented_french_forms_are_still_caught(self):
+        # Dropping the bare spellings must not drop the real French ones.
+        assert detect_non_english("produits certifiés", allow=NAMES)
+        assert detect_non_english("du bio vérifiable", allow=NAMES)
+
     def test_empty_and_missing_are_quiet(self):
         assert detect_non_english("") == []
         assert detect_non_english(None) == []  # type: ignore[arg-type]

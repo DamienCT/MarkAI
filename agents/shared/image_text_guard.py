@@ -186,14 +186,26 @@ For each piece of lettering you can read, decide:
 Garbled, misspelled, invented or malformed lettering is ALWAYS a defect — even
 on a label that legitimately belongs there.
 
-NOT a defect: texture at extreme background blur where no letter shape can be
-resolved; purely decorative non-linguistic pattern; a logo mark with no
-letterforms.
+CRITICAL — text you CANNOT read is still text. A generated frame's most common
+text defect is lettering that reads as writing at a glance but resolves into no
+characters: a chalk board with strokes in the rhythm of words, a jar label
+carrying a line of letter-like marks, a shelf tag with a price-shaped smudge, a
+sign whose letters dissolve under inspection. A viewer reads these as words the
+brand did not write, so they are defects, and you must report them EVEN THOUGH
+you cannot transcribe them. Do not omit a surface merely because you failed to
+resolve its characters — say where it is instead.
+
+NOT a defect: a pattern with no linguistic rhythm at all (fabric weave, foliage,
+wood grain, bokeh); a logo mark made of shapes rather than letterforms.
+
+Judge every surface at the size it appears. Background and out-of-focus
+surfaces count: a defocused label still reads as a label.
 
 Answer STRICT JSON only:
-{{"visible_text": ["<each distinct piece of lettering, transcribed verbatim>"],
+{{"visible_text": ["<each distinct piece of lettering you CAN read, transcribed verbatim>"],
   "unintended_text": ["<the subset NOT covered by the legitimate list>"],
   "gibberish_text": ["<the subset that is garbled, misspelled, invented or nonsense>"],
+  "illegible_text_marks": ["<each surface carrying letter-like marks you could NOT resolve, named by where it is, e.g. 'chalk board behind the counter', 'label on the left jar'>"],
   "has_unintended_text": true|false,
   "reason": "<one short sentence>"}}"""
 
@@ -317,8 +329,15 @@ def verdict_from_payload(payload: dict) -> TextGuardVerdict:
 
     The decision is made here, not by trusting the model's own boolean alone:
     a frame is rejected when it lists any unintended string OR any gibberish
-    string OR it asserts ``has_unintended_text`` without listing them. Keeping
-    the rule in code makes it deterministic and testable.
+    string OR any unresolvable letter-like marks OR it asserts
+    ``has_unintended_text`` without listing them. Keeping the rule in code
+    makes it deterministic and testable.
+
+    ``illegible_text_marks`` carries the dominant defect class. A gate study
+    over the local-model bake-off found every one of one candidate's five
+    invented-text failures recorded as "none resolvable" — the model saw them
+    and had nowhere to put them, so the gate passed all five. Un-transcribable
+    lettering is exactly as unpublishable as lettering that reads cleanly.
     """
     if not isinstance(payload, dict):
         return _skipped("malformed verdict")
@@ -326,19 +345,26 @@ def verdict_from_payload(payload: dict) -> TextGuardVerdict:
     visible = _clean_items(payload.get("visible_text"))
     unintended = _clean_items(payload.get("unintended_text"))
     gibberish = _clean_items(payload.get("gibberish_text"))
+    illegible = _clean_items(payload.get("illegible_text_marks"))
     declared = bool(payload.get("has_unintended_text"))
 
-    flagged = bool(unintended or gibberish or declared)
+    flagged = bool(unintended or gibberish or illegible or declared)
     reason = str(payload.get("reason") or "").strip()[:300]
     if flagged and not reason:
         reason = "unintended rendered text"
+    if illegible and not (unintended or gibberish):
+        # Name the surface — "unintended rendered text" with nothing to quote
+        # reads like a false positive to whoever triages it.
+        reason = f"unresolvable letter-like marks: {'; '.join(illegible[:3])}"[:300]
 
     return TextGuardVerdict(
         flagged=flagged,
         checked=True,
         reason=reason,
         visible_text=visible,
-        unintended_text=unintended,
+        # Marks nobody can transcribe are still unintended text; downstream
+        # (strengthen_prompt, logging) reads this list, so they belong in it.
+        unintended_text=unintended + illegible,
         gibberish_text=gibberish,
     )
 
@@ -408,8 +434,15 @@ async def detect_unintended_text(
                         ],
                     }
                 ],
+                # No temperature. This request used to pin it to 0, which the
+                # default vision model rejects outright (HTTP 400, "Only the
+                # default (1) value is supported"). It reached production only
+                # because litellm's drop_params silently strips it — so the
+                # determinism was never real, and pointing
+                # IMAGE_TEXT_GUARD_MODEL straight at a provider, or turning
+                # drop_params off, failed EVERY image open while the gate
+                # still reported itself as enabled.
                 "response_format": {"type": "json_object"},
-                "temperature": 0,
             },
             timeout=settings.IMAGE_TEXT_GUARD_TIMEOUT_S,
         )

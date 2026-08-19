@@ -137,6 +137,65 @@ def _use_generator(monkeypatch, stub):
 # ── Decision rule ───────────────────────────────────────────────────────
 
 
+class TestIllegibleMarks:
+    """The defect class the gate could not report.
+
+    A gate study over the local-model bake-off found all five of one
+    candidate's invented-text failures recorded as "none resolvable": the
+    vision model saw letter-like marks, could not transcribe them, and the
+    schema gave it nowhere to say so. unintended_text and gibberish_text both
+    came back empty, so the gate passed every one. A viewer still reads those
+    marks as words the brand did not write.
+    """
+
+    PSEUDO = {
+        "visible_text": [],
+        "unintended_text": [],
+        "gibberish_text": [],
+        "illegible_text_marks": ["chalk board behind the counter", "label on the left jar"],
+        "has_unintended_text": False,
+        "reason": "letter-like marks that do not resolve",
+    }
+
+    def test_unresolvable_marks_are_rejected(self):
+        verdict = verdict_from_payload(self.PSEUDO)
+        assert verdict.flagged is True, (
+            "the model reported letter-like marks and the gate passed the frame"
+        )
+
+    def test_the_surfaces_are_named_in_the_reason(self):
+        # "unintended rendered text" with nothing quotable reads as a false
+        # positive to whoever triages it.
+        reason = verdict_from_payload(self.PSEUDO).reason
+        assert "chalk board behind the counter" in reason
+
+    def test_marks_reach_offending_so_the_re_roll_can_use_them(self):
+        assert "label on the left jar" in verdict_from_payload(self.PSEUDO).offending
+
+    def test_a_frame_with_neither_readable_nor_illegible_text_still_passes(self):
+        assert verdict_from_payload({**CLEAN, "illegible_text_marks": []}).flagged is False
+
+    def test_the_field_is_optional(self):
+        # Older payloads, and models that omit the key, must not change.
+        assert verdict_from_payload(CLEAN).flagged is False
+
+
+class TestGuardPromptAsksForTheMarks:
+    def test_prompt_requests_unresolvable_lettering(self):
+        prompt = build_guard_prompt(None)
+        assert "illegible_text_marks" in prompt
+        assert "CANNOT read" in prompt or "cannot transcribe" in prompt
+
+    def test_prompt_no_longer_exempts_all_unresolvable_marks(self):
+        """The old wording excused "extreme background blur where no letter
+        shape can be resolved", which is precisely the failure mode."""
+        prompt = build_guard_prompt(None)
+        assert "extreme background blur where no letter shape" not in prompt
+        # A genuinely non-linguistic pattern must still be exempt, or the gate
+        # fires on every fabric weave.
+        assert "fabric weave" in prompt
+
+
 class TestVerdictFromPayload:
     def test_clean_frame_passes(self):
         verdict = verdict_from_payload(CLEAN)
@@ -249,8 +308,22 @@ class TestDetectUnintendedText:
         assert verdict.checked is True
         body = fake.calls[0][1]["json"]
         assert body["model"] == "test-vision"
-        assert body["temperature"] == 0
         assert body["response_format"] == {"type": "json_object"}
+
+    def test_no_temperature_is_sent(self, monkeypatch, guard_on):
+        """The request used to pin temperature=0 and the vision model 400s on it.
+
+        It survived only because litellm's drop_params strips unsupported
+        fields, so the guard failed open on EVERY image the moment anything
+        bypassed that — a direct-to-provider IMAGE_TEXT_GUARD_MODEL, or
+        drop_params turned off — while still reporting itself enabled.
+        """
+        fake = FakeVisionClient([CLEAN])
+        _use_vision(monkeypatch, fake)
+
+        asyncio.run(detect_unintended_text(PNG_BYTES, "image/png"))
+
+        assert "temperature" not in fake.calls[0][1]["json"]
 
     def test_gibberish_text_rejected(self, monkeypatch, guard_on):
         _use_vision(monkeypatch, FakeVisionClient([GIBBERISH]))

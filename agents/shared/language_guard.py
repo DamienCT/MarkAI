@@ -45,19 +45,31 @@ _MARKERS = frozenset(
     """
     du des une aux nos vos votre notre avec sans chez dans cette ces
     leur leurs très déjà enfin ainsi aussi toujours jamais plutôt
-    quelques chaque autour moins mieux depuis pendant selon
+    quelques chaque autour moins mieux depuis selon
     vous nous ils elles sont êtes avez avons soyez
     rendez demain matin soir semaine mois année années maintenant
     bientôt prochain prochaine toutes
     magasin goûter gouter rentrée rentree épicerie epicerie boulangerie
     marché marche santé sante beauté beaute famille enfants maison
-    cuisine quotidien gourmand savoureux naturel naturelle nouvelle
-    boutique livraison gratuit offre ouvre ouverture meilleur meilleure
-    produits certifié certifiée certifiés certifiées certifies
-    vérifié vérifiée vérifiés vérifiable verifie verifiable
+    quotidien savoureux naturel naturelle nouvelle
+    livraison gratuit offre ouvre ouverture meilleur meilleure
+    produits certifié certifiée certifiés certifiées
+    vérifié vérifiée vérifiés vérifiable verifie
     bienvenue découvrir decouvrir profitez retrouvez
     """.split()
 )
+
+# Words that LOOK French and are ordinary English. Listing them is not
+# decorative: an earlier revision had "cuisine", "boutique", "gourmand",
+# "pendant", "certifies" and "verifiable" as markers, which flags a food and
+# retail brand's clean English copy several times a week. A guard nobody
+# trusts is a guard nobody reads, so accented French keeps these words'
+# accented forms as markers while the bare spellings stay out.
+_ENGLISH_LOOKALIKES = frozenset(
+    "cuisine boutique gourmand pendant certifies verifiable ensemble tout "
+    "tous pour son pain chat coin car sale ton".split()
+)
+assert not (_MARKERS & _ENGLISH_LOOKALIKES), "a marker is an ordinary English word"
 
 # Contractions are a strong signal and survive tokenisation badly, so they are
 # matched as substrings rather than as words.
