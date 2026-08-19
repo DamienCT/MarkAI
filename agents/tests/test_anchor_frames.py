@@ -275,3 +275,152 @@ class TestMakeKeyframeGeneratesTheSet:
         # old code path silently produced a t2v reel.
         out, _ = self._run(monkeypatch, fail_indices=(0,))
         assert out.get("status") == "failed"
+
+
+class TestEveryAnchorGetsTheSwap:
+    """Swapping only the first anchor ships a blank box as a hero.
+
+    product_rule asks EVERY anchor for "a simple generic unlabeled product
+    container (plain matte box or pouch with NO writing on it) ... completely
+    blank — it will be digitally replaced later". When the swap ran on
+    anchors[0] alone, the frames that start shots 4 and 7 kept that blank
+    box — which is verbatim the defect make_keyframe already refuses to ship
+    for shot 1: "a blank unbranded pouch becomes the hero of a 30s reel".
+    """
+
+    def _run(self, monkeypatch, *, refuse=()):
+        import asyncio
+
+        seen = {"swaps": []}
+
+        async def fake_generate(prompt, **kw):
+            n = len(seen["swaps"])  # unused, keeps signature honest
+            return "data:image/png;base64,aGk="
+
+        async def fake_swap(state, data):
+            i = len(seen["swaps"])
+            seen["swaps"].append(i)
+            # Refusal is signalled by returning the SAME object.
+            return data if i in refuse else b"SWAPPED%d" % i
+
+        async def fake_swappable(url):
+            return True
+
+        async def noop(*a, **kw):
+            return None
+
+        async def fail(state, message):
+            return {"status": "failed", "errors": [message]}
+
+        monkeypatch.setattr(nodes, "generate_image", fake_generate)
+        monkeypatch.setattr(nodes, "product_photo_is_swappable", fake_swappable)
+        monkeypatch.setattr(nodes, "_replace_product_in_generated_image", fake_swap)
+        monkeypatch.setattr(nodes, "async_upload_file", noop)
+        monkeypatch.setattr(nodes, "update_agent_run_step", noop)
+        monkeypatch.setattr(nodes, "_fail", fail)
+        state = {
+            "brand_id": "b",
+            "calendar_item_id": "c",
+            "calendar_item": {"channel": "instagram"},
+            "shot_plan": {"shots": [
+                {"index": i + 1, "scene": f"SCENE CONTEXT: beat {i + 1}"}
+                for i in range(7)
+            ]},
+            "product_image": "products/b/pack.png",
+            "is_lifestyle_only": False,
+        }
+        return asyncio.run(nodes.make_keyframe(state)), seen
+
+    def test_the_swap_runs_once_per_anchor(self, monkeypatch):
+        out, seen = self._run(monkeypatch)
+        assert len(seen["swaps"]) == len(nodes._anchor_indices(7))
+
+    def test_no_anchor_keeps_its_placeholder(self, monkeypatch):
+        out, _ = self._run(monkeypatch)
+        for idx, data in out["anchor_frames"].items():
+            assert data.startswith(b"SWAPPED"), (idx, data)
+
+    def test_a_later_refusal_drops_that_anchor_rather_than_shipping_it(
+        self, monkeypatch
+    ):
+        # Better one repeated composition than one fabricated pack: the cut
+        # falls back to the opening frame, which is real.
+        out, _ = self._run(monkeypatch, refuse=(1,))
+        assert 0 in out["anchor_frames"]
+        assert len(out["anchor_frames"]) == len(nodes._anchor_indices(7)) - 1
+        for data in out["anchor_frames"].values():
+            assert data.startswith(b"SWAPPED")
+
+    def test_a_refusal_on_the_opening_anchor_still_drops_the_whole_reel(
+        self, monkeypatch
+    ):
+        out, _ = self._run(monkeypatch, refuse=(0,))
+        assert out["keyframe_bytes"] is None
+        assert out["keyframe_verified_pack"] is False
+
+
+class TestThePlannerDoesNotContradictItself:
+    """A rule and its verbatim contradiction in one call is not a rule.
+
+    pack_block forbids the literal strings 'bottle whole and visible' and
+    'product-shot distance'. The STORY ARC and SHORT-FORM DISCIPLINE blocks
+    used to emit "held at natural product-shot distance" and "Show the
+    product whole at natural product-shot distance" unconditionally — the
+    second tripping both banned phrases at once. That is why the hero-pack
+    beat survived every ban placed on it.
+    """
+
+    def _prompts(self, monkeypatch, *, verifiable):
+        import asyncio
+
+        seen = {}
+
+        async def fake_chat(messages, **kw):
+            seen["system"] = messages[0]["content"]
+            seen["user"] = messages[1]["content"]
+            raise RuntimeError("stop after capturing")
+
+        async def noop(*a, **kw):
+            return None
+
+        async def fail(state, message):
+            return {"status": "failed", "errors": [message]}
+
+        monkeypatch.setattr(nodes, "chat_completion", fake_chat)
+        monkeypatch.setattr(nodes, "update_agent_run_step", noop)
+        monkeypatch.setattr(nodes, "_fail", fail)
+        try:
+            asyncio.run(nodes.plan_shots({
+                "brand_id": "b", "calendar_item_id": "c", "run_id": "",
+                "brand": {"name": "Naturespan"},
+                "calendar_item": {"channel": "instagram"},
+                "product": {"name": "Mild Olive Oil"},
+                "product_pack_verifiable": verifiable,
+            }))
+        except Exception:
+            pass
+        return seen
+
+    def test_an_unverifiable_pack_never_asks_for_product_shot_distance(
+        self, monkeypatch
+    ):
+        seen = self._prompts(monkeypatch, verifiable=False)
+        whole = seen["system"] + seen["user"]
+        # The ban names this phrase; the instructions must not use it.
+        assert whole.count("product-shot distance") == 1, (
+            "the only mention left should be the one inside the ban itself"
+        )
+
+    def test_nor_for_the_product_whole(self, monkeypatch):
+        seen = self._prompts(monkeypatch, verifiable=False)
+        assert "Show the product whole" not in seen["system"]
+
+    def test_the_reveal_beat_is_redirected_at_the_arc_level(self, monkeypatch):
+        seen = self._prompts(monkeypatch, verifiable=False)
+        assert "REVEAL — the product's CONTENT" in seen["system"]
+
+    def test_a_verifiable_pack_keeps_the_hero_reveal(self, monkeypatch):
+        seen = self._prompts(monkeypatch, verifiable=True)
+        assert "hero framing" in seen["system"]
+        assert "Show the product whole" in seen["system"]
+        assert "PACKAGING — READ THIS" not in seen["user"]

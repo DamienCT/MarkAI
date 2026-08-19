@@ -787,8 +787,36 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
         # lettering on it. Rewriting the scene afterwards fights the plan; a
         # measured reel where all seven scenes were rewritten still came back
         # reading "SCNE CONFEXT" and "CIABE INN TEHMTS" on the hero bottle.
+        # The STORY ARC and SHORT-FORM DISCIPLINE blocks used to say "held at
+        # natural product-shot distance" and "Show the product whole at
+        # natural product-shot distance" UNCONDITIONALLY, while pack_block —
+        # in the same call — forbade those exact strings. The second line
+        # tripped both banned phrases at once. A model handed a rule and its
+        # verbatim contradiction follows the instruction, not the ban, which
+        # is why the hero-pack beat kept surviving every ban placed on it.
+        pack_verifiable = bool(state.get("product_pack_verifiable"))
+        if pack_verifiable:
+            reveal_beat = (
+                "the product itself, hero framing: its form, colour and "
+                "material, held at natural product-shot distance."
+            )
+            label_alternative = (
+                "Show the product whole at natural product-shot distance; "
+            )
+        else:
+            reveal_beat = (
+                "the product's CONTENT, since its packaging cannot be shown "
+                "truthfully here — see PACKAGING below. The pour, the "
+                "texture, the cut surface, the steam, what it does on the "
+                "plate."
+            )
+            label_alternative = (
+                "Keep packaging partly turned away, soft, or cropped by the "
+                "frame edge. "
+            )
+
         pack_block = ""
-        if product.get("name") and not state.get("product_pack_verifiable"):
+        if product.get("name") and not pack_verifiable:
             pack_block = (
                 "PACKAGING — READ THIS BEFORE WRITING THE REVEAL BEAT:\n"
                 "There is no usable photograph of this product's packaging, "
@@ -823,8 +851,7 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "the most arresting image you have.\n"
             "2. TENSION — the everyday friction or problem this product "
             "removes, shown (never narrated).\n"
-            "3. REVEAL — the product itself, hero framing: its form, colour "
-            "and material, held at natural product-shot distance.\n"
+            f"3. REVEAL — {reveal_beat}\n"
             "4. BENEFIT / PROOF — the promise made visible: texture, "
             "freshness, craft, the detail that proves the claim.\n"
             "5. USE MOMENT — a real person actually using or enjoying it in "
@@ -851,10 +878,10 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "frame the product so close that its label fills the frame. The "
             "video model repaints every pixel each shot, so lettering it is "
             "asked to hold comes back as convincing gibberish — a garbled "
-            "brand name on screen is worse than no product shot at all. Show "
-            "the product whole at natural product-shot distance; go tight on "
-            "TEXTURE instead (the pour, the grain, the crumb, the leaf), "
-            "never on printed words.\n"
+            "brand name on screen is worse than no product shot at all. "
+            f"{label_alternative}"
+            "Go tight on TEXTURE instead (the pour, the grain, the crumb, "
+            "the leaf), never on printed words.\n"
             "- Audio is diegetic only: sounds that belong to the scene "
             "(sizzle, pour, clink, ambience). No voiceover, no music cues.\n"
             "- Stay strictly inside the brand voice above; never make claims "
@@ -1228,17 +1255,49 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
                 len(anchors),
                 len(anchor_indices),
             )
+        # Bound BEFORE the swap mutates the dict — the identity check below
+        # needs the pre-swap bytes of anchor 0.
         image_data = anchors[0]
 
-        # Swap the blank placeholder for the real product photo. Identity is
-        # the signal: every no-op path inside the swap returns the SAME bytes
-        # object it was handed, so `is` separates "swapped" from "kept the
-        # placeholder" without changing the swap's bytes-in/bytes-out contract.
-        swapped = (
-            await _replace_product_in_generated_image(state, image_data)
-            if swap_ready
-            else image_data
-        )
+        # Swap the blank placeholder for the real product photo — on EVERY
+        # anchor, not just the first. product_rule asks all of them for "a
+        # simple generic unlabeled product container … completely blank — it
+        # will be digitally replaced later", so an anchor that skips the swap
+        # ships that blank box as the hero of the shot it starts. Swapping
+        # only anchors[0] reintroduced, at shots 4 and 7, precisely the defect
+        # the comment below describes.
+        #
+        # Identity is the signal: every no-op path inside the swap returns the
+        # SAME bytes object it was handed, so `is` separates "swapped" from
+        # "kept the placeholder" without changing the swap's bytes-in/
+        # bytes-out contract.
+        if swap_ready:
+            order = sorted(anchors)
+            swapped_all = await asyncio.gather(
+                *(
+                    _replace_product_in_generated_image(state, anchors[i])
+                    for i in order
+                )
+            )
+            refused = [
+                i for i, out in zip(order, swapped_all) if out is anchors[i]
+            ]
+            for i, out in zip(order, swapped_all):
+                anchors[i] = out
+            # A later anchor that refused is dropped, not shipped: the cut it
+            # would have served falls back to the opening frame, which costs
+            # this reel one repeated composition and never a blank pack.
+            for i in refused:
+                if i != 0:
+                    logger.warning(
+                        "anchor %d kept its blank placeholder — dropping it; "
+                        "shot %d will re-anchor on the opening frame instead",
+                        i + 1, i + 1,
+                    )
+                    anchors.pop(i, None)
+            swapped = anchors[0] if 0 not in refused else image_data
+        else:
+            swapped = image_data
         if swapped is image_data and swap_ready:
             # Keeping the placeholder is a sound outcome for a still post,
             # where a blank matte box is an inert prop. It is not sound here:
