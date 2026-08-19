@@ -1035,7 +1035,9 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
         return {"keyframe_bytes": None, "keyframe_object": None}
 
 
-def _build_video_prompt(plan: dict[str, Any]) -> str:
+def _build_video_prompt(
+    plan: dict[str, Any], *, unverified_pack: bool = False
+) -> str:
     """Join the shot list into one structured multi-beat prompt with explicit
     CUT markers. Used for single-shot plans and as the degraded fallback when
     ffmpeg is unavailable (one provider call, ~5s clip)."""
@@ -1046,6 +1048,8 @@ def _build_video_prompt(plan: dict[str, Any]) -> str:
         "captions, or logos of any kind. The final shot resolves back toward "
         "the opening composition so the clip loops cleanly."
     )
+    if unverified_pack:
+        header += "\n\n" + _UNVERIFIED_PACK_DIRECTIVE
     parts = [
         f"SHOT {s['index']} ({s['duration_s']:.1f}s):\n{s['scene']}"
         for s in plan.get("shots") or []
@@ -1272,12 +1276,44 @@ def _wrap_progress(
     return _cb
 
 
-def _build_shot_prompt(shot: dict[str, Any], position: int, total: int) -> str:
+# When the product swap did not fire, no verified pack exists anywhere in
+# this reel: make_keyframe drops the keyframe and every shot is generated
+# from the prompt alone. The model then draws a label, and what it draws is
+# gibberish. One rendered reel carried "FIIRE CMIS", "THETE CCRE MAITENE OL"
+# and "TWTL CCRE PAILSNEWE" across seven shots of olive-oil bottles.
+#
+# The general rule in the plan prompt ("never make the label the subject")
+# does not cover this: the model obeyed it — the bottles sit at natural
+# product-shot distance — and the labels are still legible enough to read as
+# nonsense. With no reference to copy from, the only safe instruction is that
+# printed copy must not resolve AT ALL.
+_UNVERIFIED_PACK_DIRECTIVE = (
+    "PACKAGING (hard constraint for this reel): no product label anywhere in "
+    "frame may carry readable printed copy. Packs read as colour, shape and "
+    "material only — turned partly away from camera, softened by shallow "
+    "depth of field, or cropped by the frame edge. Never present a front-"
+    "facing label at a size where a viewer could try to read it, and never "
+    "invent a brand name, product name, weight, ingredient list or "
+    "certification mark. Unreadable packaging is correct here; invented "
+    "lettering is not."
+)
+
+
+def _build_shot_prompt(
+    shot: dict[str, Any],
+    position: int,
+    total: int,
+    *,
+    unverified_pack: bool = False,
+) -> str:
     """Prompt for ONE shot rendered as its own continuous clip.
 
     Pure function. The source image (branded keyframe for shot 1, the previous
     shot's last frame afterwards) anchors continuity, so the prompt describes
     a single take and — for chained shots — the change-one-thing principle.
+
+    *unverified_pack* is set when no keyframe survived, meaning nothing in
+    this reel shows a real pack — see _UNVERIFIED_PACK_DIRECTIVE.
     """
     header = (
         "Vertical 9:16 photorealistic commercial product footage — one "
@@ -1286,6 +1322,8 @@ def _build_shot_prompt(shot: dict[str, Any], position: int, total: int) -> str:
         "kind."
     )
     lines = [header, "", f"SHOT {position + 1} of {total}:", str(shot.get("scene") or "")]
+    if unverified_pack:
+        lines.append("\n" + _UNVERIFIED_PACK_DIRECTIVE)
     if position == 0:
         lines.append(
             "\nThe motion starts exactly from the provided first frame."
@@ -2997,7 +3035,9 @@ async def render_video(state: VideoState) -> dict[str, Any]:
 
     # ── Legacy single-call path: 1-shot plan, or no ffmpeg to chain/concat ──
     if not multi or ffmpeg_missing:
-        prompt = _build_video_prompt({**plan, "shots": fitted})
+        prompt = _build_video_prompt(
+            {**plan, "shots": fitted}, unverified_pack=not keyframe
+        )
         duration_s = (
             fitted[0]["duration_s"]
             if not multi
@@ -3097,7 +3137,20 @@ async def render_video(state: VideoState) -> dict[str, Any]:
 
     # ── Multi-shot path: N provider calls chained i2v, then ffmpeg concat ──
     num = len(fitted)
-    shot_prompts = [_build_shot_prompt(s, i, num) for i, s in enumerate(fitted)]
+    # No keyframe means the product swap did not fire, so nothing in this
+    # reel is anchored on a real pack and every label the model draws is
+    # invented. Say so in every shot prompt rather than once at planning
+    # time, which runs before make_keyframe and cannot know.
+    unverified_pack = not keyframe
+    if unverified_pack:
+        logger.info(
+            "No verified pack for this reel — every shot prompt forbids "
+            "readable label copy"
+        )
+    shot_prompts = [
+        _build_shot_prompt(s, i, num, unverified_pack=unverified_pack)
+        for i, s in enumerate(fitted)
+    ]
     full_prompt = "\n\n=== SHOT BREAK ===\n\n".join(shot_prompts)
     # generation_ledger becomes an array of per-shot ledger objects.
     shot_ledgers: list[dict[str, Any]] = []

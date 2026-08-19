@@ -153,3 +153,56 @@ class TestChainCapWithoutAKeyframe:
         anchors = [e.get("anchor") for e in result["video_meta"]["ledger"]]
         assert anchors[0] == "keyframe"
         assert "keyframe" in anchors[1:], anchors
+
+
+class TestUnverifiedPackLettering:
+    """With no verified pack, every label the model draws is invented.
+
+    A rendered reel carried "FIIRE CMIS", "THETE CCRE MAITENE OL" and "TWTL
+    CCRE PAILSNEWE" across seven shots of olive-oil bottles. The swap had
+    correctly refused (the reference was a wide banner with a small product),
+    so make_keyframe fell back to t2v and nothing anchored the pack — the
+    model drew a label from nothing.
+
+    The existing plan-prompt rule does not cover this. The model OBEYED it —
+    the bottles sit at natural product-shot distance, the label is not the
+    subject — and the copy is still legible enough to read as nonsense.
+    """
+
+    def test_the_directive_is_absent_when_a_pack_is_verified(self):
+        prompt = nodes._build_shot_prompt(
+            {"scene": "SCENE CONTEXT: a kitchen"}, 0, 6
+        )
+        assert "PACKAGING (hard constraint" not in prompt
+
+    def test_every_shot_carries_it_when_no_pack_is_verified(self):
+        for i in range(6):
+            prompt = nodes._build_shot_prompt(
+                {"scene": "SCENE CONTEXT: a kitchen"}, i, 6,
+                unverified_pack=True,
+            )
+            assert "PACKAGING (hard constraint" in prompt, i
+
+    def test_it_forbids_resolving_copy_not_merely_close_ups(self):
+        text = nodes._UNVERIFIED_PACK_DIRECTIVE
+        # The old rule only banned label CLOSE-UPS, which the model honoured
+        # while still rendering readable gibberish at mid distance.
+        assert "readable printed copy" in text
+        assert "invent" in text
+        # And it must say what correct output looks like, or the model has
+        # only a prohibition to satisfy.
+        assert "Unreadable packaging is correct" in text
+
+    def test_the_single_call_path_carries_it_too(self):
+        plan = {"shots": [{"index": 1, "duration_s": 5.0, "scene": "x"}]}
+        assert "PACKAGING (hard constraint" not in nodes._build_video_prompt(plan)
+        assert "PACKAGING (hard constraint" in nodes._build_video_prompt(
+            plan, unverified_pack=True
+        )
+
+    def test_both_paths_derive_the_flag_from_the_keyframe(self):
+        import inspect
+
+        src = inspect.getsource(nodes.render_video)
+        assert "unverified_pack = not keyframe" in src
+        assert "unverified_pack=not keyframe" in src

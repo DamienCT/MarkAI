@@ -369,10 +369,19 @@ async def swap_product_into_image(
         # invent every character on it.
         raw_reference = PILImage.open(BytesIO(product_image_data))
         if not reference_supports_swap(raw_reference):
+            # Report the TRIMMED size, which is what was actually judged.
+            # Logging the raw size read as "a 1200x630 image is too small",
+            # when the real finding is that the pack occupies a small corner
+            # of a wide banner — usually a scraped share image rather than a
+            # product photo.
+            trimmed_size = trim_flat_border(raw_reference).size
             logger.warning(
-                "Product reference too small (%s) for a faithful swap — "
-                "keeping the unlabeled placeholder",
+                "Product reference too small for a faithful swap: %s of "
+                "%s is product, under the %dpx floor — keeping the "
+                "unlabeled placeholder",
+                trimmed_size,
                 raw_reference.size,
+                MIN_SWAPPABLE_EDGE,
             )
             return image_data
 
