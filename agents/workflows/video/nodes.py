@@ -360,19 +360,30 @@ async def load_video_context(state: VideoState) -> dict[str, Any]:
         "UPDATE calendar_items SET status = 'rendering' WHERE id = :id",
         {"id": state["calendar_item_id"]},
     )
-    # Settle pack provenance HERE, before a single beat is planned. One HTTP
-    # fetch answers whether the gallery photo can carry a faithful swap, and
-    # the answer changes what the reel should be ABOUT: a plan whose REVEAL
-    # beat asks for a hero bottle at product-shot distance will get one, and
-    # with nothing real to copy from the model prints invented lettering on
-    # it. Rewriting those scenes afterwards fights the plan instead of not
-    # writing it — measured on a Naturespan reel where the delabel pass
-    # rewrote all seven scenes and shots 3, 4 and 6 still came back with
-    # legible nonsense copy ("SCNE CONFEXT", "CIABE INN TEHMTS").
-    ref = str(out.get("product_image") or state.get("product_image") or "")
-    verifiable = bool(ref) and not out.get(
-        "is_lifestyle_only", state.get("is_lifestyle_only", True)
-    )
+    return out
+
+
+async def source_product_image_for_video(state: VideoState) -> dict[str, Any]:
+    """Source the product photo, then settle whether it can back a hero beat.
+
+    The check has to land between these two nodes and nowhere else. Earlier —
+    in load_context — there is no product_image on the state yet, so it reads
+    as "no pack" on every reel. Later — in make_keyframe — the plan is already
+    written, and a plan whose REVEAL beat asks for a hero bottle at
+    product-shot distance will get one: with nothing real to copy from, the
+    model prints invented lettering on it. Rewriting those scenes afterwards
+    fights the plan instead of not writing it, and a measured reel proved that
+    loses — the delabel pass rewrote all seven scenes and shots 3, 4 and 6
+    still came back reading "SCNE CONFEXT" and "CIABE INN TEHMTS".
+
+    One HTTP fetch, once per reel; make_keyframe reuses the answer.
+    """
+    out = await source_product_image_node(state)
+    if out.get("status") == "failed":
+        return out
+    merged = {**state, **out}
+    ref = str(merged.get("product_image") or "")
+    verifiable = bool(ref) and not merged.get("is_lifestyle_only", True)
     if verifiable:
         verifiable = await product_photo_is_swappable(ref)
         if not verifiable:

@@ -603,3 +603,93 @@ class TestThePlanKnowsAboutPackProvenance:
         except Exception:
             pass
         assert "PACKAGING — READ THIS" not in seen.get("user", "")
+
+
+class TestProvenanceIsSettledBetweenSourcingAndPlanning:
+    """There is exactly one node boundary where this check works.
+
+    Earlier, in load_context, source_product_image has not run yet — the
+    state has no product_image, so the check reads "no pack" on every reel
+    and the directive fires universally. That is what the first attempt did.
+    Later, in make_keyframe, the plan is already written and the hero-label
+    beat is already in it.
+    """
+
+    def _run(self, monkeypatch, *, sourced, swappable, lifestyle=False):
+        import asyncio
+
+        asked = {}
+
+        async def fake_source(state):
+            return {
+                "product_image": sourced,
+                "is_lifestyle_only": lifestyle,
+            }
+
+        async def fake_swappable(url):
+            asked["url"] = url
+            return swappable
+
+        monkeypatch.setattr(nodes, "source_product_image_node", fake_source)
+        monkeypatch.setattr(nodes, "product_photo_is_swappable", fake_swappable)
+        out = asyncio.run(
+            nodes.source_product_image_for_video({"brand_id": "b"})
+        )
+        return out, asked
+
+    def test_a_thumbnail_reference_marks_the_pack_unverifiable(self, monkeypatch):
+        out, asked = self._run(
+            monkeypatch, sourced="products/b/banner.png", swappable=False
+        )
+        assert out["product_pack_verifiable"] is False
+        assert asked["url"] == "products/b/banner.png"
+
+    def test_a_real_photo_marks_it_verifiable(self, monkeypatch):
+        out, _ = self._run(
+            monkeypatch, sourced="products/b/pack.png", swappable=True
+        )
+        assert out["product_pack_verifiable"] is True
+
+    def test_the_node_still_returns_what_it_sourced(self, monkeypatch):
+        out, _ = self._run(
+            monkeypatch, sourced="products/b/pack.png", swappable=True
+        )
+        assert out["product_image"] == "products/b/pack.png"
+
+    def test_no_photo_means_nothing_is_fetched(self, monkeypatch):
+        out, asked = self._run(monkeypatch, sourced=None, swappable=True)
+        assert out["product_pack_verifiable"] is False
+        assert "url" not in asked
+
+    def test_a_lifestyle_reel_is_not_asked_about_either(self, monkeypatch):
+        out, asked = self._run(
+            monkeypatch, sourced="products/b/pack.png", swappable=True,
+            lifestyle=True,
+        )
+        assert out["product_pack_verifiable"] is False
+        assert "url" not in asked
+
+    def test_a_sourcing_failure_is_passed_straight_through(self, monkeypatch):
+        import asyncio
+
+        async def fail(state):
+            return {"status": "failed", "errors": ["nope"]}
+
+        async def boom(url):
+            raise AssertionError("nothing to check — sourcing failed")
+
+        monkeypatch.setattr(nodes, "source_product_image_node", fail)
+        monkeypatch.setattr(nodes, "product_photo_is_swappable", boom)
+        out = asyncio.run(nodes.source_product_image_for_video({"brand_id": "b"}))
+        assert out["status"] == "failed"
+
+    def test_the_graph_runs_it_before_planning(self):
+        from workflows.video import graph
+
+        names = [n for n, _ in graph._nodes]
+        assert names.index("source_product_image") < names.index("plan_shots")
+        fn = dict(graph._nodes)["source_product_image"]
+        assert fn is nodes.source_product_image_for_video, (
+            "the graph is still calling the unwrapped sourcing node, so no "
+            "reel ever learns its pack provenance"
+        )

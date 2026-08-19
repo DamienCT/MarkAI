@@ -15,7 +15,7 @@ from workflows.video.nodes import (
     make_keyframe,
     plan_shots,
     render_video,
-    source_product_image_node,
+    source_product_image_for_video,
     store_video,
 )
 
@@ -83,7 +83,7 @@ def _check_failed(state: VideoState) -> str:
 _nodes = [
     ("load_context", load_video_context),
     ("enrich_user_brief", enrich_user_brief),
-    ("source_product_image", source_product_image_node),
+    ("source_product_image", source_product_image_for_video),
     ("plan_shots", plan_shots),
     ("make_keyframe", make_keyframe),
     ("render_video", render_video),
