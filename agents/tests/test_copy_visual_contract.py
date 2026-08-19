@@ -537,7 +537,16 @@ class TestGenerateBackgroundCarriesTheBrief:
         state["calendar_item"]["content_brief"] = ""
         asyncio.run(content_nodes.generate_background(state))
         prompt = captured["prompt"]
-        assert "Theme: Indulgent Everyday Pairings" in prompt
+        # The theme still reaches the prompt when there is no brief — but never
+        # as a bare "Theme: <label>." line. That form reads as a title to
+        # typeset, and bake-off models duly rendered it into the frame as a
+        # caption bar (see test_image_prompt_hygiene). It is now marked as
+        # context with an explicit do-not-render instruction.
+        assert "Indulgent Everyday Pairings" in prompt
+        assert "Theme: Indulgent" not in prompt
+        assert "do NOT render this as words" in prompt
+        # Still distinguishable from the with-a-brief path, which additionally
+        # says the scene above is what to shoot.
         assert "context only" not in prompt
 
     def test_chocolate_post_carries_chocolate_into_the_prompt(self, monkeypatch):

@@ -1837,13 +1837,39 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         else "Seasonal direction: current season. "
     )
 
-    # Common composition requirements for logo/text overlay
+    # Composition requirements for the areas the compositor later draws into.
+    #
+    # Worded PURELY as photography — never naming a logo, an overlay, text, or a
+    # reserved area. Two independent bake-off runs showed strong open-weights
+    # models read the old wording as a DESIGN brief and returned a finished
+    # poster: fabricated wordmarks in the "reserved" corner, caption bars
+    # typesetting the prompt, solid colour panels taking half the canvas.
+    # gpt-image-2 ignored it, which is why it went unnoticed. Describing the
+    # same geometry as quiet parts of a photograph fixed every one of them.
     composition_rules = (
-        "IMPORTANT COMPOSITION: The top-right area of the image must be open sky, "
-        "soft blurred background, or a monotone surface (low-contrast, uniform color) — "
-        "this area is reserved for a brand logo overlay. "
-        "The bottom-left area should have some darker or open space for text overlay. "
-        "Do NOT place busy details or high-contrast elements in these corners. "
+        "COMPOSITION: The upper-right of the frame is calm and even in tone — "
+        "open sky, a softly defocused background, or a plain uniform surface, "
+        "with no detail competing for attention there. The lower-left is "
+        "similarly unbusy, a little darker or more open than the rest of the "
+        "frame. These are simply quiet parts of the photograph: keep subjects, "
+        "edges and high-contrast detail out of both areas. "
+    )
+
+    # The brand NAME never goes into an image prompt. It is a word, and image
+    # models render words: bake-off runs caught two different models typesetting
+    # "Naturespan" into the frame as a fabricated wordmark, once perfectly
+    # legibly. Competent fake client branding is more dangerous than obvious
+    # gibberish. Brand identity reaches the picture through palette, styling and
+    # casting — never through its spelling.
+    #
+    # The campaign theme is a label ("Indulgent Everyday Pairings"), not a scene.
+    # Passed as the subject it produces free association; it is context only,
+    # and it yields entirely to a real brief.
+    _theme_raw = sanitize_for_prompt(item.get("theme", "") or "")
+    theme_context = (
+        f"Campaign context (do NOT render this as words): {_theme_raw}. "
+        if _theme_raw
+        else ""
     )
 
     # Realism directives — anchor the model to real commercial photography
@@ -1889,6 +1915,17 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         "NO floating icons, NO UI elements, NO app interface overlays. "
         "NO HUD chrome, NO health indicators, NO status badges, NO info bubbles. "
         "NO graphic shapes or symbols overlaid on the scene. "
+        # The observed failure is "poster", not "cartoon" — a strong model that
+        # reads the brief as a design brief returns a competent marketing layout
+        # with invented client branding, which is far more dangerous than
+        # obvious gibberish. Name that failure mode explicitly.
+        "STRICT LAYOUT EXCLUSIONS — this is a PHOTOGRAPH, not a design: "
+        "NOT a poster, NOT an advertisement layout, NOT a magazine spread. "
+        "NO caption bar, NO title card, NO headline typeset into the image. "
+        "NO wordmark, NO brand lockup, NO invented company name. "
+        "NO solid colour panel, NO sidebar, NO colour block, NO framed border. "
+        "The photograph fills the entire frame edge to edge — it is never "
+        "inset, matted, or placed inside a graphic layout. "
         "STRICT VISUAL EXCLUSIONS: "
         "NO distorted anatomy, NO extra fingers, NO blurry faces. "
         "NO plastic skin, NO airbrushed skin, NO uniform skin. "
@@ -1963,10 +2000,12 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
         # headline promising one.
         theme = item.get("theme", "")
         theme_line = (
-            f"Campaign theme (context only — shoot the SCENE above): "
-            f"{sanitize_for_prompt(theme)}. "
+            f"Campaign theme (context only, do NOT render as words — shoot the "
+            f"SCENE above): {sanitize_for_prompt(theme)}. "
             if briefed_scene_block
-            else f"Theme: {sanitize_for_prompt(theme)}. "
+            # Bare "Theme: <label>." reads as a title to typeset. Same guard as
+            # theme_context above: say it is context and forbid rendering it.
+            else theme_context
         )
         ad_base = (
             f"Create a clean, professional PRODUCT ADVERTISEMENT image in a studio "
@@ -2049,8 +2088,7 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "
             f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post.\n\n"
             f"{scene_block}"
-            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. "
-            f"Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
+            f"{theme_context}"
             f"{color_directive}"
             f"{style_directive}"
             f"{audience_directive}"
@@ -2086,8 +2124,7 @@ async def generate_background(state: ContentState) -> dict[str, Any]:
             f"REAL PHOTOGRAPH — Ultra realistic documentary commercial photography "
             f"for a {sanitize_for_prompt(item.get('channel', 'instagram'))} post.\n\n"
             f"{scene_block}"
-            f"Brand: {sanitize_for_prompt(brand.get('name', ''))}. "
-            f"Theme: {sanitize_for_prompt(item.get('theme', ''))}. "
+            f"{theme_context}"
             f"Include a realistic unlabeled neutral product container with authentic "
             f"material textures (matte plastic or paperboard, slight wear, natural "
             f"shadows, NO writing on it) placed naturally in the scene. "
