@@ -409,7 +409,41 @@ def _clean_overlay_text(
         # A single oversized word: keep a one-line truncation rather than
         # losing the line entirely.
         kept = [words[0][:wrap_chars]]
-    return " ".join(kept)
+    return _close_fragment(" ".join(kept))
+
+
+# A burned line is read on its own, with nothing before or after it. Trailing
+# punctuation and dangling connectives promise a continuation that the next
+# cut never delivers: a rendered reel carried "AB Ecocert Eurofeuille," across
+# a full beat, which reads as a line that got cut off rather than a claim.
+_FRAGMENT_TAIL_PUNCT = ",;:-–—…"
+_DANGLING_WORDS = frozenset(
+    "and or but so with without for from to of in on at by as than that "
+    "while when because plus into onto over under".split()
+)
+
+
+def _close_fragment(text: str) -> str:
+    """Drop a trailing connective and open punctuation from a line (pure).
+
+    Only the TAIL is touched, and only words that cannot end a thought —
+    "Certified organic and" becomes "Certified organic", which is a line;
+    "Shop the range" is left exactly as written.
+    """
+    out = str(text or "").strip()
+    while out:
+        stripped = out.rstrip(_FRAGMENT_TAIL_PUNCT + " ")
+        if stripped != out:
+            out = stripped
+            continue
+        words = out.split()
+        if len(words) > 1 and words[-1].lower().strip(
+            _FRAGMENT_TAIL_PUNCT + ".!?"
+        ) in _DANGLING_WORDS:
+            out = " ".join(words[:-1])
+            continue
+        break
+    return out
 
 
 def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
@@ -753,6 +787,17 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "STYLE: photographic/commercial style anchors\n"
             "LOCKS: what must stay true across the shot (product identity, "
             "palette, setting)\n\n"
+            "PACING — \"duration_s\" is the WEIGHT of each beat, not a "
+            "formality:\n"
+            f"- Use the full {MIN_SHOT_RENDER_S:.0f}-{MAX_SHOT_RENDER_S:.0f} "
+            "second range. Giving every beat the same number produces a reel "
+            "that ticks like a metronome, which is the single clearest tell "
+            "of an automated edit.\n"
+            "- Cut FAST through the opening and any montage of quick details; "
+            "HOLD on the product reveal, the proof beat and the payoff, which "
+            "are the shots a viewer actually needs time to take in.\n"
+            "- At least two beats must differ by a full second from each "
+            "other.\n\n"
             "OVERLAY TEXT (burned onto the video in post — the ONLY text "
             "that ever appears on screen):\n"
             f"- Every shot has an \"overlay_text\": a punchy on-screen line, "
@@ -765,13 +810,25 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "- Consecutive lines must never repeat each other — each line "
             f"holds the screen for {MIN_SHOT_RENDER_S:.0f}-"
             f"{MAX_SHOT_RENDER_S:.0f} seconds, long enough to read twice.\n"
+            "- EVERY LINE STANDS ALONE. A viewer reads it with nothing before "
+            "or after it, so it must be a complete thought on its own — never "
+            "a clause that runs on into the next shot. No trailing comma, "
+            "dash or ellipsis, and never end on a connective word (and, with, "
+            "for, to, of, because). \"Certified organic, every bottle\" is a "
+            "line; \"AB Ecocert Eurofeuille,\" is a caption that got cut in "
+            "half.\n"
+            "- Write a CLAIM a shopper cares about, not a label transcription. "
+            "Certification names, standard bodies and regulatory wording are "
+            "packaging copy, not on-screen copy — say what it means for them "
+            "instead.\n"
             "- Plain words only: no emojis, no hashtags, no quotation "
             "marks.\n\n"
             "Return STRICT JSON only, with this exact shape:\n"
             "{\n"
             '  "hook_line": "<scroll-stopping line under 8 words, ENGLISH>",\n'
             '  "shots": [\n'
-            '    {"index": 1, "duration_s": 4.0, "overlay_text": "<on-screen line, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."}\n'
+            '    {"index": 1, "duration_s": 3.0, "overlay_text": "<on-screen line, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."},\n'
+            '    {"index": 2, "duration_s": 5.0, "overlay_text": "<...>", "scene": "..."}\n'
             "  ],\n"
             '  "caption": "<post caption in the brand voice, ENGLISH>",\n'
             '  "hashtags": ["tag1", "tag2"],\n'
