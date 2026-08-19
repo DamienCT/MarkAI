@@ -25,6 +25,7 @@ from typing import Any
 from uuid import uuid4
 
 from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
+from shared.image_processing import contrast_ratio, relative_luminance
 from shared.language_guard import detect_non_english
 from shared.config import (
     VIDEO_BURN_TIMEOUT_S,
@@ -151,10 +152,46 @@ _CTA_FONT_SIZE = 96
 # off the end of a finished reel. Scale the budget by the font ratio.
 _CTA_WRAP_CHARS = max(1, (_OVERLAY_WRAP_CHARS * _OVERLAY_FONT_SIZE) // _CTA_FONT_SIZE)
 _CTA_MAX_CHARS = _CTA_WRAP_CHARS * _OVERLAY_MAX_LINES
-# \an5 anchor on the 1080x1920 grid, inside the platform safe zones
-# (x 65..1015, y 270..1250) — clear of UI chrome top and bottom.
-_OVERLAY_POS_X = 540
-_OVERLAY_POS_Y = 1130
+# ── Burn safe areas on the 1080x1920 grid ─────────────────────────────────
+# Published creative specs, converted to pixels and intersected:
+#   TikTok safe-zone template: left 44, right 140 (action rail), top 130,
+#     bottom 483 (caption + handle + music row).
+#   Instagram Reels: no text in the top ~14% (270px) or bottom ~20% (384px);
+#     the organic right action rail is ~180px wide, caption block ~420px tall.
+#   YouTube Shorts: right rail ~150px, bottom title/subscribe ~380px.
+# Type may only occupy the union of all three.
+_SAFE_LEFT = 80
+_SAFE_RIGHT = 900  # 1080 - 180: clears the widest right action rail
+_SAFE_TOP = 240
+_SAFE_BOTTOM = 1420  # 1920 - 500: clears the widest bottom caption block
+# Type is bottom-LEFT anchored and grows UPWARD, so adding a line can never
+# push it into the bottom chrome. The previous \an5 centre at (540,1130) did
+# both things wrong: a ~950px-wide centred line reached x=1015, 75px under the
+# action rail, and the 1015..1245 band is exactly where a 9:16 product shot
+# puts the bottle and the faces. Rendered reels showed lines sitting on an
+# olive-oil label and across a presenter's chest.
+_OVERLAY_POS_X = _SAFE_LEFT
+_OVERLAY_POS_Y = _SAFE_BOTTOM
+# Scrim: a feathered black plate under the type. Legibility was a property of
+# the GLYPH (outline + shadow), which is backdrop-dependent by construction —
+# white-on-beige at "Certified organic matters" was barely readable in a
+# finished reel. A scrim makes the backdrop deterministic instead, which is
+# also what makes the CTA contrast check below computable without decoding a
+# frame. 55% is the lightest value that still holds white Poppins Bold over a
+# blown-out white shot.
+_SCRIM_ALPHA_HEX = "73"  # ASS alpha: 0x73/0xFF transparent => ~55% opaque
+_SCRIM_TOP_Y = 980  # \blur feathers this edge upward from about y=900
+# The worst backdrop the scrim can produce (55% black over pure white).
+_SCRIM_WORST_BACKDROP = (115, 115, 115)
+# WCAG 2.1 AA large-text is 3:1, and burned CTA type is large by definition
+# (96px on a 1080 frame). The body-text floor of 4.5:1 is NOT usable here: the
+# most contrast anything can reach against the scrim's worst backdrop is pure
+# white at 4.69:1, so a 4.5 floor admits only near-white and turns the check
+# into "always white" — a discriminator that never discriminates. At 3:1 a
+# pale brand colour passes and a saturated one (Naturespan's lime, 2.1:1)
+# does not, which is the distinction that matters.
+_MIN_CTA_CONTRAST = 3.0
+_OVERLAY_RISE_PX = 24  # entry travel for the settle
 
 # Step tracking: maps node key to index for progress reporting
 VIDEO_PIPELINE_STEPS = [
@@ -1631,22 +1668,82 @@ def _brand_accent_hex(brand: dict[str, Any]) -> str | None:
     return None
 
 
+def _cta_primary_colour(accent_hex: str | None) -> str:
+    """ASS PrimaryColour for the CTA — the brand accent only when it reads.
+
+    The scrim makes the CTA's backdrop deterministic, so the accent can be
+    checked against the WORST backdrop the scrim can produce (55% black over
+    pure white) with the same WCAG helpers the logo placer uses, without
+    decoding a frame. Naturespan's accent is a saturated lime (#80c020) that
+    measures well under the floor; it shipped as bright green letters over a
+    warm brown dinner scene, which reads as a glitch rather than a CTA.
+    """
+    accent = _hex_to_ass_color(accent_hex)
+    if not accent:
+        return "&H00FFFFFF"
+    raw = str(accent_hex).lstrip("#")
+    rgb = (int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16))
+    ratio = contrast_ratio(
+        relative_luminance(rgb), relative_luminance(_SCRIM_WORST_BACKDROP)
+    )
+    if ratio < _MIN_CTA_CONTRAST:
+        logger.info(
+            "CTA accent %s measures %.2f:1 on the scrim (floor %.1f:1) — "
+            "rendering the CTA in white instead",
+            accent_hex,
+            ratio,
+            _MIN_CTA_CONTRAST,
+        )
+        return "&H00FFFFFF"
+    return f"&H00{accent[2:-1]}"
+
+
+def _scrim_dialogue(start: float, end: float) -> str:
+    r"""One feathered black plate under the type, as an ASS vector drawing.
+
+    ``\an7`` + ``\pos(0,0)`` makes the ``\p1`` drawing coordinates frame
+    coordinates; ``\blur`` feathers the top edge so the plate reads as a
+    gradient rather than a rectangle.
+    """
+    body = (
+        "{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H000000&"
+        f"\\1a&H{_SCRIM_ALPHA_HEX}&\\blur64\\fad(180,220)\\p1}}"
+        f"m 0 {_SCRIM_TOP_Y} l 1080 {_SCRIM_TOP_Y} 1080 1920 0 1920"
+        "{\\p0}"
+    )
+    return (
+        f"Dialogue: 0,{_format_ass_time(start)},{_format_ass_time(end)},"
+        f"Scrim,,0,0,0,,{body}"
+    )
+
+
 def _build_overlay_ass(
     events: list[dict[str, Any]], accent_hex: str | None = None
 ) -> str:
     r"""Build the .ass subtitle document for the overlay events (pure).
 
-    1080x1920 play grid; 'Overlay' is Poppins Bold 76px white with a dark
-    outline and soft shadow, 'CTA' the same face at 88px in the brand accent
-    color. Every line fades in/out (\fad 250ms) and scales 90 → 100% over the
-    first 250ms, anchored \an5 at the safe-zone position.
+    1080x1920 play grid. Type is Poppins Bold, bottom-LEFT anchored (\an1) on
+    the safe baseline so it grows upward and can never drift into the bottom
+    caption chrome or under the right action rail. Each line rides a feathered
+    black scrim on the layer below, which is what carries legibility over
+    arbitrary footage — an outline alone is backdrop-dependent, and white type
+    over a pale wall was barely readable in a finished reel. The CTA takes the
+    brand accent only when it measures against the scrim; otherwise white.
     """
-    accent = _hex_to_ass_color(accent_hex)
-    cta_color = f"&H00{accent[2:-1]}" if accent else "&H00FFFFFF"
+    cta_color = _cta_primary_colour(accent_hex)
+    # \move settles the line upward as it fades in: a short travel reads as
+    # deliberate, where the old fade-plus-scale is the stock editor preset.
     tags = (
-        "{\\an5\\pos(%d,%d)\\fad(250,250)\\fscx90\\fscy90"
-        "\\t(0,250,\\fscx100\\fscy100)}" % (_OVERLAY_POS_X, _OVERLAY_POS_Y)
+        "{\\an1\\move(%d,%d,%d,%d,0,220)\\fad(180,220)}"
+        % (
+            _OVERLAY_POS_X,
+            _OVERLAY_POS_Y + _OVERLAY_RISE_PX,
+            _OVERLAY_POS_X,
+            _OVERLAY_POS_Y,
+        )
     )
+    margin_r = 1080 - _SAFE_RIGHT
+    margin_v = 1920 - _SAFE_BOTTOM
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -1660,10 +1757,20 @@ def _build_overlay_ass(
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
+        # Alignment 1 = bottom-left. The scrim carries legibility, so the type
+        # keeps a 2px keyline rather than the 4px outline + 2px shadow that
+        # reads as a sports lower-third. Spacing -1 tightens Poppins Bold at
+        # display size.
         f"Style: Overlay,Poppins,{_OVERLAY_FONT_SIZE},&H00FFFFFF,&H00FFFFFF,"
-        "&H00141414,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,5,65,65,0,1",
+        f"&H00141414,&H00000000,-1,0,0,0,100,100,-1,0,1,2,0,1,"
+        f"{_SAFE_LEFT},{margin_r},{margin_v},1",
         f"Style: CTA,Poppins,{_CTA_FONT_SIZE},{cta_color},&H00FFFFFF,"
-        "&H00141414,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,5,65,65,0,1",
+        f"&H00141414,&H00000000,-1,0,0,0,100,100,-1,0,1,2,0,1,"
+        f"{_SAFE_LEFT},{margin_r},{margin_v},1",
+        # Drawing-only style for the scrim plate. A small Fontsize keeps the
+        # line box from contributing ascent to the \p1 drawing origin.
+        "Style: Scrim,Poppins,20,&H00000000,&H00000000,&H00000000,"
+        "&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
@@ -1676,6 +1783,9 @@ def _build_overlay_ass(
         text = _wrap_overlay_text(_ass_escape(event["text"]), wrap)
         if not text:
             continue
+        # Scrim first: same Layer, and libass draws same-layer events in file
+        # order, so the plate lands under the type.
+        lines.append(_scrim_dialogue(event["start"], event["end"]))
         lines.append(
             f"Dialogue: 0,{_format_ass_time(event['start'])},"
             f"{_format_ass_time(event['end'])},{event['style']},,0,0,0,,"

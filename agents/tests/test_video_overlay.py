@@ -366,11 +366,18 @@ class TestBuildOverlayAss:
         assert "PlayResX: 1080" in doc
         assert "PlayResY: 1920" in doc
         assert f"Style: Overlay,Poppins,{_OVERLAY_FONT_SIZE}," in doc
-        assert f"Style: CTA,Poppins,{_CTA_FONT_SIZE},&H000B9EF5," in doc
-        assert doc.count("Dialogue:") == 2
-        assert "\\an5\\pos(540,1130)" in doc
-        assert "\\fad(250,250)" in doc
-        assert "\\fscx90\\fscy90\\t(0,250,\\fscx100\\fscy100)" in doc
+        # Amber measures 2.21:1 over the scrim, under the large-text floor, so
+        # the CTA is demoted to white rather than shipped unreadable.
+        assert f"Style: CTA,Poppins,{_CTA_FONT_SIZE},&H00FFFFFF," in doc
+        # Two type lines, each with a scrim plate emitted under it.
+        assert doc.count("Dialogue:") == 4
+        assert doc.count(",Scrim,,") == 2
+        # Bottom-left on the safe baseline, settling upward. The old
+        # \an5\pos(540,1130) centred the line out to x=1015 — under the action
+        # rail — and dropped it onto the hero product.
+        assert "\\an1\\move(80,1444,80,1420,0,220)" in doc
+        assert "\\fad(180,220)" in doc
+        assert "\\an5" not in doc
         assert "0:00:00.20" in doc
         assert "0:00:04.85" in doc
 
@@ -383,7 +390,11 @@ class TestBuildOverlayAss:
             _overlay_shots(["Buy {now} 50\\ off"]), [5.0], ""
         )
         doc = _build_overlay_ass(events)
-        dialogue = [ln for ln in doc.splitlines() if ln.startswith("Dialogue:")][0]
+        dialogue = [
+            ln
+            for ln in doc.splitlines()
+            if ln.startswith("Dialogue:") and ",Scrim,," not in ln
+        ][0]
         text_part = dialogue.split("}", 1)[1]
         assert "{" not in text_part and "}" not in text_part
         assert "\\" not in text_part.replace("\\N", "")
@@ -632,7 +643,12 @@ class TestCtaFitsItsBox:
             {"text": "Shop certified today", "style": "CTA", "start": 0.0, "end": 4.0}
         ]
         doc = video_nodes._build_overlay_ass(events, accent_hex=None)
-        dialogue = [ln for ln in doc.splitlines() if ln.startswith("Dialogue:")]
+        # The scrim plate is a vector drawing, not type — measure the text only.
+        dialogue = [
+            ln
+            for ln in doc.splitlines()
+            if ln.startswith("Dialogue:") and ",Scrim,," not in ln
+        ]
 
         assert len(dialogue) == 1
         for line in dialogue[0].split(",")[-1].split("\\N"):
