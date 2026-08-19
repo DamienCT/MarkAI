@@ -698,3 +698,72 @@ detection once enough reels exist to calibrate; the audio path reporting a
 gain it may not have applied on the fourth round, and `delivered_*` metrics
 being pre-AAC; music beds once licensing is decided; n8n workflow import;
 observability; token encryption; Qdrant learning loop.
+
+## Cycle 10 — The user watched the reel and was right (2026-08-19)
+
+Verbatim verdict on the delivered cap-1 reel: *"music restarting every time a
+new caption is appearing… dark screen then light screen without overlay…
+it's a mess."* Every complaint mapped to a measurement:
+
+| complaint | measurement |
+|---|---|
+| "music restarting" | no bed exists; each shot's LTX ambience restarted cold at its join — RMS steps to **+15.9 dB** in 0.5s, end card **−54.9 dB** to digital silence |
+| "dark screen then light screen" | the caption scrim darkened the bottom 49% of frame (163→87 mean luma) in and out with **every** line |
+| "captions shouldn't be throughout" | every shot carried an `overlay_text`; the plan prompt demanded one |
+| picture steps | +22.3 luma at 13s, +10.3 at 21s on *chained* joins with no cut to hide them |
+
+**Research first** (six Fable agents, verified sources): LTX-2.5 natively does
+multishot (one generation, connected shots holding character/lighting/voice),
+audio-driven talking people (IA2V), and its own finishing stack (DFR, Retake,
+temporal upscaler) — all under the LTX Community License (<$10M revenue).
+Commercially clean picks elsewhere: **ACE-Step 1.5** (music, MIT code+weights),
+**Chatterbox** (TTS, MIT, PerTh watermark), **LongCat-Video-Avatar-1.5**
+(avatars, MIT). Disqualified on license: MusicGen (CC-BY-NC weights), F5-TTS
+(NC weights), Sonic, LivePortrait (insightface), Remotion (>3 employees),
+HunyuanVideo-Avatar (excludes EU).
+
+**Shipped this cycle:**
+
+- **Caption beats** (`_select_caption_beats`): hook (high-centre, \an5) + ONE
+  mid-reel proof + CTA, enforced in code whatever the plan says; beats hold ≤
+  3.2s then the footage runs clean. Split-hook duplicates can't reach the
+  proof slot; the CTA borrow walks backwards across empty windows.
+- **Rounded cards replace the scrim**: layer-0 `\p1` bezier rounded rects
+  sized to the words (bucketed Poppins advance table, 1.40 em line height),
+  sharing the text's exact `\fad(200,260)` and 24px rise. Nothing outside the
+  words' footprint changes any more. Brand accents re-check against the
+  card's near-black: Naturespan's lime now passes (3.9:1) where the mid-grey
+  scrim rejected it. Probe frames rendered in-container confirmed geometry.
+- **Audio assembly stage**: per-shot integrated LUFS → correction to the reel
+  **median** (±9 dB cap), 60/80 ms seam fades, `adelay` onto one timeline,
+  `amix normalize=0` (no acrossfade — it desyncs hard cuts), and the last
+  shot's ambience looped under the end card with a 1.6s release. Runs between
+  end-card attach and the existing loudness search.
+- **Supplier silence** (hard user directive, own commit): see cycle notes in
+  `shared/suppliers.py` — prompt-side scrub at the DB layer, output-side
+  scrub at store time, `_resolve_sub_brand` opt-in only, `pack_owner()` for
+  swap prompts. 25 in-review posts scrubbed of "ACCORD BIO" et al.
+- **Image compositor** (the flagged jam-jar post): product region is now
+  protected like the text block (vision planner returns `product_box`;
+  `DEFAULT_PRODUCT_BOX` central band otherwise) — the logo can never again
+  sit on the pack because the pack out-contrasts the wall. Mockups stopped
+  square-cropping (feed-aspect fit, 1.91:1…4:5) — the preview a reviewer
+  approves is what the platform shows. Per-word headline colors retired;
+  one ink measured at draw time (dark over pale bands >175 luma).
+
+**Operational discovery, the hard way:** pushing to `main` auto-deploys the
+VPS agents container within ~3 minutes and killed a render 9 minutes in
+(no agent_runs row, item marked failed, JetStream ack_wait 7.3h). Rule:
+never push while a render is in flight.
+
+**In flight at cycle close:** re-render of 70036111 on the new pipeline;
+ACE-Step 1.5 installing on the 4090 box (bed library for
+`assets/music/<mood>/` next — the audio stage already picks them up).
+
+**Cycle-11 backlog:** everything in cycle 10's list that isn't struck, plus:
+LTX-2.5 native multishot migration spike (the real fix for chained-join luma
+steps), IA2V lipsync spike on the deployed fp8 checkpoint (gate before any
+avatar work), Chatterbox VO lane, per-platform image composition (the
+landscape master is the wrong shape for IG portrait), pack-weight claim vs
+pack-photo verification (copy said 690g, jar read 260g), blank-prop negative
+prompts for scene generation.
