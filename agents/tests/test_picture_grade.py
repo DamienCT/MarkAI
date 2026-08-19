@@ -361,3 +361,50 @@ class TestTheTwoGoalsCompeteOnDarkFootage:
         assert p["black"] == 0.0
         landed = _apply(murk, p, "YAVG")
         assert GOLD_YAVG > landed > murk["YAVG"] * 1.9
+
+
+class TestTheExposureContractIsStatedUpstream:
+    """The reel's darkness starts at the keyframe, and the model is not why.
+
+    gpt-image-2 delivers YAVG 140 under the content pipeline's prompts — which
+    carry an explicit lighting directive from shared.visual_brief plus a
+    "NO over-stylized lighting" exclusion — and delivered YAVG 77 under the
+    video keyframe's prompt, which said only "Real shadows. Authentic
+    textures." Left to itself the model reads "commercial product
+    photography" as chiaroscuro, and because every chained shot inherits that
+    key, one under-exposed frame sets the exposure of a 30-second reel.
+
+    The grade still corrects what lands. These are not redundant: a shot
+    rendered closer to target needs less gamma, and less gamma is less noise.
+    """
+
+    def test_the_keyframe_prompt_asks_for_a_bright_frame(self):
+        rule = nodes._KEYFRAME_EXPOSURE_RULE
+        assert "bright" in rule.lower()
+        # Naming the failure mode matters more than praising the good one —
+        # "chiaroscuro" is exactly what came back.
+        assert "chiaroscuro" in rule.lower()
+        assert "low-key" in rule.lower()
+
+    def test_and_does_not_ask_for_flat(self):
+        # Over-correcting into flat, washed-out footage would defeat the
+        # black point the grade works to protect.
+        rule = nodes._KEYFRAME_EXPOSURE_RULE.lower()
+        assert "real shadows" in rule
+        assert "not flat" in rule or "washed out" in rule
+
+    def test_every_shot_prompt_carries_the_same_contract(self):
+        for i in range(4):
+            prompt = nodes._build_shot_prompt(
+                {"scene": "SCENE CONTEXT: a kitchen"}, i, 4
+            )
+            assert "EXPOSURE:" in prompt, i
+            assert "NOT low-key" in prompt, i
+
+    def test_the_single_call_path_is_not_left_behind(self):
+        # It renders the whole reel in one generation, so an unstated
+        # contract there is a whole dark reel, not one dark shot.
+        prompt = nodes._build_video_prompt(
+            {"shots": [{"index": 1, "duration_s": 5.0, "scene": "x"}]}
+        )
+        assert "EXPOSURE" in prompt

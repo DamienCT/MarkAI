@@ -999,6 +999,24 @@ def _extract_first_frame(scene: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+# The keyframe is where the reel's darkness starts, and the same model is
+# not the reason. gpt-image-2 delivers YAVG 140 under the content pipeline's
+# prompts — which carry an explicit lighting contract from
+# shared.visual_brief plus a "NO over-stylized lighting" exclusion — and
+# delivered YAVG 77 here, under a prompt that said only "Real shadows.
+# Authentic textures." Left to itself the model reads "commercial product
+# photography" as chiaroscuro. Every chained shot then inherits that key, so
+# one under-exposed frame sets the exposure of a 30-second reel.
+_KEYFRAME_EXPOSURE_RULE = (
+    "EXPOSURE (as important as the composition): a bright, open, well-lit "
+    "frame. The subject is clearly lit — generous soft key with visible fill "
+    "in the shadows, so shadow detail stays readable rather than falling to "
+    "black. Light, airy, appetising. NOT moody, NOT chiaroscuro, NOT a dark "
+    "background with a single dramatic highlight, NOT low-key. Keep real "
+    "contrast and real shadows — this is bright, not flat or washed out. "
+)
+
+
 async def make_keyframe(state: VideoState) -> dict[str, Any]:
     """Generate the branded 9:16 product keyframe for shot 1's first frame.
 
@@ -1085,6 +1103,7 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
         # whole reel.
         f"{product_rule}"
         f"Real shadows. Authentic textures. Natural depth of field. "
+        f"{_KEYFRAME_EXPOSURE_RULE}"
         f"{no_text_rule}"
         f"The image MUST look like a photograph captured with a real camera, "
         f"NOT an artwork, NOT a rendering, NOT an illustration."
@@ -1182,7 +1201,8 @@ def _build_video_prompt(
         "footage, one continuous generation with hard cuts between shots. "
         "Diegetic audio only — no voiceover, no music. No on-screen text, "
         "captions, or logos of any kind. The final shot resolves back toward "
-        "the opening composition so the clip loops cleanly."
+        "the opening composition so the clip loops cleanly.\n\n"
+        + _SHOT_EXPOSURE_RULE
     )
     if unverified_pack:
         header += "\n\n" + _UNVERIFIED_PACK_DIRECTIVE
@@ -1423,6 +1443,20 @@ def _wrap_progress(
 # product-shot distance — and the labels are still legible enough to read as
 # nonsense. With no reference to copy from, the only safe instruction is that
 # printed copy must not resolve AT ALL.
+# Same contract the keyframe carries, for the same measured reason. Shots
+# came back at YAVG 81-89 against the stills' 140 even with the plan's own
+# LIGHTING lines asking for "soft morning light, warm-neutral" — the video
+# model has its own bias toward a dark key. The grade corrects what lands;
+# this is the cheaper half of the fix, and the two are not redundant: a shot
+# rendered closer to target needs less gamma, and less gamma is less noise.
+_SHOT_EXPOSURE_RULE = (
+    "EXPOSURE: bright, open, well-lit footage. Generous soft key with "
+    "visible fill, shadow detail readable rather than crushed to black. "
+    "NOT moody, NOT low-key, NOT a dark frame with one dramatic highlight. "
+    "Real contrast and real shadows — bright, not washed out."
+)
+
+
 _UNVERIFIED_PACK_DIRECTIVE = (
     "PACKAGING (hard constraint for this reel): no product label anywhere in "
     "frame may carry readable printed copy. Packs read as colour, shape and "
@@ -1555,7 +1589,7 @@ def _build_shot_prompt(
         "Vertical 9:16 photorealistic commercial product footage — one "
         "continuous take, no cuts, no transitions. Diegetic audio only — no "
         "voiceover, no music. No on-screen text, captions, or logos of any "
-        "kind."
+        "kind.\n\n" + _SHOT_EXPOSURE_RULE
     )
     lines = [header, "", f"SHOT {position + 1} of {total}:", str(shot.get("scene") or "")]
     if unverified_pack:
