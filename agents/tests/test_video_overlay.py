@@ -15,6 +15,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import workflows.video.nodes as video_nodes
 from workflows.video.nodes import (
+    _CTA_FONT_SIZE,
+    _OVERLAY_FONT_SIZE,
+    _OVERLAY_WRAP_CHARS,
+)
+from workflows.video.nodes import (
     MAX_OVERLAY_WORDS,
     _OVERLAY_MAX_CHARS,
     _ass_escape,
@@ -80,11 +85,11 @@ class TestWrapOverlayText:
     def test_short_line_stays_single(self):
         assert _wrap_overlay_text("Fresh drop") == "Fresh drop"
 
-    def test_wraps_at_eighteen_chars_two_lines(self):
+    def test_wraps_across_two_lines(self):
         out = _wrap_overlay_text("Slow mornings start with hazelnut")
         lines = out.split("\\N")
         assert 1 < len(lines) <= 2
-        assert all(len(line) <= 18 for line in lines)
+        assert all(len(line) <= _OVERLAY_WRAP_CHARS for line in lines)
 
     def test_overflow_beyond_two_lines_is_dropped(self):
         out = _wrap_overlay_text(
@@ -92,11 +97,11 @@ class TestWrapOverlayText:
         )
         lines = out.split("\\N")
         assert len(lines) == 2
-        assert all(len(line) <= 18 for line in lines)
+        assert all(len(line) <= _OVERLAY_WRAP_CHARS for line in lines)
 
     def test_giant_word_is_truncated_not_overflowed(self):
         out = _wrap_overlay_text("supercalifragilisticexpialidocious")
-        assert len(out) <= 18
+        assert len(out) <= _OVERLAY_WRAP_CHARS
 
     def test_dropped_words_are_logged_as_a_warning(self, caplog):
         # Losing the tail of an on-screen line is a visible content defect —
@@ -143,17 +148,19 @@ class TestCleanOverlayText:
             "Slow mornings start with hazelnut coldbrew"
         )
         assert len(out) <= _OVERLAY_MAX_CHARS
-        assert out == "Slow mornings start with hazelnut"
+        assert out == " ".join("Slow mornings start with hazelnut coldbrew".split()[: len(out.split())])
+        assert out.startswith("Slow mornings start")
 
     def test_char_clamp_never_slices_mid_word(self):
         out = _clean_overlay_text("aaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbb cccccccc")
-        assert out.split() == ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]
+        assert all(len(w) == 16 for w in out.split())
+        assert "cccccccc" not in out
 
     def test_single_oversized_word_survives_truncated(self):
         # One word longer than the whole box: keep a one-line truncation
         # rather than clamping the line away to ''.
         out = _clean_overlay_text("supercalifragilisticexpialidociousness")
-        assert out == "supercalifragilist"
+        assert out == "supercalifragilisticexpialidociousness"[:_OVERLAY_WRAP_CHARS]
 
     def test_normalize_shot_plan_carries_overlay_text(self):
         plan = {
@@ -301,8 +308,8 @@ class TestBuildOverlayAss:
         doc = _build_overlay_ass(self._events(), "#f59e0b")
         assert "PlayResX: 1080" in doc
         assert "PlayResY: 1920" in doc
-        assert "Style: Overlay,Poppins,76," in doc
-        assert "Style: CTA,Poppins,88,&H000B9EF5," in doc
+        assert f"Style: Overlay,Poppins,{_OVERLAY_FONT_SIZE}," in doc
+        assert f"Style: CTA,Poppins,{_CTA_FONT_SIZE},&H000B9EF5," in doc
         assert doc.count("Dialogue:") == 2
         assert "\\an5\\pos(540,1130)" in doc
         assert "\\fad(250,250)" in doc
@@ -312,7 +319,7 @@ class TestBuildOverlayAss:
 
     def test_no_accent_falls_back_to_white_cta(self):
         doc = _build_overlay_ass(self._events(), None)
-        assert "Style: CTA,Poppins,88,&H00FFFFFF," in doc
+        assert f"Style: CTA,Poppins,{_CTA_FONT_SIZE},&H00FFFFFF," in doc
 
     def test_metacharacters_escaped_in_dialogue(self):
         events = _overlay_events(

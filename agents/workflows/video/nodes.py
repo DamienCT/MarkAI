@@ -86,7 +86,7 @@ _CONCAT_PROGRESS_START = 95
 # master (see _burn_overlays).
 FONTS_DIR = "/usr/share/fonts/truetype/markai"
 MAX_OVERLAY_WORDS = 6
-_OVERLAY_WRAP_CHARS = 18  # ~18 chars/line at 76px keeps x within 65..1015
+_OVERLAY_WRAP_CHARS = 16  # ~16 chars/line at 96px keeps x within 65..1015
 _OVERLAY_MAX_LINES = 2
 # The whole box holds two 18-char lines — overlay_text is clamped to that
 # budget at plan normalization so _wrap_overlay_text rarely has to drop words
@@ -95,8 +95,10 @@ _OVERLAY_MAX_CHARS = _OVERLAY_WRAP_CHARS * _OVERLAY_MAX_LINES
 _OVERLAY_PAD_IN_S = 0.2  # a line appears 0.2s into its shot window
 _OVERLAY_PAD_OUT_S = 0.15  # and clears 0.15s before the cut
 _OVERLAY_MIN_EVENT_S = 0.3
-_OVERLAY_FONT_SIZE = 76
-_CTA_FONT_SIZE = 88
+# Sized for phone viewing: a full line fills ~55-60% of the 1080px frame, the
+# scale professional short-form uses. Smaller reads as a subtitle, not a hook.
+_OVERLAY_FONT_SIZE = 96
+_CTA_FONT_SIZE = 108
 # \an5 anchor on the 1080x1920 grid, inside the platform safe zones
 # (x 65..1015, y 270..1250) — clear of UI chrome top and bottom.
 _OVERLAY_POS_X = 540
