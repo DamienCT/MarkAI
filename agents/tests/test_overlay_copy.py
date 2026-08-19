@@ -128,3 +128,60 @@ class TestPacingSurvivesTheFitter:
         fitted, _ = nodes._fit_shot_durations(shots)
         total = sum(s["duration_s"] for s in fitted)
         assert total == pytest.approx(nodes.TARGET_TOTAL_S, abs=0.05)
+
+
+class TestWidowsAreRebalanced:
+    """A greedy wrap fills each line to the brim and strands the remainder.
+
+    "See you on September 1" wrapped to "See you on September" / "1" and
+    shipped that way in a delivered reel — a lone numeral on its own line
+    under a 76px caption, which is the sort of thing a reader notices before
+    they read the words.
+    """
+
+    def test_the_line_that_shipped(self):
+        assert nodes._wrap_overlay_text("See you on September 1") == (
+            "See you on\\NSeptember 1"
+        )
+
+    def test_a_balanced_line_is_left_alone(self):
+        assert nodes._wrap_overlay_text("Certified products, honestly sourced") == (
+            "Certified products,\\Nhonestly sourced"
+        )
+
+    def test_one_line_has_no_widow_to_fix(self):
+        assert nodes._rebalance_widow(["Short line"], 30) == ["Short line"]
+        assert nodes._rebalance_widow([], 30) == []
+
+    def test_it_refuses_when_the_move_would_overflow(self):
+        # A widow is a blemish; an overflowing box is a defect. The box wins.
+        # "cdefghij 1" is 10 characters against a 9-character line budget.
+        lines = ["ab cdefghij", "1"]
+        assert nodes._rebalance_widow(lines, 9) == lines
+
+    def test_it_refuses_when_the_donor_line_is_one_word(self):
+        # Moving it would only relocate the widow to the line above.
+        assert nodes._rebalance_widow(["Supercalifragilistic", "1"], 30) == [
+            "Supercalifragilistic", "1"
+        ]
+
+    @pytest.mark.parametrize("widow", ("1", "a", "to", "and"))
+    def test_short_stranded_words_are_pulled_down(self, widow):
+        out = nodes._rebalance_widow(["one two three", widow], 30)
+        assert out == ["one two", f"three {widow}"]
+
+    def test_a_legitimate_short_closing_word_is_kept(self):
+        # Four characters reads as a word, not a fragment — rebalancing it
+        # would churn lines that are already fine.
+        assert nodes._rebalance_widow(["one two three", "hype"], 30) == [
+            "one two three", "hype"
+        ]
+
+    def test_the_box_budget_still_holds_after_rebalancing(self):
+        for text in (
+            "See you on September 1",
+            "Grand Baie opens with Tamarin",
+            "One week to certified organic",
+        ):
+            for line in nodes._wrap_overlay_text(text).split("\\N"):
+                assert len(line) <= nodes._OVERLAY_WRAP_CHARS, (text, line)

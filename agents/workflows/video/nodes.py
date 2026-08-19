@@ -2436,6 +2436,37 @@ def _hex_to_ass_color(hex_color: str | None) -> str | None:
     return f"&H{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}&".upper()
 
 
+#: A last line shorter than this is a widow — typographically the same defect
+#: a print compositor would fix by pulling a word down. Set at 4 so it catches
+#: orphaned numerals and short function words ("1", "a", "to") without
+#: rebalancing a legitimate short closing word.
+_WIDOW_MIN_CHARS = 4
+
+
+def _rebalance_widow(lines: list[str], max_chars: int) -> list[str]:
+    """Pull a word down when the last line is a stranded fragment (pure).
+
+    A greedy wrap fills each line to the brim, so a line whose final word is
+    one character long strands it: "See you on September 1" wrapped to
+    "See you on September" / "1" and shipped that way in a delivered reel —
+    a lone numeral on its own line under a 76px caption.
+
+    Moving the previous line's last word down fixes it whenever the result
+    still fits. When it does not (the donor word is too long, or there is
+    only one line), the lines are returned untouched: a widow is a blemish,
+    an overflowing box is a defect.
+    """
+    if len(lines) < 2 or len(lines[-1]) >= _WIDOW_MIN_CHARS:
+        return lines
+    donor = lines[-2].split()
+    if len(donor) < 2:
+        return lines
+    moved = donor[-1]
+    if len(moved) + 1 + len(lines[-1]) > max_chars:
+        return lines
+    return [*lines[:-2], " ".join(donor[:-1]), f"{moved} {lines[-1]}"]
+
+
 def _wrap_overlay_text(
     text: str,
     max_chars: int = _OVERLAY_WRAP_CHARS,
@@ -2470,6 +2501,7 @@ def _wrap_overlay_text(
             break
     if cur:
         lines.append(cur)
+    lines = _rebalance_widow(lines, max_chars)
     if dropped or truncated:
         logger.warning(
             "overlay text does not fit the %dx%d-char box — dropped %s, "
