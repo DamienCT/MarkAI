@@ -1665,6 +1665,50 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 guard_exc,
             )
 
+    # ── Guard: never re-render a reel that's already past generation ──────
+    # video.render redelivery is the money-burn path: a redeploy kills the
+    # worker mid-render, JetStream redelivers under a fresh delivery, and the
+    # GPU renders the same reel again (measured 2026-08-20: two duplicate
+    # full renders after the morning's two redeploys). The manual re-render
+    # endpoint flips the item to 'queued' BEFORE publishing, so 'queued' is
+    # the one status that means "somebody asked for this render". Anything
+    # already reviewable is a duplicate; so is an item that carries a current
+    # reel without having been re-queued (which also means a redelivery that
+    # interrupts a RE-render stays skipped — the old reel is still live, and
+    # recovery is one manual click, not seven unpaid-for GPU minutes).
+    if agent_type == "video" and payload.get("calendar_item_id"):
+        try:
+            _vrows = await execute_query(
+                "SELECT ci.status, c.video_url FROM calendar_items ci "
+                "LEFT JOIN content c "
+                "  ON c.calendar_item_id = ci.id AND c.is_current = true "
+                "WHERE ci.id = :id",
+                {"id": payload["calendar_item_id"]},
+            )
+            if _vrows:
+                _vstatus = _vrows[0].get("status")
+                _has_reel = bool(_vrows[0].get("video_url"))
+                if _vstatus in (
+                    "in_review",
+                    "approved",
+                    "scheduled",
+                    "published",
+                ) or (_has_reel and _vstatus != "queued"):
+                    logger.info(
+                        "Skipping video.render for item %s — status '%s'%s "
+                        "(redelivery guard)",
+                        payload["calendar_item_id"],
+                        _vstatus,
+                        " with current reel" if _has_reel else "",
+                    )
+                    await msg.ack()
+                    return
+        except Exception as guard_exc:
+            logger.warning(
+                "Video already-rendered guard failed: %s — proceeding",
+                guard_exc,
+            )
+
     # ── Reels take the video pipeline, not the static-image chain ──────
     # The planner deterministically creates item_type='reel' calendar items;
     # running them through the content workflow would pay for a static image
@@ -1678,24 +1722,41 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     ):
         try:
             _item_rows = await execute_query(
-                "SELECT item_type FROM calendar_items WHERE id = :id",
+                "SELECT item_type, status FROM calendar_items WHERE id = :id",
                 {"id": payload["calendar_item_id"]},
             )
             if _item_rows and _item_rows[0].get("item_type") == "reel":
-                await _consumer.js.publish(
-                    "video.render",
-                    json.dumps(
-                        {
-                            "brand_id": brand_id,
-                            "calendar_item_id": str(payload["calendar_item_id"]),
-                            "trigger": payload.get("trigger", "event"),
-                        }
-                    ).encode(),
-                )
-                logger.info(
-                    "Diverted reel item %s to video.render",
-                    payload["calendar_item_id"],
-                )
+                # Divert only an item still waiting its turn. A redelivered
+                # batch message re-walks items the first delivery already
+                # diverted — re-publishing video.render for those is the
+                # duplicate-render path the video guard above exists to stop,
+                # so don't create the message in the first place. The chain
+                # continuation below still runs either way.
+                _reel_status = _item_rows[0].get("status")
+                if _reel_status in ("queued", "planned"):
+                    await _consumer.js.publish(
+                        "video.render",
+                        json.dumps(
+                            {
+                                "brand_id": brand_id,
+                                "calendar_item_id": str(
+                                    payload["calendar_item_id"]
+                                ),
+                                "trigger": payload.get("trigger", "event"),
+                            }
+                        ).encode(),
+                    )
+                    logger.info(
+                        "Diverted reel item %s to video.render",
+                        payload["calendar_item_id"],
+                    )
+                else:
+                    logger.info(
+                        "Reel item %s already '%s' — not re-diverting; "
+                        "continuing the content chain",
+                        payload["calendar_item_id"],
+                        _reel_status,
+                    )
                 remaining = payload.get("remaining_queue") or []
                 if remaining:
                     next_msg: dict[str, Any] = {

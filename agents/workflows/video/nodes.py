@@ -5225,7 +5225,22 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         TARGET_MAX_TOTAL_S,
         quality_tier,
     )
-    base_key = f"{state['brand_id']}:{item_id}:{state.get('run_id', '')}"
+    # The idempotency key must survive NATS REDELIVERY: a redelivered
+    # video.render arrives under a fresh run_id, so keying on run_id let the
+    # provider render the same reel twice at full price (measured 2026-08-20:
+    # two duplicate full renders after a morning of redeploys). The plan
+    # digest keys the job to WHAT is being rendered — same item + same fitted
+    # plan = same provider job — while a genuine regeneration (new plan from
+    # a new LLM call) still gets a fresh key.
+    plan_digest = zlib.crc32(
+        json.dumps(
+            [
+                (s.get("scene"), s.get("prose"), s.get("duration_s"))
+                for s in fitted
+            ]
+        ).encode("utf-8")
+    ) & 0xFFFFFFFF
+    base_key = f"{state['brand_id']}:{item_id}:{plan_digest:08x}"
 
     async def _progress(percent: int, stage: str) -> None:
         try:
