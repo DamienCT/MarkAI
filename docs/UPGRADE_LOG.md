@@ -850,3 +850,49 @@ First-ever verified backup ran (228MB pg_dump + 3.06GiB MinIO mirror,
 nightly cron installed). CYCLE NOW audit remediation shipped and deployed
 (approval loop, analytics inflation, publish timezones, rate limiting,
 label of shame: the learning feature had never persisted one row).
+
+## Cycle 12 — 2026-08-20: the reel goes clean, the batch never strands
+
+**Reel v6 (third native render) is the first with ZERO readable
+lettering.** The fix was linguistic, not mechanical: prompt-side
+"turned away / no label" negations kept losing because a commercial
+bottle's DEFAULT state is labelled — v5's close-up pour asked for "the
+olive-green glass bottle" turned away and got a full invented label
+wrapped around whatever face showed. Stating the positive attribute
+("bare, unprinted glass, no label, no paper band") replaced the default
+instead of negating it: both v6 pour close-ups came back clean glass.
+The label guard also grew severity tiers (readable/garbled strings buy
+the seed-bumped retry; unresolvable soft marks are exactly what the
+packaging lock asks for and only get recorded) and its prompt now
+demands transcriptions in the text arrays — v6's one surviving flag was
+a location DESCRIPTION filed as text, promoting an acceptable
+frame-edge sliver into a hard defect. And the hook finally reads whole:
+a wrap-trimmed hook now buys one rewrite call verified with the burn's
+own wrap simulation — the first live run turned the stump "Certified
+organic starts" into "Organic begins here".
+
+**The morning's incident became the morning's fix.** Two redeploys each
+redelivered an unacked video.render and the 4090 rendered the same
+finished reel twice more — three renders, one deliverable. The worker
+now ack-skips a video.render whose item is already reviewable (or
+carries a current reel without being re-queued), and render idempotency
+keys digest the fitted plan instead of the per-delivery run_id.
+
+**CYCLE NEXT (audit items 11-20) is fully shipped**, with the
+multi-agent adversarial review earning its keep: it refuted three of
+the batch-stranding implementation's own choices before they reached
+production — a pre-claim graph failure would have re-derived into the
+SAME queued item forever (reproduced in a 30-hop simulation), the
+continuation helper respawned on routine single-item messages (every
+redelivered top-up would sweep the brand's whole queue), and the admin
+alert used a notification type the CHECK constraint rejects, making the
+"fail loudly" feature itself fail silently. All three are folded in,
+with the batch machinery now under 30+ dispatcher tests. Also landed:
+versioning invariants at the API layer, regen status gates (failed =
+allowed, it IS the healing path), per-agent-type reaper thresholds (the
+4h cutoff sat inside video's 7.25h budget and reaped live reels),
+vision payloads at 768px instead of multi-MB originals, failed-state UX
+with real errors and real actions, and the Kanban board's dead
+drag-and-drop scaffolding deleted down to its npm deps.
+
+Suites: agents 1216, backend 189, tsc + next build clean.
