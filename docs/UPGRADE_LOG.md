@@ -896,3 +896,68 @@ with real errors and real actions, and the Kanban board's dead
 drag-and-drop scaffolding deleted down to its npm deps.
 
 Suites: agents 1216, backend 189, tsc + next build clean.
+
+---
+
+## Cycle 12.1 — 2026-08-20: the user was right again — the script was the ceiling
+
+**"Scenes too short and too random" traced to the planner, not the
+model.** v6's plan carried three chained-era habits into native mode:
+3–5s beats sized for per-shot generation, identity tags injecting the
+product's full name into every shot's prose (label-bait under a
+packaging lock, and a supplier name besides), and a loop-closure rule
+that made the last shot repeat the first pour. The A/B that proved it:
+a hand-written script — four 7.5-second beats of ONE continuous story
+(kitchen, pour, taste, shared table), no name anywhere, no loop — sent
+through the same model at the same settings came back decisively
+better: coherent light, magazine compositions, human warmth.
+
+That script style is now what plan_shots asks for when native multishot
+is live: 4–5 shots of 5–8s each, a four-beat arc (establish+hook →
+ritual → sensory proof → human payoff), at most ONE pour, no
+loop-closure, and prose that NEVER writes the product's name — backed
+by a mechanical scrub that deletes the name from native prose with
+word-boundary patterns (the reviewer's repro: an unboundaried "Bio"
+pattern hollowed "biodynamic"). Verification against a pipeline-built
+plan is pending: the first attempt failed on an unreachable forge (see
+Cycle 13) and is re-queued.
+
+---
+
+## Cycle 13 — 2026-08-20: the worker learns to die well, the deploy stops being a hand-typed ritual
+
+**STRUCTURAL items shipped: SIGTERM drain + a sanctioned CI deploy
+path.** The worker now closes intake on SIGTERM, triages in-flight
+video (a run that never reached the forge is handed back immediately —
+re-running it repeats no paid work; a submitted render is waited for,
+because a duplicate render costs more than the wait), waits out
+everything else up to a budget clamped to the container's
+stop_grace_period, and naks whatever remains for the next container.
+Deploys go through .github/workflows/deploy.yml → an unprivileged
+`deploy` user → a sudoers-whitelisted wrapper that validates its ONE
+argument as a hex SHA and execs the redeploy script with EXPECTED_SHA
+pinned. Push-to-main deploys ship disabled behind an AUTO_DEPLOY
+variable; manual dispatch always works.
+
+**The adversarial review (12 findings) paid for itself twice.** A bare
+command path in sudoers permits ANY arguments, and sudo's env_reset
+strips env_keep'd variables silently when the line is typo'd — so the
+SHA travels as a validated argument, never as environment. nats-py's
+drain() raises mid-reconnect, which would have killed the drain task
+and left every nak unflushed. And the nak-at-exit design had a
+double-settle race: a workflow finishing inside the nak window could
+ack the same message the drain was nak'ing — the drain now cancels the
+task, awaits it, and only then naks (which in turn left zombie
+'running' agent_runs rows, so the drain releases those too). The
+20-minute CI timeout was arithmetically impossible with an 840s drain
+in flight; it is 45 now.
+
+**The first live deploy calibrated the pipeline.** The drift check
+flagged seven long-running optional containers as rogue, and the health
+gate curled a host port the backend never publishes — a "healthy"
+deploy reported failure. The container set now has a TOLERATED tier and
+the health gate probes through docker exec, inside the network
+namespace where the service actually answers.
+
+Suites: agents 1246 (21 new drain/shutdown tests), bash -n clean,
+deploys.log recording outcomes.

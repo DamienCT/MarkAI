@@ -106,9 +106,12 @@ After this, `ssh markai` works without a password.
 ├── .env                      ← Production secrets (DO NOT copy off server)
 ├── docker-compose.yml        ← Base stack (11 services)
 ├── docker-compose.vps.yml    ← VPS overlay (Traefik labels, no port bindings)
-├── scripts/vps-redeploy.sh   ← One-command deploy script
+├── scripts/vps-redeploy.sh   ← Deploy script (run via GitHub Action, not by hand)
+├── deploys.log               ← One line per deploy attempt (who/what/outcome)
 ├── backups/                  ← Auto-generated pg_dumps
 └── ...
+
+/usr/local/bin/markai-deploy  ← Sudoers-whitelisted symlink to the deploy script
 
 /docker/n8n/                  ← External n8n + Traefik stack (shared VPS service)
 └── docker-compose.yml        ← Don't modify unless fixing Traefik
@@ -140,15 +143,83 @@ Expected: 11 services all showing `Up ... (healthy)`:
 - markai-postgres, markai-qdrant, markai-minio
 - markai-valkey, markai-nats, markai-litellm
 
-### Deploy latest code
+### Deploying — READ THIS BEFORE TOUCHING PRODUCTION
+
+**Manual root deploys are FORBIDDEN** (except break-glass recovery, below).
+Ad-hoc `ssh root` runs of the script have taken production down (~15 min: a
+mid-run `git pull` rewrote the executing script) and two same-morning manual
+deploys double-triggered GPU renders. The sanctioned path:
+
+**GitHub → Actions → "Deploy" → Run workflow** (or ask the orchestrator to
+trigger it). The workflow SSHes in as the unprivileged `deploy` user and runs
+the sudoers-whitelisted `/usr/local/bin/markai-deploy` (a symlink to
+`scripts/vps-redeploy.sh`) with `EXPECTED_SHA` pinned to the exact commit CI
+checked out — the deploy aborts, stack untouched, if `main` moved in between.
+A push-to-main auto-deploy also exists in the workflow but **ships disabled**;
+it only activates once the `AUTO_DEPLOY` repo variable is set to `true`.
+
+What the deploy does either way: pulls `main` (from `ado`, falling back to
+`origin`), backs up the DB, builds before stopping anything, `up -d` recreates
+only changed containers, then runs a drift check + health checks. No manual
+branch resets, no `build --no-cache`.
+
+#### Render-in-flight rule
+
+**Never deploy while a video render is running.** `up -d` recreates
+`markai-agents`, which kills the render mid-flight and drops its queue
+(redeploys drop queues — there is no resume). Check first:
+
 ```bash
-ssh markai 'cd /var/www/markai && bash scripts/vps-redeploy.sh'
+ssh markai "docker exec markai-postgres psql -U markai -d markai -tAc \"select count(*) from agent_runs where status='running'\""
 ```
 
-Pulls `main` (from `ado`, falling back to `origin`), backs up the DB, builds
-before stopping anything, then `up -d` recreates only changed containers and
-runs health checks. This script is the **only** sanctioned deploy path — no
-manual branch resets, no `build --no-cache`.
+Deploy only when that returns `0`, or when the user has explicitly accepted
+killing the run in progress.
+
+#### Deploy log
+
+Every deploy that gets past the lock appends one line to
+`/var/www/markai/deploys.log`. Two kinds of attempts are NOT in this log:
+lock-refused collisions (visible in the refused run's own output/CI log)
+and runs killed hard mid-flight (SIGKILL skips the EXIT trap) — so "no
+line" does not prove "nobody tried":
+
+```
+2026-08-20T09:14:03Z <sha-before> -> <sha-after> user=deploy outcome=ok
+```
+
+`outcome=failed(exit=N)` marks aborted runs. Check it before deploying to see
+whether someone else just shipped (this is how the duplicate-render morning
+would have been caught).
+
+#### Lock file
+
+The script holds a non-blocking exclusive `flock` on
+`/var/tmp/markai-deploy.lock`. A second deploy while one runs **fails
+immediately** with a clear error — that is by design; do not retry in a loop,
+wait for the first to finish. The lock lives on the running process's open
+file descriptor, not on the file's existence: a crashed deploy releases it
+automatically, so **never delete the lock file** to "fix" anything.
+
+#### Break-glass ONLY: manual deploy
+
+Permitted only when GitHub Actions itself is down (or repo secrets are broken)
+and production must be recovered now. Run it under `nohup`, exactly like this:
+
+```bash
+ssh markai 'cd /var/www/markai && nohup bash scripts/vps-redeploy.sh < /dev/null >> /var/www/markai/deploy-manual.log 2>&1 & echo "deploy started, pid $!"'
+# then watch it:
+ssh markai 'tail -f /var/www/markai/deploy-manual.log'
+```
+
+Why `nohup` + background: an interactive SSH session that drops mid-deploy
+kills the script partway through and leaves the stack half-recreated. Detached
+under `nohup`, the deploy survives the disconnect. (The CI path deliberately
+does NOT use nohup — the Actions runner holds the session open with keepalives
+and needs the foreground exit code.) The render-in-flight check above applies
+to break-glass deploys too. Never edit `scripts/vps-redeploy.sh` on the VPS,
+and never remove its `main()` wrapper — it is what makes the mid-run
+`git pull` self-rewrite safe.
 
 ### View logs
 ```bash
@@ -289,6 +360,9 @@ On the VPS at `/var/www/markai/`:
 
 ## DO NOT
 
+- **Do not deploy manually as root** — the sanctioned path is the GitHub "Deploy" workflow; manual is break-glass only (see the Deploying section)
+- **Do not deploy while a render is running** — check `agent_runs` for `status='running'` first (render-in-flight rule above)
+- **Do not delete `/var/tmp/markai-deploy.lock`** — a "lock held" error means a deploy is genuinely running; the lock self-releases when it exits
 - **Do not commit `.env`** — it has production secrets (Azure AD, OpenAI, Gemini, DB passwords)
 - **Do not commit `SSH_PW`** — user adds it temporarily for agent access; remove before commit
 - **Do not run `--force-wipe`** on the redeploy script unless explicitly asked (wipes DB)

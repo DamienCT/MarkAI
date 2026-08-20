@@ -201,10 +201,13 @@ echo "=== Step 9: Drift check (markai-* containers vs expected set) ==="
 # state and never touches anything outside that prefix. Plain `docker ps` is
 # used instead of `docker compose ps --format json` because the JSON shape
 # changed across compose v2 releases; container_name is pinned for every
-# service, so names are stable. The list mirrors the active (profile-less)
-# service set of docker-compose.vps.yml — if the "observability" profile is
-# ever enabled on the VPS, add its containers here or every deploy will fail.
+# service, so names are stable. EXPECTED must all be running; TOLERATED are
+# the long-running optional containers this deployment actually carries
+# (n8n serves the publish webhook, traefik + the observability stack have
+# been up for weeks) — present or absent, neither is drift. The first live
+# run of this check failed the deploy over exactly these seven.
 EXPECTED_CONTAINERS="markai-backend markai-frontend markai-agents markai-browser-worker markai-notifications markai-postgres markai-qdrant markai-minio markai-valkey markai-nats markai-litellm"
+TOLERATED_CONTAINERS="markai-n8n markai-traefik markai-promtail markai-loki markai-grafana markai-prometheus markai-otel-collector"
 RUNNING_CONTAINERS=$(docker ps --filter 'name=^markai-' --format '{{.Names}}')
 DRIFT=false
 
@@ -216,7 +219,7 @@ for expected in $EXPECTED_CONTAINERS; do
 done
 
 for name in $RUNNING_CONTAINERS; do
-  case " ${EXPECTED_CONTAINERS} " in
+  case " ${EXPECTED_CONTAINERS} ${TOLERATED_CONTAINERS} " in
     *" ${name} "*) : ;;
     *) echo "  WARNING: unexpected markai-* container is running: ${name}"; DRIFT=true ;;
   esac
@@ -234,13 +237,28 @@ if [[ "$DRIFT" == false ]]; then
   echo "  OK: all expected markai-* containers running, none unhealthy."
 fi
 
-echo "=== Step 10: Health checks ==="
-echo "Backend health:"
-curl -sf http://localhost:8000/health || echo "FAILED"
-
-echo ""
-echo "Backend metrics:"
-curl -sf http://localhost:8000/metrics 2>/dev/null | head -3 || echo "FAILED"
+echo "=== Step 10: Health checks (hard gate) ==="
+# In-container probe: the backend does not publish 8000 on the host (the
+# first live run's host-side curl reported FAILED against a healthy
+# container). Retried across ~90s because compose healthchecks need
+# start_period + interval x retries before a crash-looping service shows —
+# a drift check that runs too early reads "starting" as fine. A backend
+# that never answers fails the deploy (CI relies on the exit code).
+BACKEND_OK=false
+for _try in $(seq 1 9); do
+  if docker exec markai-backend python -c "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8000/health', timeout=5); sys.exit(0 if r.status==200 else 1)" 2>/dev/null; then
+    BACKEND_OK=true
+    break
+  fi
+  echo "  backend not answering yet (attempt ${_try}/9) — waiting 10s"
+  sleep 10
+done
+if [[ "$BACKEND_OK" == true ]]; then
+  echo "  Backend health: OK"
+else
+  echo "  WARNING: backend health did not pass within ~90s"
+  DRIFT=true
+fi
 
 echo ""
 echo "=== Step 11: Recent logs (last 20 lines each) ==="

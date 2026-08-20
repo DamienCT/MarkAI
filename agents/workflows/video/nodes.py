@@ -2079,10 +2079,15 @@ def _scrub_name_from_prose(prose: str, product_name: str) -> str:
     # Every prefix of the comma-segments, longest first: the prose may use
     # the full name, drop the weight ("Emile Noel Mild Olive Oil"), or use
     # the manufacturer head alone — all of them are the printed name.
+    # \b on both ends: without boundaries "Emile[\s,]+Noel" eats the front
+    # of "Emile Noelle" and "Bio" hollows "biodynamic" into "dynamic" —
+    # prose that never contained the printed name must come through intact.
     patterns: list[str] = []
     for cut in range(len(parts), 0, -1):
         words = [w for p in parts[:cut] for w in p.split()]
-        patterns.append(r"[\s,]+".join(re.escape(w) for w in words))
+        patterns.append(
+            r"\b" + r"[\s,]+".join(re.escape(w) for w in words) + r"\b"
+        )
     out = text
     for pat in patterns:
         out = re.sub(pat, "", out, flags=re.IGNORECASE)

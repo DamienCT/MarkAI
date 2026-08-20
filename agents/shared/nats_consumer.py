@@ -125,18 +125,43 @@ class NATSConsumer:
         await msg.nak(delay=delay)
 
     async def shutdown(self) -> None:
-        """Unsubscribe from all subjects and close the connection."""
+        """Unsubscribe from all subjects and close the connection.
+
+        Two behaviours the worker's SIGTERM drain leans on:
+        - sub.unsubscribe() cancels the subscription's delivery task, and
+          with it any handler coroutine still awaiting inside — so calling
+          this after the drain budget expires actively stops the leftover
+          workflow instead of racing it to process exit.
+        - nc.drain() flushes buffered outbound frames before closing, so
+          naks sent moments earlier reach the server.
+        """
         logger.info("Shutting down NATS consumer …")
-        for sub in self._subscriptions:
-            try:
-                await sub.unsubscribe()
-            except Exception:
-                logger.exception("Error unsubscribing")
-        self._subscriptions.clear()
-        if self._nc and not self._nc.is_closed:
-            await self._nc.drain()
-            await self._nc.close()
-        self._shutdown_event.set()
+        try:
+            for sub in self._subscriptions:
+                try:
+                    await sub.unsubscribe()
+                except Exception:
+                    logger.exception("Error unsubscribing")
+            self._subscriptions.clear()
+            if self._nc and not self._nc.is_closed:
+                try:
+                    # drain() raises ConnectionReconnectingError whenever the
+                    # client is mid-reconnect (max_reconnect_attempts=-1 can
+                    # hold it there indefinitely) — fall through to close()
+                    # rather than dying with the shutdown half done.
+                    await self._nc.drain()
+                except Exception as drain_exc:
+                    logger.warning(
+                        "NATS drain failed (%s) — closing without drain",
+                        drain_exc,
+                    )
+                if not self._nc.is_closed:
+                    await self._nc.close()
+        finally:
+            # The event is what releases the worker's main() — it must be
+            # set even when the connection teardown above fails, or a
+            # draining worker hangs until docker's SIGKILL.
+            self._shutdown_event.set()
         logger.info("NATS consumer shut down.")
 
     async def wait_for_shutdown(self) -> None:

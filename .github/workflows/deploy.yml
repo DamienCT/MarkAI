@@ -1,0 +1,91 @@
+name: Deploy
+
+# The ONE sanctioned deploy path (audit STRUCTURAL item 21). This workflow
+# SSHes to the VPS as the unprivileged "deploy" user and runs the
+# sudoers-whitelisted /usr/local/bin/markai-deploy — a WRAPPER script (not a
+# symlink) that accepts exactly one argument, validates it as a hex git SHA,
+# discards everything else, and execs scripts/vps-redeploy.sh with
+# EXPECTED_SHA set. Manual root deploys are break-glass only: see
+# VPS_CONNECTION_GUIDE.md.
+#
+# Why a wrapper and an ARGUMENT rather than env_keep: a bare command path in
+# sudoers permits ANY arguments (sudoers(5)), so the entry point itself must
+# be inert to hostile flags — the wrapper never forwards its argv. And sudo's
+# env_reset strips EXPECTED_SHA silently when the env_keep line is missing or
+# typo'd, turning the SHA pin into a no-op; an argument cannot be stripped.
+#
+# Push-triggered deploys SHIP DISABLED. They run only after the repo variable
+# AUTO_DEPLOY is set to 'true' (Settings → Secrets and variables → Actions →
+# Variables). Manual "Run workflow" dispatch always works. Before enabling
+# AUTO_DEPLOY, remember the render-in-flight rule: a deploy recreates
+# markai-agents and kills any running video render.
+#
+# Required secrets (provisioned by the orchestrator — never echo them, never
+# add set -x or ssh -v to these steps):
+#   VPS_HOST        VPS hostname or IP
+#   VPS_DEPLOY_KEY  private SSH key for the "deploy" user
+#
+# Server-side prerequisites (orchestrator): the "deploy" user + authorized
+# key, the /usr/local/bin/markai-deploy wrapper, and:
+#   deploy ALL=(root) NOPASSWD: /usr/local/bin/markai-deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+# GitHub-side serialization: deploys queue behind each other instead of
+# running concurrently. The script's non-blocking flock on the VPS is the
+# backstop for anything that slips past this (e.g. a break-glass manual run).
+concurrency:
+  group: vps-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    # The budget must cover the WORST deploy, not the average one: the agents
+    # container drains up to 840s (stop_grace_period 15m) before compose can
+    # recreate it, plus image builds, the pre-deploy backup and the ~90s
+    # health gate. 20 minutes was arithmetically impossible with a drain in
+    # flight — and a timeout kills the session mid-`up -d`, the half-deployed
+    # state this pipeline exists to prevent.
+    timeout-minutes: 45
+    # Manual dispatch is always allowed; push-to-main deploys only once the
+    # AUTO_DEPLOY repo variable is 'true' (unset = disabled = safe default).
+    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deploy key
+        # The key goes through an env var, never through shell interpolation,
+        # and is written straight to disk — nothing here prints it.
+        env:
+          VPS_DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_DEPLOY_KEY" > ~/.ssh/markai_deploy_key
+          chmod 600 ~/.ssh/markai_deploy_key
+
+      - name: Deploy (foreground SSH — the runner holds the session)
+        # No nohup, no backgrounding: this SSH session IS the deploy's
+        # terminal. ServerAliveInterval keepalives hold it open for the whole
+        # run, and the remote exit code propagates straight into the job
+        # result — an EXPECTED_SHA mismatch or a failed drift check on the
+        # VPS fails this step. EXPECTED_SHA pins the deploy to the exact
+        # commit this workflow ran for (safe to inline: a git SHA is hex).
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/markai_deploy_key \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=6 \
+            "deploy@${VPS_HOST}" \
+            "sudo -n /usr/local/bin/markai-deploy ${EXPECTED_SHA}"

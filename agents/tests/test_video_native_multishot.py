@@ -245,6 +245,19 @@ class TestScrubNameFromProse:
         assert video_nodes._scrub_name_from_prose("", "X Brand") == ""
         assert video_nodes._scrub_name_from_prose("Some prose.", "") == "Some prose."
 
+    def test_word_boundaries_protect_longer_words(self):
+        # Adversarial-review repros: without \b, "Bio" hollowed "biodynamic"
+        # into "dynamic" and "Emile Noel" ate the front of "Emile Noelle".
+        out = video_nodes._scrub_name_from_prose(
+            "A biodynamic orchard at dawn.", "Bio, Almond Butter, 250g"
+        )
+        assert out == "A biodynamic orchard at dawn."
+        out = video_nodes._scrub_name_from_prose(
+            "Emile Noelle walks past golden fields.",
+            "Emile Noel, Mild Olive Oil, 690g",
+        )
+        assert out == "Emile Noelle walks past golden fields."
+
 
 class TestSegmentPrompt:
     def test_prose_is_the_prompt_with_no_chained_furniture(self):

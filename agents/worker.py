@@ -3,20 +3,23 @@
 Main entry point: connects to NATS JetStream, subscribes to all workflow
 subjects, and dispatches incoming messages to the correct LangGraph graph.
 
-Uses durable consumers for reliable message processing and supports
-graceful shutdown via SIGINT/SIGTERM.
+Uses durable consumers for reliable message processing. SIGINT/SIGTERM
+starts a graceful drain: no new messages, in-flight workflows finish inside
+the grace budget, everything else is nak'd back for the next container.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
 import signal
 import sys
+import time
 import uuid as _uuid
-from typing import Any
+from typing import Any, Callable
 
 import nats.aio.msg
 
@@ -128,6 +131,53 @@ SUBSCRIPTIONS = [
 
 # Module-level reference to the consumer, set during main()
 _consumer: NATSConsumer | None = None
+
+# ── Graceful drain (SIGTERM/SIGINT) ─────────────────────────────────────
+# docker compose sends SIGTERM on redeploy and escalates to SIGKILL after
+# stop_grace_period (15m). Killing the worker mid-workflow strands the
+# calendar item until the release guards fire and parks the message for a
+# multi-hour ack_wait before redelivery — so on SIGTERM the worker stops
+# taking new messages, lets the in-flight workflow(s) finish inside this
+# budget, and hands everything else back with a short nak. The budget must
+# stay comfortably under stop_grace_period: the exit tail (deferred naks +
+# NATS close) has to run before docker stops asking nicely.
+# Clamped to 840s: compose SIGKILLs at stop_grace_period (900s), and a
+# budget above it silently guarantees the kill lands BEFORE the exit naks —
+# strictly worse than the default, and invisible until the next incident.
+_DRAIN_BUDGET_CAP = 840
+DRAIN_BUDGET_SECONDS = int(os.environ.get("DRAIN_BUDGET_SECONDS", "840"))
+if DRAIN_BUDGET_SECONDS > _DRAIN_BUDGET_CAP:
+    logging.getLogger(__name__).warning(
+        "DRAIN_BUDGET_SECONDS=%d exceeds the %ds cap (stop_grace_period "
+        "minus the exit tail) — clamping",
+        DRAIN_BUDGET_SECONDS,
+        _DRAIN_BUDGET_CAP,
+    )
+    DRAIN_BUDGET_SECONDS = _DRAIN_BUDGET_CAP
+
+# nak delay for work handed back at exit. The naks fire immediately before
+# the process exits, and compose starts the replacement container only after
+# this one is gone — so the redelivery lands on the NEW container about one
+# delay after it subscribes, instead of waiting out ack_wait.
+DRAIN_NAK_DELAY_SECONDS = int(os.environ.get("DRAIN_NAK_DELAY_SECONDS", "60"))
+
+_DRAIN_POLL_SECONDS = 2.0
+
+_draining = False
+#: token → {msg, subject, agent_type, payload, started} for every message a
+#: workflow is currently running on. The drain uses it to know when the last
+#: in-flight workflow finishes — and whose message to hand back if the
+#: budget expires first.
+_in_flight: dict[int, dict[str, Any]] = {}
+_in_flight_tokens = itertools.count(1)
+#: Messages to hand back right before exit: [{"msg", "label", "token"}].
+#: Deferred to exit ON PURPOSE: compose starts the replacement only after
+#: this container exits, so an early nak can only redeliver HERE, where the
+#: drain gate bounces it again — every bounce burning one of max_deliver=5
+#: attempts toward a silent discard. One nak at exit costs one attempt and
+#: reaches the new container just as fast.
+_deferred_naks: list[dict[str, Any]] = []
+_drain_task: asyncio.Task | None = None
 
 
 # The only integrity failure that means "a run is already in flight" is the
@@ -2600,6 +2650,289 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         await msg.ack()  # Don't retry indefinitely on code errors
 
 
+async def _dispatch_message(msg: nats.aio.msg.Msg) -> None:
+    """Subscription callback: drain gate + in-flight registry around _handle_message.
+
+    These are push subscriptions — messages arrive by callback, so "stop
+    pulling new work" is this gate, not a paused pull loop. Once draining,
+    an arriving message is held untouched and nak'd at exit (see
+    _deferred_naks for why not immediately).
+    """
+    if _draining:
+        logger.info(
+            "draining: no new work — holding %s for the next container",
+            msg.subject,
+        )
+        _deferred_naks.append({"msg": msg, "label": msg.subject, "token": None})
+        return
+    try:
+        payload = json.loads(msg.data.decode())
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}  # _handle_message settles bad payloads itself
+    token = next(_in_flight_tokens)
+    _in_flight[token] = {
+        "msg": msg,
+        "subject": msg.subject,
+        "agent_type": msg.subject.split(".")[0],
+        "payload": payload,
+        "started": time.monotonic(),
+        # The drain cancels abandoned/over-budget workflows through this
+        # handle BEFORE nak'ing their messages — a workflow that kept
+        # running could submit a paid render mid-drain, or ack its message
+        # concurrently with the exit nak (a double-settle).
+        "task": asyncio.current_task(),
+    }
+    try:
+        await _handle_message(msg)
+    finally:
+        _in_flight.pop(token, None)
+
+
+async def _video_reached_forge(payload: dict[str, Any]) -> bool:
+    """Has this in-flight video run already submitted its render job?
+
+    The only live marker the video pipeline leaves mid-run is
+    calendar_items.generation_metadata.video_progress — written by the
+    provider poll callbacks (forge:/fal:/veo:*) and the ffmpeg finishing
+    passes, and by NOTHING before the first job submission (context, shot
+    plan, keyframe never touch it). A non-null stage therefore means a
+    render job is (or was) live, and a duplicate render costs more than
+    waiting for this one.
+
+    Every uncertain answer is deliberately "wait":
+    - A stale stage left by a PREVIOUS reel of this item reads as
+      submitted. That run is a re-render, and the redelivery guard skips
+      re-render redeliveries anyway (the old reel is still current), so
+      handing it back early would strand the run with no upside.
+    - No calendar_item_id / DB error → wait the budget like everything
+      else; if the budget expires first, the redelivery guard makes the
+      redelivery safe.
+    """
+    item_id = payload.get("calendar_item_id")
+    if not item_id:
+        return True
+    try:
+        rows = await execute_query(
+            "SELECT generation_metadata #>> '{video_progress,stage}' AS stage "
+            "FROM calendar_items WHERE id = :id",
+            {"id": item_id},
+        )
+        return bool(rows and rows[0].get("stage"))
+    except Exception as probe_exc:
+        logger.warning(
+            "draining: video progress probe failed for item %s: %s — waiting",
+            item_id,
+            probe_exc,
+        )
+        return True
+
+
+async def _drain_and_shutdown(consumer: NATSConsumer) -> None:
+    """SIGTERM path: no new work → finish in-flight → hand back the rest → exit 0.
+
+    Operators tail these lines during a deploy:
+      "draining: no new work …"      — the signal was seen, intake is closed
+      "drain complete after Ns"      — every awaited workflow finished
+      "drain budget exhausted — nak and exit" — something outlived the
+        budget; its message redelivers ~DRAIN_NAK_DELAY_SECONDS after the
+        new container subscribes, and the release guards + redelivery
+        machinery own recovery of the half-done run.
+    """
+    global _draining
+    _draining = True
+    started = time.monotonic()
+    logger.info(
+        "draining: no new work — %d workflow(s) in flight (budget %ss)",
+        len(_in_flight),
+        DRAIN_BUDGET_SECONDS,
+    )
+
+    # ── Video triage: a reel can legitimately render longer than any sane
+    # drain budget, so don't start a wait that cannot end well. A run that
+    # has not yet submitted its render job is handed back now — re-running
+    # it on the next container repeats no paid work. Once a job IS
+    # submitted, waiting is cheaper than a duplicate render, so that run
+    # queues with everything else.
+    abandoned: set[int] = set()
+    for token, entry in list(_in_flight.items()):
+        if entry["agent_type"] != "video":
+            continue
+        item_id = entry["payload"].get("calendar_item_id")
+        if await _video_reached_forge(entry["payload"]):
+            logger.info(
+                "draining: video render %s already submitted its job — "
+                "waiting (a duplicate render costs more than the wait)",
+                item_id,
+            )
+            continue
+        logger.info(
+            "draining: video render %s has not reached the forge — handing "
+            "it back for a prompt re-render on the next container",
+            item_id,
+        )
+        _deferred_naks.append(
+            {
+                "msg": entry["msg"],
+                "label": entry["subject"],
+                "token": token,
+                "cancelled": True,
+            }
+        )
+        abandoned.add(token)
+        # Cancel NOW, not at exit: an abandoned pre-forge workflow left
+        # running through the wait could submit its render job mid-drain —
+        # after the nak decision was made on "has not reached the forge" —
+        # and the nak would then buy the duplicate render the triage exists
+        # to avoid.
+        _task = entry.get("task")
+        if _task is not None and not _task.done():
+            _task.cancel()
+
+    if abandoned:
+        _abandoned_tasks = [
+            e["task"]
+            for t, e in list(_in_flight.items())
+            if t in abandoned and e.get("task") is not None
+        ]
+        if _abandoned_tasks:
+            await asyncio.gather(*_abandoned_tasks, return_exceptions=True)
+
+    # ── Wait out the in-flight workflows, up to the budget ──────────────
+    exhausted = False
+    while any(t not in abandoned for t in _in_flight):
+        if time.monotonic() - started >= DRAIN_BUDGET_SECONDS:
+            exhausted = True
+            break
+        await asyncio.sleep(_DRAIN_POLL_SECONDS)
+
+    if exhausted:
+        leftovers = [(t, e) for t, e in _in_flight.items() if t not in abandoned]
+        logger.warning(
+            "drain budget exhausted — nak and exit: handing back %d "
+            "workflow(s); the release guards + redelivery machinery own "
+            "the half-done runs",
+            len(leftovers),
+        )
+        # Cancel FIRST and await the cancellations, THEN nak: a workflow
+        # finishing in the nak window could otherwise ack the same message
+        # the drain is nak'ing (nats-py only flips _ackd after its awaited
+        # publish, so both settles can reach the wire).
+        for token, entry in leftovers:
+            _task = entry.get("task")
+            if _task is not None and not _task.done():
+                _task.cancel()
+        _left_tasks = [
+            e["task"] for _, e in leftovers if e.get("task") is not None
+        ]
+        if _left_tasks:
+            await asyncio.gather(*_left_tasks, return_exceptions=True)
+        for token, entry in leftovers:
+            _deferred_naks.append(
+                {
+                    "msg": entry["msg"],
+                    "label": entry["subject"],
+                    "token": token,
+                    "cancelled": True,
+                }
+            )
+    else:
+        logger.info("drain complete after %ds", int(time.monotonic() - started))
+
+    # ── Release the run locks the cancelled workflows left behind ───────
+    # A cancelled handler does no failure bookkeeping (CancelledError skips
+    # its except branches), so its agent_runs row stays 'running' — and on
+    # the NEW container that zombie row makes the redelivered message hit
+    # the duplicate-run branch, which ACKS non-video work permanently. This
+    # worker is the stack's only executor, so at this point every 'running'
+    # row belongs to a workflow this drain finished or cancelled.
+    if exhausted or abandoned:
+        try:
+            await execute_update(
+                "UPDATE agent_runs SET status = 'failed', "
+                "error_message = 'abandoned by draining worker (redeploy)', "
+                "completed_at = NOW() WHERE status = 'running'"
+            )
+        except Exception as rel_exc:
+            logger.warning(
+                "draining: could not release running agent_runs rows: %s "
+                "— the stale-run reaper owns them",
+                rel_exc,
+            )
+
+    # ── Hand back everything deferred, then close ───────────────────────
+    for item in _deferred_naks:
+        token = item["token"]
+        if (
+            token is not None
+            and token not in _in_flight
+            and not item.get("cancelled")
+        ):
+            # The workflow settled its own message (acked or nak'd) after
+            # we decided to abandon it — nothing left to hand back. A
+            # CANCELLED workflow never settles, so its token leaving the
+            # registry (the dispatch finally) does not mean settled.
+            continue
+        try:
+            await item["msg"].nak(delay=DRAIN_NAK_DELAY_SECONDS)
+            logger.info(
+                "draining: nak %s (delay=%ss)",
+                item["label"],
+                DRAIN_NAK_DELAY_SECONDS,
+            )
+        except Exception as nak_exc:
+            logger.warning(
+                "draining: nak of %s failed: %s", item["label"], nak_exc
+            )
+    _deferred_naks.clear()
+
+    # shutdown() unsubscribes any remaining delivery tasks, then drains the
+    # connection so the naks above flush, and releases main() to exit 0.
+    # Guarded: a connection mid-reconnect makes nats drain() raise, and an
+    # unhandled raise here would kill the drain task and leave main()
+    # hanging until docker's SIGKILL with every nak unflushed.
+    try:
+        await consumer.shutdown()
+    except Exception as close_exc:
+        logger.warning(
+            "draining: consumer shutdown raised (%s) — exiting anyway",
+            close_exc,
+        )
+
+
+def _request_drain(consumer: NATSConsumer) -> None:
+    """Signal-handler body: start the drain exactly once.
+
+    Repeat signals must not restart the clock or double-hand-back work —
+    compose escalates to SIGKILL after stop_grace_period on its own, so
+    there is no "force" second stage to implement here.
+    """
+    global _drain_task
+    if _drain_task is not None:
+        return
+    logger.info("Shutdown signal received — draining")
+    _drain_task = asyncio.ensure_future(_drain_and_shutdown(consumer))
+
+
+def _install_signal_handlers(
+    loop: asyncio.AbstractEventLoop, on_signal: Callable[[], None]
+) -> None:
+    """Register *on_signal* for SIGINT/SIGTERM.
+
+    loop.add_signal_handler is the correct integration on the production
+    platform (Linux under docker); Windows' event loops raise
+    NotImplementedError, so dev boxes fall back to plain signal.signal —
+    that handler still runs on the loop thread between bytecodes, which is
+    enough for ensure_future to reach the running loop.
+    """
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, on_signal)
+        except NotImplementedError:
+            signal.signal(sig, lambda *_: on_signal())
+
+
 REQUIRED_SUBJECTS = [
     "research.>",
     "strategy.>",
@@ -2663,22 +2996,8 @@ async def main() -> None:
     _consumer = consumer
     loop = asyncio.get_running_loop()
 
-    # ── Graceful shutdown ────────────────────────────────────────────────
-    shutdown_triggered = False
-
-    def _request_shutdown() -> None:
-        nonlocal shutdown_triggered
-        if not shutdown_triggered:
-            shutdown_triggered = True
-            logger.info("Shutdown signal received")
-            asyncio.ensure_future(consumer.shutdown())
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _request_shutdown)
-        except NotImplementedError:
-            # Windows does not support add_signal_handler
-            signal.signal(sig, lambda *_: _request_shutdown())
+    # ── Graceful shutdown: SIGTERM starts the drain, not an instant close ──
+    _install_signal_handlers(loop, lambda: _request_drain(consumer))
 
     # ── Connect and subscribe ────────────────────────────────────────────
     await consumer.connect()
@@ -2689,7 +3008,7 @@ async def main() -> None:
             subject=subject,
             durable_name=durable,
             stream=stream,
-            handler=_handle_message,
+            handler=_dispatch_message,
             ack_wait=ack_wait,
         )
 
