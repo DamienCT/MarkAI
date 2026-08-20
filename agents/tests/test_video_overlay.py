@@ -225,6 +225,97 @@ class TestCleanOverlayText:
         assert normalized["shots"][1]["overlay_text"] == "Certified organic starts here"
         # The burn side reads its wrap from the same constant.
         assert _STYLE_LAYOUT["Hook"][1] == _HOOK_WRAP_CHARS
+        # And the trim is REPORTED, so plan_shots can ask for copy that fits
+        # instead of shipping the stump.
+        assert normalized["hook_trimmed"] is True
+
+
+class TestHookRewrite:
+    """The trim keeps plan==burn honest but ships awkward copy — a master
+    opened on "Certified organic starts". One text call asks for the same
+    message written inside the real budget."""
+
+    @staticmethod
+    def _plan(hook="Certified organic starts here"):
+        from workflows.video.nodes import _normalize_shot_plan
+
+        return _normalize_shot_plan(
+            {
+                "hook_line": hook,
+                "shots": [
+                    {
+                        "index": 1,
+                        "duration_s": 3,
+                        "scene": "SCENE CONTEXT: open",
+                        "overlay_text": hook,
+                    },
+                    {"index": 2, "duration_s": 3, "scene": "SCENE CONTEXT: mid"},
+                ],
+                "caption": "cap",
+                "hashtags": [],
+                "cta": "Shop now",
+            }
+        )
+
+    def test_a_fitting_hook_is_not_reported(self):
+        plan = self._plan("Organic, honestly")
+        assert plan["hook_trimmed"] is False
+
+    def test_rewrite_replaces_the_stump(self, monkeypatch):
+        import asyncio
+
+        from workflows.video import nodes
+
+        async def fake_chat(*args, **kwargs):
+            return '{"hook": "Organic starts here"}'
+
+        monkeypatch.setattr(nodes, "chat_completion", fake_chat)
+        plan = asyncio.run(nodes._rewrite_hook_to_fit(self._plan()))
+        assert plan["shots"][0]["overlay_text"] == "Organic starts here"
+        assert plan["hook_trimmed"] is False
+        # The accepted rewrite must itself survive the burn whole.
+        rendered = nodes._wrap_overlay_text(
+            plan["shots"][0]["overlay_text"], nodes._HOOK_WRAP_CHARS
+        )
+        assert rendered.replace("\\N", " ") == "Organic starts here"
+
+    def test_rewrite_that_still_does_not_fit_keeps_the_trim(self, monkeypatch):
+        import asyncio
+
+        from workflows.video import nodes
+
+        async def fake_chat(*args, **kwargs):
+            return '{"hook": "Certified organic goodness starts right here today"}'
+
+        monkeypatch.setattr(nodes, "chat_completion", fake_chat)
+        plan = asyncio.run(nodes._rewrite_hook_to_fit(self._plan()))
+        assert plan["shots"][0]["overlay_text"] == "Certified organic starts"
+        assert plan["hook_trimmed"] is True
+
+    def test_rewrite_failure_keeps_the_trim(self, monkeypatch):
+        import asyncio
+
+        from workflows.video import nodes
+
+        async def fake_chat(*args, **kwargs):
+            raise RuntimeError("model down")
+
+        monkeypatch.setattr(nodes, "chat_completion", fake_chat)
+        plan = asyncio.run(nodes._rewrite_hook_to_fit(self._plan()))
+        assert plan["shots"][0]["overlay_text"] == "Certified organic starts"
+        assert plan["hook_trimmed"] is True
+
+    def test_untrimmed_plan_makes_no_call(self, monkeypatch):
+        import asyncio
+
+        from workflows.video import nodes
+
+        async def fake_chat(*args, **kwargs):  # pragma: no cover - must not run
+            raise AssertionError("no rewrite call for a fitting hook")
+
+        monkeypatch.setattr(nodes, "chat_completion", fake_chat)
+        plan = asyncio.run(nodes._rewrite_hook_to_fit(self._plan("Organic, honestly")))
+        assert plan["shots"][0]["overlay_text"] == "Organic, honestly"
 
 
 class TestDistributeDurations:

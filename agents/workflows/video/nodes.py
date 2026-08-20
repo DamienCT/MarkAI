@@ -457,6 +457,25 @@ async def source_product_image_for_video(state: VideoState) -> dict[str, Any]:
     return {**out, "product_pack_verifiable": verifiable}
 
 
+def _wraps_within(words: list[str], wrap_chars: int, max_lines: int) -> bool:
+    """True when these words greedy-wrap into max_lines of wrap_chars.
+
+    The SAME simulation the burn runs — shared so the plan clamp, the trim
+    detector and the hook rewrite all agree on what fits.
+    """
+    lines, cur = 1, ""
+    for word in words:
+        nxt = f"{cur} {word}".strip() if cur else word
+        if len(nxt) <= wrap_chars:
+            cur = nxt
+            continue
+        lines += 1
+        if lines > max_lines:
+            return False
+        cur = word
+    return True
+
+
 def _clean_overlay_text(
     value: Any,
     max_chars: int = _OVERLAY_MAX_CHARS,
@@ -489,22 +508,8 @@ def _clean_overlay_text(
     words = [w[:wrap_chars] for w in text.split()[:MAX_OVERLAY_WORDS]]
     max_lines = max(1, -(-max_chars // wrap_chars))
 
-    def fits(candidate: list[str]) -> bool:
-        """True when these words wrap into max_lines of wrap_chars."""
-        lines, cur = 1, ""
-        for word in candidate:
-            nxt = f"{cur} {word}".strip() if cur else word
-            if len(nxt) <= wrap_chars:
-                cur = nxt
-                continue
-            lines += 1
-            if lines > max_lines:
-                return False
-            cur = word
-        return True
-
     kept = list(words)
-    while kept and not fits(kept):
+    while kept and not _wraps_within(kept, wrap_chars, max_lines):
         kept.pop()
     if not kept and words:
         # A single oversized word: keep a one-line truncation rather than
@@ -545,6 +550,83 @@ def _close_fragment(text: str) -> str:
             continue
         break
     return out
+
+
+async def _rewrite_hook_to_fit(plan: dict[str, Any]) -> dict[str, Any]:
+    """Replace a wrap-trimmed hook with copy WRITTEN to fit (best-effort).
+
+    The mechanical trim keeps plan==burn honest, but what it ships is a
+    stump: a finished master opened on "Certified organic starts" because
+    the plan wrote "...starts here" and the third wrapped line was dropped.
+    One cheap text call asks for the same message inside the real budget;
+    the answer is verified with the same wrap simulation the burn runs and
+    the trimmed hook is kept on any failure.
+    """
+    shots = plan.get("shots") or []
+    if not shots or not plan.get("hook_trimmed"):
+        return plan
+    full = str(plan.get("hook_line") or "").strip() or str(
+        shots[0].get("overlay_text") or ""
+    )
+    system = (
+        "You are a short-form video copywriter. The opening hook below is "
+        f"burned on screen wrapped into at most {_OVERLAY_MAX_LINES} lines "
+        f"of {_HOOK_WRAP_CHARS} characters each (greedy word wrap, breaking "
+        "only between words), and it does not fit — its last words are cut "
+        "off on the finished video. Rewrite it: the same message, punchy, "
+        "ENGLISH, reading as a COMPLETE thought, no word over "
+        f"{_HOOK_WRAP_CHARS} characters. Prefer 3-4 short words.\n"
+        'Return STRICT JSON: {"hook": "<rewritten hook>"}'
+    )
+    try:
+        raw = await chat_completion(
+            [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": sanitize_for_prompt(full, max_length=300),
+                },
+            ],
+            category="text",
+            temperature=0.4,
+            max_tokens=100,
+            response_format={"type": "json_object"},
+        )
+        parsed = parse_llm_json(str(raw), fallback=None)
+        candidate = (
+            str(parsed.get("hook") or "").strip()
+            if isinstance(parsed, dict)
+            else ""
+        )
+        words = candidate.split()
+        # Accept only a hook that survives the burn untouched: within the
+        # word cap, every word within a line, and wrapping without a drop.
+        if (
+            words
+            and len(words) <= MAX_OVERLAY_WORDS
+            and all(len(w) <= _HOOK_WRAP_CHARS for w in words)
+            and _wraps_within(words, _HOOK_WRAP_CHARS, _OVERLAY_MAX_LINES)
+        ):
+            cleaned = _clean_overlay_text(
+                candidate, _HOOK_MAX_CHARS, _HOOK_WRAP_CHARS
+            )
+            if cleaned:
+                logger.info(
+                    "HOOK_REWRITE: %r did not fit the burn box -> %r",
+                    full,
+                    cleaned,
+                )
+                shots[0]["overlay_text"] = cleaned
+                plan["hook_trimmed"] = False
+        else:
+            logger.warning(
+                "HOOK_REWRITE: rewrite %r still does not fit — keeping the "
+                "trimmed hook",
+                candidate,
+            )
+    except Exception as exc:
+        logger.warning("HOOK_REWRITE failed (%s) — keeping the trimmed hook", exc)
+    return plan
 
 
 # A prose fragment is the native-multishot prompt for ONE shot: a flowing
@@ -642,6 +724,7 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
         raise ValueError("shot plan has no shots")
 
     shots: list[dict[str, Any]] = []
+    hook_trimmed = False
     for i, raw in enumerate(raw_shots[:MAX_SHOTS]):
         if not isinstance(raw, dict):
             continue
@@ -655,13 +738,24 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
         # The first kept shot carries the hook, which is set larger and so
         # fits fewer characters per line — clamp it against the Hook budget
         # or the burn drops the trailing words the plan promised.
-        overlay = (
-            _clean_overlay_text(
+        if not shots:
+            raw_hook_words = [
+                w[:_HOOK_WRAP_CHARS]
+                for w in re.sub(
+                    r"\s+", " ", str(raw.get("overlay_text") or "")
+                ).strip().split()[:MAX_OVERLAY_WORDS]
+            ]
+            # The trim keeps plan==burn honest, but what it ships is a stump
+            # ("Certified organic starts" for "... starts here") — record
+            # that it fired so plan_shots can ask for copy WRITTEN to fit.
+            hook_trimmed = bool(raw_hook_words) and not _wraps_within(
+                raw_hook_words, _HOOK_WRAP_CHARS, _OVERLAY_MAX_LINES
+            )
+            overlay = _clean_overlay_text(
                 raw.get("overlay_text"), _HOOK_MAX_CHARS, _HOOK_WRAP_CHARS
             )
-            if not shots
-            else _clean_overlay_text(raw.get("overlay_text"))
-        )
+        else:
+            overlay = _clean_overlay_text(raw.get("overlay_text"))
         shots.append(
             {
                 "index": i + 1,
@@ -713,6 +807,7 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
 
     return {
         "hook_line": str(plan.get("hook_line") or "").strip(),
+        "hook_trimmed": hook_trimmed,
         "shots": shots,
         "caption": str(plan.get("caption") or "").strip(),
         "hashtags": hashtags,
@@ -1176,6 +1271,7 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             user,
             allow=[product.get("name", ""), brand.get("name", ""), sub_brand],
         )
+        plan = await _rewrite_hook_to_fit(plan)
         # Supplier names never reach a burned overlay or published caption.
         # Prompt context is scrubbed at the DB layer; this catches what the
         # model knows from pretraining.
