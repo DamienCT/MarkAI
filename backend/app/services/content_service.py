@@ -1,7 +1,7 @@
 import uuid
 from typing import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,7 +19,10 @@ async def list_content(
     db: AsyncSession,
     *,
     brand_id: uuid.UUID | None = None,
-    is_current: bool | None = None,
+    # Content is versioned; superseded rows keep is_current=False. Default to
+    # current rows so listings don't show every historical version of each
+    # item — pass False for history only, or None explicitly for everything.
+    is_current: bool | None = True,
     skip: int = 0,
     limit: int = 100,
 ) -> Sequence[Content]:
@@ -57,6 +60,20 @@ async def get_content_by_calendar_item(
 
 
 async def create_content(db: AsyncSession, data: ContentCreate) -> Content:
+    # Demote any existing current rows for this calendar item first, in the
+    # same transaction — a partial unique index (idx_content_current) allows
+    # exactly one is_current row per calendar item, so inserting without
+    # demoting is an IntegrityError (a 500 at the API). Mirrors the agents'
+    # store_content, which maintains the same invariant on its side.
+    if data.is_current:
+        await db.execute(
+            update(Content)
+            .where(
+                Content.calendar_item_id == data.calendar_item_id,
+                Content.is_current,
+            )
+            .values(is_current=False)
+        )
     content = Content(**data.model_dump())
     db.add(content)
     await db.commit()
@@ -72,6 +89,12 @@ async def update_content(
         return None
 
     update_data = data.model_dump(exclude_unset=True)
+
+    # is_current is owned by the versioning flow (demote-then-insert on
+    # create): a PUT that flipped it could strand a calendar item with zero
+    # current rows, silently blocking publish. Ignored rather than 422'd so
+    # old clients that still send it keep working.
+    update_data.pop("is_current", None)
 
     for key, value in update_data.items():
         setattr(content, key, value)

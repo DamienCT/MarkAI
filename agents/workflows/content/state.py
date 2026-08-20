@@ -54,6 +54,13 @@ class ContentState(TypedDict, total=False):
     # Branded image (with logo + text overlay)
     branded_image: str | None
     composed_image: str | None
+    # In-flight copies of the two images above, carried between nodes so the
+    # vision review and the mockups don't re-download from MinIO what the
+    # previous node just uploaded. Memory stays bounded because each key is
+    # set to None by its LAST consumer: composed by review_branding, branded
+    # by generate_mockups.
+    branded_image_bytes: bytes | None
+    composed_image_bytes: bytes | None
     logo_png_data: bytes | None
     logo_variant_used: str | None
     logo_xy: tuple[float, float] | None

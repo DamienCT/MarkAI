@@ -123,11 +123,27 @@ async def run_morning_jobs() -> None:
     logger.info("Morning jobs completed")
 
 
+# Per-run cap on top-up messages. The morning job is the only AUTOMATIC retry
+# path for queued items (a backend redeploy drops the in-flight NATS queue),
+# and it fires once a day. The agents worker consumes content.generate
+# sequentially with a 92-minute per-item ack budget, so ~15 worst-case items
+# fit between two morning runs; 10 leaves headroom for the activation-chain
+# traffic sharing the same consumer while still draining a dropped backlog
+# within a couple of mornings.
+_TOPUP_BATCH_LIMIT = 10
+
+
 async def _topup_content_generation() -> None:
     """
-    Check for calendar items within the content_generation_days_ahead window
-    that are still in 'queued' or 'planned' status and trigger content
-    generation for the nearest one (sequential, one per run).
+    Trigger content generation for calendar items still in 'queued' status,
+    oldest scheduled_at first, up to _TOPUP_BATCH_LIMIT per run.
+
+    The window deliberately has NO lower bound: a past-due queued item is
+    exactly the failure this job exists to heal (redeploy-dropped queue,
+    exhausted video nak retries) — the old future-only BETWEEN window meant
+    those items were never retried automatically. Items already generated are
+    ack-skipped by the worker's regeneration guard, and duplicate-run drops
+    are retried the next morning since past-due items now qualify again.
     """
     from app.scheduler import get_app_setting
 
@@ -147,35 +163,37 @@ async def _topup_content_generation() -> None:
                 "FROM calendar_items "
                 "WHERE status = 'queued' "
                 "  AND scheduled_at IS NOT NULL "
-                "  AND scheduled_at BETWEEN :now AND :horizon "
+                "  AND scheduled_at <= :horizon "
                 "ORDER BY scheduled_at ASC "
-                "LIMIT 1"
+                "LIMIT :batch_limit"
             ),
-            {"now": now, "horizon": horizon},
+            {"horizon": horizon, "batch_limit": _TOPUP_BATCH_LIMIT},
         )
-        row = result.first()
+        rows = result.all()
 
-    if row is None:
-        logger.info("Content top-up: no queued items within %d-day window", days_ahead)
+    if not rows:
+        logger.info(
+            "Content top-up: no queued items due or within %d-day window", days_ahead
+        )
         return
 
-    calendar_item_id, brand_id, title, scheduled_at = row
-    logger.info(
-        "Content top-up: triggering generation for calendar item %s (%s) scheduled at %s",
-        calendar_item_id,
-        title,
-        scheduled_at,
-    )
-
-    await nats_service.publish(
-        "content.generate",
-        {
-            "brand_id": str(brand_id),
-            "calendar_item_id": str(calendar_item_id),
-            "triggered_by": "morning_jobs.content_topup",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
-    )
+    for calendar_item_id, brand_id, title, scheduled_at in rows:
+        logger.info(
+            "Content top-up: triggering generation for calendar item %s (%s) scheduled at %s",
+            calendar_item_id,
+            title,
+            scheduled_at,
+        )
+        await nats_service.publish(
+            "content.generate",
+            {
+                "brand_id": str(brand_id),
+                "calendar_item_id": str(calendar_item_id),
+                "triggered_by": "morning_jobs.content_topup",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    logger.info("Content top-up: triggered %d item(s)", len(rows))
 
 
 # Statuses that count as "still on the calendar" — published posts no longer

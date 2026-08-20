@@ -291,8 +291,31 @@ async def dispatch_to_n8n(
     # Single unified webhook — n8n routes internally by channel field
     n8n_webhook = f"{settings.N8N_WEBHOOK_BASE}/markai/publish"
 
+    # Outbound auth: the n8n webhook is internet-reachable and this payload
+    # carries live platform tokens, so n8n must be able to reject calls that
+    # are not ours. Same shared secret as the inbound callback verification
+    # (webhooks.py) — the n8n instance already holds it as
+    # $env.N8N_WEBHOOK_SECRET for signing its callbacks, so no new
+    # provisioning is needed. Header omitted while the secret is unset so
+    # dispatch keeps working before the secret is provisioned.
+    #
+    # n8n side (runtime change, not in this repo): the FIRST node after the
+    # Webhook trigger in docs/n8n-workflows/markai-publish.json must compare
+    # $json.headers['x-webhook-secret'] to $env.N8N_WEBHOOK_SECRET and stop
+    # the workflow on mismatch — until that node exists, this header is sent
+    # but not enforced.
+    #
+    # The platform tokens stay IN the payload: the n8n workflow reads them
+    # straight from $json.body (it has no vault/credential-store lookup), so
+    # dropping them here would break every n8n-dispatched channel. Removing
+    # them requires the n8n-side vault migration first; n8n execution logs
+    # retain webhook payloads until then.
+    headers: dict[str, str] = {}
+    if settings.N8N_WEBHOOK_SECRET:
+        headers["X-Webhook-Secret"] = settings.N8N_WEBHOOK_SECRET
+
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(n8n_webhook, json=payload)
+        resp = await client.post(n8n_webhook, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json()
 

@@ -34,6 +34,35 @@ interface ApiError {
   status: number;
 }
 
+/** Thrown on a 401 while the client kicks off the sign-in redirect.
+ *  Callers must NOT proceed (the old behavior returned `undefined as T`,
+ *  which crashed them mid-redirect). Carries `detail` so generic
+ *  `err.detail` toast sites show honest copy; load-time fetch handlers
+ *  should swallow it entirely via isAuthError — the redirect is already
+ *  underway and any error UI would only flash before navigation. */
+export class AuthError extends Error {
+  readonly detail: string;
+
+  constructor() {
+    super("Session expired");
+    this.name = "AuthError";
+    this.detail = "Your session has expired — redirecting to sign-in...";
+  }
+}
+
+export function isAuthError(err: unknown): err is AuthError {
+  return err instanceof AuthError;
+}
+
+/** Start the sign-in redirect, preserving the page the user was on so they
+ *  land back where they were after re-authenticating. */
+async function redirectToSignIn(): Promise<void> {
+  const { signIn } = await import("next-auth/react");
+  signIn("azure-ad", {
+    callbackUrl: window.location.pathname + window.location.search,
+  });
+}
+
 export interface RequestOptions {
   signal?: AbortSignal;
 }
@@ -91,9 +120,8 @@ class ApiClient {
     if (!response.ok) {
       // On 401, redirect to sign-in (token expired or invalid)
       if (response.status === 401 && typeof window !== "undefined") {
-        const { signIn } = await import("next-auth/react");
-        signIn("azure-ad");
-        return undefined as T;
+        await redirectToSignIn();
+        throw new AuthError();
       }
       const error: ApiError = {
         detail: "An error occurred",
@@ -162,6 +190,10 @@ class ApiClient {
     });
 
     if (!response.ok) {
+      if (response.status === 401 && typeof window !== "undefined") {
+        await redirectToSignIn();
+        throw new AuthError();
+      }
       const error: ApiError = { detail: "Upload failed", status: response.status };
       try {
         const data = await response.json();

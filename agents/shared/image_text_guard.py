@@ -53,6 +53,7 @@ import httpx
 
 from shared.config import settings
 from shared.sanitize import sanitize_for_prompt
+from shared.vision_payload import downscale_for_vision
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,14 @@ printed, left to right, exactly as it appears — do NOT silently un-mirror it
 into the word you recognise. Printed copy that does not read left to right is
 garbled no matter how cleanly it is rendered.
 
+The three text arrays hold TRANSCRIPTIONS ONLY — the literal characters you
+read, never a description. "partial label on the right-side bottle" is not a
+transcription; a surface you can only describe belongs in
+illegible_text_marks and nowhere else. (Downstream treats the text arrays as
+readable lettering and illegible_text_marks as soft marks; a description
+filed as text promotes an unreadable — and therefore acceptable — label into
+a hard defect.)
+
 Answer STRICT JSON only:
 {{"visible_text": ["<each distinct piece of lettering you CAN read, transcribed verbatim>"],
   "unintended_text": ["<the subset NOT covered by the legitimate list>"],
@@ -454,6 +463,14 @@ async def detect_unintended_text(
     """
     if not image_data:
         return _skipped("no image data")
+
+    # Bound the payload BEFORE the size gate: generators hand back multi-MB
+    # originals and the vision bill is priced by resolution, so the request
+    # carries a 768px JPEG instead. Fails open to the original bytes, which
+    # the size gate below still protects the transport from.
+    image_data, content_type = downscale_for_vision(
+        image_data, content_type or "image/png"
+    )
 
     max_bytes = max(1, int(settings.IMAGE_TEXT_GUARD_MAX_IMAGE_MB)) * 1024 * 1024
     if len(image_data) > max_bytes:

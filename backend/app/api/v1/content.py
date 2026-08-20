@@ -32,7 +32,10 @@ router = APIRouter()
 @router.get("/", response_model=list[ContentResponse])
 async def list_content(
     brand_id: uuid.UUID | None = None,
-    is_current: bool | None = None,
+    # Content is versioned: every regen inserts a new row and demotes the old
+    # one. Listings default to current rows only — pass is_current=false to
+    # browse the superseded history.
+    is_current: bool = True,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
@@ -105,6 +108,17 @@ class ImageRegenerateRequest(BaseModel):
     format: str | None = None  # "lifestyle" (default) | "ad"
 
 
+# Image regeneration is allowed while the post is in review (same set as
+# _REBRAND_ALLOWED_STATUSES below) and from 'failed' — regenerating is the
+# healing action the failed-state UI offers, and the worker finishing on
+# 'in_review' is exactly the recovery (mirrors _VIDEO_TRIGGER_ALLOWED_STATUSES
+# allowing 'failed'). The worker always finishes by flipping the item to
+# 'in_review', so a regen queued from 'scheduled' would silently un-approve
+# the post. 'working' being absent also rejects double-submits while a regen
+# is already in flight.
+_IMAGE_REGEN_ALLOWED_STATUSES = frozenset({"in_review", "reworking", "failed"})
+
+
 @router.post("/{content_id}/regenerate-image")
 async def regenerate_image(
     content_id: uuid.UUID,
@@ -119,6 +133,25 @@ async def regenerate_image(
     content = await content_service.get_content(db, content_id)
     if content is None:
         raise HTTPException(status_code=404, detail="Content not found")
+
+    cal_result = await db.execute(
+        select(CalendarItem).where(CalendarItem.id == content.calendar_item_id)
+    )
+    cal_item = cal_result.scalar_one_or_none()
+    if cal_item is None:
+        raise HTTPException(status_code=404, detail="Calendar item not found")
+    if cal_item.status not in _IMAGE_REGEN_ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image regeneration is only allowed for in-review content (got '{cal_item.status}')",
+        )
+
+    # Flip to 'working' synchronously BEFORE publishing so the UI's poll loop
+    # (which waits for the item to leave 'working') can't race a slow worker
+    # pickup, and a second click lands on the status gate above. The worker
+    # sets 'working' again on pickup — harmless.
+    cal_item.status = "working"
+    await db.commit()
 
     # Publish a NATS message to trigger image regeneration
     from app.services import nats_service

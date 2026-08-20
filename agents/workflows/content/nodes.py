@@ -16,6 +16,7 @@ from shared.editorial import build_temporal_block, scrub_brief_meta
 from shared.llm import chat_completion, generate_image, get_model_for_category, parse_llm_json
 from shared.product_swap import pack_framing_directive
 from shared.prompt_enhancer import enhance_image_prompt as enhance_image_prompt_fn
+from shared.vision_payload import downscale_for_vision
 from shared.sanitize import sanitize_for_prompt, sanitize_json_for_prompt
 from shared.image_subject import (
     build_art_direction_block,
@@ -3205,6 +3206,10 @@ async def apply_branding(state: ContentState) -> dict[str, Any]:
         return {
             "branded_image": f"content-images/{branded_obj}",
             "composed_image": f"content-images/{composed_obj}",
+            # The bytes we just uploaded, kept in state so review_branding and
+            # generate_mockups read them instead of re-downloading from MinIO.
+            "branded_image_bytes": branded_bytes,
+            "composed_image_bytes": image_data,
             "logo_png_data": logo_png,
             "logo_variant_used": chosen_label,
             "logo_xy": plan_logo_xy,
@@ -3248,8 +3253,11 @@ async def _vision_plan_placement(
     """
     import base64 as _b64
 
-    b64 = _b64.b64encode(clean_image_data).decode("ascii")
-    data_url = f"data:image/png;base64,{b64}"
+    # 768px JPEG, not the multi-MB original — vision is priced by resolution
+    # and this call only needs to see where the empty areas are.
+    payload, mime = downscale_for_vision(clean_image_data, "image/png")
+    b64 = _b64.b64encode(payload).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
     variant_options_str = "|".join(
         f'"{v}"' for v in available_logo_variants or ["primary", "dark", "light"]
     )
@@ -3368,8 +3376,11 @@ async def _vision_review_branding(
     """
     import base64 as _b64
 
-    b64 = _b64.b64encode(branded_image_data).decode("ascii")
-    data_url = f"data:image/png;base64,{b64}"
+    # Same 768px JPEG budget as the planner — the critic judges overlap and
+    # contrast, both of which survive the downscale intact.
+    payload, mime = downscale_for_vision(branded_image_data, "image/png")
+    b64 = _b64.b64encode(payload).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
     variant_options_str = "|".join(
         f'"{v}"' for v in available_logo_variants or ["primary", "dark", "light"]
     )
@@ -3529,20 +3540,33 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
     # placement half of the review stays skipped. The copy contract still gets
     # checked: ad posts were where the frames that contradicted their own
     # headline came from, and they were shipping as {"ok": true}.
+    # This node is the composed image's LAST consumer, so every return path
+    # drops its bytes from state — that is what keeps the byte-carrying
+    # optimisation memory-bounded rather than pinning full images for the
+    # rest of the run.
+    _drop_composed = {"composed_image_bytes": None}
+
     if is_ad and not has_contract:
         logger.info("review_branding: skipped for ad/headline post (no contract)")
-        return {"branding_review": {"ok": True, "reason": "ad headline (AI-placed)"}}
+        return {
+            "branding_review": {"ok": True, "reason": "ad headline (AI-placed)"},
+            **_drop_composed,
+        }
 
     if not branded_url or not branded_url.startswith("content-images/"):
-        return {}
+        return _drop_composed
 
-    try:
-        branded_bytes = await async_download_file(
-            "content-images", branded_url.replace("content-images/", "")
-        )
-    except Exception as exc:
-        logger.warning("review_branding: failed to load branded image: %s", exc)
-        return {}
+    # apply_branding carries the bytes it just uploaded; MinIO is only the
+    # fallback (e.g. a run resumed from a fresh process).
+    branded_bytes = state.get("branded_image_bytes")
+    if not branded_bytes:
+        try:
+            branded_bytes = await async_download_file(
+                "content-images", branded_url.replace("content-images/", "")
+            )
+        except Exception as exc:
+            logger.warning("review_branding: failed to load branded image: %s", exc)
+            return _drop_composed
 
     review = await _vision_review_branding(
         branded_bytes,
@@ -3578,12 +3602,12 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
                     "ad headline (AI-placed); copy contract breached — "
                     + "; ".join(breaches)
                 )[:300]
-        return {"branding_review": out}
+        return {"branding_review": out, **_drop_composed}
 
     if review is None or review.get("ok"):
         if review:
             logger.info("review_branding: approved (%s)", review.get("reason", ""))
-        return {"branding_review": review or {"ok": True}}
+        return {"branding_review": review or {"ok": True}, **_drop_composed}
 
     new_text = review.get("new_text_anchor", "")
     new_logo_xy = review.get("new_logo_xy")
@@ -3595,19 +3619,22 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
 
     # Nothing actionable suggested — keep the original
     if not (new_text or new_logo_xy or new_variant):
-        return {"branding_review": review}
+        return {"branding_review": review, **_drop_composed}
 
-    # Pull the pre-overlay composed image so we can re-render cheaply.
-    if not composed_url or not composed_url.startswith("content-images/"):
-        logger.warning("review_branding: no composed image — cannot re-render")
-        return {"branding_review": review}
-    try:
-        composed_bytes = await async_download_file(
-            "content-images", composed_url.replace("content-images/", "")
-        )
-    except Exception as exc:
-        logger.warning("review_branding: failed to load composed image: %s", exc)
-        return {"branding_review": review}
+    # The pre-overlay composed image lets us re-render cheaply — carried in
+    # state from apply_branding, MinIO only as the fallback.
+    composed_bytes = state.get("composed_image_bytes")
+    if not composed_bytes:
+        if not composed_url or not composed_url.startswith("content-images/"):
+            logger.warning("review_branding: no composed image — cannot re-render")
+            return {"branding_review": review, **_drop_composed}
+        try:
+            composed_bytes = await async_download_file(
+                "content-images", composed_url.replace("content-images/", "")
+            )
+        except Exception as exc:
+            logger.warning("review_branding: failed to load composed image: %s", exc)
+            return {"branding_review": review, **_drop_composed}
 
     # Swap the logo if the variant changed
     if new_variant and new_variant != current_variant:
@@ -3628,7 +3655,7 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
 
     if not logo_png:
         logger.warning("review_branding: no logo bytes — keeping original branded image")
-        return {"branding_review": review}
+        return {"branding_review": review, **_drop_composed}
 
     # Resolve effective placement: use the critic's new free (x, y) if given,
     # otherwise keep what apply_branding chose. Text keeps its corner.
@@ -3683,10 +3710,14 @@ async def review_branding(state: ContentState) -> dict[str, Any]:
 
     return {
         "branded_image": f"content-images/{branded_obj}",
+        # Replace the carried bytes with the re-render so generate_mockups
+        # previews the image that was actually shipped.
+        "branded_image_bytes": new_branded,
         "logo_variant_used": current_variant,
         "logo_xy": effective_xy,
         "text_anchor_used": effective_text,
         "branding_review": review,
+        **_drop_composed,
     }
 
 
@@ -3701,18 +3732,25 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
     generated_url = state.get("generated_image")
     image_source = branded_url or generated_url
 
+    # Last consumer of the branded bytes review_branding left in state —
+    # every return path drops them so they don't ride through the rest of
+    # the run (adapt/store never look at pixels).
+    _drop_branded = {"branded_image_bytes": None}
+
     if not image_source:
-        return {"mockup_urls": {}}
+        return {"mockup_urls": {}, **_drop_branded}
 
     try:
-        # Get image bytes
-        if image_source.startswith("content-images/"):
-            obj_name = image_source.replace("content-images/", "")
-            image_data = await async_download_file("content-images", obj_name)
-        else:
-            import base64 as _b64
+        # Get image bytes — the branded image travels in state, so hitting
+        # MinIO here is the fallback, not the norm.
+        image_data = state.get("branded_image_bytes") if branded_url else None
+        if not image_data:
+            if image_source.startswith("content-images/"):
+                obj_name = image_source.replace("content-images/", "")
+                image_data = await async_download_file("content-images", obj_name)
+            elif image_source.startswith("data:"):
+                import base64 as _b64
 
-            if image_source.startswith("data:"):
                 _, b64_part = image_source.split(",", 1)
                 image_data = _b64.b64decode(b64_part)
             else:
@@ -3828,11 +3866,11 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
             except Exception:
                 logger.warning("Failed to generate %s mockup", platform, exc_info=True)
 
-        return {"mockup_urls": mockup_urls}
+        return {"mockup_urls": mockup_urls, **_drop_branded}
 
     except Exception:
         logger.exception("Mockup generation failed")
-        return {"mockup_urls": {}}
+        return {"mockup_urls": {}, **_drop_branded}
 
 
 async def store_content_node(state: ContentState) -> dict[str, Any]:
