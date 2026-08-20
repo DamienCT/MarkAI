@@ -900,6 +900,65 @@ class TestReelLabelGuard:
         assert out["checked"] and out["flagged"]
         assert out["frames_checked"] == 3
         assert out["flags"] == [{"t": 6.0, "text": ["FNILLE EIL NOIL"]}]
+        assert out["soft"] == []
+
+    def test_illegible_marks_alone_are_soft_not_flagged(self, monkeypatch):
+        """Unreadable label areas are what the packaging lock ASKS for — they
+        must never spend the seed-bumped retry a garbled string deserves."""
+        from shared import image_text_guard as itg
+        from shared.image_text_guard import TextGuardVerdict
+
+        monkeypatch.setattr(itg, "guard_enabled", lambda: True)
+        monkeypatch.setattr(
+            video_nodes, "_frame_jpeg_at", lambda path, t: b"jpeg"
+        )
+
+        async def fake_detect(data, content_type, allowed, *, label=""):
+            if label.startswith("reel@2"):
+                # Embossed neck marks: flagged by the vision model, but with
+                # no readable/garbled string — soft tier.
+                return TextGuardVerdict(
+                    flagged=True, illegible_marks=["embossed marks on neck"]
+                )
+            if label.startswith("reel@6"):
+                # Garbled string → hard, even alongside illegible marks.
+                return TextGuardVerdict(
+                    flagged=True,
+                    gibberish_text=["Elano OLI"],
+                    illegible_marks=["soft label area"],
+                )
+            if label.startswith("reel@10"):
+                # Flagged with NOTHING listed: ambiguous, stays hard.
+                return TextGuardVerdict(flagged=True)
+            return TextGuardVerdict(flagged=False)
+
+        monkeypatch.setattr(itg, "detect_unintended_text", fake_detect)
+        out = asyncio.run(
+            video_nodes._reel_label_guard("reel.mp4", [4.0] * 4)
+        )
+        assert out["flagged"] is True
+        assert [f["t"] for f in out["flags"]] == [6.0, 10.0]
+        assert out["soft"] == [{"t": 2.0, "marks": ["embossed marks on neck"]}]
+
+    def test_only_soft_marks_never_flag_the_reel(self, monkeypatch):
+        from shared import image_text_guard as itg
+        from shared.image_text_guard import TextGuardVerdict
+
+        monkeypatch.setattr(itg, "guard_enabled", lambda: True)
+        monkeypatch.setattr(
+            video_nodes, "_frame_jpeg_at", lambda path, t: b"jpeg"
+        )
+
+        async def fake_detect(data, content_type, allowed, *, label=""):
+            return TextGuardVerdict(
+                flagged=True, illegible_marks=["blurred label band"]
+            )
+
+        monkeypatch.setattr(itg, "detect_unintended_text", fake_detect)
+        out = asyncio.run(video_nodes._reel_label_guard("reel.mp4", [4.0, 4.0]))
+        assert out["flagged"] is False
+        assert out["flags"] == []
+        assert len(out["soft"]) == 2
 
     def test_guard_disabled_fails_open(self, monkeypatch):
         from shared import image_text_guard as itg

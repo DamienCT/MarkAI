@@ -1839,6 +1839,11 @@ _SHOT_EXPOSURE_RULE = (
 )
 
 
+# The last sentence is load-bearing and measured: v5's 28s pour close-up
+# asked for "the olive-green glass bottle" turned away and came back wearing
+# a full invented label, because a commercial bottle's default state IS
+# labelled. Stating the glass is bare replaces the default instead of
+# negating it.
 _UNVERIFIED_PACK_DIRECTIVE = (
     "PACKAGING (hard constraint for this reel): no product label anywhere in "
     "frame may carry readable printed copy. Packs read as colour, shape and "
@@ -1847,7 +1852,9 @@ _UNVERIFIED_PACK_DIRECTIVE = (
     "facing label at a size where a viewer could try to read it, and never "
     "invent a brand name, product name, weight, ingredient list or "
     "certification mark. Unreadable packaging is correct here; invented "
-    "lettering is not."
+    "lettering is not. Every bottle or jar near the camera is bare, "
+    "unprinted glass: a smooth unadorned surface with no label, no paper "
+    "band and no printing anywhere on it."
 )
 
 
@@ -1896,6 +1903,12 @@ async def _delabel_shot_scenes(
         "people at the table.\n"
         "- Where a pack must appear, put it turned partly away from camera, "
         "well behind the focal plane, or cropped by the frame edge.\n"
+        "- Where the container comes NEAR the camera (a pour, a hand "
+        "gripping it), state outright that it is bare, unprinted glass — "
+        "\"a plain olive-green bottle of smooth bare glass, no label or "
+        "printing on it\". A commercial bottle's default state is labelled; "
+        "turning it away only turns the invented label with it, while "
+        "declaring the glass bare replaces the default.\n"
         "- Keep the same labelled sections, the same lighting and style "
         "anchors, and the same overall look. Change framing and subject, not "
         "the brand's world.\n"
@@ -4590,6 +4603,15 @@ async def _reel_label_guard(
     legitimate lettering and would false-positive every frame after it. Fails
     open like the image gate: a disabled guard or a failed vision call never
     blocks a render.
+
+    Two tiers, because the packaging lock PERMITS what the image gate bans:
+    readable or garbled strings (``offending``) are hard flags that buy the
+    seed-bumped retry, while unresolvable letter-like marks alone
+    (``illegible_marks`` — soft label areas, embossed glass) are exactly the
+    "unreadable packaging is correct here" the directive asks for, recorded
+    under ``soft`` but never spending the retry. v5 measured the difference:
+    its retry was triggered partly by embossed neck marks while the retry
+    itself shipped a genuinely garbled label anyway.
     """
     from shared import image_text_guard as _itg
 
@@ -4613,16 +4635,23 @@ async def _reel_label_guard(
 
     results = [r for r in await asyncio.gather(*(_check(t) for t in mids)) if r]
     checked = [r for r in results if r[1].checked]
-    flags = [
-        {"t": round(t, 1), "text": v.offending[:5]}
-        for t, v in checked
-        if v.flagged
-    ]
+    flags: list[dict[str, Any]] = []
+    soft: list[dict[str, Any]] = []
+    for t, v in checked:
+        if not v.flagged:
+            continue
+        # A flag with no listed strings is ambiguous — treat as hard rather
+        # than assume the unlisted lettering was soft.
+        if v.offending or not v.illegible_marks:
+            flags.append({"t": round(t, 1), "text": v.offending[:5]})
+        else:
+            soft.append({"t": round(t, 1), "marks": v.illegible_marks[:5]})
     return {
         "checked": bool(checked),
         "frames_checked": len(checked),
         "flagged": bool(flags),
         "flags": flags,
+        "soft": soft,
     }
 
 
