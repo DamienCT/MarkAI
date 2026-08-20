@@ -29,6 +29,7 @@ import { api } from "@/lib/api";
 import { getStoredBrandId } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
 import { watchPost } from "@/lib/post-watch";
+import { toApiDatetime } from "@/lib/utils";
 import type { CalendarItem, Brand, Channel } from "@/types";
 import { ALL_CHANNELS, CHANNEL_DISPLAY_NAMES } from "@/types";
 
@@ -232,7 +233,7 @@ export default function ContentStudioPage() {
           item_type: formItemType,
           title: formTitle.trim(),
           description: formDescription.trim() || null,
-          scheduled_at: formScheduledAt || null,
+          scheduled_at: toApiDatetime(formScheduledAt) || null,
           status: "queued",
         })
       );

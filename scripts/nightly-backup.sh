@@ -9,12 +9,43 @@ set -euo pipefail
 #   1. pg_dump from the running markai-postgres container, gzipped + verified
 #   2. Rotation: keeps the newest 14 dumps in /var/www/markai/backups
 #   3. Mirrors MinIO object storage to backups/minio (only if `mc` is installed)
+#   4. Offsite sync via rclone (only if a remote named `offsite:` is configured)
+#
+# Check mode (for cron/monitoring — takes no backup):
+#   bash /var/www/markai/scripts/nightly-backup.sh check
+#   Exits 0 if the newest dump is fresher than 26h, non-zero + ALERT otherwise.
 
 cd /var/www/markai
 
 BACKUP_DIR="/var/www/markai/backups"
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="${BACKUP_DIR}/pgdump_$(date +%Y%m%d_%H%M%S).sql.gz"
+
+# ── Backup-age check helper ─────────────────────────────────────────
+# Invoked as `nightly-backup.sh check` — must branch BEFORE the backup
+# steps below run, so the dispatch lives up here.
+check_backup_age() {
+  local newest age_hours
+  newest=$(ls -1t "${BACKUP_DIR}"/pgdump_*.sql.gz 2>/dev/null | head -1 || true)
+  if [[ -z "$newest" ]]; then
+    echo "ALERT: no pgdump backups found in ${BACKUP_DIR}"
+    return 1
+  fi
+  age_hours=$(( ($(date +%s) - $(stat -c %Y "$newest")) / 3600 ))
+  if (( age_hours >= 26 )); then
+    echo "ALERT: newest backup ${newest} is ${age_hours}h old (threshold: 26h)"
+    return 1
+  fi
+  echo "OK: newest backup ${newest} is ${age_hours}h old"
+}
+
+if [[ "${1:-}" == "check" ]]; then
+  if check_backup_age; then
+    exit 0
+  else
+    exit 1
+  fi
+fi
 
 echo "=== Nightly backup started: $(date '+%Y-%m-%d %H:%M:%S') ==="
 
@@ -72,6 +103,19 @@ if command -v mc &>/dev/null; then
   fi
 else
   echo "  mc not installed — skipping MinIO mirror (install: https://min.io/docs/minio/linux/reference/minio-mc.html)."
+fi
+
+echo "=== Step 4: Offsite sync (rclone) ==="
+if command -v rclone &>/dev/null && rclone listremotes 2>/dev/null | grep -q '^offsite:$'; then
+  echo "  Copying ${BACKUP_FILE} to offsite:markai-backups/pgdump..."
+  rclone copy "$BACKUP_FILE" offsite:markai-backups/pgdump
+  if [[ -d "${BACKUP_DIR}/minio" ]]; then
+    echo "  Syncing MinIO mirror to offsite:markai-backups/minio..."
+    rclone sync "${BACKUP_DIR}/minio" offsite:markai-backups/minio
+  fi
+  echo "  Offsite sync complete."
+else
+  echo "  Offsite unconfigured — create an rclone remote named 'offsite' to enable it."
 fi
 
 echo "=== Nightly backup complete: $(date '+%Y-%m-%d %H:%M:%S') ==="

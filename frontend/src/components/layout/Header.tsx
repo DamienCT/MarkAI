@@ -177,7 +177,9 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
               notifications.slice(0, 5).map((n) => (
                 <DropdownMenuItem key={n.id} className="flex flex-col items-start gap-1 p-3">
                   <span className="text-sm font-medium">{n.title}</span>
-                  <span className="text-xs text-muted-foreground">{n.message}</span>
+                  {n.body && (
+                    <span className="text-xs text-muted-foreground">{n.body}</span>
+                  )}
                   <span className="text-[10px] text-muted-foreground/60">
                     {formatRelativeTime(n.created_at)}
                   </span>

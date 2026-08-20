@@ -74,9 +74,17 @@ async def get_analytics_summary(
         pub_where.append("channel = :channel")
     pub_sql = " AND ".join(pub_where)
 
+    # engagement_metrics rows are cumulative lifetime snapshots pulled every
+    # ~6h — summing them all counts each post once per snapshot (~4x/day).
+    # Aggregate only the latest snapshot per content_id.
     row = (
         await db.execute(
             text(f"""
+            WITH latest AS (
+                SELECT DISTINCT ON (content_id) *
+                FROM engagement_metrics{where_sql}
+                ORDER BY content_id, fetched_at DESC
+            )
             SELECT
                 COALESCE(SUM(impressions), 0) AS total_impressions,
                 COALESCE(SUM(likes), 0) AS total_likes,
@@ -86,7 +94,7 @@ async def get_analytics_summary(
                 COALESCE(SUM(clicks), 0) AS total_clicks,
                 COALESCE(AVG(engagement_rate), 0) AS avg_engagement_rate,
                 (SELECT count(*) FROM calendar_items WHERE {pub_sql}) AS total_published
-            FROM engagement_metrics{where_sql}
+            FROM latest
         """),
             params,
         )
@@ -116,16 +124,13 @@ async def get_engagement_timeseries(
 ):
     """Daily engagement metrics over time."""
     days = min(max(days, 1), 365)
+    # Snapshots are cumulative and land ~4x/day — keep only the latest
+    # snapshot per content per day, so each day shows totals-to-date once.
     query = """
-        SELECT
-            DATE(fetched_at) as date,
-            COALESCE(SUM(likes), 0) as likes,
-            COALESCE(SUM(comments), 0) as comments,
-            COALESCE(SUM(shares), 0) as shares,
-            COALESCE(SUM(impressions), 0) as impressions,
-            COALESCE(AVG(engagement_rate), 0) as engagement_rate
-        FROM engagement_metrics
-        WHERE fetched_at >= NOW() - MAKE_INTERVAL(days => :days)
+        WITH latest AS (
+            SELECT DISTINCT ON (content_id, DATE(fetched_at)) *
+            FROM engagement_metrics
+            WHERE fetched_at >= NOW() - MAKE_INTERVAL(days => :days)
     """
     params: dict = {"days": days}
     if brand_id:
@@ -134,7 +139,19 @@ async def get_engagement_timeseries(
     if channel:
         query += " AND channel = :channel"
         params["channel"] = channel
-    query += " GROUP BY DATE(fetched_at) ORDER BY date"
+    query += """
+            ORDER BY content_id, DATE(fetched_at), fetched_at DESC
+        )
+        SELECT
+            DATE(fetched_at) as date,
+            COALESCE(SUM(likes), 0) as likes,
+            COALESCE(SUM(comments), 0) as comments,
+            COALESCE(SUM(shares), 0) as shares,
+            COALESCE(SUM(impressions), 0) as impressions,
+            COALESCE(AVG(engagement_rate), 0) as engagement_rate
+        FROM latest
+        GROUP BY DATE(fetched_at) ORDER BY date
+    """
     rows = await db.execute(text(query), params)
     return [
         {
@@ -190,7 +207,14 @@ async def get_top_content(
 ):
     """Top performing content by engagement."""
     limit = min(limit, 200)
+    # Join only the latest cumulative snapshot per content_id — summing every
+    # ~6h snapshot inflated each item's numbers ~4x/day.
     query = """
+            WITH latest_em AS (
+                SELECT DISTINCT ON (content_id) *
+                FROM engagement_metrics
+                ORDER BY content_id, fetched_at DESC
+            )
             SELECT
                 ci.id, ci.title, ci.channel, ci.status,
                 ci.scheduled_at, ci.published_at,
@@ -200,7 +224,7 @@ async def get_top_content(
                 COALESCE(SUM(em.impressions), 0) as total_impressions,
                 COALESCE(AVG(em.engagement_rate), 0) as avg_engagement_rate
             FROM calendar_items ci
-            LEFT JOIN engagement_metrics em ON ci.id = em.calendar_item_id
+            LEFT JOIN latest_em em ON ci.id = em.calendar_item_id
             WHERE ci.status = 'published'
     """
     params: dict = {"lim": limit}
@@ -244,7 +268,21 @@ async def get_engagement_by_channel(
     """Engagement aggregated per channel — powers the per-channel breakdown
     (donut + comparative cards). Engagement only exists for IG/FB/LinkedIn."""
     days = min(max(days, 1), 365)
+    # Aggregate the latest cumulative snapshot per content_id only — raw rows
+    # repeat every ~6h and would inflate each channel ~4x/day.
     query = """
+        WITH latest AS (
+            SELECT DISTINCT ON (content_id) *
+            FROM engagement_metrics
+            WHERE fetched_at >= NOW() - MAKE_INTERVAL(days => :days)
+    """
+    params: dict = {"days": days}
+    if brand_id:
+        query += " AND brand_id = :brand_id"
+        params["brand_id"] = brand_id
+    query += """
+            ORDER BY content_id, fetched_at DESC
+        )
         SELECT
             channel,
             COALESCE(SUM(impressions), 0) as impressions,
@@ -255,14 +293,9 @@ async def get_engagement_by_channel(
             COALESCE(SUM(clicks), 0) as clicks,
             COALESCE(AVG(engagement_rate), 0) as engagement_rate,
             COUNT(DISTINCT content_id) as posts
-        FROM engagement_metrics
-        WHERE fetched_at >= NOW() - MAKE_INTERVAL(days => :days)
+        FROM latest
+        GROUP BY channel ORDER BY impressions DESC
     """
-    params: dict = {"days": days}
-    if brand_id:
-        query += " AND brand_id = :brand_id"
-        params["brand_id"] = brand_id
-    query += " GROUP BY channel ORDER BY impressions DESC"
     rows = await db.execute(text(query), params)
     return [
         {
@@ -288,8 +321,15 @@ async def get_brand_metrics(
     current_user: User = Depends(get_current_user),
 ):
     """Engagement metrics for a specific brand."""
+    # Latest cumulative snapshot per content_id only — see get_analytics_summary.
     rows = await db.execute(
         text("""
+            WITH latest AS (
+                SELECT DISTINCT ON (content_id) *
+                FROM engagement_metrics
+                WHERE brand_id = :brand_id
+                ORDER BY content_id, fetched_at DESC
+            )
             SELECT
                 COALESCE(SUM(em.likes), 0),
                 COALESCE(SUM(em.comments), 0),
@@ -298,7 +338,7 @@ async def get_brand_metrics(
                 COALESCE(SUM(em.reach), 0),
                 COALESCE(AVG(em.engagement_rate), 0),
                 COUNT(DISTINCT ci.id)
-            FROM engagement_metrics em
+            FROM latest em
             JOIN calendar_items ci ON em.calendar_item_id = ci.id
             WHERE ci.brand_id = :brand_id
         """),

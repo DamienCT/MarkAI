@@ -16,7 +16,7 @@ import { format } from "date-fns";
 import { api, fileUrl } from "@/lib/api";
 import { getStoredBrandValue } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
-import { formatRelativeTime, statusColor } from "@/lib/utils";
+import { formatDateTime, formatRelativeTime, statusColor } from "@/lib/utils";
 import type { Approval } from "@/types";
 
 interface ApprovalWithExtra extends Approval {
@@ -169,7 +169,14 @@ export default function ApprovalsPage() {
             // same priority as the content detail page.
             const gm = (approval.content?.generation_metadata || {}) as Record<string, unknown>;
             const imagePath = (gm.branded_image || gm.raw_image || gm.generated_image_url || "") as string;
-            const imageUrl = imagePath ? fileUrl(imagePath) : undefined;
+            const fullImageUrl = imagePath ? fileUrl(imagePath) : "";
+            // Grid thumbnail: 800px wide, quality 75 — same on-the-fly resize
+            // params PlatformMockups uses, so cards don't pull full-size originals.
+            const imageUrl = fullImageUrl
+              ? fullImageUrl.includes("?")
+                ? `${fullImageUrl}&w=800&q=75`
+                : `${fullImageUrl}?w=800&q=75`
+              : undefined;
             const videoUrl = approval.content?.video_url ? fileUrl(approval.content.video_url) : undefined;
 
             return (
@@ -182,9 +189,14 @@ export default function ApprovalsPage() {
                           {title}
                         </Link>
                       </CardTitle>
-                      <CardDescription className="flex items-center gap-2 mt-1">
+                      <CardDescription className="flex items-center flex-wrap gap-2 mt-1">
                         <Badge variant="outline" className="text-[10px] capitalize">{channel}</Badge>
                         <span className="text-xs">Submitted {formatRelativeTime(approval.created_at)}</span>
+                        {approval.calendar_item?.scheduled_at && (
+                          <span className="text-xs">
+                            · Publishes {formatDateTime(approval.calendar_item.scheduled_at)}
+                          </span>
+                        )}
                       </CardDescription>
                     </div>
                     <Badge className={statusColor(approval.status)} variant="outline">{approval.status}</Badge>

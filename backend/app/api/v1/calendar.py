@@ -155,12 +155,13 @@ async def update_calendar_item(
 async def _recreate_pending_approval_on_return(
     db: AsyncSession, item_id: uuid.UUID
 ) -> None:
-    """When a scheduled post is sent back to review, recreate a pending approval
+    """When a post is sent (back) to review, recreate a pending approval
     so the Approve/Reject actions reappear.
 
     Reuses the content_id + reviewer_id from the item's most recent approval
-    (it was approved before, so one exists). No-op if a pending one already
-    exists or there's no prior approval to base it on.
+    (approved for un-scheduled posts, rejected for reworked ones). No-op if a
+    pending one already exists or there's no prior approval to base it on
+    (first-time reviews get theirs from the normal approval-request flow).
     """
     from app.models.approval import Approval
 
@@ -200,8 +201,11 @@ async def patch_calendar_item(
     item = await calendar_service.update_calendar_item(db, item_id, data)
     if item is None:
         raise HTTPException(status_code=404, detail="Calendar item not found")
-    # Returning a scheduled post to review → re-open it for Approve/Reject.
-    if old_status == "scheduled" and item.status == "in_review":
+    # Any entry into review (scheduled → in_review un-schedule, or
+    # reworking → in_review resubmit after a rejection) → re-open it for
+    # Approve/Reject; without this a resubmitted item strands in in_review
+    # with no pending approval row.
+    if item.status == "in_review" and old_status != "in_review":
         await _recreate_pending_approval_on_return(db, item_id)
     return item
 

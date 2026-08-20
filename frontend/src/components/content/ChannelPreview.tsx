@@ -47,6 +47,7 @@ function ClickableImage({
         <img
           src={src}
           alt={alt}
+          loading="lazy"
           className={`${className || ""} cursor-zoom-in`}
           onClick={() => setOpen(true)}
         />

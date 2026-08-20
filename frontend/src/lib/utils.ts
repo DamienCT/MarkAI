@@ -30,6 +30,18 @@ export function formatRelativeTime(dateString: string): string {
   }
 }
 
+/** Convert a datetime-local input value (naive local time, e.g.
+ *  "2026-08-20T09:00") to an ISO UTC string for the API — the backend treats
+ *  incoming datetimes as UTC, so sending the raw local string would shift the
+ *  publish time by the user's UTC offset. Returns "" for empty/invalid input
+ *  so callers can `|| null` it. */
+export function toApiDatetime(local: string): string {
+  if (!local) return "";
+  const d = new Date(local);
+  if (isNaN(d.getTime())) return "";
+  return d.toISOString();
+}
+
 export function statusColor(status: string): string {
   const map: Record<string, string> = {
     active: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",

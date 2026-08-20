@@ -638,3 +638,6 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+-- Latest-snapshot lookups: serves DISTINCT ON (content_id) ... ORDER BY content_id, fetched_at DESC
+CREATE INDEX idx_engagement_metrics_content_fetched ON engagement_metrics (content_id, fetched_at DESC);

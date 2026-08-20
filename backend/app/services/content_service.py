@@ -9,7 +9,9 @@ from app.models.content import Content
 from app.schemas.content import ContentCreate, ContentUpdate
 
 
-class InvalidStatusTransition(Exception):
+class InvalidStatusTransition(ValueError):
+    # A ValueError so route handlers that guard resolve_approval with
+    # `except ValueError` return 422 instead of letting it escape as a 500.
     pass
 
 

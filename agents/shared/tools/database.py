@@ -112,14 +112,18 @@ async def complete_agent_run(
     error_message: str | None = None,
     tokens_used: int | None = None,
 ) -> None:
-    """Mark an agent_run as completed or failed."""
+    """Mark an agent_run as completed or failed.
+
+    Only runs still in 'running' are touched — a zombie worker finishing late
+    must not resurrect a run the user cancelled or the stale-run reaper failed.
+    """
     async with async_session_factory() as session:
         await session.execute(
             text(
                 "UPDATE agent_runs SET status = :status, output_payload = :output, "
                 "error_message = :error, completed_at = :completed_at, "
                 "tokens_used = COALESCE(:tokens_used, tokens_used) "
-                "WHERE id = :id"
+                "WHERE id = :id AND status = 'running'"
             ),
             {
                 "id": run_id,
@@ -617,18 +621,55 @@ async def store_calendar_items(
 
 
 async def get_performance_data(brand_id: str, days: int = 30) -> list[dict[str, Any]]:
+    """Latest engagement snapshot per content item within the window.
+
+    engagement_metrics rows are cumulative lifetime snapshots pulled every
+    ~6h — keeping only the newest per content_id stops each post being
+    counted once per snapshot (~4x/day).
+    """
     async with async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT em.*, ci.channel, ci.title FROM engagement_metrics em "
+                "WITH latest AS ("
+                "    SELECT DISTINCT ON (content_id) * FROM engagement_metrics "
+                "    WHERE brand_id = :brand_id "
+                "    AND fetched_at >= NOW() - make_interval(days => :days) "
+                "    ORDER BY content_id, fetched_at DESC"
+                ") "
+                "SELECT em.*, ci.channel, ci.title FROM latest em "
                 "JOIN calendar_items ci ON em.calendar_item_id = ci.id "
-                "WHERE em.brand_id = :brand_id "
-                "AND em.fetched_at >= NOW() - make_interval(days => :days) "
                 "ORDER BY em.fetched_at DESC"
             ),
             {"brand_id": brand_id, "days": days},
         )
         return [dict(r) for r in result.mappings().all()]
+
+
+async def resolve_current_content_id(calendar_item_ids: list[str]) -> str | None:
+    """Return the current content id for the first calendar item that has one.
+
+    Caller order is respected — pass the best-performing item first. Used to
+    anchor evaluation adaptations, since adaptations.source_content_id is
+    NOT NULL and only is_current rows are honest anchors.
+    """
+    if not calendar_item_ids:
+        return None
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT id, calendar_item_id FROM content "
+                "WHERE calendar_item_id = ANY(CAST(:ids AS uuid[])) "
+                "AND is_current = true"
+            ),
+            {"ids": calendar_item_ids},
+        )
+        by_item = {
+            str(r["calendar_item_id"]): str(r["id"]) for r in result.mappings().all()
+        }
+    for item_id in calendar_item_ids:
+        if item_id in by_item:
+            return by_item[item_id]
+    return None
 
 
 async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
@@ -646,6 +687,14 @@ async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
             # Detect which schema the caller is using
             if "brand_id" in a and "tier" in a:
                 # Evaluation-node schema — store tier/confidence/data in adaptation_notes as JSON
+                if not a.get("source_content_id"):
+                    # source_content_id is NOT NULL — inserting NULL would
+                    # roll back the whole batch, so drop the record instead.
+                    logger.warning(
+                        "Skipping adaptation without source_content_id (brand %s)",
+                        a.get("brand_id"),
+                    )
+                    continue
                 eval_meta = json.dumps(
                     {
                         "tier": a.get("tier", 2),
@@ -1019,14 +1068,21 @@ async def build_brand_intelligence(brand_id: str) -> dict[str, Any]:
         logger.warning("Failed to load events for brand %s: %s", brand_id, exc)
         events = []
 
-    # 8. Top performing content (last 90 days)
+    # 8. Top performing content (last 90 days) — latest cumulative snapshot
+    # per content only, so one item's ~6h snapshot history cannot fill
+    # several of the ten slots by itself.
     async with async_session_factory() as session:
         top_result = await session.execute(
             text(
+                "WITH latest_em AS ("
+                "    SELECT DISTINCT ON (content_id) * FROM engagement_metrics "
+                "    WHERE brand_id = :brand_id "
+                "    ORDER BY content_id, fetched_at DESC"
+                ") "
                 "SELECT ci.title, ci.channel, em.engagement_rate, em.likes, em.comments, "
                 "LEFT(c.caption, 200) AS caption_snippet "
                 "FROM calendar_items ci "
-                "JOIN engagement_metrics em ON em.calendar_item_id = ci.id "
+                "JOIN latest_em em ON em.calendar_item_id = ci.id "
                 "LEFT JOIN content c ON c.calendar_item_id = ci.id AND c.is_current = true "
                 "WHERE ci.brand_id = :brand_id "
                 "AND ci.scheduled_at > NOW() - INTERVAL '90 days' "

@@ -333,14 +333,18 @@ export interface Adaptation {
   updated_at: string;
 }
 
+// Matches the backend serializer in app/api/v1/notifications.py.
 export interface Notification {
   id: string;
-  user_id: string;
-  type: string;
+  notification_type: string;
   title: string;
-  message: string;
-  read: boolean;
-  action_url?: string;
+  body: string | null;
+  channel?: string | null;
+  reference_type: string | null;
+  reference_id: string | null;
+  is_read: boolean;
+  read_at?: string | null;
+  sent_at?: string | null;
   created_at: string;
 }
 

@@ -42,13 +42,16 @@ bash scripts/vps-redeploy.sh
 ```
 
 The script does everything automatically:
-1. Pulls latest code from `origin main`
+1. Pulls latest `main` (from `ado`, falling back to `origin`)
 2. Generates any missing env vars (random passwords for new services)
 3. Backs up PostgreSQL before any changes
-4. Rebuilds changed Docker images (backend, frontend, agents, browser-worker, notifications)
-5. Restarts all 11 services
+4. Rebuilds changed Docker images (backend, frontend, agents, browser-worker, notifications) — the old stack keeps running if a build fails
+5. Recreates only changed containers via `up -d` (postgres/nats/minio keep running)
 6. Waits 30s then runs health checks
 7. Shows service status and recent logs
+
+**This script is the only sanctioned deploy path.** Never deploy by resetting
+to a feature branch or with `build --no-cache`.
 
 **Expected result:** All services show `Up ... (healthy)`, health endpoint returns `{"status":"ok"}`.
 
@@ -56,7 +59,9 @@ The script does everything automatically:
 
 ## Manual Deploy (Step by Step)
 
-If you need more control:
+**Reference only — for debugging when the script itself is broken.** These
+steps skip the pre-deploy database backup the script takes; prefer
+`bash scripts/vps-redeploy.sh` in every normal case.
 
 ```bash
 ssh root@srv1191974.hstgr.cloud

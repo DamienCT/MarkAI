@@ -1,12 +1,14 @@
+import ipaddress
 import logging
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
 from prometheus_fastapi_instrumentator import Instrumentator
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from app.api.router import api_router
@@ -151,15 +153,24 @@ async def lifespan(app: FastAPI):
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 
+_is_production = settings.MARKAI_ENV == "production"
+
 app = FastAPI(
     title="MARKAI API",
     description="Autonomous AI Marketing Operating System",
     version="0.1.0",
     lifespan=lifespan,
+    # No interactive docs or schema in production — they enumerate every endpoint
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Enforce the default limits on every route. Added before CORSMiddleware so
+# CORS wraps it and 429 responses still carry CORS headers in the browser.
+app.add_middleware(SlowAPIMiddleware)
 
 # CORS — never combine allow_origins=["*"] with allow_credentials=True
 _frontend_url = settings.FRONTEND_URL or "http://localhost:3000"
@@ -189,7 +200,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 # Global exception handler — ensures CORS headers are present on 500 errors
-from fastapi import Request  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 import traceback as _tb  # noqa: E402
 
@@ -252,8 +262,27 @@ if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
 else:
     logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set; OpenTelemetry disabled")
 
-# Prometheus metrics
-Instrumentator().instrument(app).expose(app, include_in_schema=False)
+# Prometheus metrics — in production only internal scrapers may read /metrics
+def _require_internal_client(request: Request) -> None:
+    """Reject /metrics requests from outside the compose network in production.
+
+    Uvicorn runs with --proxy-headers, so request.client holds the real client
+    IP for traffic that came through traefik (public → rejected), while direct
+    scrapes from Prometheus on the compose network keep their container IP.
+    """
+    if not _is_production:
+        return
+    try:
+        addr = ipaddress.ip_address(request.client.host if request.client else "")
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not addr.is_private:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+Instrumentator().instrument(app).expose(
+    app, include_in_schema=False, dependencies=[Depends(_require_internal_client)]
+)
 
 # Mount all v1 routers
 app.include_router(api_router)

@@ -166,6 +166,16 @@ async def check_due_content() -> None:
             )
         if stuck_items:
             await db.commit()
+            for item in stuck_items:
+                await notify_failure(
+                    "publish_stuck_sweep",
+                    item,
+                    Exception(
+                        f"Calendar item {item.id} ('{item.title}', "
+                        f"{item.channel}) stuck in 'publishing' for over "
+                        f"{PUBLISHING_TIMEOUT} — marked failed"
+                    ),
+                )
 
         # Only 'scheduled' items are due — items an in-flight direct task
         # already moved to 'publishing' are naturally skipped here.
@@ -190,9 +200,11 @@ async def check_due_content() -> None:
         # Expire stale items (overdue by more than 1 day)
         stale_cutoff = now - STALE_THRESHOLD
         fresh_items = []
+        stale_items = []
         for item in due_items:
             if item.scheduled_at and item.scheduled_at < stale_cutoff:
                 item.status = "failed"
+                stale_items.append(item)
                 logger.warning(
                     "Calendar item %s expired — scheduled_at %s is over %s overdue",
                     item.id, item.scheduled_at, STALE_THRESHOLD,
@@ -200,8 +212,19 @@ async def check_due_content() -> None:
             else:
                 fresh_items.append(item)
 
-        if fresh_items != due_items:
+        if stale_items:
             await db.commit()
+            for item in stale_items:
+                await notify_failure(
+                    "publish_stale_expiry",
+                    item,
+                    Exception(
+                        f"Calendar item {item.id} ('{item.title}', "
+                        f"{item.channel}) expired — scheduled_at "
+                        f"{item.scheduled_at} is over {STALE_THRESHOLD} "
+                        f"overdue; marked failed instead of published"
+                    ),
+                )
 
         for calendar_item in fresh_items:
             # Get the current content version for this calendar item

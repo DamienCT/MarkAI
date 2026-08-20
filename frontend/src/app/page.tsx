@@ -122,7 +122,12 @@ export default function DashboardPage() {
           api.get<TopContent[]>("/api/v1/analytics/content/top", { limit: 3 }, { signal }),
         ]);
 
-        if (dashData.status === "fulfilled") setStats(dashData.value);
+        if (dashData.status === "fulfilled") {
+          setStats(dashData.value);
+        } else if (!(dashData.reason instanceof DOMException && dashData.reason.name === "AbortError")) {
+          // A dead backend must not render confident zeros — surface the error UI.
+          setError("Failed to load dashboard data");
+        }
         if (postsData.status === "fulfilled" && Array.isArray(postsData.value)) setCalendarItems(postsData.value);
         if (topData.status === "fulfilled" && Array.isArray(topData.value)) setTopContent(topData.value);
       } catch (err) {

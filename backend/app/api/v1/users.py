@@ -14,7 +14,7 @@ from app.auth.entra import (  # noqa: E402
     search_graph_users,
 )
 from app.auth.models import User  # noqa: E402
-from app.auth.permissions import role_has_access  # noqa: E402
+from app.auth.permissions import ROLES, role_has_access  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.deps import get_current_user, get_db  # noqa: E402
 from app.schemas.user import UserCreate, UserResponse, UserUpdate  # noqa: E402
@@ -42,6 +42,29 @@ class GrantAccessRequest(BaseModel):
 class GrantAccessResult(BaseModel):
     granted: list[str]
     errors: list[str]
+
+
+async def _require_admin_grant_permission(current_user: User) -> None:
+    """Granting the admin role requires membership in the admin security group.
+
+    Shared by grant-access and the PUT/PATCH user endpoints so role escalation
+    is gated (and audit-logged by the callers) identically everywhere.
+    """
+    from app.auth.entra import check_user_in_security_group
+
+    if not settings.ADMIN_SECURITY_GROUP_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Admin security group not configured; cannot grant admin role",
+        )
+    is_in_group = await check_user_in_security_group(
+        current_user.entra_id, settings.ADMIN_SECURITY_GROUP_ID
+    )
+    if not is_in_group:
+        raise HTTPException(
+            status_code=403,
+            detail="Only security group members can grant admin role",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -86,26 +109,12 @@ async def grant_access(
     if not data.user_ids:
         raise HTTPException(status_code=400, detail="No user IDs provided")
 
-    if data.role not in ("admin", "manager", "editor", "viewer"):
+    if data.role not in ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
 
     # Prevent granting admin role unless the current user is in the security group
     if data.role == "admin":
-        from app.auth.entra import check_user_in_security_group
-
-        if not settings.ADMIN_SECURITY_GROUP_ID:
-            raise HTTPException(
-                status_code=403,
-                detail="Admin security group not configured; cannot grant admin role",
-            )
-        is_in_group = await check_user_in_security_group(
-            current_user.entra_id, settings.ADMIN_SECURITY_GROUP_ID
-        )
-        if not is_in_group:
-            raise HTTPException(
-                status_code=403,
-                detail="Only security group members can grant admin role",
-            )
+        await _require_admin_grant_permission(current_user)
 
     # Fetch user details from Graph API
     try:
@@ -300,8 +309,28 @@ async def update_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     update_data = data.model_dump(exclude_unset=True)
+
+    new_role = update_data.get("role")
+    if new_role is not None:
+        if new_role not in ROLES:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        # Same gate as grant-access: only security group members may set admin
+        if new_role == "admin":
+            await _require_admin_grant_permission(current_user)
+
+    old_role = user.role
     for key, value in update_data.items():
         setattr(user, key, value)
+
+    if new_role is not None and new_role != old_role:
+        logger.info(
+            "AUDIT: User %s role changed from '%s' to '%s' by %s (%s)",
+            user.entra_id,
+            old_role,
+            new_role,
+            current_user.id,
+            current_user.email,
+        )
 
     await db.commit()
     await db.refresh(user)
@@ -325,8 +354,28 @@ async def patch_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     update_data = data.model_dump(exclude_unset=True)
+
+    new_role = update_data.get("role")
+    if new_role is not None:
+        if new_role not in ROLES:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        # Same gate as grant-access: only security group members may set admin
+        if new_role == "admin":
+            await _require_admin_grant_permission(current_user)
+
+    old_role = user.role
     for key, value in update_data.items():
         setattr(user, key, value)
+
+    if new_role is not None and new_role != old_role:
+        logger.info(
+            "AUDIT: User %s role changed from '%s' to '%s' by %s (%s)",
+            user.entra_id,
+            old_role,
+            new_role,
+            current_user.id,
+            current_user.email,
+        )
 
     await db.commit()
     await db.refresh(user)

@@ -332,6 +332,9 @@ services:
       dockerfile: Dockerfile
     container_name: markai-agents
     restart: unless-stopped
+    # In-flight renders take minutes — give the worker time to finish on
+    # shutdown instead of the 10s default SIGKILL killing them mid-render.
+    stop_grace_period: 15m
     deploy:
       resources:
         limits:

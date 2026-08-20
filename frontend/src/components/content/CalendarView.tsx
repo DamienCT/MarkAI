@@ -140,7 +140,28 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
 
   function handleDrop(date: Date) {
     if (dragItem && onReschedule) {
-      onReschedule(dragItem.id, date.toISOString());
+      // Only the day changes — keep the item's original time-of-day instead
+      // of resetting it to local midnight.
+      const next = new Date(date);
+      if (dragItem.scheduled_at) {
+        const prev = new Date(dragItem.scheduled_at);
+        if (!isNaN(prev.getTime())) {
+          next.setHours(prev.getHours(), prev.getMinutes(), prev.getSeconds(), 0);
+        }
+      }
+      // A scheduled item dropped in the past never publishes — it just gets
+      // marked failed later. Confirm before doing that.
+      if (
+        dragItem.status === "scheduled" &&
+        next.getTime() < Date.now() &&
+        !window.confirm(
+          "This moves the post to a time in the past, so it will not publish. Reschedule anyway?"
+        )
+      ) {
+        setDragItem(null);
+        return;
+      }
+      onReschedule(dragItem.id, next.toISOString());
     }
     setDragItem(null);
   }
@@ -151,7 +172,7 @@ export function CalendarView({ items, onReschedule }: CalendarViewProps) {
     return (
       <div
         key={item.id}
-        draggable
+        draggable={item.status !== "published"}
         onDragStart={() => handleDragStart(item)}
         onClick={() => handleItemClick(item)}
         className={cn(

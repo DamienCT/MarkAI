@@ -643,8 +643,8 @@ export default function IntelligencePage() {
                     onClick={() => setLocalTrendOnly((v) => !v)}
                     title={
                       localTrendOnly
-                        ? "Filtre Maurice actif — cliquer pour annuler"
-                        : "Afficher uniquement les tendances locales (Maurice)"
+                        ? "Mauritius filter active — click to clear"
+                        : "Show only local (Mauritius) trends"
                     }
                   >
                     {localTrendOnly ? (
@@ -706,7 +706,7 @@ export default function IntelligencePage() {
           {displayedTrends.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
               {localTrendOnly
-                ? "Aucune tendance locale (Maurice) pour le moment."
+                ? "No local (Mauritius) trends yet."
                 : "No trending topics yet."}
             </p>
           ) : (

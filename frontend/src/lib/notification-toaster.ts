@@ -8,20 +8,7 @@
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { wasPostRecentlyToasted } from "@/lib/post-watch";
-
-/** Field shape the backend actually returns from /api/v1/notifications.
- * (The exported `Notification` type in @/types is stale — uses message/type
- * instead of body/notification_type.) */
-interface BellNotification {
-  id: string;
-  notification_type: string;
-  title: string;
-  body: string | null;
-  reference_type: string | null;
-  reference_id: string | null;
-  is_read: boolean;
-  created_at: string;
-}
+import type { Notification } from "@/types";
 
 export const NOTIFICATIONS_FETCHED_EVENT = "markai.notifications-fetched";
 
@@ -69,7 +56,7 @@ export function useNotificationToaster(): void {
 
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      const list = (detail?.notifications || []) as BellNotification[];
+      const list = (detail?.notifications || []) as Notification[];
       if (!Array.isArray(list)) return;
 
       const seen = readSeen();

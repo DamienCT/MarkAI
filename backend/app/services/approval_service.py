@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from sqlalchemy import select
@@ -59,6 +59,23 @@ async def create_approval(db: AsyncSession, data: ApprovalCreate) -> Approval:
     return approval
 
 
+def _roll_schedule_forward(scheduled_at: datetime | None, now: datetime) -> datetime:
+    """Next future slot for an item approved after its scheduled_at passed:
+    keep the original time-of-day, moved to today — or tomorrow if that time
+    is already gone. With no prior schedule, fall back to this time tomorrow."""
+    if scheduled_at is None:
+        return now + timedelta(days=1)
+    candidate = now.replace(
+        hour=scheduled_at.hour,
+        minute=scheduled_at.minute,
+        second=scheduled_at.second,
+        microsecond=0,
+    )
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate
+
+
 async def resolve_approval(
     db: AsyncSession,
     approval_id: uuid.UUID,
@@ -90,6 +107,21 @@ async def resolve_approval(
                 # Auto-schedule: skip "approved" status, go directly to "scheduled"
                 _validate_transition(cal_item.status, "scheduled")
                 cal_item.status = "scheduled"
+                # A missing or past scheduled_at would make the publish checker
+                # fire instantly (or silently expire the item as >1-day stale)
+                # — roll it forward to the next future slot and record the
+                # change on the approval so the UI can surface it.
+                now = datetime.now(timezone.utc)
+                if cal_item.scheduled_at is None or cal_item.scheduled_at <= now:
+                    new_slot = _roll_schedule_forward(cal_item.scheduled_at, now)
+                    cal_item.scheduled_at = new_slot
+                    note = (
+                        "Note: scheduled time was missing or in the past — "
+                        f"rescheduled to {new_slot.strftime('%Y-%m-%d %H:%M UTC')}."
+                    )
+                    approval.feedback = (
+                        f"{approval.feedback}\n\n{note}" if approval.feedback else note
+                    )
             elif decision.status in ("rejected", "revision_requested"):
                 _validate_transition(cal_item.status, "reworking")
                 cal_item.status = "reworking"

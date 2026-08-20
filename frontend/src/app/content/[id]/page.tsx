@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { api, API_BASE_URL, fileUrl, generateVideo } from "@/lib/api";
 import { useOpenedContent } from "@/lib/opened-content";
+import { toApiDatetime } from "@/lib/utils";
 import type { Content, Approval, CalendarItem, Brand } from "@/types";
 
 function safeHashtags(raw: unknown): string[] {
@@ -337,7 +338,11 @@ export default function ContentDetailPage() {
     }
     setScheduling(true);
     try {
-      const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
+      const scheduledAt = toApiDatetime(`${scheduleDate}T${scheduleTime}:00`);
+      if (!scheduledAt) {
+        toast.error("Invalid date or time");
+        return;
+      }
       await api.patch(`/api/v1/calendar/${calendarItem.id}`, {
         status: "scheduled",
         scheduled_at: scheduledAt,
@@ -361,7 +366,11 @@ export default function ContentDetailPage() {
     }
     setScheduling(true);
     try {
-      const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
+      const scheduledAt = toApiDatetime(`${scheduleDate}T${scheduleTime}:00`);
+      if (!scheduledAt) {
+        toast.error("Invalid date or time");
+        return;
+      }
       await api.patch(`/api/v1/calendar/${calendarItem.id}`, {
         scheduled_at: scheduledAt,
       });

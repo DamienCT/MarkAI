@@ -8,7 +8,11 @@ from typing import Any
 
 from shared.llm import chat_completion, parse_llm_json
 from shared.sanitize import sanitize_json_for_prompt
-from shared.tools.database import get_performance_data, store_adaptations
+from shared.tools.database import (
+    get_performance_data,
+    resolve_current_content_id,
+    store_adaptations,
+)
 
 from workflows.evaluation.state import EvaluationState
 
@@ -165,17 +169,49 @@ async def store_adaptations_node(state: EvaluationState) -> dict[str, Any]:
     try:
         brand_id = state["brand_id"]
         adaptations = state.get("adaptations", [])
+        if not adaptations:
+            logger.info("No adaptations to store for brand %s", brand_id)
+            return {"status": "completed"}
+
+        # adaptations.source_content_id is NOT NULL, so these brand-level
+        # recommendations need a real content anchor. Use the current content
+        # row of the best-engaging item the evaluation actually analysed,
+        # falling back to the analysed row's own (possibly superseded) content.
+        ranked = sorted(
+            state.get("performance_data") or [],
+            key=lambda r: float(r.get("engagement_rate") or 0),
+            reverse=True,
+        )
+        item_ids: list[str] = []
+        for r in ranked:
+            item_id = str(r.get("calendar_item_id") or "")
+            if item_id and item_id not in item_ids:
+                item_ids.append(item_id)
+        source_content_id = await resolve_current_content_id(item_ids)
+        if not source_content_id and ranked:
+            source_content_id = str(ranked[0].get("content_id") or "") or None
+        if not source_content_id:
+            return {
+                "status": "failed",
+                "errors": [
+                    *(state.get("errors") or []),
+                    "store_adaptations failed: no content row to anchor adaptations",
+                ],
+            }
 
         db_records = []
         for a in adaptations:
             db_records.append(
                 {
                     "brand_id": brand_id,
+                    "source_content_id": source_content_id,
                     "tier": a.get("tier", 2),
                     "description": a.get("description", a.get("title", "")),
                     "confidence": a.get("confidence", 0.5),
                     "data": json.dumps(a),
-                    "status": "auto_applied" if a.get("tier") == 1 else "pending",
+                    # 'pending' is not in the adaptations status CHECK —
+                    # tier 2/3 recommendations wait for review as 'proposed'.
+                    "status": "auto_applied" if a.get("tier") == 1 else "proposed",
                 }
             )
 

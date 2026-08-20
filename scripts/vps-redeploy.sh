@@ -134,31 +134,33 @@ if [[ "$FORCE_WIPE" == true ]] && docker volume inspect markai_pgdata &>/dev/nul
 fi
 
 echo ""
-echo "=== Step 4: Stop everything ==="
-docker compose -f docker-compose.yml -f docker-compose.vps.yml down
+echo "=== Step 4: Rebuild changed services (stack stays up) ==="
+# Build BEFORE stopping anything: under set -e a failed build aborts the
+# deploy right here with the old stack still running, instead of offline.
+docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend frontend agents browser-worker notifications
 
 echo "=== Step 5: Optional volume wipe ==="
 if [[ "$FORCE_WIPE" == true ]]; then
-  echo "  --force-wipe flag detected: wiping DB volumes..."
+  echo "  --force-wipe flag detected: stopping stack and wiping DB volumes..."
+  docker compose -f docker-compose.yml -f docker-compose.vps.yml down
   docker volume rm markai_pgdata markai_qdrant_data 2>/dev/null || true
 else
   echo "  Using migrations/restart (pass --force-wipe to wipe volumes)."
 fi
 
-echo "=== Step 6: Rebuild all services ==="
-docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend frontend agents browser-worker notifications
-
-echo "=== Step 7: Start everything ==="
+echo "=== Step 6: Start/recreate changed containers ==="
+# 'up -d' recreates only containers whose image or config changed —
+# postgres/nats/minio keep running instead of restarting on every deploy.
 docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
 
-echo "=== Step 8: Wait for services ==="
+echo "=== Step 7: Wait for services ==="
 echo "Waiting 30s for services to start..."
 sleep 30
 
-echo "=== Step 9: Service status ==="
+echo "=== Step 8: Service status ==="
 docker compose -f docker-compose.yml -f docker-compose.vps.yml ps
 
-echo "=== Step 10: Health checks ==="
+echo "=== Step 9: Health checks ==="
 echo "Backend health:"
 curl -sf http://localhost:8000/health || echo "FAILED"
 
@@ -167,7 +169,7 @@ echo "Backend metrics:"
 curl -sf http://localhost:8000/metrics 2>/dev/null | head -3 || echo "FAILED"
 
 echo ""
-echo "=== Step 11: Recent logs (last 20 lines each) ==="
+echo "=== Step 10: Recent logs (last 20 lines each) ==="
 echo "--- backend ---"
 docker compose -f docker-compose.yml -f docker-compose.vps.yml logs --tail=20 backend
 

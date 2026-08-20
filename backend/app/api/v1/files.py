@@ -58,6 +58,88 @@ _ALLOWED_WIDTHS = (64, 128, 256, 400, 512, 640, 800, 1024, 1280, 1600, 2048)
 # Chunk size for streaming video bytes out of MinIO
 _STREAM_CHUNK_SIZE = 1024 * 1024  # 1 MiB
 
+# Transformed-image cache: objects live at UUID paths and never change in
+# place, so a day-long TTL is safe. Oversized results skip the cache rather
+# than crowd out hotter keys in Valkey's 256M allotment.
+_IMG_CACHE_TTL = 24 * 3600
+_IMG_CACHE_MAX_BYTES = 5 * 1024 * 1024
+
+# Module-level Valkey connection pool for the transform cache. Separate from
+# ai_model_service's pool — image bytes need decode_responses left off.
+_img_cache_pool = None
+
+
+def _get_img_cache_pool():
+    """Get or create the module-level Valkey connection pool (binary-safe)."""
+    global _img_cache_pool
+    if _img_cache_pool is None:
+        try:
+            import redis.asyncio as aioredis
+
+            _img_cache_pool = aioredis.ConnectionPool(
+                host=settings.VALKEY_HOST,
+                port=settings.VALKEY_PORT,
+                password=settings.VALKEY_PASSWORD or None,
+                max_connections=10,
+            )
+        except Exception:
+            pass
+    return _img_cache_pool
+
+
+async def _img_cache_get(key: str) -> Optional[bytes]:
+    """Fetch transformed bytes from Valkey. None on miss or when Valkey is down."""
+    try:
+        import redis.asyncio as aioredis
+
+        pool = _get_img_cache_pool()
+        if pool is None:
+            return None
+        client = aioredis.Redis(connection_pool=pool)
+        return await client.get(key)
+    except Exception:
+        return None
+
+
+async def _img_cache_set(key: str, value: bytes) -> None:
+    """Store transformed bytes in Valkey (best-effort — errors are swallowed)."""
+    if len(value) > _IMG_CACHE_MAX_BYTES:
+        return
+    try:
+        import redis.asyncio as aioredis
+
+        pool = _get_img_cache_pool()
+        if pool is None:
+            return
+        client = aioredis.Redis(connection_pool=pool)
+        await client.set(key, value, ex=_IMG_CACHE_TTL)
+    except Exception:
+        pass
+
+
+def _transform_image(data: bytes, ext: str, w: Optional[int], quality: int, want_jpeg: bool) -> bytes:
+    """Resize/re-encode an image with Pillow.
+
+    CPU-bound — callers must run this via asyncio.to_thread so the
+    decode/resize/encode work doesn't block the event loop.
+    """
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(data))
+    if w:
+        ratio = w / img.width
+        new_h = int(img.height * ratio)
+        img = img.resize((w, new_h), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    if want_jpeg or ext in ("jpg", "jpeg") or ext == "png":
+        img.convert("RGB").save(buf, format="JPEG", quality=quality)
+    elif ext == "webp":
+        img.save(buf, format="WEBP", quality=quality)
+    else:
+        return data
+    return buf.getvalue()
+
 
 def parse_range_header(range_header: str, file_size: int) -> Optional[tuple[int, int]]:
     """Parse a single-range ``Range: bytes=start-end`` header.
@@ -214,37 +296,40 @@ async def serve_file(
     if ext in _VIDEO_EXTS:
         return await _serve_video(request, bucket, object_name, ct)
 
+    # On-the-fly transform:
+    #   ?w=WIDTH  → resize (preview thumbnail)
+    #   ?fmt=jpg  → convert to JPEG (Instagram's API only accepts JPEG, not PNG)
+    want_jpeg = fmt in ("jpg", "jpeg")
+    transform = bool(w or want_jpeg) and ext in _RESIZABLE_EXTS
+    if transform:
+        if w:
+            # Snap to the nearest allowed width so callers can't request
+            # arbitrary resize dimensions (Query bounds reject >2048).
+            w = min((aw for aw in _ALLOWED_WIDTHS if aw >= w), default=_ALLOWED_WIDTHS[-1])
+        quality = q or (90 if want_jpeg else 80)
+        # png/jpg/jpeg sources re-encode as JPEG; webp stays webp unless fmt=jpg
+        out_ct = ct if (ext == "webp" and not want_jpeg) else "image/jpeg"
+        cache_key = f"imgproxy:{bucket}:{object_name}:{w or 0}:{quality}:{int(want_jpeg)}"
+
+        cached = await _img_cache_get(cache_key)
+        if cached is not None:
+            return Response(
+                content=cached,
+                media_type=out_ct,
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+
     try:
         data = await minio_service.download_file(object_name, bucket=bucket)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # On-the-fly transform:
-    #   ?w=WIDTH  → resize (preview thumbnail)
-    #   ?fmt=jpg  → convert to JPEG (Instagram's API only accepts JPEG, not PNG)
-    want_jpeg = fmt in ("jpg", "jpeg")
-    if (w or want_jpeg) and ext in _RESIZABLE_EXTS:
-        if w:
-            # Snap to the nearest allowed width so callers can't request
-            # arbitrary resize dimensions (Query bounds reject >2048).
-            w = min((aw for aw in _ALLOWED_WIDTHS if aw >= w), default=_ALLOWED_WIDTHS[-1])
+    if transform:
         try:
-            from PIL import Image
-
-            img = Image.open(io.BytesIO(data))
-            if w:
-                ratio = w / img.width
-                new_h = int(img.height * ratio)
-                img = img.resize((w, new_h), Image.LANCZOS)
-
-            buf = io.BytesIO()
-            quality = q or (90 if want_jpeg else 80)
-            if want_jpeg or ext in ("jpg", "jpeg") or ext == "png":
-                img.convert("RGB").save(buf, format="JPEG", quality=quality)
-                ct = "image/jpeg"
-            elif ext == "webp":
-                img.save(buf, format="WEBP", quality=quality)
-            data = buf.getvalue()
+            # Pillow work is CPU-bound — run off the event loop
+            data = await asyncio.to_thread(_transform_image, data, ext, w, quality, want_jpeg)
+            ct = out_ct
+            await _img_cache_set(cache_key, data)
         except Exception:
             pass  # Serve original if transform fails
 

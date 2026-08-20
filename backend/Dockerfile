@@ -56,4 +56,8 @@ USER appuser
 EXPOSE 8000
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# Trust X-Forwarded-* only from Docker bridge networks (traefik / compose
+# peers), never '*' — otherwise any direct client could spoof its source IP.
+# Both ranges are needed: Docker allocates network subnets from 172.16.0.0/12
+# first, then falls back to 192.168.0.0/16 pools.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "172.16.0.0/12,192.168.0.0/16"]
