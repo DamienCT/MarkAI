@@ -24,7 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { useRequireRole } from "@/lib/hooks";
 import { formatDate } from "@/lib/utils";
 import type { PromptVersion } from "@/types";
@@ -60,8 +60,9 @@ export default function PromptsPage() {
       try {
         const data = await api.get<PromptVersion[]>("/api/v1/prompts", { limit: 50 });
         setPrompts(data);
-      } catch {
-        toast.error("Failed to load prompts");
+      } catch (err) {
+        // Session expiry: the sign-in redirect is already underway.
+        if (!isAuthError(err)) toast.error("Failed to load prompts");
       } finally {
         setLoading(false);
       }

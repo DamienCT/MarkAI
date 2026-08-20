@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { useRequireRole } from "@/lib/hooks";
 import { statusColor, formatRelativeTime } from "@/lib/utils";
 import type { Adaptation } from "@/types";
@@ -27,8 +27,10 @@ export default function LearningPage() {
       try {
         const data = await api.get<Adaptation[]>("/api/v1/learning/adaptations", { limit: 50 }, { signal });
         setAdaptations(data);
-      } catch {
-        toast.error("Failed to load adaptations");
+      } catch (err) {
+        // Session expiry: the sign-in redirect is already underway — don't
+        // flash a misleading load-failure toast over it.
+        if (!isAuthError(err)) toast.error("Failed to load adaptations");
       } finally {
         setLoading(false);
       }

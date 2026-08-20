@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
 import { format } from "date-fns";
-import { api, fileUrl } from "@/lib/api";
+import { api, fileUrl, isAuthError } from "@/lib/api";
 import { getStoredBrandValue } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
 import { formatDateTime, formatRelativeTime, statusColor } from "@/lib/utils";
@@ -57,8 +57,9 @@ export default function ApprovalsPage() {
     try {
       const data = await api.get<{ items: ApprovalWithExtra[] } | ApprovalWithExtra[]>("/api/v1/approvals", { status: "pending" });
       setApprovals(Array.isArray(data) ? data : (data as { items: ApprovalWithExtra[] }).items || []);
-    } catch {
-      toast.error("Failed to load approvals");
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load approvals");
     } finally {
       setLoading(false);
     }

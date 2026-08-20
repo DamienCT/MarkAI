@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { formatDateTime } from "@/lib/utils";
 import { useRequireRole } from "@/lib/hooks";
 import type { AuditLogEntry } from "@/types";
@@ -41,8 +41,9 @@ export default function AuditLogPage() {
       if (searchQuery) params.search = searchQuery;
       const data = await api.get<AuditLogEntry[]>("/api/v1/audit", params);
       setEntries(data);
-    } catch {
-      toast.error("Failed to load audit log");
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load audit log");
     } finally {
       setLoading(false);
     }

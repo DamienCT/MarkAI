@@ -15,7 +15,7 @@ import { ApprovalHistory } from "@/components/approval/ApprovalHistory";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { api, API_BASE_URL, fileUrl, generateVideo } from "@/lib/api";
+import { api, API_BASE_URL, fileUrl, generateVideo, isAuthError } from "@/lib/api";
 import { useOpenedContent } from "@/lib/opened-content";
 import { toApiDatetime } from "@/lib/utils";
 import type { Content, Approval, CalendarItem, Brand } from "@/types";
@@ -55,6 +55,7 @@ export default function ContentDetailPage() {
   const [scheduleTime, setScheduleTime] = useState("09:00");
   const [scheduling, setScheduling] = useState(false);
   const [passingToReview, setPassingToReview] = useState(false);
+  const [retryingPublish, setRetryingPublish] = useState(false);
   const { markOpened } = useOpenedContent();
 
   // The URL param is the calendar item id — flag it as seen so the "New"
@@ -73,6 +74,16 @@ export default function ContentDetailPage() {
           try {
             contentData = await api.get<Content>(`/api/v1/content/${contentId}`);
           } catch { /* neither worked */ }
+        }
+        if (!contentData) {
+          // No content row — generation may have died before creating one.
+          // The URL param is the calendar item id, so fetch it directly:
+          // without it the "not yet generated" screen would hide a FAILED
+          // item's error and actions behind a forever-pending message.
+          try {
+            const calItem = await api.get<CalendarItem>(`/api/v1/calendar/${contentId}`);
+            setCalendarItem(calItem);
+          } catch { /* not a calendar item id either */ }
         }
         if (contentData) {
           setContent(contentData);
@@ -103,8 +114,10 @@ export default function ContentDetailPage() {
             setApprovals(approvalList);
           } catch { /* optional */ }
         }
-      } catch {
-        toast.error("Failed to load content");
+      } catch (err) {
+        // Session expiry mid-load: the client is already redirecting to
+        // sign-in — an error toast here would be a lie flashing over it.
+        if (!isAuthError(err)) toast.error("Failed to load content");
       } finally {
         setLoading(false);
       }
@@ -128,6 +141,19 @@ export default function ContentDetailPage() {
     if (!content) return;
     setRegeneratingImage(true);
     try {
+      // Snapshot the image identity BEFORE queueing: a new branded image can
+      // land at the SAME object path (branded.png), so updated_at (bumped by
+      // a DB trigger on every content write) is the tiebreaker for "did the
+      // worker actually produce something".
+      const imageOf = (c: Content) => (
+        c.generation_metadata?.branded_image ||
+        c.generation_metadata?.raw_image ||
+        c.generation_metadata?.generated_image_url ||
+        ""
+      ) as string;
+      const beforePath = imageOf(content);
+      const beforeUpdatedAt = content.updated_at;
+
       await api.post(`/api/v1/content/${content.id}/regenerate-image`, {
         prompt: imagePrompt || undefined,
         format,
@@ -152,7 +178,26 @@ export default function ContentDetailPage() {
               setContent(updated);
               setCalendarItem(calItem);
               setImageCacheBust(`_cb=${Date.now()}`);
-              toast.success("Image regenerated successfully");
+              // Leaving 'working' only means the worker FINISHED, not that it
+              // succeeded — on failure it restores the prior status with the
+              // old image intact. Only claim success when the image actually
+              // changed; otherwise surface the worker's recorded error.
+              const changed =
+                imageOf(updated) !== beforePath || updated.updated_at !== beforeUpdatedAt;
+              const workerError =
+                (typeof updated.generation_metadata?.regen_error === "string"
+                  ? updated.generation_metadata.regen_error
+                  : undefined) ||
+                (typeof calItem.generation_metadata?.regen_error === "string"
+                  ? calItem.generation_metadata.regen_error
+                  : undefined);
+              if (changed) {
+                toast.success("Image regenerated successfully");
+              } else if (workerError) {
+                toast.error(`Image regeneration failed: ${workerError}`);
+              } else {
+                toast.error("Image regeneration finished without producing a new image — please try again.");
+              }
               break;
             }
           } catch { /* keep polling */ }
@@ -431,6 +476,32 @@ export default function ContentDetailPage() {
     }
   }, [calendarItem, router]);
 
+  // failed → scheduled is the "retry publish" path the publish checker acts
+  // on. A scheduled_at that is already past must move forward with it: the
+  // checker EXPIRES anything more than a day overdue, so retrying a
+  // Monday-scheduled post on Wednesday with the old timestamp would silently
+  // re-fail. A couple of minutes out keeps "publishes right away" honest
+  // while landing inside the checker's next sweep.
+  const handleRetryPublish = useCallback(async () => {
+    if (!calendarItem?.id) return;
+    setRetryingPublish(true);
+    try {
+      const patch: { status: string; scheduled_at?: string } = { status: "scheduled" };
+      if (calendarItem.scheduled_at && new Date(calendarItem.scheduled_at) < new Date()) {
+        patch.scheduled_at = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+      }
+      await api.patch(`/api/v1/calendar/${calendarItem.id}`, patch);
+      toast.success("Publish retry queued — the post is scheduled again");
+      const updated = await api.get<CalendarItem>(`/api/v1/calendar/${calendarItem.id}`);
+      setCalendarItem(updated);
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || "Failed to retry publishing";
+      toast.error(detail);
+    } finally {
+      setRetryingPublish(false);
+    }
+  }, [calendarItem]);
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -441,6 +512,34 @@ export default function ContentDetailPage() {
   }
 
   if (!content) {
+    // A failed item with no content row: generation died before producing
+    // anything. "Still being processed" would be a lie here — show the
+    // recorded error and the one action that works without content (the
+    // regenerate endpoints are content-scoped, so they can't be offered).
+    if (calendarItem?.status === "failed") {
+      const calMeta = (calendarItem.generation_metadata || {}) as Record<string, unknown>;
+      const generationError = typeof calMeta.last_error === "string" ? calMeta.last_error : undefined;
+      return (
+        <div className="text-center py-12 max-w-lg mx-auto">
+          <XCircle className="h-8 w-8 text-red-500 mx-auto" />
+          <p className="text-lg font-medium mt-2">Generation failed</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {generationError
+              ? generationError
+              : "Content generation failed before anything was produced, and no error details were recorded."}
+          </p>
+          <div className="flex justify-center gap-2 mt-4">
+            <Button variant="outline" onClick={() => router.push("/content")}>
+              Back to Content Studio
+            </Button>
+            <Button variant="destructive" onClick={handleDiscard}>
+              <Trash2 className="mr-1.5 h-4 w-4" />
+              Discard
+            </Button>
+          </div>
+        </div>
+      );
+    }
     // Check if this is a calendar item that hasn't had content generated yet
     return (
       <div className="text-center py-12">
@@ -748,6 +847,136 @@ export default function ContentDetailPage() {
                 </Card>
               )}
 
+              {/* Failed — explain what went wrong and offer the recovery actions */}
+              {calendarItem && calendarItem.status === "failed" && (() => {
+                const calMeta = (calendarItem.generation_metadata || {}) as Record<string, unknown>;
+                // Two failure families write two different fields: the
+                // content/video worker records last_error on the CALENDAR
+                // ITEM's metadata; the publish pipeline records publish_error
+                // on the CONTENT's metadata. Render whichever exists.
+                const generationError = typeof calMeta.last_error === "string" ? calMeta.last_error : undefined;
+                const publishError = typeof gm.publish_error === "string" ? gm.publish_error : undefined;
+                // A recorded publish_error means the post already passed
+                // review and died at the publishing step — retrying the
+                // publish is the fix. A pure generation/render failure never
+                // reached review, so re-scheduling it would push an
+                // unapproved post straight to publishing; hide the button
+                // then. With no error recorded we can't tell, so offer it.
+                const showRetryPublish = !!publishError || !generationError;
+                return (
+                  <Card className="border-red-500/40 bg-red-500/5">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base flex items-center gap-1.5">
+                        <XCircle className="h-4 w-4 text-red-500" />
+                        Failed
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {publishError || generationError ? (
+                        <div className="space-y-2">
+                          {publishError && (
+                            <div>
+                              <p className="text-xs font-medium text-red-600 dark:text-red-400">Publishing error</p>
+                              <p className="text-sm whitespace-pre-wrap break-words">{publishError}</p>
+                            </div>
+                          )}
+                          {generationError && (
+                            <div>
+                              <p className="text-xs font-medium text-red-600 dark:text-red-400">Generation error</p>
+                              <p className="text-sm whitespace-pre-wrap break-words">{generationError}</p>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          Something went wrong, but no error details were recorded. You can retry below.
+                        </p>
+                      )}
+                      <div className="space-y-3">
+                        {showRetryPublish && (
+                          <div className="space-y-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full"
+                              disabled={retryingPublish}
+                              onClick={handleRetryPublish}
+                            >
+                              {retryingPublish ? (
+                                <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                              ) : (
+                                <CalendarClock className="mr-1.5 h-3 w-3" />
+                              )}
+                              Retry publish
+                            </Button>
+                            <p className="text-xs text-muted-foreground">
+                              Puts the post back in the publishing queue
+                              {calendarItem.scheduled_at
+                                ? ` — it will publish at its scheduled time (${new Date(calendarItem.scheduled_at).toLocaleDateString()} ${new Date(calendarItem.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}), immediately if that has passed.`
+                                : "."}
+                            </p>
+                          </div>
+                        )}
+                        <div className="space-y-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full"
+                            disabled={regeneratingImage || uploadingImage}
+                            onClick={() => handleRegenerateImage("lifestyle")}
+                          >
+                            {regeneratingImage ? (
+                              <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                            ) : (
+                              <Edit3 className="mr-1.5 h-3 w-3" />
+                            )}
+                            Regenerate image
+                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            Creates a fresh image and sends the post back to review.
+                          </p>
+                        </div>
+                        {isReel && (
+                          <div className="space-y-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full"
+                              disabled={generatingVideo || isRendering}
+                              onClick={handleGenerateVideo}
+                            >
+                              {generatingVideo || isRendering ? (
+                                <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                              ) : (
+                                <Film className="mr-1.5 h-3 w-3" />
+                              )}
+                              Regenerate video
+                            </Button>
+                            <p className="text-xs text-muted-foreground">
+                              Renders the reel again from scratch — this can take a few minutes.
+                            </p>
+                          </div>
+                        )}
+                        <div className="space-y-1">
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="w-full"
+                            onClick={handleDiscard}
+                          >
+                            <Trash2 className="mr-1.5 h-3 w-3" />
+                            Discard
+                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            Permanently deletes this post. This cannot be undone.
+                          </p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })()}
+
               {/* Scheduled — read-only: only action is Cancel (back to In Review) */}
               {calendarItem && calendarItem.status === "scheduled" && (
                 <Card className="border-blue-500/30 bg-blue-500/5">
@@ -934,7 +1163,13 @@ export default function ContentDetailPage() {
 
               {/* Image regeneration */}
               {(() => {
-                const imageLocked = !!calendarItem && ["published", "failed", "scheduled"].includes(calendarItem.status);
+                // Mirrors the backend's _IMAGE_REGEN_ALLOWED_STATUSES
+                // (content.py): regen is allowed from in_review/reworking AND
+                // failed — it's the healing action the failed card above
+                // offers (the worker finishes by flipping the item back to
+                // in_review). Published/scheduled stay locked so an approved
+                // post can't be silently un-approved.
+                const imageLocked = !!calendarItem && ["published", "scheduled"].includes(calendarItem.status);
                 return (
                   <Card>
                     <CardHeader>

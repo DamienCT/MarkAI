@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { useRequireRole } from "@/lib/hooks";
 
 /* -- IANA timezone helpers ---------------------------------------- */
@@ -125,8 +125,9 @@ export default function SettingsPage() {
           default_channels: (data.default_channels as string[]) ?? DEFAULTS.default_channels,
           notification_channels: (data.notification_channels as string[]) ?? DEFAULTS.notification_channels,
         });
-      } catch {
-        toast.error("Failed to load settings, using defaults");
+      } catch (err) {
+        // Session expiry: the sign-in redirect is already underway.
+        if (!isAuthError(err)) toast.error("Failed to load settings, using defaults");
       } finally {
         setLoading(false);
       }

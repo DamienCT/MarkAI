@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { getStoredBrandId } from "@/lib/brand-selection";
 import { statusColor, formatDate } from "@/lib/utils";
 import type { Product } from "@/types";
@@ -23,8 +23,9 @@ export default function ProductsPage() {
         if (brandId) params.brand_id = brandId;
         const data = await api.get<Product[]>("/api/v1/products", params);
         setProducts(data);
-      } catch {
-        toast.error("Failed to load products");
+      } catch (err) {
+        // Session expiry: the sign-in redirect is already underway.
+        if (!isAuthError(err)) toast.error("Failed to load products");
       } finally {
         setLoading(false);
       }

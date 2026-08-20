@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { X, Trash2, Plus, Loader2, RotateCcw, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 
 // Full weekday names (stored in best_days); displayed as 3-letter chips.
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -164,7 +164,8 @@ export function EditDocumentsModal({
         initial.current = JSON.parse(JSON.stringify(loaded));
         setData(loaded);
       })
-      .catch(() => toast.error("Failed to load document settings"))
+      // AuthError: the sign-in redirect is already underway — no toast.
+      .catch((err) => { if (!isAuthError(err)) toast.error("Failed to load document settings"); })
       .finally(() => setLoading(false));
   }, [open, brandId]);
 

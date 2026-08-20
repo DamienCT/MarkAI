@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { formatDate, formatRelativeTime } from "@/lib/utils";
 import { useRequireRole } from "@/lib/hooks";
 
@@ -56,8 +56,9 @@ export default function UsersPage() {
     try {
       const data = await api.get<UserFromAPI[]>("/api/v1/users");
       setUsers(data);
-    } catch {
-      toast.error("Failed to load users");
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load users");
     } finally {
       setLoading(false);
     }

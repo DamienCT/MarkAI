@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { KanbanBoard } from "@/components/content/KanbanBoard";
 import { ContentCard } from "@/components/content/ContentCard";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { getStoredBrandId } from "@/lib/brand-selection";
 import { useRequireRole } from "@/lib/hooks";
 import { watchPost } from "@/lib/post-watch";
@@ -91,6 +91,9 @@ export default function ContentStudioPage() {
       setItems(filtered);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
+      // Session expiry mid-load: the client is already redirecting to
+      // sign-in — an error toast here would be a lie flashing over it.
+      if (isAuthError(err)) return;
       setItems([]);
       toast.error("Failed to load content items");
     } finally {
@@ -101,7 +104,8 @@ export default function ContentStudioPage() {
   useEffect(() => {
     fetchItems(getStoredBrandId());
     // Fetch brands for the dialog
-    api.get<Brand[]>("/api/v1/brands").then((d) => setBrands(Array.isArray(d) ? d : [])).catch(() => {
+    api.get<Brand[]>("/api/v1/brands").then((d) => setBrands(Array.isArray(d) ? d : [])).catch((err) => {
+      if (isAuthError(err)) return; // redirect to sign-in already underway
       toast.error("Failed to load brands");
     });
 
@@ -176,21 +180,6 @@ export default function ContentStudioPage() {
       setAvailableChannels(ALL_CHANNELS);
     }
   }, [formBrandId, brands]);
-
-  const handleStatusChange = async (itemId: string, newStatus: string) => {
-    try {
-      await api.patch(`/api/v1/calendar/${itemId}`, { status: newStatus });
-      setItems((prev) =>
-        prev.map((item) =>
-          item.id === itemId ? { ...item, status: newStatus } : item
-        )
-      );
-      toast.success(`Status updated to ${newStatus}`);
-    } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to update status";
-      toast.error(detail);
-    }
-  };
 
   const toggleChannel = (channel: Channel) => {
     setFormChannels((prev) =>
@@ -306,7 +295,7 @@ export default function ContentStudioPage() {
           <Skeleton className="h-[500px] w-full" />
         </div>
       ) : view === "kanban" ? (
-        <KanbanBoard items={items} onStatusChange={handleStatusChange} />
+        <KanbanBoard items={items} />
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {items.length === 0 ? (

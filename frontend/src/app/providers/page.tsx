@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { useRequireRole } from "@/lib/hooks";
 import type { AIModel, AIModelCategory } from "@/types";
 
@@ -85,8 +85,9 @@ export default function ProvidersPage() {
         }
       }
       setModelsByCategory(grouped);
-    } catch {
-      toast.error("Failed to load AI models");
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load AI models");
     } finally {
       setLoading(false);
     }

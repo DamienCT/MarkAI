@@ -1,33 +1,14 @@
 "use client";
 
 import React, { useState, useMemo, useEffect, useCallback } from "react";
-import {
-  DndContext,
-  DragOverlay,
-  closestCorners,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragStartEvent,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-  useSortable,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { formatDate } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useOpenedContent } from "@/lib/opened-content";
 import type { CalendarItem, ActiveAgentRun } from "@/types";
 import type { KanbanBoardProps } from "./KanbanBoard";
-import { CHANNEL_COLORS, CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
+import { CHANNEL_COLORS } from "@/lib/constants";
 import { PipelineProgressDots } from "./WorkingStageTracker";
 
 const CHANNEL_PREFIX: Record<string, string> = {
@@ -104,63 +85,7 @@ function CompactItem({
   );
 }
 
-/** Full card shown in the stage modal and drag overlay */
-function KanbanCard({ item, isNew }: { item: CalendarItem; isNew?: boolean }) {
-  return (
-    <Link href={`/content/${item.id}`}>
-      <Card className="p-3 cursor-pointer hover:shadow-md transition-shadow">
-        <div className="flex items-start justify-between gap-2">
-          <p className="text-sm font-medium line-clamp-2 flex-1">{item.title || "Untitled"}</p>
-          {isNew && <NewPill />}
-        </div>
-        <div className="flex items-center gap-2 mt-2 flex-wrap">
-          {item.channel && (
-            <Badge variant="outline" className={`text-[10px] ${CHANNEL_COLORS[item.channel] || ""}`}>
-              {CHANNEL_DISPLAY_NAMES[item.channel] || item.channel}
-            </Badge>
-          )}
-          {item.pillar && (
-            <Badge variant="secondary" className="text-[10px] bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300">
-              {item.pillar}
-            </Badge>
-          )}
-          {item.target_audience && (
-            <Badge variant="secondary" className="text-[10px] bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-300">
-              {item.target_audience}
-            </Badge>
-          )}
-        </div>
-        {item.scheduled_at && (
-          <p className="text-[10px] text-muted-foreground mt-2">
-            {formatDate(item.scheduled_at)} at {new Date(item.scheduled_at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hour12: false })}
-          </p>
-        )}
-      </Card>
-    </Link>
-  );
-}
-
-function SortableItem({ item, isNew }: { item: CalendarItem; isNew?: boolean }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: item.id,
-    data: { status: item.status },
-  });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-
-  return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <KanbanCard item={item} isNew={isNew} />
-    </div>
-  );
-}
-
-export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
-  const [activeId, setActiveId] = useState<string | null>(null);
+export function KanbanBoardInner({ items }: KanbanBoardProps) {
   const [activeRuns, setActiveRuns] = useState<ActiveAgentRun[]>([]);
   const router = useRouter();
   const { isOpened } = useOpenedContent();
@@ -215,38 +140,6 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
     return map;
   }, [items]);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(KeyboardSensor)
-  );
-
-  const activeItem = items.find((c) => c.id === activeId);
-
-  function handleDragStart(event: DragStartEvent) {
-    setActiveId(event.active.id as string);
-  }
-
-  function handleDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
-    setActiveId(null);
-    if (!over) return;
-
-    const draggedItem = items.find((c) => c.id === active.id);
-    if (!draggedItem) return;
-
-    const overId = over.id as string;
-    const targetColumn = COLUMNS.find((col) => col.id === overId);
-
-    if (targetColumn && draggedItem.status !== targetColumn.id) {
-      onStatusChange(draggedItem.id, targetColumn.id);
-    } else {
-      const overItem = items.find((c) => c.id === overId);
-      if (overItem && draggedItem.status !== overItem.status) {
-        onStatusChange(draggedItem.id, overItem.status);
-      }
-    }
-  }
-
   function renderColumn(column: { id: string; label: string; color: string }) {
     const columnItems = itemsByStatus[column.id] || [];
     const visibleItems = columnItems.slice(0, MAX_VISIBLE_ITEMS);
@@ -260,80 +153,62 @@ export function KanbanBoardInner({ items, onStatusChange }: KanbanBoardProps) {
             {columnItems.length}
           </Badge>
         </div>
-        <SortableContext
-          items={columnItems.map((c) => c.id)}
-          strategy={verticalListSortingStrategy}
-          id={column.id}
+        <button
+          type="button"
+          onClick={() => columnItems.length > 0 && router.push(`/content/stage/${column.id}`)}
+          className={`w-full text-left rounded-lg border border-dashed p-2 min-h-[180px] flex flex-col transition-colors ${column.color} ${
+            columnItems.length > 0 ? "cursor-pointer hover:border-primary/50" : "cursor-default"
+          }`}
         >
-          <button
-            type="button"
-            onClick={() => columnItems.length > 0 && router.push(`/content/stage/${column.id}`)}
-            className={`w-full text-left rounded-lg border border-dashed p-2 min-h-[180px] flex flex-col transition-colors ${column.color} ${
-              columnItems.length > 0 ? "cursor-pointer hover:border-primary/50" : "cursor-default"
-            }`}
-          >
-            {columnItems.length === 0 ? (
-              <div className="flex items-center justify-center flex-1 text-xs text-muted-foreground">
-                No items
+          {columnItems.length === 0 ? (
+            <div className="flex items-center justify-center flex-1 text-xs text-muted-foreground">
+              No items
+            </div>
+          ) : (
+            <>
+              <div className="flex-1 overflow-hidden space-y-0.5">
+                {visibleItems.map((item) => (
+                  <CompactItem
+                    key={item.id}
+                    item={item}
+                    currentStep={column.id === "working" || column.id === "rendering" ? runStepMap[item.id] : undefined}
+                    isNew={!isOpened(item.id)}
+                  />
+                ))}
               </div>
-            ) : (
-              <>
-                <div className="flex-1 overflow-hidden space-y-0.5">
-                  {visibleItems.map((item) => (
-                    <CompactItem
-                      key={item.id}
-                      item={item}
-                      currentStep={column.id === "working" || column.id === "rendering" ? runStepMap[item.id] : undefined}
-                      isNew={!isOpened(item.id)}
-                    />
-                  ))}
+              {hiddenCount > 0 && (
+                <div className="text-center pt-1 border-t border-dashed mt-1">
+                  <span className="text-[10px] text-primary font-medium">
+                    +{hiddenCount} more — click to view all
+                  </span>
                 </div>
-                {hiddenCount > 0 && (
-                  <div className="text-center pt-1 border-t border-dashed mt-1">
-                    <span className="text-[10px] text-primary font-medium">
-                      +{hiddenCount} more — click to view all
-                    </span>
-                  </div>
-                )}
-              </>
-            )}
-          </button>
-        </SortableContext>
+              )}
+            </>
+          )}
+        </button>
       </div>
     );
   }
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCorners}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-    >
-      <div className="flex flex-col gap-4 w-full">
-        {/* Row 1: Content Pipeline */}
-        <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Content Pipeline</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
-            {ROW1_COLUMNS.map(renderColumn)}
-          </div>
-        </div>
-
-        <div className="border-t border-border" />
-
-        {/* Row 2: Publishing Pipeline */}
-        <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Publishing Pipeline</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
-            {ROW2_COLUMNS.map(renderColumn)}
-          </div>
+    <div className="flex flex-col gap-4 w-full">
+      {/* Row 1: Content Pipeline */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Content Pipeline</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
+          {ROW1_COLUMNS.map(renderColumn)}
         </div>
       </div>
 
-      <DragOverlay>
-        {activeItem ? <KanbanCard item={activeItem} isNew={!isOpened(activeItem.id)} /> : null}
-      </DragOverlay>
+      <div className="border-t border-border" />
 
-    </DndContext>
+      {/* Row 2: Publishing Pipeline */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Publishing Pipeline</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+          {ROW2_COLUMNS.map(renderColumn)}
+        </div>
+      </div>
+    </div>
   );
 }

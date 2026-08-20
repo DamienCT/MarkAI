@@ -177,7 +177,10 @@ export default function BrandDetailPage() {
       try {
         const [brandData, contentData, metricsData] = await Promise.allSettled([
           api.get<Brand>(`/api/v1/brands/${brandId}`, undefined, { signal }),
-          api.get<Content[]>(`/api/v1/content`, { brand_id: brandId, limit: 20 }, { signal }),
+          // Explicit is_current=true: content is versioned (every regen
+          // inserts a new row and demotes the old one) — passing the filter
+          // here keeps this page correct regardless of backend deploy order.
+          api.get<Content[]>(`/api/v1/content`, { brand_id: brandId, limit: 20, is_current: true }, { signal }),
           api.get<EngagementMetrics>(`/api/v1/analytics/brands/${brandId}/metrics`, undefined, { signal }),
         ]);
 

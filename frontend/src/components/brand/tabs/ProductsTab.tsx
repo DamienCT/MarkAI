@@ -19,7 +19,7 @@ import {
   DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { formatRelativeTime } from "@/lib/utils";
-import { api, fileUrl } from "@/lib/api";
+import { api, fileUrl, isAuthError } from "@/lib/api";
 import type { Brand, Product } from "@/types";
 
 type SyncOption = { value: string; label: string };
@@ -171,8 +171,9 @@ export function ProductsTab({
       );
       setVendorLogos(data.vendors || []);
       setLogoVersion((v) => v + 1);
-    } catch {
-      toast.error("Failed to load vendors");
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load vendors");
     } finally {
       setVendorLogosLoading(false);
     }
@@ -186,8 +187,9 @@ export function ProductsTab({
       );
       setCategoryLogos(data.categories || []);
       setLogoVersion((v) => v + 1);
-    } catch {
-      toast.error("Failed to load categories");
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load categories");
     } finally {
       setCategoryLogosLoading(false);
     }

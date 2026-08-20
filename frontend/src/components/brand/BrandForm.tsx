@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { ColorPalette, type ColorPaletteValue } from "@/components/brand/ColorPalette";
 import { CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
 import type { Brand } from "@/types";
@@ -357,8 +357,9 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
     try {
       const companies = await api.get<string[]>("/api/v1/brands/bc-companies");
       setAvailableCompanies(companies);
-    } catch {
-      toast.error("Failed to load BC companies");
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load BC companies");
     } finally {
       setLoadingCompanies(false);
     }
@@ -371,8 +372,9 @@ export function BrandForm({ brand, onSubmit, loading }: BrandFormProps) {
         `/api/v1/brands/bc-locations?company=${encodeURIComponent(company)}`
       );
       setAvailableLocations(locations);
-    } catch {
-      toast.error("Failed to load BC locations");
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load BC locations");
     } finally {
       setLoadingLocations(false);
     }

@@ -309,6 +309,30 @@ async def store_content(content_data: dict[str, Any]) -> str:
                 ),
                 {"cid": cal_item_id},
             )
+            # A new version instantly obsoletes any approval still open on an
+            # old one — reviewers were approving version N while looking at
+            # N+1. Resolved in the SAME transaction as the demotion so there
+            # is no window where the new version is current but a stale
+            # pending row still routes the item to a reviewer.
+            # 'revision_requested' is the closest terminal value the approvals
+            # status CHECK allows (pending/approved/rejected/revision_
+            # requested): the "revision" here is the regeneration itself, and
+            # the feedback marker says so. The workflows insert a fresh
+            # pending row for the new version right after this call.
+            await session.execute(
+                text(
+                    "UPDATE approvals SET status = 'revision_requested', "
+                    "feedback = CASE WHEN COALESCE(feedback, '') = '' THEN :note "
+                    "                ELSE feedback || ' — ' || :note END, "
+                    "decided_at = :now, updated_at = :now "
+                    "WHERE calendar_item_id = :cid AND status = 'pending'"
+                ),
+                {
+                    "cid": cal_item_id,
+                    "note": "Superseded: a newer version of this content was generated.",
+                    "now": datetime.now(timezone.utc),
+                },
+            )
         # Parse hashtags: may be a JSON string or a list
         raw_hashtags = content_data.get("hashtags", [])
         if isinstance(raw_hashtags, str):

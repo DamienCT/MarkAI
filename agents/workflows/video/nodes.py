@@ -6245,16 +6245,28 @@ async def store_video(state: VideoState) -> dict[str, Any]:
             ci = state.get("calendar_item", {}) or {}
             br = state.get("brand", {}) or {}
             recipient = ci.get("created_by") or br.get("created_by")
+            brand_name = br.get("name") or "your brand"
+            channel = (ci.get("channel") or "").capitalize() or "Social"
+            hook_preview = (
+                state.get("hook") or ci.get("title") or "Untitled"
+            ).strip()
+            if len(hook_preview) > 120:
+                hook_preview = hook_preview[:117].rstrip() + "…"
             if recipient:
-                brand_name = br.get("name") or "your brand"
-                channel = (ci.get("channel") or "").capitalize() or "Social"
-                hook_preview = (
-                    state.get("hook") or ci.get("title") or "Untitled"
-                ).strip()
-                if len(hook_preview) > 120:
-                    hook_preview = hook_preview[:117].rstrip() + "…"
                 await create_notification(
                     user_id=str(recipient),
+                    notification_type="video_ready",
+                    title=f"{channel} reel ready for review — {brand_name}",
+                    body=hook_preview,
+                    reference_type="content",
+                    reference_id=content_id,
+                )
+            else:
+                # Both created_by NULL (auto-planned, unclaimed brand): tell
+                # every active admin rather than no one.
+                from shared.tools.database import notify_admins
+
+                await notify_admins(
                     notification_type="video_ready",
                     title=f"{channel} reel ready for review — {brand_name}",
                     body=hook_preview,

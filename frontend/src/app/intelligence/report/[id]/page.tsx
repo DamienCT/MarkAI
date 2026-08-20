@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api, apiUrl } from "@/lib/api";
+import { api, apiUrl, isAuthError } from "@/lib/api";
 import { formatDate, formatDateTime, statusColor } from "@/lib/utils";
 import {
   Card,
@@ -294,6 +294,8 @@ export default function ReportPage() {
         );
         setReport(data);
       } catch (err: unknown) {
+        // Session expiry: the sign-in redirect is already underway.
+        if (isAuthError(err)) return;
         const message =
           err && typeof err === "object" && "detail" in err
             ? (err as { detail: string }).detail

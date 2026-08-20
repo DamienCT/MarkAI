@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import {
   Globe, ExternalLink, Plus, Pencil, Trash2, Sparkles, Loader2, X, Save,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, isAuthError } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Competitor } from "@/types";
 
@@ -82,8 +82,9 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
             last_updated: d.last_updated ?? "",
           }));
         setInsights(insightData);
-      } catch {
-        toast.error("Failed to load competitors");
+      } catch (err) {
+        // Session expiry: the sign-in redirect is already underway.
+        if (!isAuthError(err)) toast.error("Failed to load competitors");
       } finally {
         setLoading(false);
       }

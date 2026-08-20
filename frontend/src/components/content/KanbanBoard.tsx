@@ -3,9 +3,11 @@
 import dynamic from "next/dynamic";
 import type { CalendarItem } from "@/types";
 
+// Read-only board: columns navigate to the stage list, items link to the
+// detail page. Status changes happen there — the board never mutates status
+// itself (the old drag-and-drop scaffolding was dead code and was removed).
 export interface KanbanBoardProps {
   items: CalendarItem[];
-  onStatusChange: (itemId: string, newStatus: string) => Promise<void>;
 }
 
 const KanbanBoardInner = dynamic(
@@ -20,6 +22,6 @@ const KanbanBoardInner = dynamic(
   }
 );
 
-export function KanbanBoard({ items, onStatusChange }: KanbanBoardProps) {
-  return <KanbanBoardInner items={items} onStatusChange={onStatusChange} />;
+export function KanbanBoard({ items }: KanbanBoardProps) {
+  return <KanbanBoardInner items={items} />;
 }

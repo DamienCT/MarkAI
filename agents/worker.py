@@ -48,6 +48,7 @@ from shared.tools.database import (  # noqa: E402
     execute_query,
     execute_update,
     get_latest_research,
+    notify_admins,
 )
 
 # ── Import all workflow graphs ───────────────────────────────────────────
@@ -142,8 +143,133 @@ def _is_duplicate_run_error(exc: Exception) -> bool:
     return any(marker in text for marker in _DUPLICATE_RUN_MARKERS)
 
 
-async def _release_stuck_calendar_item(
+# Mirrors ConsumerConfig(max_deliver=5) in shared/nats_consumer.py — after this
+# many delivery attempts JetStream discards the message silently, so a nak on
+# the final attempt is a goodbye, not a retry.
+_MAX_DELIVER = 5
+
+
+def _delivery_attempt(msg: Any) -> int:
+    """Which delivery attempt this is (1-based).
+
+    Falls back to 1 when the metadata is unreadable (e.g. a malformed reply
+    subject): treating an unknown attempt as the first errs toward "a retry is
+    still coming", which never publishes a continuation too early.
+    """
+    try:
+        return int(msg.metadata.num_delivered or 1)
+    except Exception:
+        return 1
+
+
+async def _continue_content_chain(
     agent_type: str, payload: dict[str, Any], reason: str
+) -> None:
+    """Keep a sequential content batch moving past a terminally-dropped item.
+
+    The batch lives ONLY in the in-flight message's remaining_queue — when a
+    per-item terminal outcome (workflow failure, code error, rejected run
+    insert, final-delivery discard, redelivery skip) acks that message, every
+    item behind it is stranded in status='queued' with nothing left to carry
+    it forward. Publishing a QUEUE-LESS content.generate for the brand lets
+    the skip-forward path at the top of _handle_message re-derive the queue
+    from the status='queued' rows and start a fresh chain.
+
+    Termination — this must never become a message loop:
+
+    - Publishes only when the dying message carried a NON-EMPTY
+      remaining_queue — i.e. items are demonstrably stranded BEHIND it. A
+      single-item message (manual generate, morning top-up) strands nothing:
+      the morning top-up retries past-due queued items daily, and letting
+      those messages respawn made every routine redelivery sweep the brand's
+      whole queue into generation. A batch's LAST item carries an empty
+      queue and likewise needs no continuation. The queue-less continuations
+      this helper publishes can therefore never respawn themselves.
+    - The continuation carries resume=True, which tells the skip-forward path
+      that finding zero queued items means "batch complete" — it must NOT
+      fall into the re-trigger-planning branch, which would turn one failed
+      last item into an endless plan → generate → fail cycle.
+    - Callers on paths where the dying item may still be status='queued'
+      (the rejected-run-insert path dies before the graph ever flips it)
+      must fail that item out of the queue first — otherwise re-derivation
+      re-picks the same item and the failure ping-pongs forever.
+
+    Best-effort: the caller is on its way to ack a message JetStream will
+    never redeliver, so this must never raise.
+    """
+    try:
+        if agent_type != "content":
+            return
+        brand_id = payload.get("brand_id") or ""
+        if not brand_id or _consumer is None:
+            return
+        if not payload.get("remaining_queue"):
+            return
+        cont: dict[str, Any] = {
+            "brand_id": brand_id,
+            "trigger": payload.get("trigger", "event"),
+            "chain_depth": payload.get("chain_depth", 0),
+            "resume": True,
+        }
+        if payload.get("scope_weeks") is not None:
+            cont["scope_weeks"] = payload["scope_weeks"]
+        await _consumer.js.publish("content.generate", json.dumps(cont).encode())
+        logger.info(
+            "Continued content batch for brand %s after terminal drop (%s)",
+            brand_id,
+            reason,
+        )
+    except Exception as cont_exc:
+        logger.warning(
+            "Could not continue content batch for brand %s: %s — remaining "
+            "queued items stay queued until the next trigger",
+            payload.get("brand_id"),
+            cont_exc,
+        )
+
+
+async def _notify_workflow_failure(
+    agent_type: str, brand_id: str, run_id: str, reason: str
+) -> None:
+    """Best-effort admin alert when a workflow dies for good.
+
+    Terminal failures were only discoverable by opening the runs page — the
+    calendar quietly showed a 'failed' item days later. Never raises: the
+    caller is on its ack path, and a dead notifications table must not turn
+    one failure into a redelivery loop.
+    """
+    try:
+        brand_name = ""
+        if brand_id:
+            rows = await execute_query(
+                "SELECT name FROM brands WHERE id = :bid", {"bid": brand_id}
+            )
+            brand_name = (rows[0].get("name") if rows else None) or ""
+        label = agent_type.replace("_", " ").capitalize()
+        title = f"{label} workflow failed"
+        if brand_name:
+            title = f"{title} — {brand_name}"
+        await notify_admins(
+            # 'error' is in the notifications CHECK constraint's allowed set;
+            # a bespoke 'workflow_failed' type is NOT — the insert would
+            # violate the CHECK and the alert would die as a warning log,
+            # which is the exact silence this function exists to end.
+            notification_type="error",
+            title=title,
+            body=(reason or "Unknown error")[:500],
+            reference_type="agent_run" if run_id else "brand",
+            reference_id=str(run_id) if run_id else (str(brand_id) or None),
+        )
+    except Exception as notif_exc:
+        logger.warning("workflow_failed notification skipped: %s", notif_exc)
+
+
+async def _release_stuck_calendar_item(
+    agent_type: str,
+    payload: dict[str, Any],
+    reason: str,
+    *,
+    include_queued: bool = False,
 ) -> None:
     """Move a calendar_item out of its in-flight status when its workflow dies.
 
@@ -151,13 +277,29 @@ async def _release_stuck_calendar_item(
     'working'/'rendering' by the video pipeline — stays stuck forever if the
     graph dies (timeout, exception, internal failure) and blocks the UI from
     showing it correctly.
+
+    include_queued is for the rejected-run-insert path only: it dies BEFORE
+    the graph ever flips the item out of 'queued', and the rejection is
+    deterministic (a check/FK violation retries into the same wall). Leaving
+    the item queued would make the batch-continue re-derivation pick the very
+    same item again and ping-pong forever — so that one caller fails the
+    queued item out too. Every other caller fires after the graph ran, when a
+    still-'queued' item means the graph never claimed it and a retry can.
     """
     if agent_type == "content":
-        stuck_filter = "status = 'working'"
+        stuck_filter = (
+            "status IN ('queued', 'working')"
+            if include_queued
+            else "status = 'working'"
+        )
     elif agent_type == "video":
         # load_video_context moves the item queued → working → rendering;
         # a dead run can strand it in either intermediate state.
-        stuck_filter = "status IN ('working', 'rendering')"
+        stuck_filter = (
+            "status IN ('queued', 'working', 'rendering')"
+            if include_queued
+            else "status IN ('working', 'rendering')"
+        )
     else:
         return
     calendar_item_id = payload.get("calendar_item_id")
@@ -354,9 +496,18 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         content_id, brand_id, image_format,
     )
 
-    # ── Set calendar item status to "working" ──────────────────────────
+    # ── Claim the item ('working') ──────────────────────────────────────
+    # The backend endpoint now flips to 'working' synchronously before
+    # publishing (so the client's poll can't race the render), making this a
+    # no-op for current messages — kept, idempotent, for messages published
+    # by older backends. The matching release lives in the finally below.
+    # Clearing regen_error here means a stale error from a PREVIOUS attempt
+    # can never masquerade as this attempt's outcome in the UI.
     await execute_update(
-        "UPDATE calendar_items SET status = 'working' WHERE id = :id",
+        "UPDATE calendar_items SET status = 'working', "
+        "generation_metadata = COALESCE(generation_metadata, '{}'::jsonb) "
+        "|| '{\"regen_error\": null}'::jsonb "
+        "WHERE id = :id",
         {"id": calendar_item_id},
     )
 
@@ -367,6 +518,8 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
             {"id": content_id},
         )
         if not content_rows:
+            # The finally below still releases the 'working' claim — this
+            # early return used to strand the item in 'working' forever.
             logger.error("Content %s not found for image regeneration", content_id)
             return
 
@@ -875,42 +1028,41 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
             except Exception as exc:
                 logger.warning("Mockup generation failed for %s: %s", platform, exc)
 
-        # ── 4. Update content metadata ─────────────────────────────────
-        existing_metadata = content_row.get("generation_metadata") or {}
-        if isinstance(existing_metadata, str):
-            try:
-                existing_metadata = _json.loads(existing_metadata)
-            except Exception:
-                existing_metadata = {}
-
-        existing_metadata["raw_image"] = raw_url
-        existing_metadata["generated_image_url"] = raw_url
-        existing_metadata["branded_image"] = branded_url
-        # Clean base (no logo/text) for the manual logo/overlay editor — here
-        # the overlay was applied onto image_data, which IS raw_url.
-        existing_metadata["composed_image"] = raw_url
-        existing_metadata["logo_variant_used"] = chosen_label
-        existing_metadata["logo_scale"] = scale_for_logo_variant(chosen_label)
-        # Persist the text style so the logo/overlay editor re-renders the same
-        # look (ad = big headline, lifestyle = glass card) when the user fine-tunes.
-        existing_metadata["text_style"] = "headline" if image_format == "ad" else "glass"
-        existing_metadata["font_family"] = (
-            gen_meta.get("font_family") or ad_font_family or "Montserrat"
-        )
+        # ── 4. Patch content metadata ──────────────────────────────────
+        # Merged server-side (JSONB ||) into whatever generation_metadata
+        # holds NOW, not the copy read at the top of this handler — the
+        # overlay editor and other paths write their own keys while a regen
+        # is in flight, and a full-blob write from that stale read erased
+        # them.
+        meta_patch: dict[str, Any] = {
+            "raw_image": raw_url,
+            "generated_image_url": raw_url,
+            "branded_image": branded_url,
+            # Clean base (no logo/text) for the manual logo/overlay editor —
+            # here the overlay was applied onto image_data, which IS raw_url.
+            "composed_image": raw_url,
+            "logo_variant_used": chosen_label,
+            "logo_scale": scale_for_logo_variant(chosen_label),
+            # Persist the text style so the logo/overlay editor re-renders the
+            # same look (ad = big headline, lifestyle = glass card) when the
+            # user fine-tunes.
+            "text_style": "headline" if image_format == "ad" else "glass",
+            "font_family": (
+                gen_meta.get("font_family") or ad_font_family or "Montserrat"
+            ),
+        }
         _colors = gen_meta.get("headline_colors") or ad_headline_colors
         if _colors:
-            existing_metadata["headline_colors"] = _colors
-        if gen_meta.get("text_width") is not None:
-            existing_metadata["text_width"] = gen_meta.get("text_width")
+            meta_patch["headline_colors"] = _colors
         # Persist the AI-chosen headline placement so the overlay editor opens
         # on the same spot/size/width (the user can still drag/resize from there).
         if ad_text_xy is not None:
-            existing_metadata["text_xy"] = list(ad_text_xy)
-            existing_metadata["text_scale"] = float(ad_text_scale)
+            meta_patch["text_xy"] = list(ad_text_xy)
+            meta_patch["text_scale"] = float(ad_text_scale)
         if ad_text_width is not None:
-            existing_metadata["text_width"] = float(ad_text_width)
+            meta_patch["text_width"] = float(ad_text_width)
         if mockup_urls:
-            existing_metadata["mockup_urls"] = mockup_urls
+            meta_patch["mockup_urls"] = mockup_urls
         # Persist the product/vendor logo (and any prior placement) so the
         # logo/overlay editor can show & adjust it after this regeneration —
         # critical for older posts where it was resolved from the vendor.
@@ -923,29 +1075,26 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         if resolved_vendor_logo_dark and not _persist_vars.get("dark"):
             _persist_vars["dark"] = resolved_vendor_logo_dark
         if _persist_pl:
-            existing_metadata["product_logo_image"] = _persist_pl
+            meta_patch["product_logo_image"] = _persist_pl
             if _persist_vars:
-                existing_metadata["product_logo_variants"] = _persist_vars
+                meta_patch["product_logo_variants"] = _persist_vars
             _pxy = gen_meta.get("product_logo_xy")
             if _pxy is None and resolved_product_logo_xy is not None:
                 _pxy = list(resolved_product_logo_xy)
             if _pxy is not None:
-                existing_metadata["product_logo_xy"] = _pxy
-            if gen_meta.get("product_logo_scale") is not None:
-                existing_metadata["product_logo_scale"] = gen_meta.get("product_logo_scale")
-            if gen_meta.get("product_logo_enabled") is not None:
-                existing_metadata["product_logo_enabled"] = gen_meta.get("product_logo_enabled")
+                meta_patch["product_logo_xy"] = _pxy
 
         await execute_update(
-            "UPDATE content SET generation_metadata = :metadata WHERE id = :id",
-            {"id": content_id, "metadata": _json.dumps(existing_metadata, default=str)},
+            # CAST(:patch AS jsonb), not :patch::jsonb — see the bind-param
+            # note in _release_stuck_calendar_item.
+            "UPDATE content SET generation_metadata = "
+            "COALESCE(generation_metadata, '{}'::jsonb) || CAST(:patch AS jsonb) "
+            "WHERE id = :id",
+            {"id": content_id, "patch": _json.dumps(meta_patch, default=str)},
         )
 
-        # ── 5. Set calendar item status back to "in_review" ────────────
-        await execute_update(
-            "UPDATE calendar_items SET status = 'in_review' WHERE id = :id",
-            {"id": calendar_item_id},
-        )
+        # (Step 5 — releasing the item back to 'in_review' — lives in the
+        # finally below so every exit takes it.)
 
         # A regen of a REJECTED item re-enters review with its last approval
         # already resolved — without a fresh pending row the item never
@@ -994,9 +1143,26 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
 
     except Exception as exc:
         logger.exception("Image regeneration failed for content %s: %s", content_id, exc)
-        # Restore calendar item to in_review so it's not stuck in working
+        # Record the failure where the detail page reads it — without this
+        # the UI's "Image regeneration failed: …" branch can never fire and
+        # every failure shows as the generic no-new-image message.
+        try:
+            await execute_update(
+                "UPDATE calendar_items SET generation_metadata = "
+                "COALESCE(generation_metadata, '{}'::jsonb) "
+                "|| jsonb_build_object('regen_error', CAST(:err AS text)) "
+                "WHERE id = :id",
+                {"id": calendar_item_id, "err": str(exc)[:300]},
+            )
+        except Exception as rec_exc:
+            logger.warning("Could not record regen_error: %s", rec_exc)
+    finally:
+        # Success and failure alike end in 'in_review' — but release only OUR
+        # 'working' claim (WHERE status = 'working'), so a status somebody
+        # else set while we ran (approved, cancelled, …) is not clobbered.
         await execute_update(
-            "UPDATE calendar_items SET status = 'in_review' WHERE id = :id",
+            "UPDATE calendar_items SET status = 'in_review' "
+            "WHERE id = :id AND status = 'working'",
             {"id": calendar_item_id},
         )
 
@@ -1371,45 +1537,55 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
             logger.warning("Mockup regeneration skipped during rebrand: %s", exc)
 
         # ── Update content metadata with new branded image + placement ──
-        existing_metadata = gen_meta if isinstance(gen_meta, dict) else {}
-        existing_metadata["branded_image"] = branded_url
-        existing_metadata["logo_variant_used"] = chosen_label or existing_metadata.get("logo_variant_used")
-        existing_metadata["logo_xy"] = list(logo_xy) if logo_xy else None
-        existing_metadata["logo_scale"] = float(logo_scale) if logo_scale else None
-        existing_metadata["text_xy"] = list(text_xy) if text_xy else None
-        existing_metadata["text_scale"] = float(text_scale or 1.0)
-        existing_metadata["text_style"] = text_style
-        if font_family or existing_metadata.get("font_family"):
-            existing_metadata["font_family"] = font_family or existing_metadata.get("font_family")
+        # A PATCH of only the keys this rebrand produced, merged server-side:
+        # gen_meta was read at entry, and a full-blob write of that snapshot
+        # erases whatever a concurrent writer (image regen, publish pipeline)
+        # merged in the meantime — the same lost-update _handle_image_
+        # regeneration was cured of.
+        _prior_meta = gen_meta if isinstance(gen_meta, dict) else {}
+        meta_patch: dict[str, Any] = {
+            "branded_image": branded_url,
+            "logo_variant_used": chosen_label
+            or _prior_meta.get("logo_variant_used"),
+            "logo_xy": list(logo_xy) if logo_xy else None,
+            "logo_scale": float(logo_scale) if logo_scale else None,
+            "text_xy": list(text_xy) if text_xy else None,
+            "text_scale": float(text_scale or 1.0),
+            "text_style": text_style,
+        }
+        if font_family or _prior_meta.get("font_family"):
+            meta_patch["font_family"] = font_family or _prior_meta.get("font_family")
         # Per-word headline colors: an empty dict explicitly clears them.
         if headline_colors is not None:
-            existing_metadata["headline_colors"] = headline_colors
+            meta_patch["headline_colors"] = headline_colors
         if text_width is not None:
-            existing_metadata["text_width"] = text_width
+            meta_patch["text_width"] = text_width
         # Product logo placement / on-off / variant from the editor.
         if product_logo_enabled is not None:
-            existing_metadata["product_logo_enabled"] = bool(product_logo_enabled)
+            meta_patch["product_logo_enabled"] = bool(product_logo_enabled)
         if product_logo_xy is not None:
-            existing_metadata["product_logo_xy"] = list(product_logo_xy)
+            meta_patch["product_logo_xy"] = list(product_logo_xy)
         if product_logo_scale is not None:
-            existing_metadata["product_logo_scale"] = float(product_logo_scale)
+            meta_patch["product_logo_scale"] = float(product_logo_scale)
         _pl_variant_choice = payload.get("product_logo_variant")
         if _pl_variant_choice in ("light", "dark"):
-            existing_metadata["product_logo_variant"] = _pl_variant_choice
+            meta_patch["product_logo_variant"] = _pl_variant_choice
         # Persist resolved light/dark objects so later edits keep both variants
         # without re-resolving from the brand (older posts pick these up here).
-        _persist_vars = dict(gen_meta.get("product_logo_variants") or {})
+        _persist_vars = dict(_prior_meta.get("product_logo_variants") or {})
         if _rb_vendor_light and not _persist_vars.get("light"):
             _persist_vars["light"] = _rb_vendor_light
         if _rb_vendor_dark and not _persist_vars.get("dark"):
             _persist_vars["dark"] = _rb_vendor_dark
         if _persist_vars:
-            existing_metadata["product_logo_variants"] = _persist_vars
+            meta_patch["product_logo_variants"] = _persist_vars
         if mockup_urls:
-            existing_metadata["mockup_urls"] = mockup_urls
+            meta_patch["mockup_urls"] = mockup_urls
         await execute_update(
-            "UPDATE content SET generation_metadata = :metadata WHERE id = :id",
-            {"id": content_id, "metadata": _json.dumps(existing_metadata, default=str)},
+            "UPDATE content SET generation_metadata = "
+            "COALESCE(generation_metadata, '{}'::jsonb) || CAST(:patch AS jsonb) "
+            "WHERE id = :id",
+            {"id": content_id, "patch": _json.dumps(meta_patch, default=str)},
         )
         logger.info(
             "Logo rebrand complete for content %s — branded at %s",
@@ -1418,9 +1594,13 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
     except Exception as exc:
         logger.exception("Logo rebrand failed for content %s: %s", content_id, exc)
     finally:
-        # Restore the prior status so the item is never stuck in 'working'.
+        # Restore the prior status so the item is never stuck in 'working' —
+        # but only if it still IS 'working': an unconditional restore would
+        # clobber a status a reviewer (or another handler) set while this
+        # rebrand ran.
         await execute_update(
-            "UPDATE calendar_items SET status = :st WHERE id = :id",
+            "UPDATE calendar_items SET status = :st "
+            "WHERE id = :id AND status = 'working'",
             {"id": calendar_item_id, "st": prior_status},
         )
 
@@ -1578,12 +1758,17 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             # transition every 'planned' item for this brand to 'queued' here
             # — otherwise the next query finds zero queued items and the
             # `else` branch re-triggers planning, creating an infinite loop.
-            await execute_update(
-                "UPDATE calendar_items "
-                "SET status = 'queued' "
-                "WHERE brand_id = :brand_id AND status = 'planned'",
-                {"brand_id": brand_id},
-            )
+            # A batch-continue resume does NOT promote: it exists to finish
+            # the queue the dead batch was already walking, and promoting
+            # would pull future planned items into generation on the back of
+            # an unrelated failure.
+            if not payload.get("resume"):
+                await execute_update(
+                    "UPDATE calendar_items "
+                    "SET status = 'queued' "
+                    "WHERE brand_id = :brand_id AND status = 'planned'",
+                    {"brand_id": brand_id},
+                )
             queued_items = await execute_query(
                 "SELECT id FROM calendar_items WHERE brand_id = :brand_id AND status = 'queued' ORDER BY scheduled_at ASC LIMIT 100",
                 {"brand_id": brand_id},
@@ -1608,6 +1793,16 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                     "Content skip-forward: queued first item %s (%d remaining) for brand %s",
                     first_id,
                     len(remaining_ids),
+                    brand_id,
+                )
+            elif payload.get("resume"):
+                # A batch-continue message (_continue_content_chain) found
+                # nothing left to do: the batch is simply finished (or its
+                # remnants were failed out/cancelled). Falling through to the
+                # replan branch below would turn one dead item into an endless
+                # plan → generate → fail cycle — a resume never replans.
+                logger.info(
+                    "Batch resume for brand %s found no queued items — batch complete",
                     brand_id,
                 )
             else:
@@ -1656,6 +1851,13 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                         "Skipping content for item %s — already '%s' (no regeneration)",
                         payload["calendar_item_id"],
                         _item_status,
+                    )
+                    # A redelivered batch message may be the only carrier of
+                    # the remaining_queue (the first delivery died between
+                    # generating this item and chaining the next) — re-derive
+                    # and keep the batch moving instead of stranding it.
+                    await _continue_content_chain(
+                        agent_type, payload, f"item already '{_item_status}'"
                     )
                     await msg.ack()
                     return
@@ -1887,8 +2089,23 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 brand_id,
                 str(ie)[:400],
             )
+            # include_queued: this path dies before the graph claims the item,
+            # and the rejection is deterministic — the item must leave the
+            # queue or the batch continuation below re-picks it forever.
             await _release_stuck_calendar_item(
-                agent_type, payload, "agent_runs insert rejected"
+                agent_type,
+                payload,
+                "agent_runs insert rejected",
+                include_queued=True,
+            )
+            await _notify_workflow_failure(
+                agent_type,
+                brand_id,
+                "",
+                f"The run could not be recorded: {str(ie)[:300]}",
+            )
+            await _continue_content_chain(
+                agent_type, payload, "run insert rejected"
             )
             await msg.ack()
             return
@@ -1899,6 +2116,34 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             # — retry later instead (max_deliver bounds the attempts).
             logger.info(
                 "Video render for brand %s already running — retrying item %s later",
+                brand_id,
+                payload.get("calendar_item_id"),
+            )
+            await msg.nak(delay=300)
+            return
+        if agent_type == "content" and (
+            payload.get("calendar_item_id") or payload.get("remaining_queue")
+        ):
+            # A content run for this brand is already live and this message
+            # carries batch state. "Already running" is transient — the live
+            # run continues its own chain, and if it is a zombie the stale-run
+            # reaper clears it — so retry like video does rather than dropping
+            # the queue. On the FINAL delivery a nak is a discard, so hand the
+            # batch to queue re-derivation instead (the item is still 'queued'
+            # and will be re-picked once the brand's run lock frees up).
+            if _delivery_attempt(msg) >= _MAX_DELIVER:
+                logger.warning(
+                    "Content run for brand %s still blocked by a running run "
+                    "on final delivery — re-deriving the batch",
+                    brand_id,
+                )
+                await _continue_content_chain(
+                    agent_type, payload, "duplicate run on final delivery"
+                )
+                await msg.ack()
+                return
+            logger.info(
+                "Content run for brand %s already running — retrying item %s later",
                 brand_id,
                 payload.get("calendar_item_id"),
             )
@@ -1973,8 +2218,6 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             and agent_type in ("research", "strategy", "planning")
         ):
             try:
-                from shared.tools.database import notify_admins
-
                 _DOC_LABEL = {
                     "research": "Research Report",
                     "strategy": "Marketing Strategy",
@@ -2045,10 +2288,24 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 agent_type,
                 brand_id,
             )
+            _fail_reason = (safe_result or {}).get(
+                "error", "workflow reported failed"
+            )
+            # include_queued: a graph can fail BEFORE claiming the item (the
+            # empty-brief validation runs pre-claim), leaving it 'queued' —
+            # and the batch continuation below would re-derive, re-pick the
+            # SAME item first, and fail again forever. This ack is terminal
+            # for the message, so it is terminal for the item too.
             await _release_stuck_calendar_item(
-                agent_type,
-                payload,
-                (safe_result or {}).get("error", "workflow reported failed"),
+                agent_type, payload, _fail_reason, include_queued=True
+            )
+            await _notify_workflow_failure(
+                agent_type, brand_id, run_id, _fail_reason
+            )
+            # "Not chaining next stage" must not also mean "strand the rest
+            # of the batch" — one bad item, not the whole run of the factory.
+            await _continue_content_chain(
+                agent_type, payload, "workflow reported failed"
             )
             return
 
@@ -2291,7 +2548,28 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
                 status="failed",
                 error_message=f"Timed out after {timeout_s}s",
             )
-        await _release_stuck_calendar_item(agent_type, payload, "timeout")
+        # include_queued only on the FINAL attempt: a non-final timeout naks
+        # and the redelivery can still legitimately claim a 'queued' item,
+        # but the final nak is a JetStream discard — leaving the item queued
+        # then would hand the batch continuation an infinite re-pick loop.
+        await _release_stuck_calendar_item(
+            agent_type,
+            payload,
+            "timeout",
+            include_queued=_delivery_attempt(msg) >= _MAX_DELIVER,
+        )
+        if _delivery_attempt(msg) >= _MAX_DELIVER:
+            # JetStream discards after max_deliver attempts — this nak is a
+            # goodbye, not a retry, so the timeout just became terminal.
+            await _notify_workflow_failure(
+                agent_type,
+                brand_id,
+                run_id,
+                f"Timed out after {timeout_s}s on the final delivery attempt",
+            )
+            await _continue_content_chain(
+                agent_type, payload, "timed out on final delivery"
+            )
         await msg.nak(delay=60)
 
     except GraphInterrupt as gi:
@@ -2312,7 +2590,13 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         logger.exception("Workflow %s failed for brand %s", agent_type, brand_id)
         if run_id:
             await complete_agent_run(run_id, status="failed", error_message=str(exc))
-        await _release_stuck_calendar_item(agent_type, payload, str(exc)[:200])
+        # include_queued: acked without retry, so terminal — same re-pick
+        # loop as the workflow-failed branch if the item never left 'queued'.
+        await _release_stuck_calendar_item(
+            agent_type, payload, str(exc)[:200], include_queued=True
+        )
+        await _notify_workflow_failure(agent_type, brand_id, run_id, str(exc)[:400])
+        await _continue_content_chain(agent_type, payload, "unhandled workflow error")
         await msg.ack()  # Don't retry indefinitely on code errors
 
 
