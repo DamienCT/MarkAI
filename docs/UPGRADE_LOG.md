@@ -797,3 +797,56 @@ organic starts". The clamp, the style table and the plan prompt now share
 (5 moods × 3 variants, 34s) on the 4090; installed as 192k AAC under
 `agents/assets/music/<mood>/` (13MB; FLAC masters in the forge workspace).
 `_pick_music_bed` finds them by mood folder — next render carries music.
+
+## Cycle 11 — 2026-08-20: native multishot — the reel becomes ONE generation
+
+The chained pipeline's defining defects (join brightness steps, per-shot
+audio restarts) were assembly symptoms. This cycle removed the assembly.
+
+**Empirical gate first:** the design review refuted the assumed 481-frame
+cap and demanded a bracket. On this 4090 (int8 22B distilled, 704x1280,
+8-step): 241f/110s/22.8GB, 361f/150s/23.5GB, 481f/220s/23.6GB,
+**721f/411s/20.8GB** — a full 30s reel in ONE pass. The two-pass seam
+machinery shipped anyway (env-tunable cap) but the default path has ZERO
+seams. LTX-2.5 renders scene changes as cross-dissolves (max scene score
+<0.04 — scdet finds nothing), so caption realignment treats "no cuts" as
+the normal case and nudges beats out of dissolve zones.
+
+**Measured, planned-boundary steps on the delivered reel:** picture worst
+-6.1 luma (v1 +22.3, v3 worst +39.2); audio worst -4.4dB (v1 +15.9, v2
+-40.5). Audio assembly logs the whole story: "1 shot(s) level-matched
+(gains +0.0 dB)" — nothing left to fix.
+
+**Forge:** mode=multishot (segments[] -> pass planner -> prose paragraphs
+-> per-pass render -> bridge-frame continuation -> head-trim+fade join,
+NO acrossfade), worker timeout/failure now engine.cancel (a timed-out job
+used to burn the GPU for the full render), 62 tests. Adversarial review
+caught the bridge -sseof/-frames:v silent-empty failure (AAC padding
+outruns video PTS) before it ever fired live; a live smoke found
+mode=multishot still required a top-level prompt — every agents render
+would have silently 422'd into the fallback forever.
+
+**Agents:** per-shot prose (through language guard, supplier scrub, and
+delabel rewrite), capability probe, verbatim chained fallback with ledger
+provenance, ONE uniform grade (per-shot grading would reintroduce the
+steps), 1155 tests.
+
+**Invented-label reroll gate:** the first native reel shipped a bottle
+wearing a full pseudo-label. Prompt-side mitigation is documented as
+insufficient (image bake-off: five variants, zero effect), so the native
+branch now vision-checks one frame per shot on the RAW reel and buys the
+same seed-bumped retry the motion floor gets; still-flagged reels ship
+with flags in meta. Live: attempt 1 flagged 4 timestamps (readable
+gibberish), retry cut it to 3 soft ones. Known gap: the guard borrows the
+image gate's any-lettering strictness — an unreadable label AREA is legal
+here; severity tiers + LTX Retake on flagged windows are the cycle-12 fix.
+
+**Ops, same night:** deploy script executed a mid-file git pull that
+rewrote itself and took prod down ~15 min (recovered, volumes intact) —
+body now wrapped in main() so bash parses before executing. Tunnel
+forward rebound from 0.0.0.0 to the docker bridge — port 9100 is no
+longer internet-reachable; sshd keepalive reaps dead forwards in 90s.
+First-ever verified backup ran (228MB pg_dump + 3.06GiB MinIO mirror,
+nightly cron installed). CYCLE NOW audit remediation shipped and deployed
+(approval loop, analytics inflation, publish timezones, rate limiting,
+label of shame: the learning feature had never persisted one row).
