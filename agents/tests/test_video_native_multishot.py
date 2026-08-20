@@ -206,6 +206,46 @@ class TestProseNormalization:
         assert out[1]["prose"] == "hands. hands knead."
 
 
+class TestScrubNameFromProse:
+    """The product name is a supplier mention AND label-bait: a measured reel
+    shipped every shot leading with 'Emile Noel Mild Olive Oil, a golden
+    olive oil in a dark glass bottle, ...' despite the delabel instruction.
+    Deleting the name leaves the appositive description as the subject."""
+
+    def test_full_name_and_head_are_deleted_comma_insensitively(self):
+        prose = (
+            "Emile Noel Mild Olive Oil, a golden olive oil in a dark glass "
+            "bottle, pours in a smooth ribbon into a warm pan. Later Emile "
+            "Noel rests on the counter."
+        )
+        out = video_nodes._scrub_name_from_prose(
+            prose, "Emile Noel, Mild Olive Oil, 690g"
+        )
+        assert "Emile" not in out and "Noel" not in out
+        assert out.startswith("A golden olive oil in a dark glass bottle")
+        assert "pours in a smooth ribbon" in out
+        # The second sentence lost its subject to the head-deletion but is
+        # tidied and recapitalized, never left starting with punctuation.
+        assert ". Later" in out
+
+    def test_middle_segment_alone_survives(self):
+        # "apricot jam" is legitimate description — only the full sequence
+        # and the manufacturer head are the printed name.
+        prose = "A jar of apricot jam glows in the light."
+        out = video_nodes._scrub_name_from_prose(
+            prose, "Coteaux Nantais, Apricot Jam, 690g"
+        )
+        assert out == prose
+
+    def test_scrub_that_would_empty_returns_original(self):
+        out = video_nodes._scrub_name_from_prose("Emile Noel", "Emile Noel")
+        assert out == "Emile Noel"
+
+    def test_no_name_or_no_prose_is_identity(self):
+        assert video_nodes._scrub_name_from_prose("", "X Brand") == ""
+        assert video_nodes._scrub_name_from_prose("Some prose.", "") == "Some prose."
+
+
 class TestSegmentPrompt:
     def test_prose_is_the_prompt_with_no_chained_furniture(self):
         shot = {

@@ -80,6 +80,68 @@ def _patch_llm(monkeypatch, response: str) -> dict:
     return captured
 
 
+class TestNativePacingPrompt:
+    """'The scenes are too short and too random' (user, on a 7x4.3s reel):
+    when the forge renders the reel in ONE pass, the plan asks for 4-5 long
+    continuous-story beats; the chained path keeps its 6-8 x 3-5s regime."""
+
+    def _system_prompt(self, monkeypatch, capable: bool) -> str:
+        import shared.video as shared_video
+
+        async def fake_probe():
+            return capable
+
+        monkeypatch.setattr(shared_video, "forge_supports_multishot", fake_probe)
+        captured = _patch_llm(monkeypatch, json.dumps(_canned_plan()))
+        asyncio.run(plan_shots(_state()))
+        return captured["messages"][0]["content"]
+
+    def test_native_regime_asks_for_few_long_story_beats(self, monkeypatch):
+        prompt = self._system_prompt(monkeypatch, True)
+        n_min, n_max = (
+            video_nodes.NATIVE_MIN_PLAN_SHOTS,
+            video_nodes.NATIVE_MAX_PLAN_SHOTS,
+        )
+        assert f"{n_min} to {n_max}" in prompt
+        assert "ONE continuous story" in prompt
+        assert "At most ONE pour" in prompt
+        # The prose must never carry the product name — it is a supplier
+        # mention AND the label-bait that kept coming back as lettering.
+        assert "NEVER write the product's name" in prompt
+        # "resolves back toward the opening composition" is what made shot 7
+        # pour into a pan again, "echoing the opening" — banned for native.
+        assert "loops cleanly" not in prompt
+        assert "does not loop" in prompt
+
+    def test_chained_regime_is_untouched(self, monkeypatch):
+        prompt = self._system_prompt(monkeypatch, False)
+        assert f"{MIN_PLAN_SHOTS} to {MAX_SHOTS}" in prompt
+        assert "loops cleanly" in prompt
+        assert "Repeat the product and setting identity tags" in prompt
+
+
+class TestNativeFitRange:
+    def test_native_range_keeps_long_beats_on_target(self):
+        shots = [
+            {"index": i, "duration_s": 7.5, "scene": "s"} for i in range(1, 5)
+        ]
+        fitted, dropped = video_nodes._fit_shot_durations(
+            shots,
+            min_shot_s=video_nodes.NATIVE_MIN_SHOT_RENDER_S,
+            max_shot_s=video_nodes.NATIVE_MAX_SHOT_RENDER_S,
+        )
+        assert not dropped
+        assert sum(s["duration_s"] for s in fitted) == pytest.approx(30.0)
+        assert all(5.0 <= s["duration_s"] <= 8.0 for s in fitted)
+
+    def test_chained_default_range_unchanged(self):
+        shots = [
+            {"index": i, "duration_s": 7.5, "scene": "s"} for i in range(1, 5)
+        ]
+        fitted, _ = video_nodes._fit_shot_durations(shots)
+        assert all(s["duration_s"] <= 5.0 for s in fitted)
+
+
 class TestPlanShots:
     def test_parses_canned_response(self, monkeypatch):
         captured = _patch_llm(monkeypatch, json.dumps(_canned_plan()))

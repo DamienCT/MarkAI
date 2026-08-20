@@ -2,10 +2,21 @@
 set -euo pipefail
 
 # ── MARKAI VPS Redeploy Script ──────────────────────────────────────
-# Run this ON the VPS: bash /var/www/markai/scripts/vps-redeploy.sh
+# Sanctioned invocation: the GitHub "Deploy" workflow, which SSHes in as
+# the "deploy" user and runs the sudoers-whitelisted wrapper
+# /usr/local/bin/markai-deploy (a symlink to this file). Manual root runs
+# are break-glass only — see VPS_CONNECTION_GUIDE.md for the exact form.
 # Flags:
-#   --force-wipe   wipe DB volumes (requires a fresh verified backup)
-#   --skip-backup  skip the pre-deploy pg_dump (NOT recommended)
+#   --force-wipe          wipe DB volumes (requires a fresh verified backup)
+#   --skip-backup         skip the pre-deploy pg_dump (NOT recommended)
+#   --expected-sha=<sha>  abort unless HEAD equals <sha> after the pull
+#                         (also readable from the EXPECTED_SHA env var — CI uses that)
+#
+# Concurrency: an exclusive NON-BLOCKING flock on /var/tmp/markai-deploy.lock.
+# A second deploy while one runs fails immediately and loudly — it must never
+# queue silently: two same-morning deploys once double-triggered GPU renders.
+# Every attempt appends one line to /var/www/markai/deploys.log
+# (ISO timestamp, SHA before -> after, invoking user, outcome).
 #
 # The WHOLE script body lives inside main(), called on the last line.
 # This is load-bearing, not style: Step 1's `git pull` rewrites THIS
@@ -20,20 +31,36 @@ cd /var/www/markai
 
 FORCE_WIPE=false
 SKIP_BACKUP=false
+# Empty means "no pin": manual break-glass runs deploy whatever main is at.
+EXPECTED_SHA="${EXPECTED_SHA:-}"
 for arg in "$@"; do
   case "$arg" in
     --force-wipe)  FORCE_WIPE=true ;;
     --skip-backup) SKIP_BACKUP=true ;;
-    *) echo "Unknown flag: ${arg} (supported: --force-wipe, --skip-backup)"; exit 1 ;;
+    --expected-sha=*) EXPECTED_SHA="${arg#--expected-sha=}" ;;
+    *) echo "Unknown flag: ${arg} (supported: --force-wipe, --skip-backup, --expected-sha=<sha>)"; exit 1 ;;
   esac
 done
 
 echo "=== Step 1: Pull latest code ==="
+SHA_BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 # Both remotes carry the same main (dual-push convention); prefer ado but fall
 # back to origin (GitHub) when its credential has expired.
 if ! git pull ado main; then
     echo "WARN: ado pull failed (credential expired?) — falling back to origin"
     git pull origin main
+fi
+SHA_AFTER=$(git rev-parse HEAD)
+echo "  ${SHA_BEFORE} -> ${SHA_AFTER}"
+
+# CI pins the exact commit it checked out. A mismatch means main moved between
+# CI checkout and this deploy (or the wrong thing got pulled) — abort NOW,
+# while nothing has been built or restarted and the old stack is still up.
+if [[ -n "$EXPECTED_SHA" && "$SHA_AFTER" != "$EXPECTED_SHA" ]]; then
+  echo "ERROR: HEAD after pull is ${SHA_AFTER}, but EXPECTED_SHA=${EXPECTED_SHA}."
+  echo "Nothing was built or restarted; the running stack is untouched."
+  echo "Re-run the deploy workflow to ship the current HEAD, or investigate why main moved."
+  exit 1
 fi
 
 echo "=== Step 2: Generate and add missing env vars ==="
@@ -169,7 +196,45 @@ sleep 30
 echo "=== Step 8: Service status ==="
 docker compose -f docker-compose.yml -f docker-compose.vps.yml ps
 
-echo "=== Step 9: Health checks ==="
+echo "=== Step 9: Drift check (markai-* containers vs expected set) ==="
+# The VPS is SHARED with other apps: this check reads ONLY markai-* container
+# state and never touches anything outside that prefix. Plain `docker ps` is
+# used instead of `docker compose ps --format json` because the JSON shape
+# changed across compose v2 releases; container_name is pinned for every
+# service, so names are stable. The list mirrors the active (profile-less)
+# service set of docker-compose.vps.yml — if the "observability" profile is
+# ever enabled on the VPS, add its containers here or every deploy will fail.
+EXPECTED_CONTAINERS="markai-backend markai-frontend markai-agents markai-browser-worker markai-notifications markai-postgres markai-qdrant markai-minio markai-valkey markai-nats markai-litellm"
+RUNNING_CONTAINERS=$(docker ps --filter 'name=^markai-' --format '{{.Names}}')
+DRIFT=false
+
+for expected in $EXPECTED_CONTAINERS; do
+  if ! printf '%s\n' "$RUNNING_CONTAINERS" | grep -Fqx "$expected"; then
+    echo "  WARNING: expected container ${expected} is NOT running"
+    DRIFT=true
+  fi
+done
+
+for name in $RUNNING_CONTAINERS; do
+  case " ${EXPECTED_CONTAINERS} " in
+    *" ${name} "*) : ;;
+    *) echo "  WARNING: unexpected markai-* container is running: ${name}"; DRIFT=true ;;
+  esac
+done
+
+UNHEALTHY=$(docker ps --filter 'name=^markai-' --filter 'health=unhealthy' --format '{{.Names}}')
+if [[ -n "$UNHEALTHY" ]]; then
+  for name in $UNHEALTHY; do
+    echo "  WARNING: container reports UNHEALTHY: ${name}"
+  done
+  DRIFT=true
+fi
+
+if [[ "$DRIFT" == false ]]; then
+  echo "  OK: all expected markai-* containers running, none unhealthy."
+fi
+
+echo "=== Step 10: Health checks ==="
 echo "Backend health:"
 curl -sf http://localhost:8000/health || echo "FAILED"
 
@@ -178,7 +243,7 @@ echo "Backend metrics:"
 curl -sf http://localhost:8000/metrics 2>/dev/null | head -3 || echo "FAILED"
 
 echo ""
-echo "=== Step 10: Recent logs (last 20 lines each) ==="
+echo "=== Step 11: Recent logs (last 20 lines each) ==="
 echo "--- backend ---"
 docker compose -f docker-compose.yml -f docker-compose.vps.yml logs --tail=20 backend
 
@@ -189,8 +254,62 @@ echo "--- frontend ---"
 docker compose -f docker-compose.yml -f docker-compose.vps.yml logs --tail=20 frontend
 
 echo ""
+# Drift fails the deploy AFTER status/logs printed above, so the operator (or
+# the CI log) has the diagnostics in hand. CI relies on this non-zero exit.
+if [[ "$DRIFT" == true ]]; then
+  echo "=== DEPLOY FAILED DRIFT CHECK — see Step 9 warnings above ==="
+  exit 1
+fi
+
 echo "=== Deploy complete ==="
 
 }
 
-main "$@"
+# ── Entry point ─────────────────────────────────────────────────────
+# Everything below runs BEFORE Step 1's git pull can swap this file, and the
+# final `main "$@"; exit "$?"` shares one line so bash never reads another
+# line from the (possibly rewritten) file after main returns.
+
+LOCK_FILE="/var/tmp/markai-deploy.lock"
+DEPLOY_LOG="/var/www/markai/deploys.log"
+SHA_BEFORE="unknown"
+SHA_AFTER="unknown"
+
+write_deploy_log() {
+  # One line per deploy attempt. Best-effort on purpose: a broken log write
+  # must never change the deploy's own exit code.
+  printf '%s %s -> %s user=%s outcome=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SHA_BEFORE" "$SHA_AFTER" \
+    "${SUDO_USER:-$(id -un)}" "$1" >> "$DEPLOY_LOG" 2>/dev/null || true
+}
+
+on_exit() {
+  local code=$?
+  if [[ "$code" -eq 0 ]]; then
+    write_deploy_log "ok"
+  else
+    write_deploy_log "failed(exit=${code})"
+  fi
+}
+
+command -v flock >/dev/null 2>&1 || {
+  echo "ERROR: flock not found — refusing to deploy without concurrency protection." >&2
+  exit 1
+}
+
+# Non-blocking on purpose: a second deploy while one runs must FAIL loudly,
+# never queue silently (queued deploys are how the duplicate GPU renders
+# happened). The lock lives on the open fd, not the file, so a crashed deploy
+# releases it automatically — never delete the lock file to "unstick" things.
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "ERROR: another deploy is already running (lock: ${LOCK_FILE})." >&2
+  echo "Not queueing behind it. Wait for it to finish, check ${DEPLOY_LOG}, then re-run." >&2
+  exit 1
+fi
+
+# Trap only once we own the lock, so a lock-refused attempt is not logged as
+# a deploy (the deploy it collided with will write its own line).
+trap on_exit EXIT
+
+main "$@"; exit "$?"
