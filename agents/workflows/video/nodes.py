@@ -4913,8 +4913,25 @@ async def _reel_label_guard(
     }
 
 
+#: Per-segment packaging line for native multishot segments after the first.
+#: The FULL _UNVERIFIED_PACK_DIRECTIVE rides only segment 1: the native
+#: prompt is one concatenated text, and five 120-word copies of the block
+#: outweighed the story itself — v8's shot 1→2 seam staged a tableau of four
+#: bare bottles nobody asked for, the same repetition-bias failure the
+#: identity tags had. The delabel pass already writes the constraint into the
+#: prose where a pack appears; this one sentence keeps it in every segment's
+#: conditioning window without drowning the beat.
+_PACK_REMINDER = (
+    "Any pack in frame stays unreadable — bare, unprinted glass, no label, "
+    "no printed copy."
+)
+
+
 def _build_segment_prompt(
-    shot: dict[str, Any], *, unverified_pack: bool = False
+    shot: dict[str, Any],
+    *,
+    unverified_pack: bool = False,
+    full_pack_directive: bool = True,
 ) -> str:
     """Prompt for ONE native-multishot segment (pure function).
 
@@ -4925,12 +4942,18 @@ def _build_segment_prompt(
     prose existed. The structured prompt frame (_build_shot_prompt) stays on
     the chained path: shot numbers and CONTINUITY blocks are precisely the
     labels the multishot conditioning must never see.
+
+    Under *unverified_pack*, the first segment carries the full packaging
+    block and the rest carry _PACK_REMINDER (see its comment for why).
     """
     prose = str(shot.get("prose") or "").strip() or _prose_from_scene(
         str(shot.get("scene") or "")
     )
     if unverified_pack:
-        prose = f"{prose}\n\n{_UNVERIFIED_PACK_DIRECTIVE}"
+        if full_pack_directive:
+            prose = f"{prose}\n\n{_UNVERIFIED_PACK_DIRECTIVE}"
+        else:
+            prose = f"{prose} {_PACK_REMINDER}"
     return prose
 
 
@@ -4973,10 +4996,14 @@ async def _render_native_multishot(
     num = len(fitted)
     segments = [
         {
-            "prompt": _build_segment_prompt(s, unverified_pack=unverified_pack),
+            "prompt": _build_segment_prompt(
+                s,
+                unverified_pack=unverified_pack,
+                full_pack_directive=(i == 0),
+            ),
             "duration_s": s["duration_s"],
         }
-        for s in fitted
+        for i, s in enumerate(fitted)
     ]
     native_prompt = "\n\n".join(seg["prompt"] for seg in segments)
     # Deterministic seed so the motion retry below is a REAL re-roll: with

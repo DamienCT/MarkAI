@@ -275,10 +275,27 @@ class TestSegmentPrompt:
         )
         assert prompt == "a mill. stone wheels."
 
-    def test_unverified_pack_directive_rides_each_segment(self):
+    def test_unverified_pack_directive_rides_the_first_segment(self):
         prompt = _build_segment_prompt({"prose": "A jar."}, unverified_pack=True)
         assert prompt.startswith("A jar.")
         assert video_nodes._UNVERIFIED_PACK_DIRECTIVE in prompt
+
+    def test_later_segments_get_the_one_line_reminder_not_the_block(self):
+        # Five copies of the 120-word block outweighed the story (v8 staged
+        # a four-bottle tableau at the first seam) — segments after the first
+        # keep the constraint as one sentence.
+        prompt = _build_segment_prompt(
+            {"prose": "A jar."}, unverified_pack=True, full_pack_directive=False
+        )
+        assert prompt.startswith("A jar.")
+        assert video_nodes._UNVERIFIED_PACK_DIRECTIVE not in prompt
+        assert video_nodes._PACK_REMINDER in prompt
+
+    def test_verified_pack_gets_neither_block_nor_reminder(self):
+        prompt = _build_segment_prompt(
+            {"prose": "A jar."}, unverified_pack=False, full_pack_directive=False
+        )
+        assert prompt == "A jar."
 
 
 # ── Cut detection and caption-window realignment (pure) ────────────────────
