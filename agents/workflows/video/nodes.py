@@ -1904,7 +1904,11 @@ async def _delabel_shot_scenes(
         "as one flowing present-tense paragraph for a video model that "
         "renders the whole reel in a single pass. Revise it under the same "
         "constraint, keeping it a flowing paragraph: no shot numbers, no "
-        "timestamps, no labels.\n\n"
+        "timestamps, no labels. In the prose, never name the brand or "
+        "producer at all — identify the product by colour, material and "
+        "silhouette (\"the olive-green glass bottle\"): a printed name in "
+        "the prompt is exactly what comes back as invented lettering on the "
+        "pack.\n\n"
         'Return STRICT JSON: {"shots": [{"index": <int>, "scene": '
         '"<revised scene, same labelled sections>", "prose": "<revised '
         'prose, same flowing form>"}]}'
@@ -4563,6 +4567,65 @@ async def _finish_audio(
         return video_bytes, {**meta, "audio": False, "audio_finish": f"failed:{exc}"[:220]}
 
 
+def _frame_jpeg_at(path: str, t: float) -> bytes:
+    """One frame at *t* as a vision-sized JPEG (pure ffmpeg; b'' on failure)."""
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.2f}", "-i", path,
+            "-frames:v", "1", "-vf", "scale=768:-2", "-q:v", "4",
+            "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+        ],
+        capture_output=True,
+        timeout=60,
+    )
+    return proc.stdout if proc.returncode == 0 else b""
+
+
+async def _reel_label_guard(
+    path: str, durations: list[float]
+) -> dict[str, Any]:
+    """Vision-check one frame per planned shot for lettering the brief bans.
+
+    Runs on the RAW reel, before the caption burn — burned beats are the one
+    legitimate lettering and would false-positive every frame after it. Fails
+    open like the image gate: a disabled guard or a failed vision call never
+    blocks a render.
+    """
+    from shared import image_text_guard as _itg
+
+    if not _itg.guard_enabled():
+        return {"checked": False, "flagged": False, "reason": "disabled"}
+
+    mids: list[float] = []
+    start = 0.0
+    for dur in durations:
+        mids.append(start + dur / 2.0)
+        start += dur
+
+    async def _check(t: float) -> tuple[float, Any] | None:
+        frame = await asyncio.to_thread(_frame_jpeg_at, path, t)
+        if not frame:
+            return None
+        v = await _itg.detect_unintended_text(
+            frame, "image/jpeg", None, label=f"reel@{t:.1f}s"
+        )
+        return (t, v)
+
+    results = [r for r in await asyncio.gather(*(_check(t) for t in mids)) if r]
+    checked = [r for r in results if r[1].checked]
+    flags = [
+        {"t": round(t, 1), "text": v.offending[:5]}
+        for t, v in checked
+        if v.flagged
+    ]
+    return {
+        "checked": bool(checked),
+        "frames_checked": len(checked),
+        "flagged": bool(flags),
+        "flags": flags,
+    }
+
+
 def _build_segment_prompt(
     shot: dict[str, Any], *, unverified_pack: bool = False
 ) -> str:
@@ -4713,21 +4776,46 @@ async def _render_native_multishot(
                 # than being compensated for that.
                 motion = await asyncio.to_thread(_measure_motion, path)
                 verdict = _motion_verdict(motion)
-                if verdict is None:
-                    result = candidate
-                    break
-                if attempt == 0:
+                if verdict is not None:
+                    if attempt == 0:
+                        logger.warning(
+                            "Native multishot reel looks %s (motion %.2f) — "
+                            "one seed-bumped retry",
+                            verdict,
+                            motion or 0.0,
+                        )
+                        continue
+                    return _bail(
+                        f"native multishot reel still {verdict} (motion "
+                        f"{motion or 0.0:.2f}) after a seed-bumped retry"
+                    )
+                # ── Invented-label gate (raw reel, BEFORE captions burn) ───
+                # A finished single-pass reel shipped a hero bottle wearing a
+                # full pseudo-label; prompt-side mitigation is documented as
+                # insufficient (the image bake-off measured five variants and
+                # none suppressed invented lettering) — the reroll gate is
+                # the defence that works. One seed-bumped retry; a reel that
+                # still trips ships anyway (the chained path has the same
+                # exposure and costs 7 renders), with the flags in its meta.
+                label_guard = await _reel_label_guard(
+                    path, [float(s["duration_s"]) for s in fitted]
+                )
+                if label_guard.get("flagged") and attempt == 0:
                     logger.warning(
-                        "Native multishot reel looks %s (motion %.2f) — one "
-                        "seed-bumped retry",
-                        verdict,
-                        motion or 0.0,
+                        "Native multishot reel resolved invented lettering "
+                        "(%s) — one seed-bumped retry",
+                        label_guard.get("flags"),
                     )
                     continue
-                return _bail(
-                    f"native multishot reel still {verdict} (motion "
-                    f"{motion or 0.0:.2f}) after a seed-bumped retry"
-                )
+                if label_guard.get("flagged"):
+                    logger.warning(
+                        "Native multishot reel still shows lettering after a "
+                        "seed-bumped retry — shipping with label_guard flags "
+                        "in meta: %s",
+                        label_guard.get("flags"),
+                    )
+                result = candidate
+                break
 
             # ── Per-window diagnostics (ledger only) ───────────────────────
             planned = [float(s["duration_s"]) for s in fitted]
@@ -4853,6 +4941,7 @@ async def _render_native_multishot(
                 "model": result.model,
                 "cost_usd": round(total_cost, 4),
                 "motion": round(motion, 2) if motion is not None else None,
+                "label_guard": label_guard,
                 "ledger": attempt_ledgers,
             }
             logger.info(

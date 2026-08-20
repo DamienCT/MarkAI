@@ -869,3 +869,90 @@ class TestMakeKeyframeNativeBranch:
         out, _ = self._run(monkeypatch, self._state(), probe=self._boom)
         assert sorted(out["anchor_frames"]) == video_nodes._anchor_indices(7)
         assert out["native_multishot_capable"] is False
+
+
+class TestReelLabelGuard:
+    """A rendered reel shipped a hero bottle wearing a full pseudo-label —
+    prompt-side mitigation is documented as insufficient, so the native
+    branch gained the same reject-and-reroll defence the image path has."""
+
+    def test_guard_unit_flags_lettering_frames(self, monkeypatch):
+        from shared import image_text_guard as itg
+        from shared.image_text_guard import TextGuardVerdict
+
+        monkeypatch.setattr(itg, "guard_enabled", lambda: True)
+        monkeypatch.setattr(
+            video_nodes, "_frame_jpeg_at", lambda path, t: b"jpeg"
+        )
+
+        async def fake_detect(data, content_type, allowed, *, label=""):
+            # Flag only the second sampled frame.
+            if label.startswith("reel@6"):
+                return TextGuardVerdict(
+                    flagged=True, unintended_text=["FNILLE EIL NOIL"]
+                )
+            return TextGuardVerdict(flagged=False)
+
+        monkeypatch.setattr(itg, "detect_unintended_text", fake_detect)
+        out = asyncio.run(
+            video_nodes._reel_label_guard("reel.mp4", [4.0, 4.0, 4.0])
+        )
+        assert out["checked"] and out["flagged"]
+        assert out["frames_checked"] == 3
+        assert out["flags"] == [{"t": 6.0, "text": ["FNILLE EIL NOIL"]}]
+
+    def test_guard_disabled_fails_open(self, monkeypatch):
+        from shared import image_text_guard as itg
+
+        monkeypatch.setattr(itg, "guard_enabled", lambda: False)
+        out = asyncio.run(video_nodes._reel_label_guard("reel.mp4", [4.0]))
+        assert out == {"checked": False, "flagged": False, "reason": "disabled"}
+
+    def test_flagged_reel_buys_one_seed_bumped_retry(self, monkeypatch):
+        h = _NativeHarness(monkeypatch)
+        calls = []
+
+        async def fake_guard(path, durations):
+            calls.append(path)
+            if len(calls) == 1:
+                return {
+                    "checked": True, "frames_checked": 7, "flagged": True,
+                    "flags": [{"t": 15.0, "text": ["ENILLE MID OIL"]}],
+                }
+            return {"checked": True, "frames_checked": 7, "flagged": False,
+                    "flags": []}
+
+        monkeypatch.setattr(video_nodes, "_reel_label_guard", fake_guard)
+        result = asyncio.run(render_video(_state([4] * 5)))
+
+        assert result.get("status") != "failed"
+        assert len(h.native_requests) == 2
+        assert h.native_requests[1].seed == h.native_requests[0].seed + 1
+        assert h.requests == []  # never fell back to the chained loop
+        meta = result["video_meta"]
+        assert meta["render_mode"] == "native_multishot"
+        reel_entry = next(e for e in meta["ledger"] if "label_guard" in e)
+        assert reel_entry["label_guard"]["flagged"] is False
+
+    def test_still_flagged_reel_ships_with_flags_in_meta(self, monkeypatch):
+        h = _NativeHarness(monkeypatch)
+
+        async def fake_guard(path, durations):
+            return {
+                "checked": True, "frames_checked": 7, "flagged": True,
+                "flags": [{"t": 15.0, "text": ["ENILLE MID OIL"]}],
+            }
+
+        monkeypatch.setattr(video_nodes, "_reel_label_guard", fake_guard)
+        result = asyncio.run(render_video(_state([4] * 5)))
+
+        assert result.get("status") != "failed"
+        # Retried once, then shipped anyway — a chained fallback would cost
+        # 7 renders and carries the same lettering exposure.
+        assert len(h.native_requests) == 2
+        assert h.requests == []
+        meta = result["video_meta"]
+        assert meta["render_mode"] == "native_multishot"
+        reel_entry = next(e for e in meta["ledger"] if "label_guard" in e)
+        assert reel_entry["label_guard"]["flagged"] is True
+        assert reel_entry["label_guard"]["flags"][0]["t"] == 15.0
