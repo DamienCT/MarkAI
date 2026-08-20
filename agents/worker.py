@@ -15,6 +15,7 @@ import logging
 import os
 import signal
 import sys
+import uuid as _uuid
 from typing import Any
 
 import nats.aio.msg
@@ -945,6 +946,46 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
             "UPDATE calendar_items SET status = 'in_review' WHERE id = :id",
             {"id": calendar_item_id},
         )
+
+        # A regen of a REJECTED item re-enters review with its last approval
+        # already resolved — without a fresh pending row the item never
+        # reappears in the Approvals queue (the backend recreates approvals on
+        # its PATCH path, but this write bypasses the API). Idempotent: the
+        # common in_review regen still has its pending row and is a no-op.
+        try:
+            pending = await execute_query(
+                "SELECT id FROM approvals WHERE calendar_item_id = :cid "
+                "AND status = 'pending' LIMIT 1",
+                {"cid": calendar_item_id},
+            )
+            if not pending:
+                reviewers = await execute_query(
+                    "SELECT reviewer_id AS id FROM approvals "
+                    "WHERE calendar_item_id = :cid "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    {"cid": calendar_item_id},
+                ) or await execute_query(
+                    "SELECT id FROM users WHERE role IN ('admin', 'manager') "
+                    "AND is_active = true LIMIT 1"
+                )
+                if reviewers:
+                    await execute_update(
+                        "INSERT INTO approvals (id, content_id, calendar_item_id, "
+                        "reviewer_id, status) VALUES (:id, :content_id, "
+                        ":calendar_item_id, :reviewer_id, 'pending')",
+                        {
+                            "id": str(_uuid.uuid4()),
+                            "content_id": content_id,
+                            "calendar_item_id": calendar_item_id,
+                            "reviewer_id": str(reviewers[0]["id"]),
+                        },
+                    )
+                    logger.info(
+                        "Recreated pending approval for regenerated item %s",
+                        calendar_item_id,
+                    )
+        except Exception as appr_exc:
+            logger.warning("Approval recreation after regen failed: %s", appr_exc)
 
         logger.info(
             "Image regeneration complete for content %s — branded at %s",

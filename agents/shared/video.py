@@ -20,6 +20,9 @@ Provider notes:
     ForgeProvider  → local GPU gateway at ``settings.VIDEO_FORGE_URL``
                      (auth ``X-API-Key``). Output is already master-encoded
                      (1080x1920 H.264+AAC faststart); marginal cost is zero.
+                     The only provider that honours ``VideoRequest.segments``
+                     (native multishot, ``mode="multishot"``) — probe support
+                     with ``forge_supports_multishot()`` before sending one.
     FalProvider    → fal.ai queue API twin, used when ``FAL_API_KEY`` is set.
                      fal requires an image *URL*, so raw bytes are pushed
                      through fal's storage initiate-upload flow first.
@@ -82,6 +85,14 @@ class VideoRequest:
     seed: int | None = None
     quality_tier: str = "standard"
     idempotency_key: str | None = None
+    #: Native multishot (forge only): ordered per-scene segments, each
+    #: ``{"prompt": ..., "duration_s": ...}`` plus the optional per-segment
+    #: keys the gateway accepts (transition, image_b64/image_url,
+    #: anchor_strength). ``duration_s`` above carries the segments' sum and
+    #: ``image_bytes`` the opening keyframe. Cloud providers cannot serve a
+    #: segmented request and refuse it (ProviderUnavailableError), so the
+    #: cascade can never mis-route one.
+    segments: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -96,6 +107,10 @@ class VideoResult:
     height: int
     cost_usd: float
     ledger: list[dict]
+    #: Forge OutputInfo render passes (native multishot splits long reels
+    #: into VRAM-sized passes internally and reports them here). None from
+    #: every other provider and from older forges.
+    passes: list[dict] | None = None
 
 
 class ProviderUnavailableError(RuntimeError):
@@ -260,6 +275,12 @@ class ForgeProvider:
             "audio": req.audio,
             "quality_tier": req.quality_tier,
         }
+        if req.segments is not None:
+            # Native multishot: the gateway plans its own render passes from
+            # the ordered segments; mode is already "multishot" on the
+            # request. An older forge 422s the mode literal — the caller's
+            # fallback trigger.
+            payload["segments"] = req.segments
         if req.image_bytes is not None:
             payload["image_b64"] = base64.b64encode(req.image_bytes).decode()
         elif req.image_url:
@@ -338,6 +359,9 @@ class ForgeProvider:
             height=int(output.get("height") or 0),
             cost_usd=0.0,
             ledger=ledger,
+            # Multishot OutputInfo names the internal render passes; absent
+            # on single-pass jobs and older forges.
+            passes=output.get("passes") or None,
         )
 
 
@@ -359,6 +383,12 @@ class FalProvider:
         return max(_FAL_MIN_DURATION_S, min(_FAL_MAX_DURATION_S, int(round(duration_s))))
 
     async def available(self, req: VideoRequest, ledger: list[dict]) -> bool:
+        if req.segments is not None:
+            # A segmented multishot request only the forge can honour must
+            # never degrade into a single fal clip of the first prompt.
+            raise ProviderUnavailableError(
+                "fal cannot render native multishot segments"
+            )
         if not settings.FAL_API_KEY:
             ledger.append(
                 _ledger_entry(self.name, self.model, "skipped", "FAL_API_KEY not set")
@@ -518,6 +548,11 @@ class VeoProvider:
         return {"x-goog-api-key": settings.GEMINI_API_KEY}
 
     async def available(self, req: VideoRequest, ledger: list[dict]) -> bool:
+        if req.segments is not None:
+            # Same routing guard as fal: segments are a forge-only contract.
+            raise ProviderUnavailableError(
+                "veo cannot render native multishot segments"
+            )
         if not settings.GEMINI_API_KEY:
             ledger.append(
                 _ledger_entry(self.name, self.model, "skipped", "GEMINI_API_KEY not set")
@@ -628,6 +663,28 @@ class VeoProvider:
             cost_usd=round(billed_s * settings.VEO_COST_PER_S, 4),
             ledger=ledger,
         )
+
+
+async def forge_supports_multishot() -> bool:
+    """One /health probe: does the forge gateway speak native multishot?
+
+    The extended gateway advertises ``"modes": ["i2v", "t2v", "multishot"]``
+    in its /health payload. An older forge has no ``modes`` field at all and
+    would 422 a ``mode="multishot"`` submit (mode literal validation), so an
+    absent field means no support — as does an unreachable box. Callers
+    cache the answer per render run; this function performs one GET per
+    call.
+    """
+    client = _get_http_client()
+    base = settings.VIDEO_FORGE_URL.rstrip("/")
+    try:
+        resp = await client.get(f"{base}/health", timeout=5)
+        resp.raise_for_status()
+        modes = (resp.json() or {}).get("modes") or []
+    except Exception as exc:
+        logger.debug("Forge multishot capability probe failed: %s", exc)
+        return False
+    return "multishot" in modes
 
 
 def _cascade_for(quality_tier: str) -> list[VideoProvider]:

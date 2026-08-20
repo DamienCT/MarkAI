@@ -4,10 +4,12 @@ Reuses the content workflow's context/brief/product-image machinery
 (load_context, enrich_user_brief, source_product_image_node) and adds the
 video-specific stages: plan_shots (LLM shot list with per-shot on-screen
 overlay lines), make_keyframe (branded product keyframe at 9:16),
-render_video (one shared.video provider call per shot, chained i2v from the
-previous shot's last frame, ffmpeg concat into a ~30s master reel, then a
-best-effort libass burn of the overlay text onto the master), and
-store_video (MinIO + video_jobs/media_assets/content persistence).
+render_video (ONE native multishot forge call for the whole reel when the
+gateway advertises it, else one shared.video provider call per shot with
+chained i2v from the previous shot's last frame and an ffmpeg concat into a
+~30s master reel — then a best-effort libass burn of the overlay text onto
+the master), and store_video (MinIO + video_jobs/media_assets/content
+persistence).
 """
 
 from __future__ import annotations
@@ -338,6 +340,10 @@ class VideoState(ContentState, total=False):
     #: reel's actual cut points.
     anchor_frames: dict[int, bytes]
     anchor_objects: dict[int, str]
+    #: One /health probe per run: does the forge advertise native multishot?
+    #: Set by make_keyframe (which needs the answer first, to skip mid-reel
+    #: anchor generation); render_video reuses it rather than probing again.
+    native_multishot_capable: bool
     video_bytes: bytes | None
     video_meta: dict[str, Any]
     video_object: str | None
@@ -541,13 +547,84 @@ def _close_fragment(text: str) -> str:
     return out
 
 
+# A prose fragment is the native-multishot prompt for ONE shot: a flowing
+# present-tense paragraph, no list furniture. Models regress toward
+# labelling ("Shot 3:", "[0:12]", "2)") under long context, so the labels
+# the plan prompt forbids are stripped mechanically here.
+_PROSE_LABEL_RE = re.compile(
+    # The digit is required: without it "Scene-setting sunlight..." would
+    # lose its first word to the separator match.
+    r"^\s*(?:shot|scene|beat|segment)\s*#?\s*\d+\s*[:.\-–—)\]]\s*",
+    re.IGNORECASE,
+)
+# Bare enumeration ("3. A hand...", "2) The pour...") — the separator must be
+# followed by whitespace so "3.5 litres pour" keeps its number.
+_PROSE_ENUM_RE = re.compile(r"^\s*\d+\s*[:.)\]]\s+")
+_PROSE_TIMESTAMP_RE = re.compile(
+    r"^\s*[\[(]?\d{1,2}:\d{2}(?:\.\d+)?"
+    r"(?:\s*[-–—]\s*\d{1,2}:\d{2}(?:\.\d+)?)?[\])]?\s*[:\-–—]?\s*"
+)
+
+
+def _clean_shot_prose(value: Any) -> str:
+    """Normalize one shot's prose fragment (pure).
+
+    Collapses whitespace and strips the leading shot-number/timestamp labels
+    the plan prompt forbids, repeating until nothing matches ("Shot 3:
+    [0:12] A hand..." wears two coats). Returns '' when absent — the caller
+    falls back to a mechanical prose-ification of the scene block.
+    """
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    while True:
+        stripped = _PROSE_TIMESTAMP_RE.sub(
+            "", _PROSE_ENUM_RE.sub("", _PROSE_LABEL_RE.sub("", text))
+        ).strip()
+        if stripped == text:
+            return text
+        text = stripped
+
+
+def _scene_section(scene: str, label: str) -> str:
+    """One labelled section of a structured scene block, whitespace-collapsed
+    (pure). '' when the label is absent."""
+    match = re.search(
+        rf"{label}:\s*(.+?)(?=\n[A-Z][A-Z/ ]+:|\Z)", scene or "", re.DOTALL
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else ""
+
+
+def _prose_from_scene(scene: str) -> str:
+    """Mechanical prose-ification of a structured scene block (pure).
+
+    The fallback when a plan carries no usable prose (older plans, model
+    regressions): the SCENE CONTEXT and FIRST FRAME sentences joined into
+    one flowing fragment — the two sections that describe what is ON SCREEN
+    rather than how to photograph it, which is what the multishot model's
+    per-scene conditioning wants. A scene with neither label (legacy
+    free-text) collapses to one line as-is.
+    """
+    parts = [
+        _scene_section(scene, "SCENE CONTEXT"),
+        _scene_section(scene, "FIRST FRAME"),
+    ]
+    parts = [p for p in parts if p]
+    if not parts:
+        return re.sub(r"\s+", " ", str(scene or "")).strip()
+    return " ".join(
+        p if p.endswith((".", "!", "?", "…")) else f"{p}." for p in parts
+    )
+
+
 def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
     """Validate and normalize the LLM's shot plan JSON.
 
     Enforces: non-empty shots with scene text, per-shot duration >= 0.5s,
     first shot >= 2s, total duration <= MAX_PLAN_TOTAL_S, at most MAX_SHOTS
     shots, cleaned per-shot overlay_text (<= MAX_OVERLAY_WORDS words, no
-    newlines, '' when absent), and cleaned hashtags (no '#', no spaces).
+    newlines, '' when absent), cleaned per-shot prose (labels stripped, a
+    mechanical prose-ification of the scene when absent — see
+    _clean_shot_prose / _prose_from_scene), and cleaned hashtags (no '#',
+    no spaces).
 
     Over-budget plans are scaled DOWN, never truncated: the hook keeps its
     floor and the remaining beats share whatever budget is left, because
@@ -590,6 +667,10 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
                 "index": i + 1,
                 "duration_s": max(MIN_SHOT_S, duration),
                 "scene": scene,
+                # The native multishot branch prompts with prose; the scene
+                # block stays untouched for the chained fallback path.
+                "prose": _clean_shot_prose(raw.get("prose"))
+                or _prose_from_scene(scene),
                 "overlay_text": overlay,
             }
         )
@@ -722,6 +803,13 @@ def _plan_language_flags(plan: dict[str, Any], allow: Sequence[str]) -> dict[str
             str(shot.get("overlay_text") or ""), allow=allow
         ):
             flags[f"shots[{index}].overlay_text"] = markers
+        # Prose never reaches a viewer directly, but it IS the native
+        # multishot prompt — a French prose renders the same wrong-language
+        # world the burned copy was already guarded against.
+        if markers := detect_non_english(
+            str(shot.get("prose") or ""), allow=allow
+        ):
+            flags[f"shots[{index}].prose"] = markers
     return flags
 
 
@@ -765,7 +853,9 @@ async def _enforce_plan_language(
                         "Your previous plan was written in the wrong language. "
                         "Rewrite the ENTIRE plan in English. Every hook_line, "
                         "overlay_text, caption and cta must be English — these "
-                        "are burned onto the finished video. Keep proper nouns "
+                        "are burned onto the finished video — and every shot's "
+                        "prose must be English too, because it drives the "
+                        "video model. Keep proper nouns "
                         "(brand, product, place and certification names) "
                         "exactly as they are; translate everything else."
                     ),
@@ -962,6 +1052,21 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "STYLE: photographic/commercial style anchors\n"
             "LOCKS: what must stay true across the shot (product identity, "
             "palette, setting)\n\n"
+            "Each shot ALSO carries a \"prose\" value — the same shot "
+            "rewritten as ONE flowing present-tense paragraph fragment, for "
+            "a video model that renders the whole reel in a single pass:\n"
+            "- Subject-first declarative description (\"A hand lifts the "
+            "jar...\", never \"We see...\" or camera directions as "
+            "sentences).\n"
+            "- Repeat the product and setting identity tags (what the "
+            "product is, its colour/shape/material, where we are) in EVERY "
+            "shot's prose — the model holds identity across scenes only "
+            "when every scene restates it.\n"
+            "- End every prose fragment with the scene's diegetic sound and "
+            "the continuity clause: \"...the ambience continues across the "
+            "cut.\"\n"
+            "- NO shot numbers, NO timestamps, NO labels of any kind inside "
+            "prose — it is a paragraph, not a list entry.\n\n"
             "PACING — \"duration_s\" is the WEIGHT of each beat, not a "
             "formality:\n"
             f"- Use the full {MIN_SHOT_RENDER_S:.0f}-{MAX_SHOT_RENDER_S:.0f} "
@@ -1005,8 +1110,8 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
             "{\n"
             '  "hook_line": "<scroll-stopping line under 8 words, ENGLISH>",\n'
             '  "shots": [\n'
-            '    {"index": 1, "duration_s": 3.0, "overlay_text": "<the hook, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ..."},\n'
-            '    {"index": 2, "duration_s": 5.0, "overlay_text": null, "scene": "..."}\n'
+            '    {"index": 1, "duration_s": 3.0, "overlay_text": "<the hook, 6 words max, ENGLISH>", "scene": "SCENE CONTEXT: ...\\nFIRST FRAME: ...\\nCAMERA/OPTICS: ...\\nLIGHTING: ...\\nAUDIO: ...\\nSTYLE: ...\\nLOCKS: ...", "prose": "<one flowing paragraph fragment, ENGLISH>"},\n'
+            '    {"index": 2, "duration_s": 5.0, "overlay_text": null, "scene": "...", "prose": "..."}\n'
             "  ],\n"
             '  "music_mood": "<one of: ' + "|".join(MUSIC_MOODS) + '>",\n'
             '  "caption": "<post caption in the brand voice, ENGLISH>",\n'
@@ -1193,6 +1298,19 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
     if not shots:
         return await _fail(state, "make_keyframe: no shot plan available")
 
+    # Will render_video take the native multishot branch? Asked HERE, one
+    # node early, because the answer decides how many anchor frames to buy:
+    # the native reel is ONE generation whose cut rhythm is prompt-driven,
+    # so its mid-reel re-anchor frames would never be consumed. The probe
+    # result rides on the state so render_video asks the forge exactly once
+    # per run.
+    quality_tier = state.get("quality_tier") or "standard"
+    native_capable = False
+    if quality_tier != "hero" and _config_settings.VIDEO_NATIVE_MULTISHOT:
+        from shared.video import forge_supports_multishot
+
+        native_capable = await forge_supports_multishot()
+
     has_product_image = state.get("product_image") is not None
     is_lifestyle_only = state.get("is_lifestyle_only", True)
 
@@ -1325,7 +1443,15 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
         # Giving each re-anchor its own generated frame keeps the only cuts
         # the format has and removes the repetition. They render concurrently,
         # so the wall clock is one generation (~103s) rather than N.
-        anchor_indices = _anchor_indices(len(shots))
+        #
+        # On the NATIVE multishot branch only the opening branded keyframe is
+        # made: the reel is one generation, cut rhythm moves to the prompts,
+        # and mid-reel anchors would spend N x ~$0.04 plus wall time on
+        # frames the render never consumes. Deliberate consequence: if the
+        # render later FALLS BACK to chaining, every re-anchor cuts back to
+        # this one opening frame (pre-anchor-era behaviour) — accepted
+        # degradation, recorded by render_video as multishot_fallback.
+        anchor_indices = [0] if native_capable else _anchor_indices(len(shots))
         rendered = await asyncio.gather(
             *(_render_anchor(i) for i in anchor_indices)
         )
@@ -1404,6 +1530,7 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
                 "keyframe_bytes": None,
                 "keyframe_object": None,
                 "keyframe_verified_pack": False,
+                "native_multishot_capable": native_capable,
             }
         image_data = swapped
         anchors[0] = image_data
@@ -1431,6 +1558,7 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
             "keyframe_verified_pack": swap_ready,
             "anchor_frames": anchors,
             "anchor_objects": anchor_objects,
+            "native_multishot_capable": native_capable,
         }
     except Exception as exc:
         logger.warning("make_keyframe failed (%s) — falling back to t2v", exc)
@@ -1440,6 +1568,7 @@ async def make_keyframe(state: VideoState) -> dict[str, Any]:
             "keyframe_verified_pack": False,
             "anchor_frames": {},
             "anchor_objects": {},
+            "native_multishot_capable": native_capable,
         }
 
 
@@ -1744,7 +1873,14 @@ async def _delabel_shot_scenes(
     if not shots:
         return shots, False
     payload = [
-        {"index": s.get("index", i + 1), "scene": str(s.get("scene") or "")}
+        {
+            "index": s.get("index", i + 1),
+            "scene": str(s.get("scene") or ""),
+            # The native multishot prompt for the same shot — it must give
+            # up the readable pack together with the scene, or the branch
+            # that actually renders would keep asking for it.
+            "prose": str(s.get("prose") or ""),
+        }
         for i, s in enumerate(shots)
     ]
     system = (
@@ -1764,8 +1900,14 @@ async def _delabel_shot_scenes(
         "anchors, and the same overall look. Change framing and subject, not "
         "the brand's world.\n"
         "- Never introduce on-screen text, signage or logos.\n\n"
+        "Each shot may also carry a \"prose\" field — the same shot written "
+        "as one flowing present-tense paragraph for a video model that "
+        "renders the whole reel in a single pass. Revise it under the same "
+        "constraint, keeping it a flowing paragraph: no shot numbers, no "
+        "timestamps, no labels.\n\n"
         'Return STRICT JSON: {"shots": [{"index": <int>, "scene": '
-        '"<revised scene, same labelled sections>"}]}'
+        '"<revised scene, same labelled sections>", "prose": "<revised '
+        'prose, same flowing form>"}]}'
     )
     try:
         raw = await chat_completion(
@@ -1790,16 +1932,24 @@ async def _delabel_shot_scenes(
         if not isinstance(revised, list) or not revised:
             raise ValueError("no shots in the revision")
         by_index = {
-            r.get("index"): str(r.get("scene") or "").strip()
+            r.get("index"): r
             for r in revised
             if isinstance(r, dict) and str(r.get("scene") or "").strip()
         }
         out: list[dict[str, Any]] = []
         replaced = 0
         for i, shot in enumerate(shots):
-            scene = by_index.get(shot.get("index", i + 1))
+            rev = by_index.get(shot.get("index", i + 1))
+            scene = str((rev or {}).get("scene") or "").strip()
             if scene:
-                out.append({**shot, "scene": scene})
+                # A revision that lost the prose falls back to a mechanical
+                # prose-ification of the REVISED scene — the prose must
+                # never keep asking for the readable pack its scene just
+                # gave up.
+                prose = _clean_shot_prose(
+                    (rev or {}).get("prose")
+                ) or _prose_from_scene(scene)
+                out.append({**shot, "scene": scene, "prose": prose})
                 replaced += 1
             else:
                 out.append(shot)
@@ -2080,6 +2230,186 @@ def _motion_verdict(score: float | None) -> str | None:
     if score > _MAX_MOTION_YAVG:
         return "smeared"
     return None
+
+
+def _measure_window_motion(
+    path: str, start_s: float, duration_s: float
+) -> float | None:
+    """Motion score for one planned window of a native reel (worker thread).
+
+    Ledger-only diagnostic: per-window numbers let a reviewer see WHICH beat
+    stalled, but only the whole-file measurement may trigger the native
+    seed-bumped retry — the model's cross-dissolve zones sit inside these
+    windows and read as low motion, so a per-window floor would
+    false-positive on a healthy reel.
+    """
+    if not _ffmpeg_ok():
+        return None
+    args = [
+        "ffmpeg", "-v", "info", "-nostats",
+        "-ss", f"{max(0.0, start_s):.3f}", "-t", f"{max(0.1, duration_s):.3f}",
+        "-i", path,
+        "-vf",
+        f"scale={_MOTION_ANALYSIS_W}:-2,tblend=all_mode=difference,"
+        "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+        "-an", "-f", "null", "-",
+    ]
+    try:
+        proc = _run_ffmpeg(args, timeout=120)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    except AttributeError:  # already str (mocked runs)
+        stderr = str(proc.stderr or "")
+    return _motion_from_stderr(stderr)
+
+
+# ── Native multishot: cut detection and caption-window realignment ─────────
+#
+# The native model chooses its own transition timing, so the planned shot
+# windows can drift from what was rendered. Measured on the live validation
+# bracket: the model renders CROSS-DISSOLVES between clearly distinct
+# scenes, not hard cuts — ffmpeg's scene detector found NO frame pair above
+# a 0.04 scene score across three scene changes. So "no cuts detected" is
+# the NORMAL case, handled by keeping the planned windows unchanged; only a
+# cut that IS detected near a planned boundary moves that boundary.
+_SCENE_CUT_THRESHOLD = 0.3
+#: How far (s) a detected cut may sit from a planned boundary and still be
+#: read as that boundary. Segments are 3-5s, so one second keeps every
+#: boundary's neighbourhood comfortably disjoint.
+_CUT_SNAP_TOLERANCE_S = 1.0
+#: A boundary with no confirming cut is a dissolve zone: the two scenes
+#: cross-fade through it, and a caption fading in there materialises over
+#: the blend. Nudging the unconfirmed boundary this far into the shot moves
+#: the caption's entry (boundary + _OVERLAY_PAD_IN_S) clear of the blend
+#: without touching any caption-system constant.
+_DISSOLVE_NUDGE_S = 0.35
+#: A nudge must never leave the window too short to hold a readable line.
+_MIN_NUDGED_WINDOW_S = 2.0
+
+_SCENE_TIME_RE = re.compile(r"pts_time:([0-9.]+)")
+
+
+def _cut_detect_cmd(path: str) -> list[str]:
+    """ffmpeg args printing the timestamp of every hard cut (pure).
+
+    ``select=gt(scene,T)`` passes only frames whose scene-change score
+    clears the cut threshold — the same 0-1 scale the chained-era boundary
+    measurements used (chained seams 0.000-0.194, re-anchor cuts
+    0.44-0.75) — and metadata=print emits each survivor's pts_time. Decoded
+    at _MOTION_ANALYSIS_W and written to null; nothing is encoded.
+    """
+    return [
+        "ffmpeg", "-v", "info", "-nostats", "-i", path,
+        "-vf",
+        f"scale={_MOTION_ANALYSIS_W}:-2,"
+        f"select=gt(scene\\,{_SCENE_CUT_THRESHOLD}),metadata=print",
+        "-an", "-f", "null", "-",
+    ]
+
+
+def _detect_cuts(path: str) -> list[float] | None:
+    """Timestamps of hard cuts in a reel; [] when none; None if unmeasurable.
+
+    Runs in a worker thread. The native multishot model renders
+    CROSS-DISSOLVES between scenes rather than hard cuts, so an EMPTY list
+    is the NORMAL result — callers keep the planned windows and must never
+    treat it as an error. None means ffmpeg is unavailable or the filter
+    failed: same handling, the planned windows stand.
+    """
+    if not _ffmpeg_ok():
+        return None
+    try:
+        proc = _run_ffmpeg(_cut_detect_cmd(path), timeout=120)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    except AttributeError:  # already str (mocked runs)
+        stderr = str(proc.stderr or "")
+    cuts: list[float] = []
+    for raw in _SCENE_TIME_RE.findall(stderr):
+        t = float(raw)
+        if t <= 0.1:
+            continue  # the stream's first frame, not a scene change
+        if cuts and t - cuts[-1] < 0.25:
+            continue  # one cut smeared across adjacent frames
+        cuts.append(t)
+    return cuts
+
+
+def _snap_windows_to_cuts(
+    planned: list[float],
+    cuts: list[float] | None,
+    tolerance_s: float = _CUT_SNAP_TOLERANCE_S,
+) -> tuple[list[float], set[int]]:
+    """Planned windows with boundaries snapped to detected cuts (pure).
+
+    Returns (durations, confirmed): each INTERIOR boundary that has a
+    detected cut within *tolerance_s* moves to it, and ``confirmed`` holds
+    the (1-based) indices of the shots whose START boundary a real cut
+    confirmed. Empty or None *cuts* — the normal case, the model dissolves
+    instead of cutting — returns the planned windows unchanged with nothing
+    confirmed; it is NOT an error. A snap that would fold a neighbouring
+    window under half a second is dropped rather than applied.
+    """
+    out = [float(d or 0.0) for d in planned]
+    if len(out) <= 1 or not cuts:
+        return out, set()
+    boundaries: list[float] = []
+    acc = 0.0
+    for d in out[:-1]:
+        acc += d
+        boundaries.append(acc)
+    total = acc + out[-1]
+    snapped = list(boundaries)
+    confirmed: set[int] = set()
+    for idx, planned_b in enumerate(boundaries):
+        nearest = min(cuts, key=lambda c: abs(c - planned_b))
+        if abs(nearest - planned_b) <= tolerance_s:
+            snapped[idx] = nearest
+            confirmed.add(idx + 1)
+    prev = 0.0
+    for idx in range(len(snapped)):
+        upper = (snapped[idx + 1] if idx + 1 < len(snapped) else total) - 0.5
+        if (idx + 1) in confirmed and not (prev + 0.5 <= snapped[idx] <= upper):
+            snapped[idx] = boundaries[idx]
+            confirmed.discard(idx + 1)
+        prev = snapped[idx]
+    durations: list[float] = []
+    prev = 0.0
+    for b in [*snapped, total]:
+        durations.append(round(b - prev, 2))
+        prev = b
+    return durations, confirmed
+
+
+def _dissolve_safe_windows(
+    durations: list[float], confirmed: set[int]
+) -> list[float]:
+    """Caption windows nudged off unconfirmed (dissolve) boundaries (pure).
+
+    A confirmed boundary is a real cut — a caption may enter right on it,
+    exactly as on the chained path. An UNCONFIRMED interior boundary is a
+    cross-dissolve: the entry point moves _DISSOLVE_NUDGE_S into the shot so
+    a mid-beat line never sits on the planned boundary, materialising over
+    two blending scenes. The nudge is caption timing ONLY — the ledger keeps
+    the un-nudged windows, because nothing about the render moved.
+    """
+    out = [float(d or 0.0) for d in durations]
+    for b in range(1, len(out)):
+        if b in confirmed:
+            continue
+        if out[b] - _DISSOLVE_NUDGE_S < _MIN_NUDGED_WINDOW_S:
+            continue
+        out[b - 1] = round(out[b - 1] + _DISSOLVE_NUDGE_S, 2)
+        out[b] = round(out[b] - _DISSOLVE_NUDGE_S, 2)
+    return out
 
 
 # ── Picture grade ──────────────────────────────────────────────────────────
@@ -2380,6 +2710,30 @@ def _grade_chain(
                 f":{window}"
             )
         start = end
+    return ",".join(parts)
+
+
+def _uniform_grade_chain(p: dict[str, float] | None) -> str:
+    """One ungated grade for a whole single-generation reel (pure).
+
+    Same colorlevels → eq order as _grade_chain (the gamma was solved for
+    what the black point leaves behind) but with NO enable window: a native
+    multishot reel is one generation with one exposure, so exactly one
+    correction applies everywhere. Per-shot windows here would actively
+    re-introduce the per-window exposure steps whose absence is the whole
+    point of the native file. Returns '' when there is nothing to correct.
+    """
+    if not p:
+        return ""
+    parts: list[str] = []
+    black = float(p.get("black") or 0.0)
+    if black > 0.0:
+        parts.append(
+            f"colorlevels=rimin={black:.4f}:gimin={black:.4f}:bimin={black:.4f}"
+        )
+    parts.append(
+        f"eq=gamma={p['gamma']:.3f}:saturation={p['saturation']:.3f}"
+    )
     return ",".join(parts)
 
 
@@ -3110,6 +3464,7 @@ async def _burn_overlays(
     brand: dict[str, Any],
     durations: list[float] | None = None,
     grade_params: list[dict[str, float] | None] | None = None,
+    uniform_grade: dict[str, float] | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     """Composite the shot plan's overlay text onto the finished master.
 
@@ -3122,6 +3477,12 @@ async def _burn_overlays(
     the pass is already happening; when there is no overlay text but there
     IS a grade, the pass still runs, with the grade alone.
 
+    *uniform_grade* is the native-multishot alternative: ONE correction for
+    the whole file, applied with no time gating (see _uniform_grade_chain).
+    The two grade arguments are mutually exclusive by construction — the
+    native branch measures once and passes uniform_grade; the chained path
+    measures per shot and passes grade_params.
+
     Best-effort by contract: ANY failure (no ffmpeg, ass filter or fonts
     unavailable, encoder error) logs a warning and returns the ORIGINAL
     bytes with overlay_burn='failed:<reason>' — text burning never fails
@@ -3131,7 +3492,7 @@ async def _burn_overlays(
         has_text = any(
             str(s.get("overlay_text") or "").strip() for s in shots
         ) or bool(str(cta or "").strip())
-        has_grade = any(grade_params or [])
+        has_grade = any(grade_params or []) or bool(uniform_grade)
         if not has_text and not has_grade:
             return video_bytes, {"overlay_burn": "skipped:no overlay text"}
         if not _ffmpeg_ok():
@@ -3148,9 +3509,12 @@ async def _burn_overlays(
                 durations = _distribute_durations(
                     [float(s.get("duration_s") or 0.0) for s in shots], total
                 )
-            grade = (
-                _grade_chain(grade_params, durations) if grade_params else ""
-            )
+            if uniform_grade:
+                grade = _uniform_grade_chain(uniform_grade)
+            else:
+                grade = (
+                    _grade_chain(grade_params, durations) if grade_params else ""
+                )
             events = _overlay_events(shots, durations, cta)
             if not events and not grade:
                 return video_bytes, {
@@ -3189,6 +3553,9 @@ async def _burn_overlays(
                 return video_bytes, {"overlay_burn": f"failed:{reason}"[:220]}
             burned = await asyncio.to_thread(_read_bytes, dst)
             graded = sum(1 for p in (grade_params or []) if p)
+            if uniform_grade and grade:
+                # One ungated correction covers every shot in the file.
+                graded = len(shots)
             logger.info(
                 "Burned %d overlay line(s) onto the master, graded %d shot(s) "
                 "(%d → %d bytes)",
@@ -4196,6 +4563,369 @@ async def _finish_audio(
         return video_bytes, {**meta, "audio": False, "audio_finish": f"failed:{exc}"[:220]}
 
 
+def _build_segment_prompt(
+    shot: dict[str, Any], *, unverified_pack: bool = False
+) -> str:
+    """Prompt for ONE native-multishot segment (pure function).
+
+    The segment prompt is the shot's ``prose`` — the flowing paragraph the
+    plan wrote for exactly this consumer (subject-first, identity tags
+    restated, diegetic-audio continuity clause) — falling back to a
+    mechanical prose-ification of the scene for plans normalized before
+    prose existed. The structured prompt frame (_build_shot_prompt) stays on
+    the chained path: shot numbers and CONTINUITY blocks are precisely the
+    labels the multishot conditioning must never see.
+    """
+    prose = str(shot.get("prose") or "").strip() or _prose_from_scene(
+        str(shot.get("scene") or "")
+    )
+    if unverified_pack:
+        prose = f"{prose}\n\n{_UNVERIFIED_PACK_DIRECTIVE}"
+    return prose
+
+
+async def _render_native_multishot(
+    state: VideoState,
+    plan: dict[str, Any],
+    fitted: list[dict[str, Any]],
+    *,
+    keyframe: bytes | None,
+    quality_tier: str,
+    unverified_pack: bool,
+    scenes_rewritten: bool,
+    base_key: str,
+    requested_total: float,
+    dropped_indices: list[Any],
+    split_shots: bool,
+    progress: Callable[[int, str], Awaitable[None]],
+) -> tuple[dict[str, Any] | None, str | None, dict[str, Any] | None]:
+    """Render the whole reel in ONE native multishot forge call.
+
+    A single 721-frame (30s) pass fits the 4090 (~7 min, 20.8GB peak
+    measured), so a normal reel arrives as ONE file with ZERO seams — the
+    forge plans any VRAM pass-splitting internally; this side just sends
+    every segment. The call is bounded by the same VIDEO_RENDER_TIMEOUT_S a
+    single chained shot gets, so the chained worst-case worker budget stays
+    the binding bound (one call, at most two with the seed-bumped retry).
+
+    Returns (node_output, fallback_reason, fallback_ledger_entry):
+    node_output is render_video's finished return dict on success and None
+    on any failure — an old forge 422ing the mode literal, a forge
+    failure/timeout, or a whole-reel motion-floor failure after ONE
+    seed-bumped retry — in which case the caller re-enters the chained
+    per-shot loop in the same run (keyframe still in state) and records
+    fallback_reason as meta ``multishot_fallback``, with the attempt's
+    provenance in fallback_ledger_entry.
+    """
+    from shared.video import VideoRequest, generate_video
+
+    item_id = state["calendar_item_id"]
+    num = len(fitted)
+    segments = [
+        {
+            "prompt": _build_segment_prompt(s, unverified_pack=unverified_pack),
+            "duration_s": s["duration_s"],
+        }
+        for s in fitted
+    ]
+    native_prompt = "\n\n".join(seg["prompt"] for seg in segments)
+    # Deterministic seed so the motion retry below is a REAL re-roll: with
+    # no seed at all the forge picks its own and a "retry" could reproduce
+    # the same frozen reel from cache or RNG luck.
+    seed = zlib.crc32(base_key.encode("utf-8")) & 0x7FFFFFFF
+    attempt_ledgers: list[dict[str, Any]] = []
+    total_cost = 0.0
+
+    def _bail(reason: str) -> tuple[None, str, dict[str, Any]]:
+        return (
+            None,
+            reason,
+            {
+                "shot": 0,
+                "status": "native_multishot_fallback",
+                "detail": reason,
+                "cost_usd": round(total_cost, 4),
+                "ledger": attempt_ledgers,
+            },
+        )
+
+    async def _native_progress(percent: int, stage: str) -> None:
+        # The forge reports 0-100 for the whole reel; map it into the shot
+        # window ([0, _CONCAT_PROGRESS_START)) so the finishing passes keep
+        # their reserved tail exactly as on the chained path.
+        await progress(
+            int(
+                max(0, min(100, int(percent)))
+                * _CONCAT_PROGRESS_START
+                / 100
+            ),
+            f"multishot:{stage}",
+        )
+
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"reelms_{item_id}_") as workdir:
+            result = None
+            path = ""
+            motion: float | None = None
+            attempts = 0
+            for attempt in range(2):
+                attempts = attempt + 1
+                req = VideoRequest(
+                    mode="multishot",
+                    prompt=native_prompt,
+                    image_bytes=keyframe,
+                    duration_s=requested_total,
+                    aspect="9:16",
+                    audio=True,
+                    seed=seed + attempt,
+                    quality_tier=quality_tier,
+                    idempotency_key=(
+                        f"{base_key}:ms" if attempt == 0 else f"{base_key}:ms:r2"
+                    )[:128],
+                    segments=segments,
+                )
+                try:
+                    candidate = await asyncio.wait_for(
+                        generate_video(req, progress_cb=_native_progress),
+                        timeout=_config_settings.VIDEO_RENDER_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    return _bail(
+                        f"native multishot render exceeded the "
+                        f"{_config_settings.VIDEO_RENDER_TIMEOUT_S}s budget"
+                    )
+                except Exception as exc:
+                    # A forge without the multishot mode literal 422s the
+                    # submit; a forge failure lands here the same way. Either
+                    # way the chained loop can still save the reel.
+                    attempt_ledgers.extend(getattr(exc, "ledger", []) or [])
+                    return _bail(f"native multishot render failed: {exc}")
+                attempt_ledgers.extend(candidate.ledger or [])
+                total_cost += candidate.cost_usd or 0.0
+                path = os.path.join(workdir, f"reel_ms_a{attempt + 1}.mp4")
+                await asyncio.to_thread(
+                    _write_bytes, path, candidate.video_bytes
+                )
+                # ── Whole-file motion floor ────────────────────────────────
+                # The model's cross-dissolves read low/ghosty and pull this
+                # average down slightly; the floor is already biased toward
+                # letting slow footage through, so it stays unchanged rather
+                # than being compensated for that.
+                motion = await asyncio.to_thread(_measure_motion, path)
+                verdict = _motion_verdict(motion)
+                if verdict is None:
+                    result = candidate
+                    break
+                if attempt == 0:
+                    logger.warning(
+                        "Native multishot reel looks %s (motion %.2f) — one "
+                        "seed-bumped retry",
+                        verdict,
+                        motion or 0.0,
+                    )
+                    continue
+                return _bail(
+                    f"native multishot reel still {verdict} (motion "
+                    f"{motion or 0.0:.2f}) after a seed-bumped retry"
+                )
+
+            # ── Per-window diagnostics (ledger only) ───────────────────────
+            planned = [float(s["duration_s"]) for s in fitted]
+            window_motions: list[float | None] = []
+            start = 0.0
+            for dur in planned:
+                window_motions.append(
+                    await asyncio.to_thread(
+                        _measure_window_motion, path, start, dur
+                    )
+                )
+                start += dur
+
+            final_info = await asyncio.to_thread(_probe_shot, path)
+            final_duration = float((final_info or {}).get("duration") or 0.0)
+            if final_info is not None and final_duration < 0.5 * requested_total:
+                return _bail(
+                    f"native multishot reel too short ({final_duration:.1f}s "
+                    f"vs requested {requested_total:.1f}s)"
+                )
+            final_video = (final_info or {}).get("video") or {}
+
+            # ── Caption windows: planned → cut-snapped → dissolve-nudged ───
+            # Cut timing is model-chosen, so the planned windows are scaled
+            # onto the file's real length and each boundary snaps to a
+            # detected hard cut in its neighbourhood. The model normally
+            # renders cross-dissolves, so "no cuts detected" keeps every
+            # planned window unchanged — the NORMAL case, never an error.
+            windows = planned
+            if final_duration > 0:
+                windows = _distribute_durations(planned, final_duration)
+            cuts = await asyncio.to_thread(_detect_cuts, path)
+            rendered_windows, confirmed = _snap_windows_to_cuts(windows, cuts)
+            caption_windows = _dissolve_safe_windows(
+                rendered_windows, confirmed
+            )
+
+            # ── ONE picture measurement, ONE uniform grade ─────────────────
+            # Per-shot grading is actively wrong here: it would re-introduce
+            # per-window exposure steps into a file whose consistency is the
+            # point.
+            picture = await asyncio.to_thread(_measure_picture, path)
+            grade = _grade_params(picture)
+
+            video_bytes = await asyncio.to_thread(_read_bytes, path)
+            cta_text = str(plan.get("cta") or "")
+            brand = state.get("brand") or {}
+            await progress(_CONCAT_PROGRESS_START + 3, "overlay:burn")
+            # Same order as the chained path: the card owns the CTA, so it
+            # has to exist before the burn decides what the final beat says.
+            card_path, card_meta = await _build_end_card(
+                brand, cta_text, workdir
+            )
+            video_bytes, overlay_meta = await _burn_overlays(
+                video_bytes,
+                fitted,
+                "" if card_path else cta_text,
+                brand,
+                durations=caption_windows,
+                uniform_grade=grade,
+            )
+            overlay_meta = {**overlay_meta, **card_meta}
+            card_attached = False
+            footage_s = final_duration or requested_total
+            if card_path:
+                video_bytes, attach_meta = await _attach_end_card(
+                    video_bytes, card_path, workdir
+                )
+                overlay_meta = {**overlay_meta, **attach_meta}
+                if not attach_meta:
+                    card_attached = True
+            delivered_s = footage_s + (_END_CARD_S if card_attached else 0.0)
+
+            # ── One-clip audio assembly, then music bed + loudness ─────────
+            # With a single clip the per-seam fades no-op; the pass still
+            # level-matches the reel and lays the ambience tail under the
+            # end card.
+            await progress(_CONCAT_PROGRESS_START + 4, "audio:assemble")
+            video_bytes, assembly_meta = await _assemble_audio(
+                video_bytes,
+                [path],
+                [footage_s],
+                _END_CARD_S if card_attached else 0.0,
+                delivered_s,
+            )
+            overlay_meta = {**overlay_meta, **assembly_meta}
+            await progress(_CONCAT_PROGRESS_START + 5, "audio:finish")
+            video_bytes, audio_meta = await _finish_audio(
+                video_bytes,
+                plan,
+                brand,
+                seed=str(item_id),
+                duration_s=delivered_s,
+            )
+            overlay_meta = {**overlay_meta, **audio_meta}
+            await progress(100, "render:complete")
+
+            # ── Ledger/meta: same shape the chained path writes ────────────
+            shot_metas = [
+                {
+                    "index": shot.get("index", i + 1),
+                    "provider": result.provider,
+                    "model": result.model,
+                    "requested_s": shot["duration_s"],
+                    # scdet-derived where a real cut confirmed the boundary;
+                    # identical to requested where the model dissolved.
+                    "rendered_s": round(float(rendered), 2),
+                    "cost_usd": 0.0,
+                    "anchor": "multishot",
+                    "motion": round(wm, 2) if wm is not None else None,
+                    "motion_verdict": None,
+                    "picture": None,
+                    "grade": None,
+                }
+                for i, (shot, rendered, wm) in enumerate(
+                    zip(fitted, rendered_windows, window_motions)
+                )
+            ]
+            reel_ledger = {
+                "shot": 0,
+                "render_mode": "native_multishot",
+                "provider": result.provider,
+                "model": result.model,
+                "cost_usd": round(total_cost, 4),
+                "motion": round(motion, 2) if motion is not None else None,
+                "ledger": attempt_ledgers,
+            }
+            logger.info(
+                "Native multishot reel rendered: %s/%s %.1fs in %d attempt(s), "
+                "%d segment(s), motion %s, %d cut(s) detected (%d bytes, "
+                "$%.4f)",
+                result.provider,
+                result.model,
+                delivered_s,
+                attempts,
+                num,
+                "n/a" if motion is None else f"{motion:.2f}",
+                len(cuts or []),
+                len(video_bytes),
+                total_cost,
+            )
+            meta: dict[str, Any] = {
+                "provider": result.provider,
+                "model": result.model,
+                "duration_s": round(delivered_s, 2),
+                "width": int(final_video.get("width") or result.width or 1080),
+                "height": int(
+                    final_video.get("height") or result.height or 1920
+                ),
+                "cost_usd": round(total_cost, 4),
+                # Same array-of-entries shape as the chained ledger; shot 0
+                # is the whole-reel render.
+                "ledger": [reel_ledger],
+                "idempotency_key": f"{base_key}:ms"[:128],
+                "shot_count": num,
+                "requested_total_s": requested_total,
+                "shots": shot_metas,
+                "dropped_shots": dropped_indices,
+                # No concat and no per-shot normalize ran — the forge output
+                # is master-conformant by construction.
+                "normalized_shots": [],
+                "concat_mode": "none",
+                "render_mode": "native_multishot",
+                "native_attempts": attempts,
+                "unverified_pack": unverified_pack,
+                "scenes_delabelled": scenes_rewritten,
+                **overlay_meta,
+            }
+            if result.passes:
+                meta["passes"] = result.passes
+            if picture:
+                meta["picture"] = {
+                    k: round(v, 1) for k, v in picture.items()
+                }
+            if grade:
+                meta["grade"] = grade
+            if cuts:
+                meta["detected_cuts"] = [round(c, 2) for c in cuts]
+            if split_shots:
+                meta["split_to_min_shots"] = True
+            return (
+                {
+                    "video_bytes": video_bytes,
+                    "video_prompt": native_prompt,
+                    "video_meta": meta,
+                },
+                None,
+                None,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Native multishot branch failed (%s) — falling back to the "
+            "chained path",
+            exc,
+        )
+        return _bail(f"native multishot branch failed: {exc}")
+
+
 async def render_video(state: VideoState) -> dict[str, Any]:
     """Render the reel — one provider call per planned shot, chained i2v for
     continuity, an ffmpeg concat into the ~30s master final.mp4, then a
@@ -4210,6 +4940,11 @@ async def render_video(state: VideoState) -> dict[str, Any]:
     of failing the item. Progress streams into
     calendar_items.generation_metadata.video_progress as before, with each
     shot mapped to its proportional window.
+
+    When the forge advertises native multishot (and the tier is not hero and
+    VIDEO_NATIVE_MULTISHOT is on), the whole reel is rendered in ONE forge
+    call first — see _render_native_multishot. Any failure there re-enters
+    the chained loop below in the same run, keyframe still in hand.
     """
     await update_agent_run_step(
         state.get("run_id", ""),
@@ -4430,6 +5165,52 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         # with its label to camera; rewrite the scenes so nothing is asking
         # for the frame that produces invented lettering.
         fitted, scenes_rewritten = await _delabel_shot_scenes(fitted)
+
+    # ── Native multishot: ONE forge call renders the whole reel ────────────
+    # Gated on the tier (hero reels stay on the proven per-shot Veo path),
+    # the setting, and a per-run /health capability probe — make_keyframe
+    # already probed and left the answer on the state, so the normal flow
+    # asks the forge exactly once per run. Every failure past these gates
+    # falls back INTO the chained loop below, keyframe still in hand, and is
+    # recorded as multishot_fallback.
+    native_fallback: str | None = None
+    native_entry: dict[str, Any] | None = None
+    if quality_tier != "hero" and _config_settings.VIDEO_NATIVE_MULTISHOT:
+        capable = state.get("native_multishot_capable")
+        if capable is None:
+            from shared.video import forge_supports_multishot
+
+            capable = await forge_supports_multishot()
+        if capable:
+            native_out, native_fallback, native_entry = (
+                await _render_native_multishot(
+                    state,
+                    plan,
+                    fitted,
+                    keyframe=keyframe,
+                    quality_tier=quality_tier,
+                    unverified_pack=unverified_pack,
+                    scenes_rewritten=scenes_rewritten,
+                    base_key=base_key,
+                    requested_total=requested_total,
+                    dropped_indices=dropped_indices,
+                    split_shots=split_shots,
+                    progress=_progress,
+                )
+            )
+            if native_out is not None:
+                return native_out
+            logger.warning(
+                "render_video: native multishot fell back (%s) — re-entering "
+                "the chained per-shot path",
+                native_fallback,
+            )
+        else:
+            logger.info(
+                "render_video: forge does not advertise native multishot — "
+                "chained per-shot path"
+            )
+
     shot_prompts = [
         _build_shot_prompt(s, i, num, unverified_pack=unverified_pack)
         for i, s in enumerate(fitted)
@@ -4439,6 +5220,13 @@ async def render_video(state: VideoState) -> dict[str, Any]:
     shot_ledgers: list[dict[str, Any]] = []
     shot_metas: list[dict[str, Any]] = []
     total_cost = 0.0
+    if native_entry is not None:
+        # The failed native attempt's provenance stays in the same per-shot
+        # ledger array ("shot" 0 = the whole-reel attempt) so
+        # video_jobs.generation_ledger shows WHY this reel chained, and its
+        # spend counts toward the reel like any other paid render.
+        shot_ledgers.append(native_entry)
+        total_cost += float(native_entry.get("cost_usd") or 0.0)
 
     async def _fail_multi(message: str) -> dict[str, Any]:
         # total_cost is read at call time — paid shots completed before the
@@ -4957,6 +5745,12 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         meta["split_to_min_shots"] = True
     if quality_tier == "hero":
         meta["hero_grid_fit"] = True
+    if native_fallback:
+        # Native was attempted and this reel chained instead. It also
+        # inherited the accepted anchor degradation (make_keyframe skipped
+        # the mid-reel anchors), so the reason is recorded where reviewers
+        # look.
+        meta["multishot_fallback"] = native_fallback
     return {
         "video_bytes": video_bytes,
         "video_prompt": full_prompt,
@@ -5076,6 +5870,11 @@ async def store_video(state: VideoState) -> dict[str, Any]:
                 "shots": meta.get("shots"),
                 "unverified_pack": meta.get("unverified_pack"),
                 "graded_shots": meta.get("graded_shots"),
+                # "native_multishot" when one forge call rendered the whole
+                # reel; absent on chained reels. multishot_fallback names why
+                # a native attempt ended up chaining.
+                "render_mode": meta.get("render_mode"),
+                "multishot_fallback": meta.get("multishot_fallback"),
             },
             "status": "in_review",
         }
@@ -5128,6 +5927,8 @@ async def store_video(state: VideoState) -> dict[str, Any]:
                         "shot_count": meta.get("shot_count"),
                         "requested_total_s": meta.get("requested_total_s"),
                         "concat_mode": meta.get("concat_mode"),
+                        "render_mode": meta.get("render_mode"),
+                        "multishot_fallback": meta.get("multishot_fallback"),
                         "dropped_shots": meta.get("dropped_shots"),
                         "overlay_burn": meta.get("overlay_burn"),
                         "overlay_lines": meta.get("overlay_lines"),

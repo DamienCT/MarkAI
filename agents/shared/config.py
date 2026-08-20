@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     VIDEO_RENDER_TIMEOUT_S: int = 2400
     FAL_COST_PER_S: float = 0.06
     VEO_COST_PER_S: float = 0.15
+    # Native multishot: when the forge /health advertises the "multishot"
+    # mode, the whole reel is rendered in ONE forge call (per-scene segments,
+    # model-chosen transitions) instead of the chained per-shot loop. The
+    # switch exists so an operator can pin a reel back onto the proven
+    # chained path without redeploying; hero-tier reels ignore it and stay
+    # on Veo either way.
+    VIDEO_NATIVE_MULTISHOT: bool = True
 
     # ── Generated-image text guard ───────────────────────────────────────
     # Image models hallucinate lettering — invented labels on unlabelled jars,
@@ -121,6 +128,9 @@ settings = Settings()
 # call per shot, each bounded by VIDEO_RENDER_TIMEOUT_S, then the ffmpeg
 # finishing passes. Both the worker's asyncio.wait_for budget and the NATS
 # ack_wait derive from video_workflow_timeout_s so they can never drift.
+# The native multishot path renders the whole reel in ONE call (two with its
+# seed-bumped motion retry), each bounded by the same VIDEO_RENDER_TIMEOUT_S,
+# so the chained worst case below remains the binding bound.
 VIDEO_MAX_REEL_SHOTS = 8
 # ffmpeg work on top of the shot renders, sized to the passes it actually
 # runs: per-shot normalization (600s each, worst case every clip is non-forge),

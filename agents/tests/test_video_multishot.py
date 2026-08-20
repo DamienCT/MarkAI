@@ -601,6 +601,10 @@ class TestRenderVideoMultiShot:
         # Per-shot ledger array preserved for video_jobs.generation_ledger
         assert [entry["shot"] for entry in meta["ledger"]] == [1, 2, 3, 4, 5]
         assert all("ledger" in entry for entry in meta["ledger"])
+        # Without a multishot-capable forge the chained path IS the render —
+        # no native-branch artefacts may leak into its meta.
+        assert "render_mode" not in meta
+        assert "multishot_fallback" not in meta
 
     def test_non_forge_shot_is_normalized_and_costs_summed(self, monkeypatch):
         h = _Harness(monkeypatch, providers={2: "fal"}, costs={2: 0.5})

@@ -6,6 +6,15 @@ set -euo pipefail
 # Flags:
 #   --force-wipe   wipe DB volumes (requires a fresh verified backup)
 #   --skip-backup  skip the pre-deploy pg_dump (NOT recommended)
+#
+# The WHOLE script body lives inside main(), called on the last line.
+# This is load-bearing, not style: Step 1's `git pull` rewrites THIS
+# file while bash is still reading it, and an unwrapped script resumes
+# at a byte offset inside the NEW file — a 2026-08-20 deploy executed a
+# misaligned `down` that way and removed the whole production stack.
+# Wrapped, bash parses the entire function before running any of it.
+
+main() {
 
 cd /var/www/markai
 
@@ -181,3 +190,7 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml logs --tail=20 fr
 
 echo ""
 echo "=== Deploy complete ==="
+
+}
+
+main "$@"
