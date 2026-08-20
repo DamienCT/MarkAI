@@ -706,7 +706,12 @@ def _prose_from_scene(scene: str) -> str:
     )
 
 
-def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
+def _normalize_shot_plan(
+    plan: Any,
+    *,
+    plan_min: int = MIN_PLAN_SHOTS,
+    plan_max: int = MAX_SHOTS,
+) -> dict[str, Any]:
     """Validate and normalize the LLM's shot plan JSON.
 
     Enforces: non-empty shots with scene text, per-shot duration >= 0.5s,
@@ -780,13 +785,13 @@ def _normalize_shot_plan(plan: Any) -> dict[str, Any]:
     if not shots:
         raise ValueError("shot plan has no usable shots (missing scene text)")
 
-    if len(shots) < MIN_PLAN_SHOTS:
+    if len(shots) < plan_min:
         logger.warning(
             "Shot plan returned %d beats (asked for %d-%d) — the reel will "
             "be shorter than the %.0fs target",
             len(shots),
-            MIN_PLAN_SHOTS,
-            MAX_SHOTS,
+            plan_min,
+            plan_max,
             TARGET_TOTAL_S,
         )
 
@@ -923,6 +928,8 @@ async def _enforce_plan_language(
     user: str,
     *,
     allow: Sequence[str] = (),
+    plan_min: int = MIN_PLAN_SHOTS,
+    plan_max: int = MAX_SHOTS,
 ) -> dict[str, Any]:
     """Re-ask once if the plan came back in the wrong language.
 
@@ -973,7 +980,9 @@ async def _enforce_plan_language(
         parsed = parse_llm_json(str(retry), fallback=None)
         if parsed is None:
             parsed = await _repair_shot_plan_json(str(retry))
-        candidate = _normalize_shot_plan(parsed)
+        candidate = _normalize_shot_plan(
+            parsed, plan_min=plan_min, plan_max=plan_max
+        )
     except Exception as exc:
         logger.warning("PLAN_LANGUAGE: retry failed (%s) — keeping first plan", exc)
         return plan
@@ -1361,12 +1370,14 @@ async def plan_shots(state: VideoState) -> dict[str, Any]:
         parsed = parse_llm_json(str(result), fallback=None)
         if parsed is None:
             parsed = await _repair_shot_plan_json(str(result))
-        plan = _normalize_shot_plan(parsed)
+        plan = _normalize_shot_plan(parsed, plan_min=plan_min, plan_max=plan_max)
         plan = await _enforce_plan_language(
             plan,
             system,
             user,
             allow=[product.get("name", ""), brand.get("name", ""), sub_brand],
+            plan_min=plan_min,
+            plan_max=plan_max,
         )
         plan = await _rewrite_hook_to_fit(plan)
         # Supplier names never reach a burned overlay or published caption.
