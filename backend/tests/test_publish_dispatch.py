@@ -65,6 +65,14 @@ def _fake_db():
     return db
 
 
+def _enable_publishing(monkeypatch):
+    """Bypass the kill-switch DB read (fake sessions can't serve it)."""
+    monkeypatch.setattr(
+        "app.services.publish_service.is_publishing_enabled",
+        AsyncMock(return_value=True),
+    )
+
+
 # ── Registry mapping ────────────────────────────────────────────────────
 
 
@@ -127,7 +135,11 @@ def test_resolve_media_picks_video_for_reels(monkeypatch):
     media = resolve_media(content, calendar_item)
 
     assert media.kind == "video"
-    assert media.public_url == "https://api.test/api/v1/files/videos/brand/item/final.mp4"
+    # Prefix match: the URL gains a signed access token (mt=…&exp=…) once
+    # app.utils.media_sign is present.
+    assert media.public_url.startswith(
+        "https://api.test/api/v1/files/videos/brand/item/final.mp4"
+    )
     assert media.bytes_loader is not None
     assert media.mime == "video/mp4"
 
@@ -145,8 +157,12 @@ def test_resolve_media_picks_branded_image_for_posts(monkeypatch):
     media = resolve_media(content, calendar_item)
 
     assert media.kind == "image"
-    # Meta channels get the JPEG-converted variant.
-    assert media.public_url == "https://api.test/api/v1/files/images/brand/item.png?fmt=jpg"
+    # Meta channels get the JPEG-converted variant (prefix match: a signed
+    # access token may precede fmt=jpg in the query string).
+    assert media.public_url.startswith(
+        "https://api.test/api/v1/files/images/brand/item.png"
+    )
+    assert "fmt=jpg" in media.public_url
     assert media.bytes_loader is not None
 
 
@@ -161,7 +177,10 @@ def test_resolve_media_no_jpg_suffix_for_non_meta_channels(monkeypatch):
     media = resolve_media(content, calendar_item)
 
     assert media.kind == "image"
-    assert media.public_url == "https://api.test/api/v1/files/images/brand/item.png"
+    assert media.public_url.startswith(
+        "https://api.test/api/v1/files/images/brand/item.png"
+    )
+    assert "fmt=jpg" not in media.public_url
 
 
 # ── publish_direct ──────────────────────────────────────────────────────
@@ -187,6 +206,7 @@ class _FakePublisher:
 
 @pytest.mark.anyio
 async def test_publish_direct_success_updates_status_and_platform_metadata(monkeypatch):
+    _enable_publishing(monkeypatch)
     monkeypatch.setattr(settings, "PUBLIC_API_URL", "https://api.test")
     brand = _make_brand()
     calendar_item = _make_calendar_item("instagram", "reel", "publishing")
@@ -226,6 +246,7 @@ async def test_publish_direct_success_updates_status_and_platform_metadata(monke
 
 @pytest.mark.anyio
 async def test_publish_direct_failure_marks_failed_with_error(monkeypatch):
+    _enable_publishing(monkeypatch)
     brand = _make_brand()
     calendar_item = _make_calendar_item("instagram", "post", "publishing")
     content = _make_content(
@@ -255,6 +276,7 @@ async def test_publish_direct_failure_marks_failed_with_error(monkeypatch):
 
 @pytest.mark.anyio
 async def test_publish_direct_without_publisher_fails_item(monkeypatch):
+    _enable_publishing(monkeypatch)
     brand = _make_brand()
     calendar_item = _make_calendar_item("tiktok", "post", "publishing")
     content = _make_content(calendar_item)
@@ -296,7 +318,7 @@ class _FakeSession:
         self.commit = AsyncMock()
         self.add = MagicMock()
 
-    async def execute(self, stmt):
+    async def execute(self, stmt, params=None):
         self.executed.append(stmt)
         return self._results.pop(0)
 
@@ -314,14 +336,15 @@ async def test_checker_due_query_skips_publishing_items(monkeypatch):
     'publishing' items are swept to failed by a dedicated query."""
     from app.scheduler import publish_checker
 
-    session = _FakeSession([_FakeResult([]), _FakeResult([])])
+    # Results: kill-switch read (absent → enabled), stuck sweep, due query.
+    session = _FakeSession([_FakeResult([]), _FakeResult([]), _FakeResult([])])
     monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
 
     await publish_checker.check_due_content()
 
-    assert len(session.executed) == 2
-    sweep_params = session.executed[0].compile().params
-    due_params = session.executed[1].compile().params
+    assert len(session.executed) == 3
+    sweep_params = session.executed[1].compile().params
+    due_params = session.executed[2].compile().params
     assert "publishing" in sweep_params.values()
     assert "scheduled" in due_params.values()
     assert "publishing" not in due_params.values()
@@ -342,9 +365,12 @@ async def test_checker_direct_path_marks_publishing_and_spawns_task(monkeypatch)
 
     session = _FakeSession(
         [
+            _FakeResult([]),  # kill-switch read at sweep start (absent → enabled)
             _FakeResult([]),  # stuck-'publishing' sweep
             _FakeResult([calendar_item]),  # due items
+            _FakeResult([]),  # per-item kill-switch read
             _FakeResult([content]),  # current content for the item
+            _FakeResult([calendar_item.id]),  # CAS claim scheduled→publishing
         ]
     )
     monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
@@ -356,7 +382,10 @@ async def test_checker_direct_path_marks_publishing_and_spawns_task(monkeypatch)
 
     await publish_checker.check_due_content()
 
-    assert calendar_item.status == "publishing"
+    # The claim is an atomic compare-and-set: scheduled → publishing.
+    claim_params = session.executed[5].compile().params
+    assert "publishing" in claim_params.values()
+    assert "scheduled" in claim_params.values()
     spawn.assert_called_once_with(calendar_item.id, content.id)
     n8n.assert_not_awaited()
     session.commit.assert_awaited()

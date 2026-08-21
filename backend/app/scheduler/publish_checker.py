@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from app.auth.models import ScheduledJobLog
@@ -11,7 +11,13 @@ from app.models.base import async_session_factory
 from app.models.calendar_item import CalendarItem
 from app.models.content import Content
 from app.services.notification_service import notify_failure
-from app.services.publish_service import dispatch_to_n8n, publish_direct, resolve_media
+from app.services.publish_service import (
+    PublishingDisabledError,
+    dispatch_to_n8n,
+    is_publishing_enabled,
+    publish_direct,
+    resolve_media,
+)
 from app.services.publishers.registry import get_publisher
 
 logger = logging.getLogger(__name__)
@@ -19,10 +25,14 @@ logger = logging.getLogger(__name__)
 # Content overdue by more than this is moved to "failed" instead of published.
 STALE_THRESHOLD = timedelta(days=1)
 
-# A direct publish stuck in "publishing" longer than this (crashed worker,
-# lost event loop, backend restart mid-upload) is swept to "failed" so it can
-# be retried via the failed→scheduled transition.
-PUBLISHING_TIMEOUT = timedelta(minutes=30)
+# A publish stuck in "publishing" longer than this (crashed task, lost event
+# loop, backend restart mid-upload, n8n callback never delivered) is swept to
+# "failed" with an "unreconciled" note. NEVER auto-retried: the post may have
+# reached the platform, so an operator must verify there before re-scheduling.
+PUBLISHING_TIMEOUT = timedelta(minutes=45)
+
+# Note stamped on swept items (shown in generation_metadata.publish_note).
+UNRECONCILED_NOTE = "unreconciled — verify on platform before re-scheduling"
 
 # At most this many direct publishes run concurrently — container status
 # polls (IG Reels, LinkedIn video) can take minutes each.
@@ -32,6 +42,41 @@ MAX_CONCURRENT_DIRECT_PUBLISHES = 3
 # collected mid-flight; the done-callback discards finished tasks.
 _direct_tasks: set[asyncio.Task] = set()
 _direct_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DIRECT_PUBLISHES)
+
+
+async def _claim_for_publishing(db, calendar_item_id: uuid.UUID) -> bool:
+    """Atomically claim a due item for dispatch: scheduled → publishing.
+
+    Compare-and-set so a concurrent scheduler (second process/replica) or an
+    in-flight task can never dispatch the same item twice — the item leaves
+    'scheduled' before ANY external call, for the direct AND the n8n path.
+    Returns False when another process already claimed it.
+    """
+    result = await db.execute(
+        update(CalendarItem)
+        .where(CalendarItem.id == calendar_item_id)
+        .where(CalendarItem.status == "scheduled")
+        .values(status="publishing")
+        .returning(CalendarItem.id)
+    )
+    await db.commit()
+    return result.scalar_one_or_none() is not None
+
+
+async def _release_claim(db, calendar_item_id: uuid.UUID) -> None:
+    """Return a claimed-but-never-dispatched item to 'scheduled'.
+
+    Only valid when NO external call was made (kill switch engaged before
+    dispatch) — anything after a dispatch attempt must go through the
+    callback / failed path instead.
+    """
+    await db.execute(
+        update(CalendarItem)
+        .where(CalendarItem.id == calendar_item_id)
+        .where(CalendarItem.status == "publishing")
+        .values(status="scheduled")
+    )
+    await db.commit()
 
 
 def _spawn_direct_publish(calendar_item_id: uuid.UUID, content_id: uuid.UUID) -> None:
@@ -86,9 +131,21 @@ async def _run_direct_publish(
                     )
                     return
 
-                outcome = await publish_direct(
-                    db, content, calendar_item, calendar_item.brand
-                )
+                try:
+                    outcome = await publish_direct(
+                        db, content, calendar_item, calendar_item.brand
+                    )
+                except PublishingDisabledError:
+                    # Kill switch engaged after the claim but before any
+                    # external call — release the claim so the item publishes
+                    # once the switch is re-enabled.
+                    await _release_claim(db, calendar_item_id)
+                    logger.warning(
+                        "Publishing kill switch engaged — released claim on "
+                        "calendar item %s (nothing was dispatched)",
+                        calendar_item_id,
+                    )
+                    return
 
                 details: dict = {
                     "content_id": str(content_id),
@@ -147,10 +204,21 @@ async def check_due_content() -> None:
     logger.info("Checking for due content to publish")
 
     async with async_session_factory() as db:
+        # Kill switch — checked at sweep start; when engaged the whole tick
+        # is frozen (no dispatch, no state changes) until re-enabled.
+        if not await is_publishing_enabled(db):
+            logger.warning(
+                "Publishing kill switch is engaged — skipping publish sweep"
+            )
+            return
+
         now = datetime.now(timezone.utc)
 
-        # Sweep items stuck in 'publishing' (direct task crashed or the
-        # backend restarted mid-upload) so they become retryable.
+        # Sweep items stuck in 'publishing' (task crashed, backend restarted
+        # mid-upload, or the n8n callback never arrived). Marked failed with
+        # an 'unreconciled' note — NEVER auto-retried, because the post may
+        # have reached the platform; an operator must verify there before
+        # re-scheduling (reconcile-before-retry).
         stuck_result = await db.execute(
             select(CalendarItem)
             .where(CalendarItem.status == "publishing")
@@ -159,10 +227,16 @@ async def check_due_content() -> None:
         stuck_items = stuck_result.scalars().all()
         for item in stuck_items:
             item.status = "failed"
+            item.generation_metadata = {
+                **(item.generation_metadata or {}),
+                "publish_note": UNRECONCILED_NOTE,
+            }
             logger.warning(
-                "Calendar item %s stuck in 'publishing' for over %s — marking failed",
+                "Calendar item %s stuck in 'publishing' for over %s — marking "
+                "failed (%s)",
                 item.id,
                 PUBLISHING_TIMEOUT,
+                UNRECONCILED_NOTE,
             )
         if stuck_items:
             await db.commit()
@@ -173,7 +247,8 @@ async def check_due_content() -> None:
                     Exception(
                         f"Calendar item {item.id} ('{item.title}', "
                         f"{item.channel}) stuck in 'publishing' for over "
-                        f"{PUBLISHING_TIMEOUT} — marked failed"
+                        f"{PUBLISHING_TIMEOUT} — marked failed; "
+                        f"{UNRECONCILED_NOTE}"
                     ),
                 )
 
@@ -227,6 +302,15 @@ async def check_due_content() -> None:
                 )
 
         for calendar_item in fresh_items:
+            # Kill switch — re-checked before every dispatch so an operator
+            # flip mid-tick stops the remaining items (they stay scheduled).
+            if not await is_publishing_enabled(db):
+                logger.warning(
+                    "Publishing kill switch engaged mid-tick — leaving "
+                    "remaining due items scheduled"
+                )
+                break
+
             # Get the current content version for this calendar item
             content_result = await db.execute(
                 select(Content)
@@ -245,12 +329,17 @@ async def check_due_content() -> None:
 
             # ── Direct in-backend publisher path ────────────────────────
             # Supported channel/media combinations publish straight from the
-            # backend: mark 'publishing' now (so the next tick skips the
-            # item) and run the platform flow in a background task.
+            # backend: atomically claim (scheduled → publishing, so no other
+            # tick/process picks the item up) and run the platform flow in a
+            # background task.
             media = resolve_media(content, calendar_item)
             if get_publisher(calendar_item.channel, media.kind) is not None:
-                calendar_item.status = "publishing"
-                await db.commit()
+                if not await _claim_for_publishing(db, calendar_item.id):
+                    logger.info(
+                        "Calendar item %s already claimed elsewhere — skipping",
+                        calendar_item.id,
+                    )
+                    continue
                 _spawn_direct_publish(calendar_item.id, content.id)
                 logger.info(
                     "Spawned direct publish of content %s to %s (%s)",
@@ -261,12 +350,19 @@ async def check_due_content() -> None:
                 continue
 
             # ── n8n fallback path (teams, website_blog, x, tiktok, …) ───
+            # Claim BEFORE dispatch: the item leaves 'scheduled' immediately,
+            # so an n8n async ack (or a lost callback) can never re-dispatch
+            # it on the next tick (Teams used to re-post the same message
+            # every 5 minutes). The n8n callback finalizes publishing →
+            # published/failed; items whose callback never arrives are swept
+            # to failed-unreconciled after PUBLISHING_TIMEOUT.
+            if not await _claim_for_publishing(db, calendar_item.id):
+                logger.info(
+                    "Calendar item %s already claimed elsewhere — skipping",
+                    calendar_item.id,
+                )
+                continue
             try:
-                # Keep status as "scheduled" during dispatch — n8n callback
-                # will set it to "published" or "failed" directly. Channels
-                # WITHOUT a callback (teams posts directly, website_blog is
-                # manual) must transition here or they re-dispatch every tick
-                # (Teams used to re-post the same message every 5 minutes).
                 dispatch_result = await dispatch_to_n8n(content, calendar_item, brand)
                 result_status = (dispatch_result or {}).get("status")
                 if result_status == "published":
@@ -276,6 +372,10 @@ async def check_due_content() -> None:
                     # Manual channel — park it back in review so it stops
                     # being picked up as due.
                     calendar_item.status = "in_review"
+                # Any other result (n8n async ack, duplicate/ignored
+                # callback echo): stay 'publishing' — do NOT touch the ORM
+                # status attribute, the callback may already have finalized
+                # the row and a stale flush would overwrite it.
 
                 log = ScheduledJobLog(
                     job_name="publish_dispatch",
@@ -296,6 +396,16 @@ async def check_due_content() -> None:
                     content.id,
                     calendar_item.channel,
                 )
+            except PublishingDisabledError:
+                # Kill switch engaged between the claim and the dispatch —
+                # nothing left the backend, so release the claim and stop.
+                await _release_claim(db, calendar_item.id)
+                logger.warning(
+                    "Publishing kill switch engaged — released claim on "
+                    "calendar item %s and stopped dispatching",
+                    calendar_item.id,
+                )
+                break
             except Exception as e:
                 # Mark as failed so it can be retried via failed→scheduled transition
                 calendar_item.status = "failed"

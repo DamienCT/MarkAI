@@ -1,5 +1,6 @@
 {
   "name": "MARKAI - Unified Publisher",
+  "description": "MARKAI unified publisher. RE-IMPORT REQUIRED after the 2026-08-21 webhook-hardening backend deploy: callbacks now echo the dispatch's X-Webhook-Event-Id (replay dedup) and send a body-bound HMAC signature (X-Webhook-Signature = 'sha256=' + hex(hmac_sha256(secret, timestamp + '.' + raw_body)), with X-Webhook-Timestamp in unix seconds) computed in Code nodes. Operator setup: (1) set N8N_WEBHOOK_HMAC_SECRET in the n8n environment to the SAME value as the backend's N8N_WEBHOOK_HMAC_SECRET, (2) set NODE_FUNCTION_ALLOW_BUILTIN=crypto so the Code nodes can require('crypto'), (3) re-import this workflow. Until the HMAC secret is set on BOTH sides the backend accepts the legacy static-secret path (deprecated, logged). The backend also now always sends X-Webhook-Secret on dispatch — a first-node secret check against $env.N8N_WEBHOOK_SECRET can (and should) be added to reject foreign calls.",
   "nodes": [
     {
       "parameters": {
@@ -29,7 +30,9 @@
             { "id": "a8", "name": "linkedin_access_token", "value": "={{ $json.body.linkedin_access_token || '' }}", "type": "stringValue" },
             { "id": "a9", "name": "linkedin_org_id", "value": "={{ $json.body.linkedin_org_id || '' }}", "type": "stringValue" },
             { "id": "a10", "name": "callback_url", "value": "={{ $env.MARKAI_API_URL || 'http://backend:8000' }}", "type": "stringValue" },
-            { "id": "a11", "name": "webhook_secret", "value": "={{ $env.N8N_WEBHOOK_SECRET || '' }}", "type": "stringValue" }
+            { "id": "a11", "name": "webhook_secret", "value": "={{ $env.N8N_WEBHOOK_SECRET || '' }}", "type": "stringValue" },
+            { "id": "a12", "name": "event_id", "value": "={{ $json.headers['x-webhook-event-id'] || '' }}", "type": "stringValue" },
+            { "id": "a13", "name": "hmac_secret", "value": "={{ $env.N8N_WEBHOOK_HMAC_SECRET || '' }}", "type": "stringValue" }
           ]
         },
         "options": {}
@@ -148,25 +151,61 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Build the success-callback body and sign it (requires NODE_FUNCTION_ALLOW_BUILTIN=crypto).\nconst crypto = require('crypto');\nconst sv = $('Set Variables').item.json;\nconst postId = $json.id || ($json.headers && $json.headers['x-restli-id']) || 'unknown';\nconst body = JSON.stringify({\n  content_id: sv.content_id,\n  status: 'published',\n  platform_post_id: String(postId),\n  published_at: new Date().toISOString(),\n});\nconst timestamp = Math.floor(Date.now() / 1000).toString();\n// Echo the backend's dispatch event id so replayed callbacks dedup; fall back to a fresh uuid.\nconst eventId = sv.event_id || crypto.randomUUID();\nconst signature = sv.hmac_secret\n  ? 'sha256=' + crypto.createHmac('sha256', sv.hmac_secret).update(timestamp + '.' + body).digest('hex')\n  : '';\nreturn { json: { body_raw: body, timestamp, event_id: eventId, signature } };"
+      },
+      "id": "c1a1a1a1-0001-4000-8000-000000000011",
+      "name": "Sign Success Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Build the failure-callback body and sign it (requires NODE_FUNCTION_ALLOW_BUILTIN=crypto).\nconst crypto = require('crypto');\nconst sv = $('Set Variables').item.json;\nconst errMsg = ($json.error && ($json.error.message || $json.error.description)) || 'Publish failed';\nconst body = JSON.stringify({\n  content_id: sv.content_id,\n  status: 'failed',\n  error_message: errMsg,\n});\nconst timestamp = Math.floor(Date.now() / 1000).toString();\nconst eventId = sv.event_id || crypto.randomUUID();\nconst signature = sv.hmac_secret\n  ? 'sha256=' + crypto.createHmac('sha256', sv.hmac_secret).update(timestamp + '.' + body).digest('hex')\n  : '';\nreturn { json: { body_raw: body, timestamp, event_id: eventId, signature } };"
+      },
+      "id": "c1a1a1a1-0001-4000-8000-000000000012",
+      "name": "Sign Failed Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 700]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Build the not-implemented callback body and sign it (requires NODE_FUNCTION_ALLOW_BUILTIN=crypto).\nconst crypto = require('crypto');\nconst sv = $('Set Variables').item.json;\nconst body = JSON.stringify({\n  content_id: sv.content_id,\n  status: 'failed',\n  error_message: 'channel_not_implemented',\n});\nconst timestamp = Math.floor(Date.now() / 1000).toString();\nconst eventId = sv.event_id || crypto.randomUUID();\nconst signature = sv.hmac_secret\n  ? 'sha256=' + crypto.createHmac('sha256', sv.hmac_secret).update(timestamp + '.' + body).digest('hex')\n  : '';\nreturn { json: { body_raw: body, timestamp, event_id: eventId, signature } };"
+      },
+      "id": "c1a1a1a1-0001-4000-8000-000000000013",
+      "name": "Sign NotImplemented Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [940, 800]
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "={{ $('Set Variables').item.json.callback_url }}/api/v1/webhooks/publish-result",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" }
+            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" },
+            { "name": "X-Webhook-Event-Id", "value": "={{ $json.event_id }}" },
+            { "name": "X-Webhook-Timestamp", "value": "={{ $json.timestamp }}" },
+            { "name": "X-Webhook-Signature", "value": "={{ $json.signature }}" }
           ]
         },
         "sendBody": true,
-        "contentType": "json",
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"published\",\n  \"platform_post_id\": \"{{ $json.id || ($json.headers && $json.headers['x-restli-id']) || 'unknown' }}\",\n  \"published_at\": \"{{ new Date().toISOString() }}\"\n}",
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body_raw }}",
         "options": {}
       },
       "id": "c1a1a1a1-0001-4000-8000-000000000008",
       "name": "Callback Success",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1380, 400]
+      "position": [1600, 400]
     },
     {
       "parameters": {
@@ -175,20 +214,23 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" }
+            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" },
+            { "name": "X-Webhook-Event-Id", "value": "={{ $json.event_id }}" },
+            { "name": "X-Webhook-Timestamp", "value": "={{ $json.timestamp }}" },
+            { "name": "X-Webhook-Signature", "value": "={{ $json.signature }}" }
           ]
         },
         "sendBody": true,
-        "contentType": "json",
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"failed\",\n  \"error_message\": {{ JSON.stringify(($json.error && ($json.error.message || $json.error.description)) || 'Publish failed') }}\n}",
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body_raw }}",
         "options": {}
       },
       "id": "c1a1a1a1-0001-4000-8000-000000000010",
       "name": "Callback Failed",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1380, 700]
+      "position": [1600, 700]
     },
     {
       "parameters": {
@@ -197,20 +239,23 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" }
+            { "name": "X-Webhook-Secret", "value": "={{ $('Set Variables').item.json.webhook_secret }}" },
+            { "name": "X-Webhook-Event-Id", "value": "={{ $json.event_id }}" },
+            { "name": "X-Webhook-Timestamp", "value": "={{ $json.timestamp }}" },
+            { "name": "X-Webhook-Signature", "value": "={{ $json.signature }}" }
           ]
         },
         "sendBody": true,
-        "contentType": "json",
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"content_id\": \"{{ $('Set Variables').item.json.content_id }}\",\n  \"status\": \"failed\",\n  \"error_message\": \"channel_not_implemented\"\n}",
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body_raw }}",
         "options": {}
       },
       "id": "c1a1a1a1-0001-4000-8000-000000000009",
       "name": "Callback Not Implemented",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [940, 800]
+      "position": [1160, 800]
     }
   ],
   "connections": {
@@ -225,32 +270,41 @@
         [{ "node": "IG Create Container", "type": "main", "index": 0 }],
         [{ "node": "FB Publish", "type": "main", "index": 0 }],
         [{ "node": "LinkedIn Publish", "type": "main", "index": 0 }],
-        [{ "node": "Callback Not Implemented", "type": "main", "index": 0 }]
+        [{ "node": "Sign NotImplemented Callback", "type": "main", "index": 0 }]
       ]
     },
     "IG Create Container": {
       "main": [
         [{ "node": "IG Publish", "type": "main", "index": 0 }],
-        [{ "node": "Callback Failed", "type": "main", "index": 0 }]
+        [{ "node": "Sign Failed Callback", "type": "main", "index": 0 }]
       ]
     },
     "IG Publish": {
       "main": [
-        [{ "node": "Callback Success", "type": "main", "index": 0 }],
-        [{ "node": "Callback Failed", "type": "main", "index": 0 }]
+        [{ "node": "Sign Success Callback", "type": "main", "index": 0 }],
+        [{ "node": "Sign Failed Callback", "type": "main", "index": 0 }]
       ]
     },
     "FB Publish": {
       "main": [
-        [{ "node": "Callback Success", "type": "main", "index": 0 }],
-        [{ "node": "Callback Failed", "type": "main", "index": 0 }]
+        [{ "node": "Sign Success Callback", "type": "main", "index": 0 }],
+        [{ "node": "Sign Failed Callback", "type": "main", "index": 0 }]
       ]
     },
     "LinkedIn Publish": {
       "main": [
-        [{ "node": "Callback Success", "type": "main", "index": 0 }],
-        [{ "node": "Callback Failed", "type": "main", "index": 0 }]
+        [{ "node": "Sign Success Callback", "type": "main", "index": 0 }],
+        [{ "node": "Sign Failed Callback", "type": "main", "index": 0 }]
       ]
+    },
+    "Sign Success Callback": {
+      "main": [[{ "node": "Callback Success", "type": "main", "index": 0 }]]
+    },
+    "Sign Failed Callback": {
+      "main": [[{ "node": "Callback Failed", "type": "main", "index": 0 }]]
+    },
+    "Sign NotImplemented Callback": {
+      "main": [[{ "node": "Callback Not Implemented", "type": "main", "index": 0 }]]
     }
   },
   "settings": {

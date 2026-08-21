@@ -52,7 +52,7 @@ api_router.include_router(events.router, prefix="/events", tags=["events"])
 
 # Alias: frontend calls /api/v1/audit directly — redirects to system/audit-log
 from fastapi import Depends  # noqa: E402
-from sqlalchemy import select, delete  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 from app.deps import get_current_user, get_db  # noqa: E402
 from app.auth.models import AuditLog, User  # noqa: E402
@@ -104,18 +104,8 @@ async def list_audit_log(
         for row, email in result.all()
     ]
 
-
-@api_router.delete("/audit", tags=["system"])
-async def clear_audit_log(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Permanently delete every audit log entry. Admin only.
-
-    Wipes the `audit_log` table only — no business data is touched.
-    """
-    if not role_has_access(current_user.role, "admin"):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    result = await db.execute(delete(AuditLog))
-    await db.commit()
-    return {"deleted": result.rowcount or 0}
+# NOTE: the DELETE /audit hard-wipe endpoint was deliberately removed
+# (P0-11): the audit log is append-only evidence — an admin-reachable,
+# itself-unaudited wipe made every other audit record untrustworthy.
+# Retention/purge, if ever needed, must be a separately audited,
+# break-glass operation — not an API endpoint.

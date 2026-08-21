@@ -1,12 +1,19 @@
+import hashlib
+import hmac
+import json
 import logging
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import settings
+from app.models.base import async_session_factory
 from app.models.brand import Brand
 from app.models.calendar_item import CalendarItem
 from app.models.content import Content
@@ -17,8 +24,56 @@ from app.services.publishers.base import (
     resolve_caption_and_hashtags,
 )
 from app.services.publishers.registry import get_publisher
+from app.utils.media_sign import sign_media_path
+from app.utils.redact import redact
 
 logger = logging.getLogger(__name__)
+
+# TTL for signed media URLs handed to third parties (n8n payloads, Meta /
+# LinkedIn fetch-by-URL). Long enough to cover slow container polls + retries.
+MEDIA_URL_SIGN_TTL = 2 * 60 * 60
+
+# system_flags key for the global publishing kill switch.
+PUBLISHING_KILL_SWITCH_KEY = "publishing_enabled"
+
+
+class PublishingDisabledError(Exception):
+    """Raised when the global publishing kill switch is engaged."""
+
+    pass
+
+
+async def _read_publishing_flag(db: AsyncSession) -> bool:
+    result = await db.execute(
+        text("SELECT value FROM system_flags WHERE key = :key"),
+        {"key": PUBLISHING_KILL_SWITCH_KEY},
+    )
+    value = result.scalar_one_or_none()
+    if value is None:
+        return True  # flag absent = publishing enabled
+    if isinstance(value, str):
+        value = json.loads(value)
+    if isinstance(value, dict):
+        return bool(value.get("enabled", True))
+    return True
+
+
+async def is_publishing_enabled(db: AsyncSession | None = None) -> bool:
+    """Global publishing kill switch (``system_flags`` key ``publishing_enabled``).
+
+    Absent flag = enabled. Any read error fails CLOSED (returns False) so a
+    broken/missing flags table can never allow an external post.
+    """
+    try:
+        if db is not None:
+            return await _read_publishing_flag(db)
+        async with async_session_factory() as session:
+            return await _read_publishing_flag(session)
+    except Exception:
+        logger.exception(
+            "Could not read publishing kill switch — failing closed (no dispatch)"
+        )
+        return False
 
 
 def get_platform_credentials(brand: Brand, channel: str) -> dict[str, Any]:
@@ -98,6 +153,17 @@ def _preflight_checks(
             "N8N_WEBHOOK_BASE not configured. Set it in .env to enable publishing."
         )
 
+    # Refuse to dispatch without the shared webhook secret: the inbound
+    # /publish-result callback 503s when the secret is unset, so a dispatch
+    # without it records a successful platform post as 'failed' and invites a
+    # duplicate retry (config asymmetry, N-15).
+    if not settings.N8N_WEBHOOK_SECRET:
+        raise PublishPreflightError(
+            "N8N_WEBHOOK_SECRET not configured — refusing to dispatch to n8n "
+            "(the inbound callback would be rejected and the post recorded "
+            "as failed)."
+        )
+
     # Check content has required fields
     caption = content.caption or content.body_text or ""
     if not caption:
@@ -120,9 +186,13 @@ async def _derive_facebook_page_token(token: str, page_id: str) -> str | None:
         return None
     try:
         async with httpx.AsyncClient(timeout=15) as client:
+            # Token goes in the Authorization header, NEVER the URL: httpx
+            # logs request URLs and str(HTTPStatusError) embeds them, so a
+            # query-string token leaks into backend logs on every 4xx (N-01).
             resp = await client.get(
                 f"https://graph.facebook.com/v25.0/{page_id}",
-                params={"fields": "access_token", "access_token": token},
+                params={"fields": "access_token"},
+                headers={"Authorization": f"Bearer {token}"},
             )
             resp.raise_for_status()
             page_token = resp.json().get("access_token")
@@ -135,7 +205,9 @@ async def _derive_facebook_page_token(token: str, page_id: str) -> str | None:
         )
         return None
     except Exception as exc:
-        logger.warning("Could not derive FB Page token for page %s: %s", page_id, exc)
+        logger.warning(
+            "Could not derive FB Page token for page %s: %s", page_id, redact(str(exc))
+        )
         return None
 
 
@@ -148,6 +220,36 @@ def resolve_channel_copy(content: Content, channel: str) -> tuple[str, list[str]
     n8n paths can never drift apart.
     """
     return resolve_caption_and_hashtags(content, channel)
+
+
+def _signed_file_url(path: str, *, as_jpg: bool = False) -> str | None:
+    """Externally reachable ``/files`` URL for a MinIO path, carrying a signed
+    access token (``mt=<hmac>&exp=<unix>``) so third-party fetchers (n8n,
+    Meta, LinkedIn) can read it now that the media endpoints require auth."""
+    api_base = settings.PUBLIC_API_URL or settings.FRONTEND_URL
+    if not api_base or not path:
+        return None
+    url = f"{api_base}/api/v1/files/{path}"
+    try:
+        # Sign the bare object path — media_sign verification accepts either
+        # the full URL path or the object path, and transform params
+        # (fmt=jpg) stay outside the signature.
+        url = f"{url}?{sign_media_path(path, MEDIA_URL_SIGN_TTL)}"
+    except RuntimeError:
+        # MEDIA_PROXY_TOKEN unset. Outside production the media endpoints
+        # fall back to open access, so an unsigned URL still works;
+        # production enforces the token at startup (_REQUIRED_PROD), so
+        # fail loudly rather than emit a URL a platform cannot fetch.
+        if settings.MARKAI_ENV == "production":
+            raise
+        logger.warning(
+            "MEDIA_PROXY_TOKEN unset — media URL for %s left unsigned "
+            "(non-production fallback)",
+            path,
+        )
+    if as_jpg:
+        url += ("&" if "?" in url else "?") + "fmt=jpg"
+    return url
 
 
 def resolve_media(
@@ -165,13 +267,11 @@ def resolve_media(
     — the n8n webhook payload is image-only, so its dispatch keeps sending
     the branded image even for video items.
     """
-    api_base = settings.PUBLIC_API_URL or settings.FRONTEND_URL
-
     if not image_only and content.video_url and calendar_item.item_type in ("reel", "video"):
         video_path = content.video_url
         return MediaBundle(
             kind="video",
-            public_url=f"{api_base}/api/v1/files/{video_path}" if api_base else None,
+            public_url=_signed_file_url(video_path),
             bytes_loader=lambda: minio_service.download_file(video_path),
             mime="video/mp4",
         )
@@ -184,12 +284,13 @@ def resolve_media(
         or gen_meta.get("generated_image_url")
     )
     public_url = None
-    if image_path and api_base:
-        public_url = f"{api_base}/api/v1/files/{image_path}"
+    if image_path:
         # Instagram's Content Publishing API only accepts JPEG; our pipeline
         # renders PNG. Serve a JPEG-converted variant for Meta channels.
-        if calendar_item.channel in ("instagram", "facebook"):
-            public_url += "?fmt=jpg"
+        public_url = _signed_file_url(
+            image_path,
+            as_jpg=calendar_item.channel in ("instagram", "facebook"),
+        )
     return MediaBundle(
         kind="image",
         public_url=public_url,
@@ -214,6 +315,12 @@ async def dispatch_to_n8n(
     - teams: dispatch directly via Teams incoming webhook (not n8n)
     """
     channel = calendar_item.channel
+
+    # Global kill switch — checked immediately before any external effect.
+    if not await is_publishing_enabled():
+        raise PublishingDisabledError(
+            "Publishing kill switch is engaged — n8n/teams dispatch blocked"
+        )
 
     # ── website_blog: no external dispatch ──────────────────────────
     if channel == "website_blog":
@@ -247,10 +354,21 @@ async def dispatch_to_n8n(
                 }
             ],
         }
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(webhook_url, json=teams_payload)
-            resp.raise_for_status()
-            return {"status": "published", "channel": "teams"}
+        # Teams webhook URLs embed a credential in the PATH — never let the
+        # URL-bearing httpx exception text escape into logs / job-log rows.
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(webhook_url, json=teams_payload)
+                resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise PublishPreflightError(
+                f"Teams webhook returned HTTP {exc.response.status_code}"
+            ) from None
+        except httpx.HTTPError as exc:
+            raise PublishPreflightError(
+                f"Teams webhook request failed: {type(exc).__name__}"
+            ) from None
+        return {"status": "published", "channel": "teams"}
 
     # ── All other channels: dispatch to n8n ─────────────────────────
     _preflight_checks(content, calendar_item, brand)
@@ -296,8 +414,9 @@ async def dispatch_to_n8n(
     # are not ours. Same shared secret as the inbound callback verification
     # (webhooks.py) — the n8n instance already holds it as
     # $env.N8N_WEBHOOK_SECRET for signing its callbacks, so no new
-    # provisioning is needed. Header omitted while the secret is unset so
-    # dispatch keeps working before the secret is provisioned.
+    # provisioning is needed. _preflight_checks refuses to dispatch when the
+    # secret is unset (the inbound callback would 503 and mark a live post
+    # failed).
     #
     # n8n side (runtime change, not in this repo): the FIRST node after the
     # Webhook trigger in docs/n8n-workflows/markai-publish.json must compare
@@ -310,12 +429,29 @@ async def dispatch_to_n8n(
     # dropping them here would break every n8n-dispatched channel. Removing
     # them requires the n8n-side vault migration first; n8n execution logs
     # retain webhook payloads until then.
-    headers: dict[str, str] = {}
-    if settings.N8N_WEBHOOK_SECRET:
-        headers["X-Webhook-Secret"] = settings.N8N_WEBHOOK_SECRET
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "X-Webhook-Secret": settings.N8N_WEBHOOK_SECRET,
+    }
+
+    # Serialize once so the HMAC signature (when enabled) covers the exact
+    # bytes on the wire. The event id is echoed back by the n8n callback
+    # (X-Webhook-Event-Id) so replayed callbacks dedup against
+    # webhook_events.
+    body = json.dumps(payload)
+    headers["X-Webhook-Event-Id"] = str(uuid.uuid4())
+    # Optional until the operator provisions the HMAC secret on both sides.
+    hmac_secret = settings.N8N_WEBHOOK_HMAC_SECRET
+    if hmac_secret:
+        ts = str(int(time.time()))
+        signature = hmac.new(
+            hmac_secret.encode(), f"{ts}.{body}".encode(), hashlib.sha256
+        ).hexdigest()
+        headers["X-Webhook-Timestamp"] = ts
+        headers["X-Webhook-Signature"] = f"sha256={signature}"
 
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(n8n_webhook, json=payload, headers=headers)
+        resp = await client.post(n8n_webhook, content=body.encode(), headers=headers)
         resp.raise_for_status()
         return resp.json()
 
@@ -393,6 +529,14 @@ async def publish_direct(
     ``dispatch_to_n8n`` instead when ``get_publisher`` returns None for the
     channel/media combination.
     """
+    # Global kill switch — checked immediately before any external effect.
+    # Raises (instead of recording a failed outcome) so callers can release
+    # the 'publishing' claim without marking the item failed.
+    if not await is_publishing_enabled(db):
+        raise PublishingDisabledError(
+            "Publishing kill switch is engaged — direct publish blocked"
+        )
+
     channel = calendar_item.channel
     media = resolve_media(content, calendar_item)
     publisher = get_publisher(channel, media.kind)

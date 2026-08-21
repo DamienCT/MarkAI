@@ -1,8 +1,6 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useSession } from "next-auth/react";
-import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -17,12 +15,8 @@ import type { AuditLogEntry } from "@/types";
 
 export default function AuditLogPage() {
   const { hasAccess, loading: roleLoading } = useRequireRole("manager");
-  const { data: session } = useSession();
-  const isAdmin =
-    ((session?.user as Record<string, unknown> | undefined)?.role as string | undefined) === "admin";
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [clearing, setClearing] = useState(false);
   const [actionFilter, setActionFilter] = useState<string>("all");
   const [resourceFilter, setResourceFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -54,26 +48,8 @@ export default function AuditLogPage() {
     fetchEntries();
   };
 
-  async function handleClearLog() {
-    if (
-      !window.confirm(
-        "This permanently deletes ALL audit log entries. This cannot be undone. Continue?"
-      )
-    ) {
-      return;
-    }
-    setClearing(true);
-    try {
-      const res = await api.delete<{ deleted: number }>("/api/v1/audit");
-      toast.success(`Audit log cleared (${res.deleted} entries removed)`);
-      setPage(1);
-      fetchEntries();
-    } catch {
-      toast.error("Failed to clear audit log");
-    } finally {
-      setClearing(false);
-    }
-  }
+  // Deliberately no "clear log" control: the audit log is append-only
+  // evidence and its backend hard-delete endpoint has been removed (P0-11).
 
   return (
     <div className="space-y-6">
@@ -82,17 +58,6 @@ export default function AuditLogPage() {
           <h1 className="text-3xl font-bold">Audit Log</h1>
           <p className="text-muted-foreground">System activity and change tracking</p>
         </div>
-        {isAdmin && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleClearLog}
-            disabled={clearing || entries.length === 0}
-          >
-            <Trash2 className="h-4 w-4 mr-2" />
-            {clearing ? "Clearing..." : "Clear log"}
-          </Button>
-        )}
       </div>
 
       <Card>

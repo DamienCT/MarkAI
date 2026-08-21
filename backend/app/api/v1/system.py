@@ -1,10 +1,11 @@
 import asyncio
+import json
 import logging
 import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,8 @@ from app.auth.permissions import role_has_access
 from app.config import settings
 from app.deps import get_current_user, get_db
 from app.scheduler import scheduler
+from app.services import audit_service
+from app.services.publish_service import PUBLISHING_KILL_SWITCH_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +148,108 @@ async def trigger_job(
 
     job.modify(next_run_time=datetime.now(timezone.utc))
     return {"message": f"Job '{job_id}' triggered", "job_id": job_id}
+
+
+class PublishingKillSwitch(BaseModel):
+    enabled: bool
+
+
+def _flag_enabled(value) -> bool:
+    """Decode a system_flags JSONB value into the enabled bool.
+
+    Must mirror publish_service._read_publishing_flag: on a malformed flag
+    the enforcement path fails CLOSED (dispatch blocked), so the display
+    must report disabled too — never "enabled" while publishing is blocked.
+    """
+    if value is None:
+        return True  # flag absent = publishing enabled
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return False  # malformed flag: enforcement fails closed — agree
+    if isinstance(value, dict):
+        return bool(value.get("enabled", True))
+    return True
+
+
+@router.get("/publishing-kill-switch")
+async def get_publishing_kill_switch(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Current state of the global publishing kill switch. Admin only."""
+    if not role_has_access(current_user.role, "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    result = await db.execute(
+        text(
+            "SELECT value, updated_by, updated_at FROM system_flags "
+            "WHERE key = :key"
+        ),
+        {"key": PUBLISHING_KILL_SWITCH_KEY},
+    )
+    row = result.first()
+    if row is None:
+        return {"enabled": True, "updated_by": None, "updated_at": None}
+    return {
+        "enabled": _flag_enabled(row.value),
+        "updated_by": row.updated_by,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@router.put("/publishing-kill-switch")
+async def set_publishing_kill_switch(
+    payload: PublishingKillSwitch,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Engage/release the global publishing kill switch. Admin only.
+
+    ``enabled=false`` blocks every external dispatch (scheduler sweep, n8n
+    fallback AND direct publishers) until re-enabled. The change is
+    audit-logged with the acting user.
+    """
+    if not role_has_access(current_user.role, "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    old_result = await db.execute(
+        text("SELECT value FROM system_flags WHERE key = :key"),
+        {"key": PUBLISHING_KILL_SWITCH_KEY},
+    )
+    old_enabled = _flag_enabled(old_result.scalar_one_or_none())
+
+    await db.execute(
+        text(
+            "INSERT INTO system_flags (key, value, updated_by) "
+            "VALUES (:key, CAST(:value AS JSONB), :updated_by) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+            "updated_by = EXCLUDED.updated_by, updated_at = NOW()"
+        ),
+        {
+            "key": PUBLISHING_KILL_SWITCH_KEY,
+            "value": json.dumps({"enabled": payload.enabled}),
+            "updated_by": current_user.email,
+        },
+    )
+    await db.commit()
+
+    await audit_service.record_audit(
+        action="update",
+        entity_type="system",
+        user_id=current_user.id,
+        old_values={"publishing_enabled": old_enabled},
+        new_values={"publishing_enabled": payload.enabled},
+        request=request,
+    )
+    logger.warning(
+        "Publishing kill switch set to enabled=%s by %s",
+        payload.enabled,
+        current_user.email,
+    )
+    return {"enabled": payload.enabled}
 
 
 @router.get("/audit-log")
