@@ -342,6 +342,7 @@ async def store_content(content_data: dict[str, Any]) -> str:
                 raw_hashtags = [h.strip() for h in raw_hashtags.split(",") if h.strip()]
         if not isinstance(raw_hashtags, list):
             raw_hashtags = []
+        raw_hashtags = [_sanitize_pg_text(h) for h in raw_hashtags]
 
         # Build generation_metadata with all the extra content info
         gen_metadata = content_data.get("metadata", {})
@@ -365,20 +366,28 @@ async def store_content(content_data: dict[str, Any]) -> str:
                 "VALUES (:id, :brand_id, :calendar_item_id, :headline, :caption, "
                 ":hashtags, :cta_text, :metadata, true, true)"
             ),
+            # Same null-byte sanitation as store_calendar_items: a single \x00
+            # in an LLM caption would otherwise abort the run at its final
+            # persist, after all generation cost (N-18). The JSONB metadata
+            # gets its backslash-u0000 escapes stripped too — PostgreSQL jsonb rejects
+            # them just like TEXT rejects raw null bytes.
             {
                 "id": content_id,
                 "brand_id": content_data.get("brand_id"),
                 "calendar_item_id": cal_item_id,
-                "headline": (
-                    content_data.get("headline") or content_data.get("hook", "")
-                )[:500],
-                "caption": content_data.get("caption")
-                or content_data.get("body_text", ""),
+                "headline": _cap_pg_varchar(
+                    content_data.get("headline") or content_data.get("hook", ""), 500
+                ),
+                "caption": _sanitize_pg_text(
+                    content_data.get("caption") or content_data.get("body_text", "")
+                ),
                 "hashtags": raw_hashtags,
-                "cta_text": (
-                    content_data.get("cta") or content_data.get("cta_text", "")
-                )[:255],
-                "metadata": json.dumps(gen_metadata, default=str),
+                "cta_text": _cap_pg_varchar(
+                    content_data.get("cta") or content_data.get("cta_text", ""), 255
+                ),
+                "metadata": json.dumps(gen_metadata, default=str).replace(
+                    "\\u0000", ""
+                ),
             },
         )
         await session.commit()
@@ -412,19 +421,57 @@ async def get_products(brand_id: str) -> list[dict[str, Any]]:
 
 
 async def upsert_product(product: dict[str, Any]) -> str:
+    """Insert or update a product keyed on (brand_id, bc_item_no).
+
+    Persists the two keys the product-intel nodes write back (N-06):
+    - ``image_url`` → primary_image_url — a newly sourced image wins; a
+      null/absent one keeps whatever the row already has.
+    - ``metadata`` → metadata (JSONB) — shallow top-level MERGE
+      (``existing || incoming``), not replace, so the brand-match payload
+      and any other writer survive each other's runs; incoming keys win.
+    """
+    metadata = product.get("metadata") or {}
+    if isinstance(metadata, str):
+        # match_products_to_brands pre-serialises its payload
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    params = {
+        "brand_id": product.get("brand_id"),
+        "bc_item_no": product.get("bc_item_no"),
+        "name": _sanitize_pg_text(product.get("name")),
+        "description": _sanitize_pg_text(product.get("description")),
+        "category": product.get("category"),
+        "vendor_no": product.get("vendor_no"),
+        "unit_price": product.get("unit_price"),
+        "bc_company": product.get("bc_company"),
+        "bc_location": product.get("bc_location"),
+        "remaining_qty": product.get("remaining_qty"),
+        "primary_image_url": product.get("image_url")
+        or product.get("primary_image_url"),
+        "metadata": json.dumps(metadata, default=str).replace("\\u0000", ""),
+    }
     async with async_session_factory() as session:
         result = await session.execute(
             text(
                 "INSERT INTO products (brand_id, bc_item_no, name, description, category, "
-                "vendor_no, unit_price, bc_company, bc_location, remaining_qty, is_active) "
+                "vendor_no, unit_price, bc_company, bc_location, remaining_qty, "
+                "primary_image_url, metadata, is_active) "
                 "VALUES (:brand_id, :bc_item_no, :name, :description, :category, "
-                ":vendor_no, :unit_price, :bc_company, :bc_location, :remaining_qty, false) "
+                ":vendor_no, :unit_price, :bc_company, :bc_location, :remaining_qty, "
+                ":primary_image_url, CAST(:metadata AS jsonb), false) "
                 "ON CONFLICT (brand_id, bc_item_no) WHERE bc_item_no IS NOT NULL DO UPDATE SET "
                 "name = EXCLUDED.name, description = EXCLUDED.description, "
-                "remaining_qty = EXCLUDED.remaining_qty, updated_at = NOW() "
+                "remaining_qty = EXCLUDED.remaining_qty, "
+                "primary_image_url = COALESCE(EXCLUDED.primary_image_url, products.primary_image_url), "
+                "metadata = COALESCE(products.metadata, '{}'::jsonb) || EXCLUDED.metadata, "
+                "updated_at = NOW() "
                 "RETURNING id"
             ),
-            product,
+            params,
         )
         await session.commit()
         row = result.first()
@@ -697,11 +744,15 @@ async def resolve_current_content_id(calendar_item_ids: list[str]) -> str | None
 
 
 async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
-    """Store adaptations from the evaluation workflow.
+    """Store recommendations from the evaluation workflow.
 
     Accepts records with either the evaluation-node schema
     (brand_id, tier, description, confidence, data, status) or the
     legacy content-adaptation schema (source_content_id, target_channel, ...).
+
+    Every insert lands as 'proposed' (or a caller-supplied non-applied
+    status): a recommendation is never stamped 'auto_applied' at insert
+    time — nothing has been applied at that point (P0-06).
     """
     ids: list[str] = []
     async with async_session_factory() as session:
@@ -715,18 +766,34 @@ async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
                     # source_content_id is NOT NULL — inserting NULL would
                     # roll back the whole batch, so drop the record instead.
                     logger.warning(
-                        "Skipping adaptation without source_content_id (brand %s)",
+                        "Skipping recommendation without source_content_id (brand %s)",
                         a.get("brand_id"),
                     )
                     continue
+                data = a.get("data", {})
+                if isinstance(data, str):
+                    # tolerate pre-serialised callers — avoid double encoding
+                    try:
+                        data = json.loads(data)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 eval_meta = json.dumps(
                     {
                         "tier": a.get("tier", 2),
                         "confidence": a.get("confidence", 0.5),
-                        "data": a.get("data", {}),
+                        "data": data,
                     },
                     default=str,
-                )
+                ).replace("\\u0000", "")
+                status = a.get("status") or "proposed"
+                if status == "auto_applied":
+                    # Fail closed: nothing may claim it was applied at insert.
+                    logger.warning(
+                        "store_adaptations: coercing auto_applied insert to "
+                        "proposed (brand %s)",
+                        a.get("brand_id"),
+                    )
+                    status = "proposed"
                 await session.execute(
                     text(
                         "INSERT INTO adaptations (id, source_content_id, target_channel, "
@@ -738,9 +805,9 @@ async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
                         "id": adapt_id,
                         "source_content_id": a.get("source_content_id"),
                         "target_channel": a.get("target_channel", "instagram"),
-                        "adapted_text": a.get("description", ""),
+                        "adapted_text": _sanitize_pg_text(a.get("description", "")),
                         "notes": eval_meta,
-                        "status": a.get("status", "queued"),
+                        "status": status,
                     },
                 )
             else:
@@ -756,9 +823,11 @@ async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
                         "id": adapt_id,
                         "source_content_id": a.get("source_content_id"),
                         "target_channel": a.get("target_channel", "instagram"),
-                        "adapted_text": a.get("adapted_text", ""),
-                        "adapted_headline": a.get("adapted_headline", ""),
-                        "notes": a.get("notes", ""),
+                        "adapted_text": _sanitize_pg_text(a.get("adapted_text", "")),
+                        "adapted_headline": _cap_pg_varchar(
+                            a.get("adapted_headline", ""), 500
+                        ),
+                        "notes": _sanitize_pg_text(a.get("notes", "")),
                     },
                 )
             ids.append(adapt_id)
@@ -766,25 +835,83 @@ async def store_adaptations(adaptations: list[dict[str, Any]]) -> list[str]:
     return ids
 
 
+def _lift_adaptation_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Lift evaluation metadata serialised into adaptation_notes to top level.
+
+    The adaptations table has no tier/confidence/data columns, so evaluation
+    packs them into adaptation_notes as JSON. The adaptation workflow filters
+    on row["tier"] — without this lift those filters matched nothing and every
+    review queue stayed permanently empty (P0-06). Legacy free-text notes rows
+    default to tier 2 (human review).
+    """
+    meta: dict[str, Any] = {}
+    notes = row.get("adaptation_notes")
+    if isinstance(notes, str) and notes.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(notes)
+            if isinstance(parsed, dict):
+                meta = parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    try:
+        tier = int(meta.get("tier", 2))
+    except (TypeError, ValueError):
+        tier = 2
+    row["tier"] = tier if tier in (1, 2, 3) else 2
+    try:
+        row["confidence"] = float(meta.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        row["confidence"] = 0.5
+    data = meta.get("data", {})
+    if isinstance(data, str):
+        # historical rows double-encoded data as a JSON string
+        try:
+            data = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    row["data"] = data
+    row["description"] = row.get("adapted_text") or ""
+    return row
+
+
 async def get_pending_adaptations(brand_id: str) -> list[dict[str, Any]]:
+    """Recommendations still awaiting a human decision.
+
+    The pending set is only 'proposed' and legacy 'queued' — never
+    applied/rejected/auto_applied — so decided history is not re-loaded
+    as pending work on every run.
+    """
     async with async_session_factory() as session:
         result = await session.execute(
             text(
                 "SELECT a.* FROM adaptations a "
                 "JOIN content c ON a.source_content_id = c.id "
                 "WHERE c.brand_id = :brand_id "
-                "AND a.status IN ('proposed', 'auto_applied', 'queued') "
+                "AND a.status IN ('proposed', 'queued') "
                 "ORDER BY a.created_at"
             ),
             {"brand_id": brand_id},
         )
-        return [dict(r) for r in result.mappings().all()]
+        return [_lift_adaptation_row(dict(r)) for r in result.mappings().all()]
 
 
 async def update_adaptation_status(adaptation_id: str, status: str) -> None:
+    """Record a human decision (or requeue) on a recommendation.
+
+    'auto_applied' is refused outright: no executor exists that could turn a
+    recommendation into a real behaviour change, so marking one applied
+    without a human decision would be fake learning (P0-06).
+    """
+    if status == "auto_applied":
+        raise ValueError(
+            "adaptations are never auto-applied — a human must apply or reject"
+        )
     async with async_session_factory() as session:
         await session.execute(
-            text("UPDATE adaptations SET status = :status WHERE id = :id"),
+            text(
+                "UPDATE adaptations SET status = :status, updated_at = NOW() "
+                "WHERE id = :id"
+            ),
             {"id": adaptation_id, "status": status},
         )
         await session.commit()

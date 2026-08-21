@@ -4855,12 +4855,18 @@ def _frame_jpeg_at(path: str, t: float) -> bytes:
 async def _reel_label_guard(
     path: str, durations: list[float]
 ) -> dict[str, Any]:
-    """Vision-check one frame per planned shot for lettering the brief bans.
+    """Vision-check first/mid/last frames of every planned shot window for
+    lettering the brief bans.
 
     Runs on the RAW reel, before the caption burn — burned beats are the one
     legitimate lettering and would false-positive every frame after it. Fails
     open like the image gate: a disabled guard or a failed vision call never
     blocks a render.
+
+    One mid-window frame per shot was the whole original probe, so lettering
+    that pops in at a cut or resolves late in a beat shipped unexamined
+    (P0-10) — the boundary samples stay a beat inside their window so frame
+    extraction never lands on the neighbouring shot.
 
     Two tiers, because the packaging lock PERMITS what the image gate bans:
     readable or garbled strings (``offending``) are hard flags that buy the
@@ -4876,22 +4882,40 @@ async def _reel_label_guard(
     if not _itg.guard_enabled():
         return {"checked": False, "flagged": False, "reason": "disabled"}
 
-    mids: list[float] = []
+    times: list[float] = []
     start = 0.0
     for dur in durations:
-        mids.append(start + dur / 2.0)
+        dur = max(0.0, float(dur))
+        edge = min(0.25, dur / 4.0)
+        for t in (start + edge, start + dur / 2.0, start + dur - edge):
+            # Sub-second windows collapse their samples — keep one of each
+            # near-identical pair instead of paying the vision call twice.
+            if not times or t - times[-1] > 0.05:
+                times.append(t)
         start += dur
 
-    async def _check(t: float) -> tuple[float, Any] | None:
-        frame = await asyncio.to_thread(_frame_jpeg_at, path, t)
-        if not frame:
-            return None
-        v = await _itg.detect_unintended_text(
-            frame, "image/jpeg", None, label=f"reel@{t:.1f}s"
-        )
-        return (t, v)
+    # 3x the frames of the old probe: bound the fan-out so an 8-shot reel
+    # cannot fire 24 concurrent vision calls at the gateway at once.
+    gate = asyncio.Semaphore(4)
 
-    results = [r for r in await asyncio.gather(*(_check(t) for t in mids)) if r]
+    async def _check(t: float) -> tuple[float, Any] | None:
+        async with gate:
+            try:
+                frame = await asyncio.to_thread(_frame_jpeg_at, path, t)
+            except Exception as exc:
+                # ffmpeg missing/timeout must degrade this frame's check,
+                # never surface as a render failure — the guard's contract
+                # is record-don't-block.
+                logger.debug("label guard frame @%.1fs failed: %s", t, exc)
+                return None
+            if not frame:
+                return None
+            v = await _itg.detect_unintended_text(
+                frame, "image/jpeg", None, label=f"reel@{t:.1f}s"
+            )
+            return (t, v)
+
+    results = [r for r in await asyncio.gather(*(_check(t) for t in times)) if r]
     checked = [r for r in results if r[1].checked]
     flags: list[dict[str, Any]] = []
     soft: list[dict[str, Any]] = []
@@ -5062,9 +5086,7 @@ async def _render_native_multishot(
                     )[:128],
                     segments=segments,
                     lora_name=(brand_lora or {}).get("lora_name"),
-                    lora_strength=float(
-                        (brand_lora or {}).get("lora_strength") or 1.0
-                    ),
+                    lora_strength=_lora_strength_of(brand_lora),
                 )
                 try:
                     candidate = await asyncio.wait_for(
@@ -5334,6 +5356,16 @@ async def _render_native_multishot(
         return _bail(f"native multishot branch failed: {exc}")
 
 
+def _lora_strength_of(brand_lora: dict[str, Any] | None) -> float:
+    """Adapter strength for the render request — 0.0 is a LEGITIMATE value.
+
+    ``or 1.0`` coerced a deliberately zeroed adapter back to full strength
+    (N-12); only an absent value may default.
+    """
+    raw = (brand_lora or {}).get("lora_strength")
+    return 1.0 if raw is None else float(raw)
+
+
 async def _brand_video_lora(brand_id: str) -> dict[str, Any] | None:
     """The brand's ready video adapter as forge kwargs, or None.
 
@@ -5362,7 +5394,10 @@ async def _brand_video_lora(brand_id: str) -> dict[str, Any] | None:
         return None
     return {
         "lora_name": str(rows[0]["adapter_name"]),
-        "lora_strength": float(rows[0]["strength"] or 1.0),
+        # 0.0 is a legal configured strength — only NULL defaults (N-12).
+        "lora_strength": (
+            1.0 if rows[0]["strength"] is None else float(rows[0]["strength"])
+        ),
     }
 
 
@@ -5574,9 +5609,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 quality_tier=quality_tier,
                 idempotency_key=base_key[:128],
                 lora_name=(brand_lora or {}).get("lora_name"),
-                lora_strength=float(
-                    (brand_lora or {}).get("lora_strength") or 1.0
-                ),
+                lora_strength=_lora_strength_of(brand_lora),
             )
             result = await generate_video(req, progress_cb=_progress)
             logger.info(
@@ -5610,6 +5643,24 @@ async def render_video(state: VideoState) -> dict[str, Any]:
             # distributed proportionally across the clip's real duration.
             cta_text = str(plan.get("cta") or "")
             with tempfile.TemporaryDirectory(prefix="single_") as cardwork:
+                # ── Invented-label gate (raw clip, BEFORE captions burn) ───
+                # Same guard the native lane runs (P0-10); a 1-shot hero
+                # plan lands here, so this lane must not ship unchecked.
+                # Record-don't-block, like the chained lane.
+                raw_path = os.path.join(cardwork, "raw.mp4")
+                await asyncio.to_thread(
+                    _write_bytes, raw_path, result.video_bytes
+                )
+                label_guard = await _reel_label_guard(
+                    raw_path, [float(result.duration_s or duration_s or 0.0)]
+                )
+                if label_guard.get("flagged"):
+                    logger.warning(
+                        "Single-call clip resolved invented lettering — "
+                        "shipping with label_guard flags in meta: %s",
+                        label_guard.get("flags"),
+                    )
+                meta["label_guard"] = label_guard
                 # Same order as the multi-shot path: the card owns the CTA,
                 # so it has to exist before the burn decides what to write
                 # on the final beat.
@@ -5825,9 +5876,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     quality_tier=quality_tier,
                     idempotency_key=f"{base_key}:s{i + 1}"[:128],
                     lora_name=(brand_lora or {}).get("lora_name"),
-                    lora_strength=float(
-                        (brand_lora or {}).get("lora_strength") or 1.0
-                    ),
+                    lora_strength=_lora_strength_of(brand_lora),
                 )
                 try:
                     # Bound the SHOT, not just the run. shared.video gives
@@ -6178,16 +6227,30 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     )
             video_bytes = await asyncio.to_thread(_read_bytes, final_path)
             final_video = (final_info or {}).get("video") or {}
+            rendered_durations = [
+                float((p or {}).get("duration") or m["requested_s"])
+                for p, m in zip(probes, shot_metas)
+            ]
+
+            # ── Invented-label gate (raw reel, BEFORE captions burn) ───────
+            # The same guard the native lane runs; the chained and hero
+            # lanes shipped unchecked (P0-10). Record-don't-block here:
+            # re-rendering a chained reel costs N full provider calls, so a
+            # flagged reel ships with the flags in its meta for review to
+            # consume — the native lane keeps its seed-bumped retry.
+            label_guard = await _reel_label_guard(final_path, rendered_durations)
+            if label_guard.get("flagged"):
+                logger.warning(
+                    "Chained reel resolved invented lettering — shipping "
+                    "with label_guard flags in meta: %s",
+                    label_guard.get("flags"),
+                )
 
             # ── Burn the overlay text onto the finished master ─────────────
             # Timing windows use the durations actually rendered (probed per
             # shot, falling back to the fitted request). Best-effort: failure
             # keeps the unburned master.
             await _progress(_CONCAT_PROGRESS_START + 3, "overlay:burn")
-            rendered_durations = [
-                float((p or {}).get("duration") or m["requested_s"])
-                for p, m in zip(probes, shot_metas)
-            ]
             cta_text = str(plan.get("cta") or "")
             # Render the card first: it carries the CTA, so whether it exists
             # decides what the burn puts on the final beat.
@@ -6271,6 +6334,9 @@ async def render_video(state: VideoState) -> dict[str, Any]:
         "dropped_shots": dropped_indices,
         "normalized_shots": normalized,
         "concat_mode": concat_mode,
+        # Same guard payload the native lane records (there it rides the
+        # whole-reel ledger entry) — review consumes the flags either way.
+        "label_guard": label_guard,
         # Recorded because it changes what the reel SHOWS, not just how it was
         # made: an unverified-pack reel deliberately has no legible pack.
         "unverified_pack": unverified_pack,
@@ -6483,6 +6549,12 @@ async def store_video(state: VideoState) -> dict[str, Any]:
                         "dropped_shots": meta.get("dropped_shots"),
                         "overlay_burn": meta.get("overlay_burn"),
                         "overlay_lines": meta.get("overlay_lines"),
+                        # Chained and single-call lanes carry the guard at
+                        # meta top level (the native lane rides it on the
+                        # whole-reel ledger entry) — persist it here so
+                        # video_jobs shows it for every lane. None when the
+                        # lane recorded nothing.
+                        "label_guard": meta.get("label_guard"),
                     }
                 ),
                 "idempotency_key": (meta.get("idempotency_key") or "")[:128] or None,

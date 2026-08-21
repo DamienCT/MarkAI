@@ -122,6 +122,15 @@ class ProviderUnavailableError(RuntimeError):
     """Raised when a provider cannot serve this request — skip to the next one."""
 
 
+class ProviderConfigError(RuntimeError):
+    """Raised when a provider rejects our CREDENTIALS/config (401/403).
+
+    Unlike ProviderUnavailableError this must abort the cascade: a wrong
+    VIDEO_FORGE_API_KEY silently failing every reel over to paid cloud at
+    ~$0.06/s is exactly the N-11 bug — a config error is fixed by an
+    operator, not by spending money on fal."""
+
+
 # ── Shared httpx client (lazy singleton, mirrors shared/tools/browser.py) ──
 _http_client: httpx.AsyncClient | None = None
 
@@ -258,7 +267,28 @@ class ForgeProvider:
         return {"X-API-Key": settings.VIDEO_FORGE_API_KEY}
 
     async def available(self, req: VideoRequest, ledger: list[dict]) -> bool:
-        """Health probe — skip the provider entirely when the box is unreachable."""
+        """Health probe — skip the provider entirely when the box is unreachable.
+
+        A blank API key is checked FIRST and loudly: /health is
+        unauthenticated, so the probe alone let a blank key "pass" here only
+        for submit to 401 and the broad cascade handler to silently fail the
+        reel over to paid cloud (N-11). Production startup refuses a blank
+        key outright (shared/config.py); this guard covers dev boxes."""
+        if not settings.VIDEO_FORGE_API_KEY:
+            logger.error(
+                "VIDEO_FORGE_API_KEY is blank — the forge would 401 every "
+                "submit. Set the key (or unset VIDEO_FORGE_URL); skipping "
+                "the forge provider."
+            )
+            ledger.append(
+                _ledger_entry(
+                    self.name,
+                    self.model,
+                    "skipped",
+                    "VIDEO_FORGE_API_KEY is blank — config error",
+                )
+            )
+            return False
         client = _get_http_client()
         try:
             resp = await client.get(f"{self.base_url}/health", timeout=5)
@@ -303,6 +333,14 @@ class ForgeProvider:
         resp = await client.post(
             f"{self.base_url}/v1/jobs", json=payload, headers=self._headers(), timeout=60
         )
+        if resp.status_code in (401, 403):
+            # Wrong key = operator error, never a reason to fail over to
+            # paid cloud (N-11). generate_video re-raises this unchanged.
+            raise ProviderConfigError(
+                f"forge rejected the API key (HTTP {resp.status_code}) — "
+                "check VIDEO_FORGE_API_KEY; refusing to fail over to a paid "
+                "provider"
+            )
         resp.raise_for_status()  # 202 accepted, or 200 on duplicate idempotency_key
         job_id = (resp.json() or {}).get("job_id")
         if not job_id:
@@ -729,6 +767,21 @@ async def generate_video(
             logger.warning("Video provider %s skipped: %s", provider.name, exc)
             ledger.append(_ledger_entry(provider.name, provider.model, "skipped", str(exc)))
             failures.append(f"{provider.name}: {exc}")
+        except ProviderConfigError as exc:
+            # Credentials are wrong, not the network: aborting here is the
+            # point — silently continuing the cascade is what burned paid
+            # fal spend on every misconfigured render (N-11).
+            logger.error(
+                "Video provider %s config error — aborting the cascade "
+                "(no paid fallback): %s",
+                provider.name,
+                exc,
+            )
+            ledger.append(
+                _ledger_entry(provider.name, provider.model, "config_error", str(exc))
+            )
+            exc.ledger = ledger  # type: ignore[attr-defined]
+            raise
         except Exception as exc:
             logger.warning("Video provider %s failed: %s", provider.name, exc)
             ledger.append(_ledger_entry(provider.name, provider.model, "failed", str(exc)))

@@ -2633,10 +2633,12 @@ async def _download_product_asset(ref: str | None) -> bytes | None:
                 r = await c.get(ref)
                 r.raise_for_status()
                 return r.content
-        from shared.config import settings as _cfg
+        from shared.config import media_auth_headers, settings as _cfg
         if ref.startswith("/"):
             async with _httpx.AsyncClient(timeout=30) as c:
-                r = await c.get(f"{_cfg.BACKEND_URL}{ref}")
+                r = await c.get(
+                    f"{_cfg.BACKEND_URL}{ref}", headers=media_auth_headers()
+                )
                 r.raise_for_status()
                 return r.content
         bucket = getattr(_cfg, "MINIO_BUCKET", "markai-assets")
@@ -2644,7 +2646,10 @@ async def _download_product_asset(ref: str | None) -> bytes | None:
             return await async_download_file(bucket, ref)
         except Exception:
             async with _httpx.AsyncClient(timeout=30) as c:
-                r = await c.get(f"{_cfg.BACKEND_URL}/api/v1/files/{ref}")
+                r = await c.get(
+                    f"{_cfg.BACKEND_URL}/api/v1/files/{ref}",
+                    headers=media_auth_headers(),
+                )
                 r.raise_for_status()
                 return r.content
     except Exception as exc:
@@ -2712,13 +2717,23 @@ async def _download_logo_bytes(url: str) -> bytes | None:
     """Download logo bytes from a MinIO path or HTTP URL."""
     import httpx
 
+    from shared.config import media_auth_headers, settings as _cfg
+
     try:
         if url.startswith("content-images/") or url.startswith("brand-assets/"):
             bucket, _, obj = url.partition("/")
             return await async_download_file(bucket, obj)
         else:
+            _base = getattr(_cfg, "BACKEND_URL", "") or "http://backend:8000"
             async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(url)
+                resp = await client.get(
+                    url,
+                    # Backend media GETs need the token; never send it to an
+                    # external logo host.
+                    headers=(
+                        media_auth_headers() if url.startswith(_base) else None
+                    ),
+                )
                 resp.raise_for_status()
                 return resp.content
     except Exception:
@@ -3856,6 +3871,7 @@ async def generate_mockups_node(state: ContentState) -> dict[str, Any]:
                     display_name=brand_name,
                     avatar_initial=brand_initial,
                     avatar_logo_data=avatar_logo_data,
+                    industry=str(brand_guidelines.get("industry") or ""),
                 )
                 obj_name = f"{brand_id}/{item_id}/mockup_{platform}.png"
                 await async_upload_file(

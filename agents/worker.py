@@ -91,6 +91,13 @@ def _setup_json_logging() -> None:
     root.addHandler(handler)
     root.setLevel(logging.INFO)
 
+    # httpx/httpcore log every request line — full URL, query string included —
+    # at INFO, which is how credential-bearing URLs reach stdout (N-01).
+    # Keep them at WARNING so request URLs never enter the logs (mirrors
+    # backend main.py).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 _setup_json_logging()
 logger = logging.getLogger("worker")
@@ -210,6 +217,118 @@ def _delivery_attempt(msg: Any) -> int:
         return int(msg.metadata.num_delivered or 1)
     except Exception:
         return 1
+
+
+def _register_run_id(run_id: str) -> None:
+    """Attach the freshly created agent_runs id to this task's in-flight entry.
+
+    The shutdown drain scopes its release UPDATE to exactly the run ids
+    registered here (AG-11): a global WHERE status='running' would fail
+    ANOTHER worker's live runs — and free their dedup locks — the moment a
+    second worker exists.
+    """
+    task = asyncio.current_task()
+    for entry in _in_flight.values():
+        if entry.get("task") is task:
+            entry["run_id"] = run_id
+            return
+
+
+def _extract_interrupts(result: Any) -> list[dict[str, Any]]:
+    """JSON-safe interrupt payloads from a graph invoke result ([] = none).
+
+    langgraph 1.1.3 does NOT raise GraphInterrupt out of (a)invoke: a node
+    hitting interrupt() makes the invocation return NORMALLY with the pending
+    interrupts under result["__interrupt__"] as a list of
+    langgraph.types.Interrupt (attrs: value, id) — verified against the
+    installed version, with and without a checkpointer. Missing this marker
+    records an unapproved, half-done run as 'completed' and chains it
+    downstream (P0-01).
+    """
+    if not isinstance(result, dict):
+        return []
+    raw = result.get("__interrupt__") or []
+    if not isinstance(raw, (list, tuple)):
+        raw = [raw]
+    interrupts: list[dict[str, Any]] = []
+    for item in raw:
+        value = getattr(item, "value", item)
+        try:
+            value = json.loads(json.dumps(value, default=str))
+        except Exception:
+            value = {"repr": repr(item)}
+        interrupt_id = getattr(item, "id", None)
+        interrupts.append(
+            {
+                "value": value,
+                "interrupt_id": str(interrupt_id) if interrupt_id else None,
+            }
+        )
+    return interrupts
+
+
+async def _record_paused_run(
+    run_id: str | None,
+    agent_type: str,
+    brand_id: str,
+    interrupts: list[dict[str, Any]],
+) -> None:
+    """Persist an interrupted run as paused_for_review + notify the operators.
+
+    Only the interrupt payload is stored — NOT the graph's half-done
+    artifacts: a 'completed'-shaped strategy payload from an interrupted run
+    is exactly what poisoned get_latest_strategy with an unapproved,
+    wrong-shaped strategy (N-09; the getter filters status='completed').
+    """
+    logger.info(
+        "Workflow %s paused for human review (brand %s, run %s)",
+        agent_type,
+        brand_id,
+        run_id,
+    )
+    if run_id:
+        try:
+            await complete_agent_run(
+                run_id,
+                status="paused_for_review",
+                output_payload={
+                    "paused_for_review": True,
+                    "interrupts": interrupts,
+                },
+            )
+        except Exception as pause_exc:
+            logger.error(
+                "Could not record run %s as paused_for_review: %s",
+                run_id,
+                pause_exc,
+            )
+    try:
+        brand_name = "a brand"
+        if brand_id:
+            rows = await execute_query(
+                "SELECT name FROM brands WHERE id = :bid", {"bid": brand_id}
+            )
+            brand_name = (rows[0].get("name") if rows else None) or brand_name
+        first_message = ""
+        if interrupts and isinstance(interrupts[0].get("value"), dict):
+            first_message = str(interrupts[0]["value"].get("message") or "")
+        # 'approval_request' is in the notifications CHECK constraint;
+        # 'review_required' etc. are not.
+        await notify_admins(
+            notification_type="approval_request",
+            title=f"{agent_type.capitalize()} run paused for review — {brand_name}",
+            body=first_message
+            or f"{brand_name}: the {agent_type} workflow is waiting for a human decision.",
+            reference_type="agent_run",
+            reference_id=str(run_id) if run_id else None,
+            roles=("admin", "manager", "editor"),
+        )
+    except Exception as notif_exc:
+        logger.warning(
+            "paused_for_review notification skipped for run %s: %s",
+            run_id,
+            notif_exc,
+        )
 
 
 async def _continue_content_chain(
@@ -404,14 +523,17 @@ async def _replace_product_in_image(
                 resp.raise_for_status()
                 product_image_data = resp.content
         elif product_image_url.startswith("/"):
-            from shared.config import settings as _cfg
+            from shared.config import media_auth_headers, settings as _cfg
             backend_url = getattr(_cfg, "BACKEND_URL", "http://backend:8000")
             async with _httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(f"{backend_url}{product_image_url}")
+                resp = await client.get(
+                    f"{backend_url}{product_image_url}",
+                    headers=media_auth_headers(),
+                )
                 resp.raise_for_status()
                 product_image_data = resp.content
         else:
-            from shared.config import settings as _storage_cfg
+            from shared.config import media_auth_headers, settings as _storage_cfg
             from shared.tools.storage import async_download_file as _adl
             default_bucket = getattr(_storage_cfg, "MINIO_BUCKET", "markai-assets")
             try:
@@ -420,7 +542,8 @@ async def _replace_product_in_image(
                 backend_url = getattr(_storage_cfg, "BACKEND_URL", "http://backend:8000")
                 async with _httpx.AsyncClient(timeout=30) as client:
                     resp = await client.get(
-                        f"{backend_url}/api/v1/files/{product_image_url}"
+                        f"{backend_url}/api/v1/files/{product_image_url}",
+                        headers=media_auth_headers(),
                     )
                     resp.raise_for_status()
                     product_image_data = resp.content
@@ -450,7 +573,7 @@ async def _download_product_asset(ref: str | None) -> bytes | None:
     if not ref:
         return None
     import httpx as _httpx
-    from shared.config import settings as _cfg
+    from shared.config import media_auth_headers, settings as _cfg
     from shared.tools.storage import async_download_file as _adl
 
     try:
@@ -461,7 +584,9 @@ async def _download_product_asset(ref: str | None) -> bytes | None:
                 return r.content
         if ref.startswith("/"):
             async with _httpx.AsyncClient(timeout=30) as c:
-                r = await c.get(f"{_cfg.BACKEND_URL}{ref}")
+                r = await c.get(
+                    f"{_cfg.BACKEND_URL}{ref}", headers=media_auth_headers()
+                )
                 r.raise_for_status()
                 return r.content
         bucket = getattr(_cfg, "MINIO_BUCKET", "markai-assets")
@@ -469,7 +594,10 @@ async def _download_product_asset(ref: str | None) -> bytes | None:
             return await _adl(bucket, ref)
         except Exception:
             async with _httpx.AsyncClient(timeout=30) as c:
-                r = await c.get(f"{_cfg.BACKEND_URL}/api/v1/files/{ref}")
+                r = await c.get(
+                    f"{_cfg.BACKEND_URL}/api/v1/files/{ref}",
+                    headers=media_auth_headers(),
+                )
                 r.raise_for_status()
                 return r.content
     except Exception as exc:
@@ -876,9 +1004,20 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 logo_png = None
                 for try_label in [chosen_label] + [l for l in available_logos if l != chosen_label]:
                     try:
+                        from shared.config import media_auth_headers as _mah
+
                         logo_url = available_logos[try_label]
                         async with _httpx.AsyncClient(timeout=30) as client:
-                            resp = await client.get(logo_url)
+                            resp = await client.get(
+                                logo_url,
+                                # Backend media GETs need the token; never
+                                # send it to an external logo host.
+                                headers=(
+                                    _mah()
+                                    if logo_url.startswith(api_base)
+                                    else None
+                                ),
+                            )
                             resp.raise_for_status()
                             logo_raw = resp.content
                         is_svg = logo_raw[:5] == b"<?xml" or logo_raw[:4] == b"<svg" or b"<svg" in logo_raw[:500]
@@ -1034,11 +1173,20 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
             logo_info = logos_cfg.get(avatar_label)
             if isinstance(logo_info, dict) and logo_info.get("url"):
                 try:
+                    from shared.config import media_auth_headers as _mah
+
                     _logo_url = logo_info["url"]
                     if _logo_url.startswith("/"):
                         _logo_url = f"{api_base}{_logo_url}"
                     async with _httpx.AsyncClient(timeout=30) as client:
-                        resp = await client.get(_logo_url)
+                        resp = await client.get(
+                            _logo_url,
+                            headers=(
+                                _mah()
+                                if _logo_url.startswith(api_base)
+                                else None
+                            ),
+                        )
                         resp.raise_for_status()
                         _raw = resp.content
                     is_svg = _raw[:5] == b"<?xml" or _raw[:4] == b"<svg" or b"<svg" in _raw[:500]
@@ -1071,6 +1219,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                     mockup_image_data, caption, platform,
                     username=brand_handle, display_name=brand_name,
                     avatar_initial=brand_initial, avatar_logo_data=avatar_logo_data,
+                    industry=str(brand_guidelines.get("industry") or ""),
                 )
                 obj_name = f"{brand_id}/{calendar_item_id}/mockup_{platform}.png"
                 await async_upload_file("content-images", obj_name, mockup_bytes, "image/png")
@@ -1443,9 +1592,20 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
             logo_png = None
             for try_label in [chosen_label] + [l for l in available_logos if l != chosen_label]:
                 try:
+                    from shared.config import media_auth_headers as _mah
+
                     logo_url = available_logos[try_label]
                     async with _httpx.AsyncClient(timeout=30) as client:
-                        resp = await client.get(logo_url)
+                        resp = await client.get(
+                            logo_url,
+                            # Backend media GETs need the token; never send
+                            # it to an external logo host.
+                            headers=(
+                                _mah()
+                                if logo_url.startswith(api_base)
+                                else None
+                            ),
+                        )
                         resp.raise_for_status()
                         logo_raw = resp.content
                     is_svg = logo_raw[:5] == b"<?xml" or logo_raw[:4] == b"<svg" or b"<svg" in logo_raw[:500]
@@ -1551,11 +1711,20 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                 logo_info = logos_cfg.get(avatar_label)
                 if isinstance(logo_info, dict) and logo_info.get("url"):
                     try:
+                        from shared.config import media_auth_headers as _mah
+
                         _logo_url = logo_info["url"]
                         if _logo_url.startswith("/"):
                             _logo_url = f"{api_base}{_logo_url}"
                         async with _httpx.AsyncClient(timeout=30) as client:
-                            resp = await client.get(_logo_url)
+                            resp = await client.get(
+                                _logo_url,
+                                headers=(
+                                    _mah()
+                                    if _logo_url.startswith(api_base)
+                                    else None
+                                ),
+                            )
                             resp.raise_for_status()
                             _raw = resp.content
                         is_svg = _raw[:5] == b"<?xml" or _raw[:4] == b"<svg" or b"<svg" in _raw[:500]
@@ -1577,6 +1746,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                         mockup_base, caption, platform,
                         username=brand_handle, display_name=brand_name,
                         avatar_initial=brand_initial, avatar_logo_data=avatar_logo_data,
+                        industry=str(brand_guidelines.get("industry") or ""),
                     )
                     obj_name = f"{brand_id}/{calendar_item_id}/mockup_{platform}.png"
                     await async_upload_file("content-images", obj_name, mockup_bytes, "image/png")
@@ -2209,6 +2379,9 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         return
 
     initial_state["run_id"] = run_id
+    # Drain scoping (AG-11): the shutdown release must only ever touch runs
+    # THIS worker created — record the id on our in-flight registry entry.
+    _register_run_id(run_id)
 
     logger.info(
         "Dispatching %s workflow for brand %s (run %s)",
@@ -2229,6 +2402,19 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             graph.ainvoke(initial_state, config=config if config else None),
             timeout=timeout_s,
         )
+
+        # ── HITL safe-stop (P0-01): interrupts come back IN the result ──
+        # On langgraph 1.1.3 an interrupt() returns normally with an
+        # "__interrupt__" marker — the except GraphInterrupt below never
+        # fires. Without this check the run is stamped 'completed' and
+        # chained, sending an UNAPPROVED strategy downstream. Record the
+        # pause (interrupt payload only — no completed-looking artifacts),
+        # notify the reviewers, ack, and never chain.
+        interrupts = _extract_interrupts(result)
+        if interrupts:
+            await _record_paused_run(run_id, agent_type, brand_id, interrupts)
+            await msg.ack()
+            return
 
         # Ensure result is JSON-safe before storing (handle UUIDs, datetimes, etc.)
         safe_result = json.loads(json.dumps(result, default=str))
@@ -2623,17 +2809,14 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         await msg.nak(delay=60)
 
     except GraphInterrupt as gi:
-        logger.info(
-            "Workflow %s paused for human review (brand %s)", agent_type, brand_id
-        )
-        if run_id:
-            await complete_agent_run(
-                run_id,
-                status="paused_for_review",
-                output_payload=gi.value
-                if hasattr(gi, "value")
-                else {"reason": str(gi)},
-            )
+        # Dead on langgraph 1.1.3 (interrupts return via "__interrupt__",
+        # handled above) — kept as belt-and-suspenders for a version that
+        # raises again, routed through the same pause/notify path.
+        raw = gi.args[0] if gi.args else []
+        interrupts = _extract_interrupts({"__interrupt__": raw}) or [
+            {"value": {"reason": str(gi)}, "interrupt_id": None}
+        ]
+        await _record_paused_run(run_id, agent_type, brand_id, interrupts)
         await msg.ack()
 
     except Exception as exc:
@@ -2756,6 +2939,10 @@ async def _drain_and_shutdown(consumer: NATSConsumer) -> None:
     # submitted, waiting is cheaper than a duplicate render, so that run
     # queues with everything else.
     abandoned: set[int] = set()
+    # agent_runs ids of every workflow THIS drain cancels — captured before
+    # the cancel, because the dispatch finally pops the registry entry. The
+    # release UPDATE below is scoped to exactly these ids (AG-11).
+    released_run_ids: list[str] = []
     for token, entry in list(_in_flight.items()):
         if entry["agent_type"] != "video":
             continue
@@ -2781,6 +2968,8 @@ async def _drain_and_shutdown(consumer: NATSConsumer) -> None:
             }
         )
         abandoned.add(token)
+        if entry.get("run_id"):
+            released_run_ids.append(entry["run_id"])
         # Cancel NOW, not at exit: an abandoned pre-forge workflow left
         # running through the wait could submit its render job mid-drain —
         # after the nak decision was made on "has not reached the forge" —
@@ -2820,6 +3009,8 @@ async def _drain_and_shutdown(consumer: NATSConsumer) -> None:
         # the drain is nak'ing (nats-py only flips _ackd after its awaited
         # publish, so both settles can reach the wire).
         for token, entry in leftovers:
+            if entry.get("run_id"):
+                released_run_ids.append(entry["run_id"])
             _task = entry.get("task")
             if _task is not None and not _task.done():
                 _task.cancel()
@@ -2844,20 +3035,32 @@ async def _drain_and_shutdown(consumer: NATSConsumer) -> None:
     # A cancelled handler does no failure bookkeeping (CancelledError skips
     # its except branches), so its agent_runs row stays 'running' — and on
     # the NEW container that zombie row makes the redelivered message hit
-    # the duplicate-run branch, which ACKS non-video work permanently. This
-    # worker is the stack's only executor, so at this point every 'running'
-    # row belongs to a workflow this drain finished or cancelled.
-    if exhausted or abandoned:
+    # the duplicate-run branch, which ACKS non-video work permanently.
+    # Scoped to the run ids registered by THIS worker's cancelled workflows
+    # (AG-11): a global WHERE status='running' fails ANOTHER worker's live
+    # runs the moment a second worker exists — their successful completion
+    # then silently no-ops and the freed dedup lock permits a duplicate
+    # (paid) run. A run cancelled before it registered its id is left to
+    # the stale-run reaper.
+    # One UPDATE per id rather than id = ANY(:ids): binding a Python list
+    # through the raw text() helper to an asyncpg uuid[] parameter is
+    # unproven in this repo (text() bindings have bitten before), and a
+    # drain releases a handful of rows at most — the loop is the provably
+    # correct shape. Per-id try/except: one bad row must not strand the rest.
+    for _rel_id in released_run_ids:
         try:
             await execute_update(
                 "UPDATE agent_runs SET status = 'failed', "
                 "error_message = 'abandoned by draining worker (redeploy)', "
-                "completed_at = NOW() WHERE status = 'running'"
+                "completed_at = NOW() "
+                "WHERE id = :id AND status = 'running'",
+                {"id": _rel_id},
             )
         except Exception as rel_exc:
             logger.warning(
-                "draining: could not release running agent_runs rows: %s "
-                "— the stale-run reaper owns them",
+                "draining: could not release running agent_runs row %s: %s "
+                "— the stale-run reaper owns it",
+                _rel_id,
                 rel_exc,
             )
 

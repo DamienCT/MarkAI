@@ -40,6 +40,24 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is required for migrations")
 
 
+def include_object(object, name, type_, reflected, compare_to):
+    """Keep --autogenerate from emitting DROPs for schema that has no ORM model.
+
+    brand_model_profiles (0004), system_flags and webhook_events (0005) exist
+    only as SQL — no model imports them above — and the hand-written partial
+    indexes (idx_brand_model_profiles_ready, idx_products_brand_bc_item,
+    idx_video_jobs_idempotency, idx_agent_runs_running, idx_content_current, …)
+    never appear in metadata either. Without this hook a future autogenerate
+    would emit DROP TABLE / DROP INDEX for all of them (N-16). Anything
+    reflected from the database with no metadata counterpart is therefore
+    ignored; removing schema stays the job of hand-written convergence
+    migrations.
+    """
+    if reflected and compare_to is None:
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
     context.configure(
@@ -47,13 +65,18 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

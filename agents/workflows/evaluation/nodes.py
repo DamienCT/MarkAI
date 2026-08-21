@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -116,11 +115,15 @@ async def generate_recommendations(state: EvaluationState) -> dict[str, Any]:
 
 
 async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
-    """Classify recommendations into adaptation tiers.
+    """Classify recommendations into risk tiers.
 
-    - tier1: Safe to auto-apply (timing adjustments, hashtag changes)
-    - tier2: Needs human review (content tone changes, audience targeting)
+    - tier1: Low risk (timing adjustments, hashtag changes)
+    - tier2: Medium risk (content tone changes, audience targeting)
     - tier3: Major strategic changes (pillar restructuring, platform changes)
+
+    The tier describes review weight only — every tier is stored as a
+    recommendation that waits for a human to apply or reject it; nothing
+    is applied automatically.
     """
     try:
         recommendations = state.get("recommendations", [])
@@ -129,9 +132,9 @@ async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
-                    "You are a marketing operations manager. Classify each recommendation into a tier:\n"
-                    "- tier1: Safe to auto-apply. Examples: posting time changes, hashtag optimization, minor caption tweaks.\n"
-                    "- tier2: Needs human review. Examples: content tone shifts, new audience targeting, format changes.\n"
+                    "You are a marketing operations manager. Classify each recommendation into a risk tier:\n"
+                    "- tier1: Low risk. Examples: posting time changes, hashtag optimization, minor caption tweaks.\n"
+                    "- tier2: Medium risk, needs careful human review. Examples: content tone shifts, new audience targeting, format changes.\n"
                     "- tier3: Major strategic change. Examples: pillar restructuring, platform strategy changes, brand voice shifts.\n"
                     "Return a JSON array where each object has the original recommendation fields plus a 'tier' field (1, 2, or 3)."
                 ),
@@ -165,12 +168,18 @@ async def classify_adaptations(state: EvaluationState) -> dict[str, Any]:
 
 
 async def store_adaptations_node(state: EvaluationState) -> dict[str, Any]:
-    """Persist classified adaptations to the database."""
+    """Persist classified recommendations for human review.
+
+    Every tier — including tier 1 — is stored as 'proposed'. Nothing is
+    auto-applied: no executor exists that could turn a recommendation into
+    a real behaviour change, so an 'applied' stamp at insert time would be
+    fake learning (P0-06). A human applies or rejects each one.
+    """
     try:
         brand_id = state["brand_id"]
         adaptations = state.get("adaptations", [])
         if not adaptations:
-            logger.info("No adaptations to store for brand %s", brand_id)
+            logger.info("No recommendations to store for brand %s", brand_id)
             return {"status": "completed"}
 
         # adaptations.source_content_id is NOT NULL, so these brand-level
@@ -201,22 +210,32 @@ async def store_adaptations_node(state: EvaluationState) -> dict[str, Any]:
 
         db_records = []
         for a in adaptations:
+            try:
+                tier = int(a.get("tier", 2))
+            except (TypeError, ValueError):
+                tier = 2
             db_records.append(
                 {
                     "brand_id": brand_id,
                     "source_content_id": source_content_id,
-                    "tier": a.get("tier", 2),
+                    "tier": tier if tier in (1, 2, 3) else 2,
                     "description": a.get("description", a.get("title", "")),
                     "confidence": a.get("confidence", 0.5),
-                    "data": json.dumps(a),
-                    # 'pending' is not in the adaptations status CHECK —
-                    # tier 2/3 recommendations wait for review as 'proposed'.
-                    "status": "auto_applied" if a.get("tier") == 1 else "proposed",
+                    # dict, not json.dumps(a) — store_adaptations serialises
+                    # the whole envelope once; pre-encoding double-encoded it.
+                    "data": a,
+                    # Every tier waits for a human decision — never
+                    # 'auto_applied' at insert time (P0-06).
+                    "status": "proposed",
                 }
             )
 
         ids = await store_adaptations(db_records)
-        logger.info("Stored %d adaptations for brand %s", len(ids), brand_id)
+        logger.info(
+            "Stored %d recommendations for brand %s (proposed — awaiting human review)",
+            len(ids),
+            brand_id,
+        )
 
         return {"status": "completed"}
     except Exception as exc:

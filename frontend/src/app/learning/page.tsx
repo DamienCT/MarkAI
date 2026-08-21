@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
-import { Info } from "lucide-react";
+import { Info, TriangleAlert } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,11 +14,48 @@ import { useRequireRole } from "@/lib/hooks";
 import { statusColor, formatRelativeTime } from "@/lib/utils";
 import type { Adaptation } from "@/types";
 
+// The backend lifts the JSON-encoded adaptation_notes envelope (tier,
+// confidence, data) into top-level response keys — tier is numeric 1..3.
+type LearningAdaptation = Omit<Adaptation, "tier" | "confidence_score"> & {
+  tier?: number | string;
+  confidence?: number;
+  confidence_score?: number;
+  data?: Record<string, unknown> | null;
+};
+
+const TIER_LABELS: Record<number, "post" | "campaign" | "strategy"> = {
+  1: "post", // low risk: timing, hashtags, minor caption tweaks
+  2: "campaign", // medium risk: tone shifts, targeting, format changes
+  3: "strategy", // major: pillar restructuring, platform strategy
+};
+
+function tierName(a: LearningAdaptation): "post" | "campaign" | "strategy" {
+  if (typeof a.tier === "number") return TIER_LABELS[a.tier] ?? "campaign";
+  if (a.tier === "post" || a.tier === "campaign" || a.tier === "strategy") return a.tier;
+  return "campaign";
+}
+
+function confidenceOf(a: LearningAdaptation): number {
+  const c = a.confidence ?? a.confidence_score;
+  return typeof c === "number" && !Number.isNaN(c) ? c : 0.5;
+}
+
+// Rows still awaiting a human decision (mirrors the backend's CAS guard).
+function isDecidable(a: LearningAdaptation): boolean {
+  return a.status === "proposed" || a.status === "auto_applied";
+}
+
 export default function LearningPage() {
   const { hasAccess, loading: roleLoading } = useRequireRole("editor");
-  const [adaptations, setAdaptations] = useState<Adaptation[]>([]);
+  const { data: session } = useSession();
+  const [adaptations, setAdaptations] = useState<LearningAdaptation[]>([]);
   const [loading, setLoading] = useState(true);
-  const [bulkApproving, setBulkApproving] = useState(false);
+  const [bulkApplying, setBulkApplying] = useState(false);
+
+  // Decisions are manager/admin only server-side — hide the buttons below that.
+  const userRole =
+    (session?.user as Record<string, unknown> | undefined)?.role as string | undefined;
+  const canDecide = userRole === "manager" || userRole === "admin";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -25,7 +63,7 @@ export default function LearningPage() {
 
     async function fetchAdaptations() {
       try {
-        const data = await api.get<Adaptation[]>("/api/v1/learning/adaptations", { limit: 50 }, { signal });
+        const data = await api.get<LearningAdaptation[]>("/api/v1/learning/adaptations", { limit: 50 }, { signal });
         setAdaptations(data);
       } catch (err) {
         // Session expiry: the sign-in redirect is already underway — don't
@@ -40,45 +78,36 @@ export default function LearningPage() {
     return () => controller.abort();
   }, []);
 
-  const handleApprove = async (id: string) => {
+  const handleDecision = async (id: string, action: "apply" | "reject") => {
     try {
-      await api.put(`/api/v1/learning/adaptations/${id}`, { status: "approved" });
-      setAdaptations((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, status: "approved" } : a))
+      const res = await api.post<{ id: string; status: string }>(
+        `/api/v1/learning/adaptations/${id}/decision`,
+        { action }
       );
-      toast.success("Adaptation approved");
+      setAdaptations((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, status: res.status } : a))
+      );
+      toast.success(action === "apply" ? "Recommendation applied" : "Recommendation rejected");
     } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to approve adaptation";
+      const detail =
+        (err as { detail?: string })?.detail || `Failed to ${action} recommendation`;
       toast.error(detail);
     }
   };
 
-  const handleReject = async (id: string) => {
-    try {
-      await api.put(`/api/v1/learning/adaptations/${id}`, { status: "rejected" });
-      setAdaptations((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, status: "rejected" } : a))
-      );
-      toast.success("Adaptation rejected");
-    } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to reject adaptation";
-      toast.error(detail);
-    }
-  };
-
-  const handleBulkApproveTier1 = async () => {
+  const handleBulkApplyTier1 = async () => {
     const postProposed = adaptations.filter(
-      (a) => a.tier === "post" && a.status === "proposed"
+      (a) => tierName(a) === "post" && isDecidable(a)
     );
     if (postProposed.length === 0) {
-      toast.info("No proposed post-level adaptations to approve");
+      toast.info("No proposed post-level recommendations to apply");
       return;
     }
-    setBulkApproving(true);
+    setBulkApplying(true);
     try {
       const results = await Promise.allSettled(
         postProposed.map((a) =>
-          api.put(`/api/v1/learning/adaptations/${a.id}`, { status: "approved" })
+          api.post(`/api/v1/learning/adaptations/${a.id}/decision`, { action: "apply" })
         )
       );
       const succeeded = results.filter((r) => r.status === "fulfilled").length;
@@ -86,10 +115,10 @@ export default function LearningPage() {
 
       setAdaptations((prev) =>
         prev.map((a) => {
-          if (a.tier === "post" && a.status === "proposed") {
+          if (tierName(a) === "post" && isDecidable(a)) {
             const result = results[postProposed.findIndex((p) => p.id === a.id)];
             if (result?.status === "fulfilled") {
-              return { ...a, status: "approved" };
+              return { ...a, status: "applied" };
             }
           }
           return a;
@@ -97,22 +126,22 @@ export default function LearningPage() {
       );
 
       if (failed === 0) {
-        toast.success(`Approved ${succeeded} post-level adaptation(s)`);
+        toast.success(`Applied ${succeeded} post-level recommendation(s)`);
       } else {
-        toast.warning(`Approved ${succeeded}, failed ${failed}`);
+        toast.warning(`Applied ${succeeded}, failed ${failed}`);
       }
     } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to bulk approve";
+      const detail = (err as { detail?: string })?.detail || "Failed to bulk apply";
       toast.error(detail);
     } finally {
-      setBulkApproving(false);
+      setBulkApplying(false);
     }
   };
 
   const tiers = ["post", "campaign", "strategy"] as const;
 
   const postProposedCount = adaptations.filter(
-    (a) => a.tier === "post" && a.status === "proposed"
+    (a) => tierName(a) === "post" && isDecidable(a)
   ).length;
 
   if (loading) {
@@ -128,24 +157,38 @@ export default function LearningPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-3xl font-bold">System Learning</h1>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-3xl font-bold">System Learning</h1>
+            <Badge variant="outline" className="border-amber-400 text-amber-700 dark:border-amber-600 dark:text-amber-400">
+              Experimental
+            </Badge>
+          </div>
           <p className="text-muted-foreground">AI-driven adaptations and strategy refinements</p>
         </div>
-        {postProposedCount > 0 && (
-          <Button onClick={handleBulkApproveTier1} disabled={bulkApproving}>
-            {bulkApproving
-              ? "Approving..."
-              : `Approve All Tier 1 (${postProposedCount})`}
+        {canDecide && postProposedCount > 0 && (
+          <Button onClick={handleBulkApplyTier1} disabled={bulkApplying}>
+            {bulkApplying
+              ? "Applying..."
+              : `Apply All Tier 1 (${postProposedCount})`}
           </Button>
         )}
+      </div>
+
+      {/* Experimental Banner */}
+      <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950">
+        <TriangleAlert className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+        <p className="text-sm text-amber-800 dark:text-amber-200">
+          <span className="font-semibold">Experimental</span> — recommendations only, nothing is auto-applied.
+          Every adaptation stays proposed until a person applies or rejects it here.
+        </p>
       </div>
 
       {/* Info Banner */}
       <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950">
         <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
         <p className="text-sm text-blue-800 dark:text-blue-200">
-          AI agents analyze content performance and propose improvements. Review and approve adaptations to help the system learn.
-          Post-level changes are safe to auto-approve, while campaign and strategy changes require manual review.
+          AI agents analyze content performance and propose improvements. Review and apply recommendations to help the system learn.
+          Post-level changes can be bulk-applied; campaign and strategy changes require individual review.
         </p>
       </div>
 
@@ -181,7 +224,7 @@ export default function LearningPage() {
           <CardContent>
             <p className="text-3xl font-bold">
               {adaptations.length > 0
-                ? ((adaptations.reduce((sum, a) => sum + a.confidence_score, 0) / adaptations.length) * 100).toFixed(0)
+                ? ((adaptations.reduce((sum, a) => sum + confidenceOf(a), 0) / adaptations.length) * 100).toFixed(0)
                 : 0}%
             </p>
           </CardContent>
@@ -197,7 +240,7 @@ export default function LearningPage() {
 
         {tiers.map((tier) => (
           <TabsContent key={tier} value={tier} className="mt-6 space-y-4">
-            {adaptations.filter((a) => a.tier === tier).length === 0 ? (
+            {adaptations.filter((a) => tierName(a) === tier).length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center">
                   <p className="text-muted-foreground">No {tier}-level adaptations</p>
@@ -205,17 +248,19 @@ export default function LearningPage() {
               </Card>
             ) : (
               adaptations
-                .filter((a) => a.tier === tier)
+                .filter((a) => tierName(a) === tier)
                 .map((adaptation) => (
                   <Card key={adaptation.id}>
                     <CardHeader>
                       <div className="flex items-center justify-between">
                         <div>
-                          <CardTitle className="text-base">{adaptation.category}</CardTitle>
-                          <CardDescription>{adaptation.description}</CardDescription>
+                          <CardTitle className="text-base">
+                            {adaptation.category || `Tier ${typeof adaptation.tier === "number" ? adaptation.tier : 2} recommendation`}
+                          </CardTitle>
+                          <CardDescription>{adaptation.description || adaptation.adapted_text}</CardDescription>
                         </div>
                         <div className="flex items-center gap-2">
-                          <Badge variant="outline">{Math.round(adaptation.confidence_score * 100)}% confidence</Badge>
+                          <Badge variant="outline">{Math.round(confidenceOf(adaptation) * 100)}% confidence</Badge>
                           <Badge className={statusColor(adaptation.status)}>{adaptation.status}</Badge>
                         </div>
                       </div>
@@ -226,16 +271,8 @@ export default function LearningPage() {
                         <div className="mb-4 rounded-md border p-3 bg-muted/30">
                           <p className="text-xs font-medium mb-2">What changed</p>
                           <div className="space-y-2">
-                            {adaptation.adaptation_notes && (
-                              <div>
-                                <p className="text-xs text-muted-foreground mb-1">Original context:</p>
-                                <p className="text-xs bg-red-50 dark:bg-red-950/30 rounded-sm px-2 py-1 border border-red-200 dark:border-red-900">
-                                  {adaptation.adaptation_notes}
-                                </p>
-                              </div>
-                            )}
                             <div>
-                              <p className="text-xs text-muted-foreground mb-1">Adapted text:</p>
+                              <p className="text-xs text-muted-foreground mb-1">Recommendation:</p>
                               <p className="text-xs bg-green-50 dark:bg-green-950/30 rounded-sm px-2 py-1 border border-green-200 dark:border-green-900">
                                 {adaptation.adapted_text}
                               </p>
@@ -274,10 +311,10 @@ export default function LearningPage() {
                       )}
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-muted-foreground">{formatRelativeTime(adaptation.created_at)}</span>
-                        {adaptation.status === "proposed" && (
+                        {canDecide && isDecidable(adaptation) && (
                           <div className="flex gap-2">
-                            <Button size="sm" variant="outline" onClick={() => handleReject(adaptation.id)}>Reject</Button>
-                            <Button size="sm" onClick={() => handleApprove(adaptation.id)}>Approve</Button>
+                            <Button size="sm" variant="outline" onClick={() => handleDecision(adaptation.id, "reject")}>Reject</Button>
+                            <Button size="sm" onClick={() => handleDecision(adaptation.id, "apply")}>Apply</Button>
                           </div>
                         )}
                       </div>

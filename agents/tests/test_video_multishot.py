@@ -498,6 +498,12 @@ class _Harness:
         monkeypatch.setattr(
             video_nodes, "_brand_video_lora", self._fake_brand_lora
         )
+        # The label guard now runs on EVERY lane (chained/hero too, P0-10).
+        # Its frame extraction is a raw subprocess ffmpeg call the fake
+        # _run_ffmpeg cannot intercept — return no frame so the guard
+        # fail-opens without spawning processes; guard-behaviour tests patch
+        # _frame_jpeg_at / _reel_label_guard themselves.
+        monkeypatch.setattr(video_nodes, "_frame_jpeg_at", lambda path, t: b"")
         monkeypatch.setattr(shared_video, "generate_video", self._fake_generate_video)
 
     async def _fake_brand_lora(self, brand_id):

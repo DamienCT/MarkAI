@@ -1021,8 +1021,8 @@ class TestReelLabelGuard:
         )
 
         async def fake_detect(data, content_type, allowed, *, label=""):
-            # Flag only the second sampled frame.
-            if label.startswith("reel@6"):
+            # Flag only shot 2's mid frame.
+            if label.startswith("reel@6.0"):
                 return TextGuardVerdict(
                     flagged=True, unintended_text=["FNILLE EIL NOIL"]
                 )
@@ -1033,7 +1033,8 @@ class TestReelLabelGuard:
             video_nodes._reel_label_guard("reel.mp4", [4.0, 4.0, 4.0])
         )
         assert out["checked"] and out["flagged"]
-        assert out["frames_checked"] == 3
+        # first/mid/last of each of the three 4s windows (P0-10).
+        assert out["frames_checked"] == 9
         assert out["flags"] == [{"t": 6.0, "text": ["FNILLE EIL NOIL"]}]
         assert out["soft"] == []
 
@@ -1093,7 +1094,8 @@ class TestReelLabelGuard:
         out = asyncio.run(video_nodes._reel_label_guard("reel.mp4", [4.0, 4.0]))
         assert out["flagged"] is False
         assert out["flags"] == []
-        assert len(out["soft"]) == 2
+        # Three sampled frames per window, every one soft.
+        assert len(out["soft"]) == 6
 
     def test_guard_disabled_fails_open(self, monkeypatch):
         from shared import image_text_guard as itg

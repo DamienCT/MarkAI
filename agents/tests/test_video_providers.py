@@ -73,6 +73,15 @@ def _raise_connect_error(url, kwargs):
     raise ConnectionError("connection refused")
 
 
+@pytest.fixture(autouse=True)
+def _forge_key(monkeypatch):
+    """The forge availability gate refuses a blank API key outright (N-11) —
+    pin a key so every test here keeps exercising the health probe / submit
+    behaviour it was written against. Blank-key behaviour has its own tests
+    in test_f3_video_forge.py."""
+    monkeypatch.setattr(video.settings, "VIDEO_FORGE_API_KEY", "forge-test-key")
+
+
 @pytest.fixture
 def fast_polls(monkeypatch):
     """No real sleeping between polls; no real ffprobe runs."""

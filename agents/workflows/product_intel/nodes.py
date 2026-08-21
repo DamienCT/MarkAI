@@ -20,6 +20,31 @@ from workflows.product_intel.state import ProductIntelState
 logger = logging.getLogger(__name__)
 
 
+def _normalize_product(p: dict[str, Any]) -> dict[str, Any]:
+    """Align a product dict with the upsert_product persistence contract.
+
+    DB rows (``SELECT * FROM products``) expose ``vendor_name``/``vendor_no``
+    and ``primary_image_url``; the Fabric fallback and older persisted state
+    use ``vendor``/``image_url``. Downstream nodes read AND upsert
+    ``image_url`` + ``metadata``, so every path must populate them the same
+    way (N-06/N-07).
+    """
+    if not p.get("vendor_name"):
+        p["vendor_name"] = p.get("vendor") or ""
+    if not p.get("image_url"):
+        p["image_url"] = p.get("primary_image_url")
+    md = p.get("metadata")
+    if isinstance(md, (dict, list)):
+        # upsert_product binds metadata as a JSON string (JSONB cast in SQL).
+        p["metadata"] = json.dumps(md)
+    return p
+
+
+def _product_vendor(p: dict[str, Any]) -> str:
+    """Vendor label for a product row, whatever path it was loaded from."""
+    return str(p.get("vendor_name") or p.get("vendor") or "").strip()
+
+
 async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
     """Group products by vendor and use LLM to identify distinct brands."""
     products = await get_products(state["brand_id"])
@@ -51,12 +76,24 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
                 "WHERE Company = ? AND blocked = 0 ORDER BY no",
                 (bc_company,),
             )
+            # Full upsert_product bind set so the fallback path can actually
+            # persist (a dict missing bound params raises on execute).
             products = [
                 {
+                    "brand_id": state["brand_id"],
+                    "bc_item_no": p.get("no", ""),
                     "name": p.get("description", ""),
+                    "description": None,
+                    "category": None,
                     "sku": p.get("no", ""),
-                    "vendor": p.get("vendorNo", ""),
+                    "vendor_name": p.get("vendorNo", ""),
+                    "vendor_no": p.get("vendorNo", ""),
+                    "unit_price": None,
+                    "bc_company": bc_company,
+                    "bc_location": None,
+                    "remaining_qty": None,
                     "image_url": None,
+                    "metadata": None,
                 }
                 for p in raw_products
             ]
@@ -67,10 +104,12 @@ async def discover_brands(state: ProductIntelState) -> dict[str, Any]:
                 "status": "failed",
             }
 
-    # Group by vendor
+    products = [_normalize_product(p) for p in products]
+
+    # Group by vendor — DB rows carry vendor_name, not vendor (N-07).
     vendor_groups: dict[str, list[dict[str, Any]]] = {}
     for p in products:
-        vendor = p.get("vendor", "Unknown")
+        vendor = _product_vendor(p) or "Unknown"
         vendor_groups.setdefault(vendor, []).append(p)
 
     # Use LLM to identify brands from vendor groups
@@ -189,7 +228,7 @@ async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
         {
             "role": "user",
             "content": (
-                f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in products[:100]], max_length=6000)}\n\n"
+                f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': _product_vendor(p)} for p in products[:100]], max_length=6000)}\n\n"
                 f"Brand mappings:\n{sanitize_json_for_prompt(brand_mappings, max_length=4000)}"
             ),
         },
@@ -219,13 +258,28 @@ async def match_products_to_brands(state: ProductIntelState) -> dict[str, Any]:
         sku = match.get("sku")
         matching_product = next((p for p in products if p.get("sku") == sku), None)
         if matching_product:
-            matching_product["metadata"] = json.dumps(
+            # Merge onto whatever metadata the row already carries (dict from
+            # the DB read, JSON string from a prior pass) so unrelated keys
+            # survive the upsert; always hand upsert_product a JSON string.
+            existing_md: dict[str, Any] = {}
+            raw_md = matching_product.get("metadata")
+            if isinstance(raw_md, dict):
+                existing_md = dict(raw_md)
+            elif isinstance(raw_md, str) and raw_md:
+                try:
+                    parsed_md = json.loads(raw_md)
+                    if isinstance(parsed_md, dict):
+                        existing_md = parsed_md
+                except ValueError:
+                    pass
+            existing_md.update(
                 {
                     "brand_name": match.get("brand_name"),
                     "category": match.get("category"),
                     "is_promotable": match.get("is_promotable", False),
                 }
             )
+            matching_product["metadata"] = json.dumps(existing_md)
             try:
                 await upsert_product(matching_product)
             except Exception:
@@ -240,8 +294,11 @@ async def source_product_images_node(state: ProductIntelState) -> dict[str, Any]
     images: dict[str, str] = {}
 
     for product in products:
+        _normalize_product(product)
         pid = product.get("id") or product.get("sku", "")
         if product.get("image_url"):
+            # Already has an image (incl. primary_image_url from the DB) —
+            # don't re-source and re-upsert what's already stored.
             images[pid] = product["image_url"]
             continue
 
@@ -249,7 +306,7 @@ async def source_product_images_node(state: ProductIntelState) -> dict[str, Any]
             product_sku=product.get("sku"),
             bc_item_no=product.get("bc_item_no"),
             product_name=product.get("name"),
-            brand_name=product.get("vendor", ""),
+            brand_name=_product_vendor(product),
         )
         if result.image_url:
             images[pid] = result.image_url
@@ -293,7 +350,7 @@ async def flag_promotable(state: ProductIntelState) -> dict[str, Any]:
         },
         {
             "role": "user",
-            "content": f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': p.get('vendor')} for p in candidates[:50]], max_length=6000)}",
+            "content": f"Products:\n{sanitize_json_for_prompt([{'sku': p.get('sku'), 'name': p.get('name'), 'vendor': _product_vendor(p)} for p in candidates[:50]], max_length=6000)}",
         },
     ]
     try:

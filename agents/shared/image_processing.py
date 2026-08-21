@@ -1555,6 +1555,7 @@ def generate_mockup(
     avatar_initial: str | None = None,
     avatar_color: tuple[int, int, int] = (79, 220, 239),
     avatar_logo_data: bytes | None = None,
+    industry: str = "",
 ) -> bytes:
     """Generate a realistic mobile feed mockup for a given platform.
 
@@ -1562,6 +1563,10 @@ def generate_mockup(
     ``avatar_initial`` defaults to the first character of *display_name*.
     ``avatar_logo_data`` — if provided, uses this image as the profile avatar
     instead of a colored circle with an initial letter.
+    ``industry`` — the brand's real industry, shown on the LinkedIn header
+    line when provided (the line is omitted when blank). Mockups never invent
+    engagement numbers: likes/comments/shares/followers are drawn without
+    counts, because a preview that fabricates metrics reads as a lie.
     """
     initial = avatar_initial or (display_name[0].upper() if display_name else "H")
     avatar_logo = None
@@ -1614,6 +1619,7 @@ def generate_mockup(
             initial=initial,
             avatar_color=avatar_color,
             avatar_logo=avatar_logo,
+            industry=industry,
         )
     elif platform == "x":
         img = _mockup_x(
@@ -1683,13 +1689,11 @@ def _mockup_instagram(
     img.paste(post_img, (0, y))
     y += post_img.height
 
-    # Actions + likes
+    # Actions row - no invented like count: this is a preview, not analytics.
     draw.text(
         (16, y + 12), "\u2661  \U0001f4ac  \u2933", font=_load_font(24), fill=(0, 0, 0)
     )
     y += 50
-    draw.text((16, y), "2,847 likes", font=_load_font(14, "bold"), fill=(0, 0, 0))
-    y += 22
 
     # Caption
     bf = _load_font(14, "bold")
@@ -1709,7 +1713,7 @@ def _mockup_instagram(
 
     y += 8
     draw.text(
-        (16, y), "View all 42 comments", font=_load_font(14), fill=(150, 150, 150)
+        (16, y), "View comments", font=_load_font(14), fill=(150, 150, 150)
     )
     y += 22
     draw.text((16, y), "2 hours ago", font=_load_font(12), fill=(150, 150, 150))
@@ -1792,17 +1796,11 @@ def _mockup_facebook(
     img.paste(post_img, (0, y))
     y += post_img.height
 
-    # Reactions
+    # Reactions row - icons only, no invented counts (preview, not analytics).
     draw.rectangle([0, y, W, y + 36], fill=(255, 255, 255))
     draw.text(
         (16, y + 8),
-        "\U0001f44d\u2764\ufe0f 1.2K",
-        font=_load_font(13),
-        fill=(100, 100, 100),
-    )
-    draw.text(
-        (W - 180, y + 8),
-        "89 comments \u00b7 34 shares",
+        "\U0001f44d\u2764\ufe0f",
         font=_load_font(13),
         fill=(100, 100, 100),
     )
@@ -1841,6 +1839,7 @@ def _mockup_linkedin(
     initial="H",
     avatar_color=(79, 220, 239),
     avatar_logo=None,
+    industry="",
 ):
     img = Image.new("RGB", (W, H), (240, 240, 240))
     draw = ImageDraw.Draw(img)
@@ -1863,12 +1862,12 @@ def _mockup_linkedin(
     draw.rectangle([0, y, W, H - 56], fill=(255, 255, 255))
     _draw_avatar(draw, 40, y + 34, 24, initial=initial, color=avatar_color, logo_image=avatar_logo, canvas=img)
     draw.text((72, y + 14), display_name, font=_load_font(15, "bold"), fill=(0, 0, 0))
-    draw.text(
-        (72, y + 34),
-        "Health & Wellness \u00b7 1,234 followers",
-        font=_load_font(12),
-        fill=(100, 100, 100),
-    )
+    # The brand's real industry when known; the line is omitted otherwise.
+    # No invented follower count either way (preview, not analytics).
+    if industry:
+        draw.text(
+            (72, y + 34), industry, font=_load_font(12), fill=(100, 100, 100)
+        )
     draw.text(
         (72, y + 50), "2h \u00b7 \U0001f310", font=_load_font(12), fill=(100, 100, 100)
     )
@@ -1884,16 +1883,11 @@ def _mockup_linkedin(
     img.paste(post_img, (0, y))
     y += post_img.height
 
+    # Reactions row - icons only, no invented counts (preview, not analytics).
     draw.rectangle([0, y, W, y + 36], fill=(255, 255, 255))
     draw.text(
         (16, y + 8),
-        "\U0001f44d\u2764\ufe0f\U0001f4a1 847",
-        font=_load_font(13),
-        fill=(100, 100, 100),
-    )
-    draw.text(
-        (W - 200, y + 8),
-        "52 comments \u00b7 18 reposts",
+        "\U0001f44d\u2764\ufe0f\U0001f4a1",
         font=_load_font(13),
         fill=(100, 100, 100),
     )
@@ -1992,12 +1986,13 @@ def _mockup_x(
     img.paste(rounded, (16, y), mask)
     y += img_h2 + 12
 
+    # Action icons only - no invented counts (preview, not analytics).
     af = _load_font(13)
     for label, ox in [
-        ("\U0001f4ac 42", 60),
-        ("\U0001f501 128", 180),
-        ("\u2661 847", 300),
-        ("\U0001f4ca 12K", 420),
+        ("\U0001f4ac", 60),
+        ("\U0001f501", 180),
+        ("\u2661", 300),
+        ("\U0001f4ca", 420),
     ]:
         draw.text((ox, y), label, font=af, fill=(100, 100, 100))
     y += 36

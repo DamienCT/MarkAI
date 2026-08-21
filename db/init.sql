@@ -67,6 +67,7 @@ CREATE TABLE products (
     category            VARCHAR(255),
     subcategory         VARCHAR(255),
     attributes          JSONB DEFAULT '{}',
+    metadata            JSONB NOT NULL DEFAULT '{}',
     tags                TEXT[] DEFAULT '{}',
     image_urls          JSONB DEFAULT '[]',
     primary_image_url   TEXT,
@@ -343,7 +344,7 @@ CREATE TABLE adaptations (
     status              VARCHAR(50) NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued', 'working', 'in_review', 'reworking',
                                            'approved', 'scheduled', 'published', 'failed',
-                                           'proposed', 'auto_applied')),
+                                           'proposed', 'auto_applied', 'applied', 'rejected')),
     created_by          UUID REFERENCES users(id),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -637,6 +638,25 @@ CREATE INDEX idx_brand_model_profiles_brand ON brand_model_profiles (brand_id, k
 -- At most one READY adapter per brand+kind — render-time lookup never picks.
 CREATE UNIQUE INDEX idx_brand_model_profiles_ready
     ON brand_model_profiles (brand_id, kind) WHERE status = 'ready';
+
+-- ── System Flags (operational toggles) ──────────────────────────
+-- Mirrors alembic 0005. Key 'publishing_enabled' holds {"enabled": bool};
+-- an absent key means enabled (fail-open on the flag, checked at scheduler
+-- sweep start and before every external dispatch).
+CREATE TABLE system_flags (
+    key             TEXT PRIMARY KEY,
+    value           JSONB NOT NULL DEFAULT '{}',
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── Webhook Events (inbound callback replay protection) ─────────
+-- Mirrors alembic 0005. Callbacks carrying X-Webhook-Event-Id INSERT here;
+-- a conflict on event_id means replay → the handler no-ops with 200.
+CREATE TABLE webhook_events (
+    event_id        TEXT PRIMARY KEY,
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 -- ── Updated-at trigger function ─────────────────────────────────
 CREATE OR REPLACE FUNCTION update_updated_at_column()

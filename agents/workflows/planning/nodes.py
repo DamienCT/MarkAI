@@ -945,7 +945,8 @@ async def _generate_campaigns_inner(state: PlanningState) -> dict[str, Any]:
             {
                 "name": p.get("name"),
                 "category": p.get("category"),
-                "vendor": p.get("vendor"),
+                # DB rows carry vendor_name, not vendor (N-07)
+                "vendor": p.get("vendor_name") or p.get("vendor"),
                 "description": (p.get("description") or "")[:200],
             }
             for p in products[:50]
@@ -1636,6 +1637,9 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
     # ── Generate per-channel per-week (parallel) ───────────────
     all_items: list[dict[str, Any]] = []
+    # Batches whose LLM call raised (post-retry). Appends happen inside the
+    # coroutines, which is safe under asyncio's single-threaded scheduling.
+    batch_failures: list[str] = []
     batch_size_days = 7
     expected_total = 0
     channel_counts: dict[str, int] = {ch: 0 for ch in enabled_channels}
@@ -1882,6 +1886,10 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
 
             except Exception as batch_exc:
                 logger.error("BATCH_FAIL batch=%d channel=%s: %s", batch_idx, channel, batch_exc)
+                batch_failures.append(
+                    f"batch={batch_idx} channel={channel} "
+                    f"({b_start_str}→{b_end_str}): {batch_exc}"
+                )
                 return []
 
     # Launch batch×channel tasks in waves. Every wave is a full concurrent
@@ -1942,6 +1950,30 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
         -(-len(batch_windows) // wave_size) if batch_windows else 0,
         ", ".join(f"{ch}={cnt}" for ch, cnt in channel_counts.items()),
     )
+
+    # ── Failure surfacing (N-08) ──────────────────────────────────
+    # A batch whose LLM call raised (post-retry) or a run that produced zero
+    # items must mark the run failed — the graph then routes to END, so
+    # store_calendar never purges the existing plan to replace it with a
+    # hole. Silent [] here is what wiped whole calendars during outages.
+    total_batches = len(batch_windows) * len(enabled_channels)
+    if batch_failures or not all_items:
+        detail = (
+            f"{len(batch_failures)}/{total_batches} batches failed, "
+            f"{len(all_items)}/{expected_total} items generated — "
+            "existing calendar left untouched"
+        )
+        logger.error("generate_calendar failed for brand %s: %s", brand_id, detail)
+        return {
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"generate_calendar failed: {detail}",
+                *batch_failures[:10],
+            ],
+            # Kept for run-output diagnosis; never stored (graph ends here).
+            "calendar_items": all_items,
+        }
 
     # ── Post-generation deterministic passes ──────────────────────
     # The LLM sees one week at a time; these run over the whole horizon and
@@ -2247,6 +2279,23 @@ async def store_calendar(state: PlanningState) -> dict[str, Any]:
             except (ValueError, TypeError):
                 return None
         db_items = [it for it in db_items if _item_ym(it) in target_months]
+
+    # ── Empty-generation guard (N-08) ─────────────────────────────
+    # Never purge the existing plan to replace it with nothing. Zero valid
+    # items (LLM outage upstream, every item failing validation, or a
+    # targeted re-plan whose items all fell outside the target months)
+    # aborts BEFORE the delete: run marked failed, stored calendar kept.
+    if not db_items:
+        msg = (
+            f"store_calendar aborted: 0 valid calendar items to store "
+            f"(received {len(items)}, skipped {skipped} invalid) — "
+            "existing calendar left untouched"
+        )
+        logger.error("%s (brand %s)", msg, brand_id)
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), msg],
+        }
 
     # Deterministic post/reel layout (applied after month filtering so slot
     # indices are stable for the exact set of items being stored).
