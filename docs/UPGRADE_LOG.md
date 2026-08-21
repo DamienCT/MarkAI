@@ -1006,3 +1006,47 @@ recorded its first outcome=ok under user=deploy.
 
 Suites: agents 1250. Deploys: 8a8bc5c (packaging fix), a2beab5
 (idempotency + upsert), both via workflow_dispatch.
+
+---
+
+## Cycle 14 — 2026-08-21: the forge becomes a service, brands get their own models
+
+Directive: dual local/API providers, per-brand fine-tuned models, an
+always-on local AI server published on the open internet, portable
+credentials, and local quality measured against a Sora A/B. Architecture
+ledger: docs/AI_SERVER_PROGRAM.md.
+
+**The 4090 is now a supervised, published service.** Four Scheduled
+Tasks own the forge (the three components at logon + a 5-minute
+watchdog that restarts whatever is down — the old tasks had never
+fired once and the processes died twice with their console session).
+Public route: internet → shared Traefik (TLS, rate-limited) → a socat
+relay container → the reverse tunnel → the GPU, live at
+forge.markai.srv1191974.hstgr.cloud with auth in the forge itself.
+MarkAI consumes it through exactly two settings (URL + key), proven by
+a real reel job submitted, rendered, and downloaded through the public
+chain from the VPS — which is the portability claim, continuously
+exercised.
+
+**Per-brand adapters are plumbed end to end.** brand_model_profiles
+(one READY adapter per brand+kind, enforced by a partial unique index)
+→ fail-open lookup in render_video → lora_name/strength on every forge
+request → a LoraLoaderModelOnly spliced after the workflow's single
+model source. Proven live on the image side with a same-seed A/B: the
+Qwen-Lightning adapter visibly transforms an 8-step render. The video
+side is honestly gated: adversarial verification killed the "LoRA-on-
+int8 is already proven" claim (no first-party workflow does it), so a
+phase-0 spike decides it before any brand training is scheduled.
+
+**The Sora question is settled with a receipt.** The entire Sora line
+is discontinued (API dies 2026-09-24, no successor — the project's old
+"never Sora" decision was exactly right), so we bought the benchmark
+while it lives: a $14 sora-2-pro 20s 1080x1920 render of the v10
+script. Split verdict, recorded without flattery: Sora leads on
+micro-texture and pixel sharpness; our pipeline leads on story
+adherence (Sora dropped the human after 2 seconds and slid into
+b-roll; v10 delivered all five beats). The quality loop now has a
+frozen reference and a specific gap to close.
+
+Suites: agents 1253, backend 189, forge 92. Forge repo: a3205af
+(supervision), ec9db38 (lora passthrough).
