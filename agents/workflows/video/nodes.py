@@ -4971,6 +4971,7 @@ async def _render_native_multishot(
     dropped_indices: list[Any],
     split_shots: bool,
     progress: Callable[[int, str], Awaitable[None]],
+    brand_lora: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any] | None]:
     """Render the whole reel in ONE native multishot forge call.
 
@@ -5060,6 +5061,10 @@ async def _render_native_multishot(
                         f"{base_key}:ms" if attempt == 0 else f"{base_key}:ms:r2"
                     )[:128],
                     segments=segments,
+                    lora_name=(brand_lora or {}).get("lora_name"),
+                    lora_strength=float(
+                        (brand_lora or {}).get("lora_strength") or 1.0
+                    ),
                 )
                 try:
                     candidate = await asyncio.wait_for(
@@ -5329,6 +5334,38 @@ async def _render_native_multishot(
         return _bail(f"native multishot branch failed: {exc}")
 
 
+async def _brand_video_lora(brand_id: str) -> dict[str, Any] | None:
+    """The brand's ready video adapter as forge kwargs, or None.
+
+    Fail-open by design: an adapter is a bonus, never a render blocker — a
+    missing table (migration not yet applied), a DB hiccup, or no ready row
+    all mean "render on the base model". The partial unique index on
+    brand_model_profiles guarantees at most one ready row per (brand, kind).
+    """
+    if not brand_id:
+        return None
+    try:
+        rows = await execute_query(
+            "SELECT adapter_name, strength FROM brand_model_profiles "
+            "WHERE brand_id = :b AND kind = 'video' AND status = 'ready' "
+            "LIMIT 1",
+            {"b": brand_id},
+        )
+    except Exception as exc:
+        logger.warning(
+            "brand video adapter lookup failed (%s) — rendering on the base "
+            "model",
+            exc,
+        )
+        return None
+    if not rows:
+        return None
+    return {
+        "lora_name": str(rows[0]["adapter_name"]),
+        "lora_strength": float(rows[0]["strength"] or 1.0),
+    }
+
+
 async def render_video(state: VideoState) -> dict[str, Any]:
     """Render the reel — one provider call per planned shot, chained i2v for
     continuity, an ffmpeg concat into the ~30s master final.mp4, then a
@@ -5456,6 +5493,15 @@ async def render_video(state: VideoState) -> dict[str, Any]:
     # identical plan, and the forge answered the "new" render with the
     # previous reel from cache (measured 2026-08-20, the v9 that was v8).
     _pack_flag = not state.get("keyframe_verified_pack")
+    # Per-brand adapter: a different adapter produces a different reel, so it
+    # belongs in the digest alongside the prompts.
+    brand_lora = await _brand_video_lora(str(state.get("brand_id") or ""))
+    if brand_lora:
+        logger.info(
+            "render_video: brand adapter %s (strength %.2f) rides this reel",
+            brand_lora["lora_name"],
+            brand_lora["lora_strength"],
+        )
     plan_digest = zlib.crc32(
         json.dumps(
             [
@@ -5471,6 +5517,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 )
                 for i, s in enumerate(fitted)
             ]
+            + [brand_lora]
         ).encode("utf-8")
     ) & 0xFFFFFFFF
     base_key = f"{state['brand_id']}:{item_id}:{plan_digest:08x}"
@@ -5526,6 +5573,10 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                 audio=True,
                 quality_tier=quality_tier,
                 idempotency_key=base_key[:128],
+                lora_name=(brand_lora or {}).get("lora_name"),
+                lora_strength=float(
+                    (brand_lora or {}).get("lora_strength") or 1.0
+                ),
             )
             result = await generate_video(req, progress_cb=_progress)
             logger.info(
@@ -5667,6 +5718,7 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     dropped_indices=dropped_indices,
                     split_shots=split_shots,
                     progress=_progress,
+                    brand_lora=brand_lora,
                 )
             )
             if native_out is not None:
@@ -5772,6 +5824,10 @@ async def render_video(state: VideoState) -> dict[str, Any]:
                     audio=True,
                     quality_tier=quality_tier,
                     idempotency_key=f"{base_key}:s{i + 1}"[:128],
+                    lora_name=(brand_lora or {}).get("lora_name"),
+                    lora_strength=float(
+                        (brand_lora or {}).get("lora_strength") or 1.0
+                    ),
                 )
                 try:
                     # Bound the SHOT, not just the run. shared.video gives

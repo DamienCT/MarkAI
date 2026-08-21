@@ -93,6 +93,11 @@ class VideoRequest:
     #: segmented request and refuse it (ProviderUnavailableError), so the
     #: cascade can never mis-route one.
     segments: list[dict[str, Any]] | None = None
+    #: Per-brand adapter (forge only): a LoRA filename installed on the forge
+    #: box, from the brand's ready brand_model_profiles row. Cloud providers
+    #: silently ignore it — an adapter is a bonus, never a routing constraint.
+    lora_name: str | None = None
+    lora_strength: float = 1.0
 
 
 @dataclass
@@ -289,6 +294,11 @@ class ForgeProvider:
             payload["seed"] = req.seed
         if req.idempotency_key:
             payload["idempotency_key"] = req.idempotency_key
+        if req.lora_name:
+            # Per-brand adapter — an older forge without the field 422s,
+            # which the caller's fallback machinery already handles.
+            payload["lora_name"] = req.lora_name
+            payload["lora_strength"] = req.lora_strength
         client = _get_http_client()
         resp = await client.post(
             f"{self.base_url}/v1/jobs", json=payload, headers=self._headers(), timeout=60

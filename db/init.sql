@@ -611,6 +611,33 @@ CREATE INDEX idx_media_assets_calendar_item ON media_assets (calendar_item_id);
 CREATE INDEX idx_media_assets_content ON media_assets (content_id);
 CREATE INDEX idx_media_assets_kind_role ON media_assets (kind, role);
 
+-- ── Brand Model Profiles (per-brand image/video adapters on the forge) ───
+-- Mirrors alembic 0004. The adapter FILE lives on the forge box (ComfyUI
+-- models/loras); this stores only its name + how the render pipelines use
+-- it. Video adapter files never leave our infrastructure (LTX Community
+-- License: non-transferable Derivatives).
+CREATE TABLE brand_model_profiles (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL CHECK (kind IN ('image', 'video')),
+    base_model      TEXT NOT NULL,
+    adapter_name    TEXT NOT NULL,
+    trigger_token   TEXT,
+    strength        DOUBLE PRECISION NOT NULL DEFAULT 1.0
+                    CHECK (strength >= 0.0 AND strength <= 2.0),
+    status          TEXT NOT NULL DEFAULT 'training'
+                    CHECK (status IN ('training', 'ready', 'failed', 'disabled')),
+    notes           TEXT,
+    trained_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_brand_model_profiles_brand ON brand_model_profiles (brand_id, kind);
+-- At most one READY adapter per brand+kind — render-time lookup never picks.
+CREATE UNIQUE INDEX idx_brand_model_profiles_ready
+    ON brand_model_profiles (brand_id, kind) WHERE status = 'ready';
+
 -- ── Updated-at trigger function ─────────────────────────────────
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$

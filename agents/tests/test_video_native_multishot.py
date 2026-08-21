@@ -536,6 +536,35 @@ class TestNativeMultishotRender:
         asyncio.run(render_video(_state([4] * 6, verified_pack=False)))
         assert h.native_requests[-1].idempotency_key != first
 
+    def test_brand_adapter_rides_the_native_request(self, monkeypatch):
+        # A ready brand_model_profiles row becomes lora_name/lora_strength on
+        # the forge request; no row leaves the fields at their base defaults.
+        h = _NativeHarness(monkeypatch)
+
+        async def fake_profile(brand_id):
+            return {"lora_name": "brand_x.safetensors", "lora_strength": 0.85}
+
+        monkeypatch.setattr(video_nodes, "_brand_video_lora", fake_profile)
+        result = asyncio.run(render_video(_state([4] * 6)))
+        assert result.get("status") != "failed"
+        req = h.native_requests[0]
+        assert req.lora_name == "brand_x.safetensors"
+        assert req.lora_strength == 0.85
+
+    def test_no_adapter_means_base_model(self, monkeypatch):
+        h = _NativeHarness(monkeypatch)
+        asyncio.run(render_video(_state([4] * 6)))
+        assert h.native_requests[0].lora_name is None
+
+    def test_adapter_lookup_failure_never_blocks_the_render(self, monkeypatch):
+        # Fail-open: the helper itself catches DB errors and returns None.
+        async def boom(sql, params=None):
+            raise RuntimeError("relation brand_model_profiles does not exist")
+
+        monkeypatch.setattr(video_nodes, "execute_query", boom)
+        out = asyncio.run(video_nodes._brand_video_lora("b-1"))
+        assert out is None
+
     def test_forge_output_passes_are_carried_into_meta(self, monkeypatch):
         h = _NativeHarness(
             monkeypatch,

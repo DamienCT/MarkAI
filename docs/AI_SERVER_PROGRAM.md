@@ -132,11 +132,52 @@ while the API lives:
    releases (only from the Wan-Video org — SEO "open Wan 2.7" claims are
    false), LTX Retake + avatar lanes (docs/VIDEO_LANES_RESEARCH.md).
 
+### Adversarial-verification corrections folded in (2026-08-21)
+
+- **LoRA-over-int8 video is UNPROVEN upstream**: no first-party LTX workflow
+  applies any LoRA over the int8 2.5 transformer (2.3's distilled LoRA rides
+  the bf16 dev checkpoint; 2.5's distilled transformer is standalone), and
+  ComfyUI weight-patching on quantized checkpoints has open doubts
+  (Comfy-Org/ComfyUI#14722). The video phase-0 spike must validate a plain
+  LoRA AND the IC-LoRA loader on the int8 pipeline BEFORE any brand training
+  is scheduled. Escape hatches if it fails: quantized-aware community
+  loaders, offline merge-then-quantize per brand, or the Wan 2.2 lane.
+- klein-4B's "1h on a 4090" numbers are from a BFL-sponsored community blog;
+  BFL's own doc says 12GB VRAM and 1–3h — feasibility holds either way.
+- musubi-tuner is NOT blanket Apache-2.0 (vendored code carries other
+  licenses) — fine for our training use, wrong to state in client docs.
+- GGUF LoRA loading is "experimental" per its own README — smoke-test it,
+  never assume.
+- No trainer or ComfyUI doc names Qwen-Image-**2512** explicitly (they name
+  Qwen-Image / Edit-2511) — the overnight smoke test is load-bearing for the
+  whole image top pick, not a formality.
+
+### First A/B result (2026-08-21, frozen reference bought)
+
+sora-2-pro, 20s, native 1080x1920, the v10 script's beats 1–3 verbatim
+($14): `samples/naturespan_olive_oil_sora2pro_benchmark_20s.mp4`.
+Honest split verdict — **Sora leads on micro-texture** (tomato flesh, bread
+crumb, oil viscosity at macro distance; native 1080p sharpness) while **our
+pipeline leads on story adherence** (Sora dropped the human after 2s and
+drifted into b-roll; v10 delivered all five beats including the human
+payoff). The quality loop's target is therefore specific: close the
+micro-texture/sharpness gap (two-stage refine, higher gen resolution, the
+481-frame bracket test) without giving up narrative fidelity.
+
 Status ledger:
 - [x] Supervision + watchdog live (forge repo a3205af)
-- [x] Public route + credentials (this repo: forge-proxy overlay)
-- [x] Sora research verified; benchmark plan set
-- [ ] Sora reference clips rendered (before 2026-09-24)
-- [ ] brand_model_profiles schema + forge lora passthrough
-- [ ] Image fine-tune smoke test (one brand, overnight)
-- [ ] Video adapter smoke test (one brand, one GPU-day)
+- [x] Public route + credentials live and E2E-proven (a real reel job
+      submitted, rendered, and downloaded through the public URL)
+- [x] Sora research verified; **20s 1080p reference clip bought** (extension
+      to 32s optional; API param is `video`, not `video_id`)
+- [x] brand_model_profiles schema (alembic 0004 + init.sql) + forge lora
+      passthrough (forge repo ec9db38) + agents lookup/threading
+- [x] Image adapter loading PROVEN live: same-seed A/B with the installed
+      Qwen-Lightning LoRA visibly transforms an 8-step render through the
+      spliced graph
+- [ ] Video phase-0: LoRA + IC-LoRA over the int8 LTX pipeline (needs an
+      LTX adapter file on the box — download one official IC-LoRA)
+- [ ] Image fine-tune smoke test (one brand, overnight, musubi-tuner)
+- [ ] Video adapter smoke test (one brand, one GPU-day) — GATED on phase-0
+- [ ] Training scheduler: serialize trainer runs against renders (the
+      ComfyUI-queue-as-scheduler option)

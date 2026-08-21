@@ -493,7 +493,15 @@ class _Harness:
         monkeypatch.setattr(video_nodes, "_run_ffmpeg", self._fake_run_ffmpeg)
         monkeypatch.setattr(video_nodes, "_probe_shot", self._fake_probe)
         monkeypatch.setattr(video_nodes, "execute_update", self._fake_execute_update)
+        # No brand adapter unless a test says otherwise — the real lookup is
+        # fail-open but its connection attempt costs seconds per test.
+        monkeypatch.setattr(
+            video_nodes, "_brand_video_lora", self._fake_brand_lora
+        )
         monkeypatch.setattr(shared_video, "generate_video", self._fake_generate_video)
+
+    async def _fake_brand_lora(self, brand_id):
+        return None
 
     async def _fake_execute_update(self, query, params=None):
         self.updates.append((query, params))
