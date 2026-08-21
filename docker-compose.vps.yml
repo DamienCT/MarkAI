@@ -56,6 +56,35 @@ services:
   n8n:
     profiles: ["disabled"]
 
+  # ── Public route to the local GPU forge ─────────────────────────────────
+  # The forge itself lives on the operator's 4090 box behind a reverse SSH
+  # tunnel bound to the docker bridge (172.17.0.1:9100, host IP — reachable
+  # from every bridge network). Traefik's docker provider cannot route to a
+  # bare host port, so this one-process socat relay gives the tunnel a
+  # container face with routing labels. Auth stays IN the forge (X-API-Key
+  # on /v1/*; /health is deliberately open for monitors); the rate limit is
+  # a brute-force backstop, sized far above the render pollers.
+  # This is what makes the forge reachable from ANY server as
+  # https://forge.${MARKAI_DOMAIN} + VIDEO_FORGE_API_KEY — not just from
+  # this VPS's tunnel endpoint.
+  forge-proxy:
+    image: alpine/socat
+    container_name: markai-forge-proxy
+    restart: unless-stopped
+    command: TCP-LISTEN:9100,fork,reuseaddr TCP:172.17.0.1:9100
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=n8n_default"
+      - "traefik.http.routers.markai-forge.rule=Host(`forge.${MARKAI_DOMAIN}`)"
+      - "traefik.http.routers.markai-forge.entrypoints=websecure"
+      - "traefik.http.routers.markai-forge.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.markai-forge.loadbalancer.server.port=9100"
+      - "traefik.http.middlewares.markai-forge-ratelimit.ratelimit.average=30"
+      - "traefik.http.middlewares.markai-forge-ratelimit.ratelimit.burst=60"
+      - "traefik.http.routers.markai-forge.middlewares=markai-forge-ratelimit"
+    networks:
+      - n8n_default
+
   agents:
     environment:
       MARKAI_ENV: production
