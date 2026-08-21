@@ -500,6 +500,42 @@ class TestNativeMultishotRender:
         assert all(m["provider"] == "forge" for m in shots_meta)
         assert meta["end_card"] == "ok"
 
+    def test_same_plan_same_key_across_deliveries(self, monkeypatch):
+        # Redelivery dedup: the delabel LLM's variance must stay OUT of the
+        # key (it runs after the digest), so two runs of the identical state
+        # ask the provider under the identical key.
+        h = _NativeHarness(monkeypatch)
+
+        async def passthrough(shots):
+            return shots, True
+
+        monkeypatch.setattr(video_nodes, "_delabel_shot_scenes", passthrough)
+        asyncio.run(render_video(_state([4] * 6, verified_pack=False)))
+        first = h.native_requests[-1].idempotency_key
+        asyncio.run(render_video(_state([4] * 6, verified_pack=False)))
+        assert h.native_requests[-1].idempotency_key == first
+
+    def test_prompt_machinery_change_changes_the_key(self, monkeypatch):
+        # The v9-that-was-v8 incident (2026-08-20): the packaging-block fix
+        # shipped, the plan LLM reproduced the identical plan, and the forge
+        # answered the "new" render with the previous reel from cache —
+        # because the key digested only the plan, never the built prompts.
+        h = _NativeHarness(monkeypatch)
+
+        async def passthrough(shots):
+            return shots, True
+
+        monkeypatch.setattr(video_nodes, "_delabel_shot_scenes", passthrough)
+        asyncio.run(render_video(_state([4] * 6, verified_pack=False)))
+        first = h.native_requests[-1].idempotency_key
+        monkeypatch.setattr(
+            video_nodes,
+            "_UNVERIFIED_PACK_DIRECTIVE",
+            "PACKAGING vNEXT: nothing readable anywhere.",
+        )
+        asyncio.run(render_video(_state([4] * 6, verified_pack=False)))
+        assert h.native_requests[-1].idempotency_key != first
+
     def test_forge_output_passes_are_carried_into_meta(self, monkeypatch):
         h = _NativeHarness(
             monkeypatch,

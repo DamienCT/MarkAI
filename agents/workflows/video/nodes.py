@@ -5448,11 +5448,28 @@ async def render_video(state: VideoState) -> dict[str, Any]:
     # digest keys the job to WHAT is being rendered — same item + same fitted
     # plan = same provider job — while a genuine regeneration (new plan from
     # a new LLM call) still gets a fresh key.
+    #
+    # The digest also folds in the BUILT native segment prompt for each shot,
+    # applied to the PRE-delabel plan so the delabel LLM's variance cannot
+    # break redelivery dedup. The plan tuples alone were blind to prompt
+    # MACHINERY: the packaging-block fix shipped, the plan LLM reproduced the
+    # identical plan, and the forge answered the "new" render with the
+    # previous reel from cache (measured 2026-08-20, the v9 that was v8).
+    _pack_flag = not state.get("keyframe_verified_pack")
     plan_digest = zlib.crc32(
         json.dumps(
             [
-                (s.get("scene"), s.get("prose"), s.get("duration_s"))
-                for s in fitted
+                (
+                    s.get("scene"),
+                    s.get("prose"),
+                    s.get("duration_s"),
+                    _build_segment_prompt(
+                        s,
+                        unverified_pack=_pack_flag,
+                        full_pack_directive=(i == 0),
+                    ),
+                )
+                for i, s in enumerate(fitted)
             ]
         ).encode("utf-8")
     ) & 0xFFFFFFFF
@@ -6355,6 +6372,13 @@ async def store_video(state: VideoState) -> dict[str, Any]:
 
         # ── 3. video_jobs + media_assets bookkeeping ───────────────────────
         duration_s = float(meta.get("duration_s") or 0) or None
+        # ON CONFLICT: a provider dedup-hit (the forge answered from cache
+        # after a redelivery, or a replan reproduced the identical plan) is a
+        # legitimate outcome that re-runs this bookkeeping under a key an
+        # earlier run already claimed. Refresh that row to point at the
+        # newest content instead of failing a workflow whose content row is
+        # already stored — measured 2026-08-20: the failure marked the item
+        # 'failed' AFTER its reel and content row were live.
         await execute_update(
             "INSERT INTO video_jobs (id, brand_id, calendar_item_id, content_id, "
             "provider, model, mode, prompt, source_image_object, params, status, "
@@ -6363,7 +6387,15 @@ async def store_video(state: VideoState) -> dict[str, Any]:
             "VALUES (:id, :brand_id, :calendar_item_id, :content_id, "
             ":provider, :model, :mode, :prompt, :source_image_object, :params, 'succeeded', "
             "100, :idempotency_key, :output_object, :thumbnail_object, :duration_s, "
-            ":cost_usd, :ledger, NOW(), NOW())",
+            ":cost_usd, :ledger, NOW(), NOW()) "
+            "ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL "
+            "DO UPDATE SET content_id = EXCLUDED.content_id, "
+            "prompt = EXCLUDED.prompt, params = EXCLUDED.params, "
+            "output_object = EXCLUDED.output_object, "
+            "thumbnail_object = EXCLUDED.thumbnail_object, "
+            "duration_s = EXCLUDED.duration_s, cost_usd = EXCLUDED.cost_usd, "
+            "generation_ledger = EXCLUDED.generation_ledger, "
+            "status = 'succeeded', progress = 100, completed_at = NOW()",
             {
                 "id": str(uuid4()),
                 "brand_id": brand_id,
