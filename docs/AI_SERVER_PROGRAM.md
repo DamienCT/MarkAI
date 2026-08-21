@@ -175,8 +175,14 @@ Status ledger:
 - [x] Image adapter loading PROVEN live: same-seed A/B with the installed
       Qwen-Lightning LoRA visibly transforms an 8-step render through the
       spliced graph
-- [ ] Video phase-0: LoRA + IC-LoRA over the int8 LTX pipeline (needs an
-      LTX adapter file on the box — download one official IC-LoRA)
+- [x] Video phase-0 (mechanism): LoRA patching over the int8 LTX-2.5
+      transformer APPLIES — same-seed 3s renders with/without the official
+      2.5 distilled LoRA (rank-450, 8.9GB, strength 0.5) produced visibly
+      different scenes, no OOM. The "silently ignored patch" failure mode is
+      ruled out; what remains is EXPRESSIVENESS (does a rank-16 brand
+      adapter carry identity) — that is the brand smoke test's question.
+      IC-LoRA loader path still untested: the Ingredients repo is gated,
+      user must accept it (one click) before reference-sheet conditioning.
 - [ ] Image fine-tune smoke test (one brand, overnight, musubi-tuner)
 - [ ] Video adapter smoke test (one brand, one GPU-day) — GATED on phase-0
 - [ ] Training scheduler: serialize trainer runs against renders (the
