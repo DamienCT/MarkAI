@@ -53,8 +53,10 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
 
   useEffect(() => {
     // Poll for notifications every 30 seconds using the authed api client
-    // (EventSource does not support custom Authorization headers)
-    fetchNotifications();
+    // (EventSource does not support custom Authorization headers).
+    // The initial fetch is deferred to a macrotask so no setState fires
+    // synchronously inside the effect body (avoids cascading renders).
+    const initialFetch = setTimeout(fetchNotifications, 0);
 
     function startPolling() {
       if (pollingRef.current) return;
@@ -82,6 +84,7 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      clearTimeout(initialFetch);
       stopPolling();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };

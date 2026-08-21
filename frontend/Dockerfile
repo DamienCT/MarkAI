@@ -22,6 +22,11 @@ ARG NEXT_PUBLIC_AZURE_AD_CLIENT_ID=
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_AZURE_AD_CLIENT_ID=$NEXT_PUBLIC_AZURE_AD_CLIENT_ID
 
+# Runtime secrets (Azure AD, NEXTAUTH_SECRET) are injected at container start,
+# not at image build — tell next.config.ts to skip its fail-closed env check
+# here. src/lib/auth.ts still refuses to run in production without them.
+ENV NEXT_BUILD_ALLOW_MISSING_RUNTIME_ENV=1
+
 RUN npm run build
 
 # Production image, copy all the files and run next

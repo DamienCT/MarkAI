@@ -110,10 +110,15 @@ export function KanbanBoardInner({ items }: KanbanBoardProps) {
   }, [hasWorkingItems]);
 
   useEffect(() => {
-    fetchActiveRuns();
-    if (!hasWorkingItems) return;
+    // Defer the initial fetch to a macrotask so no setState fires
+    // synchronously inside the effect body (avoids cascading renders).
+    const initial = setTimeout(fetchActiveRuns, 0);
+    if (!hasWorkingItems) return () => clearTimeout(initial);
     const interval = setInterval(fetchActiveRuns, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(interval);
+    };
   }, [fetchActiveRuns, hasWorkingItems]);
 
   // Map calendar_item_id -> current_step for quick lookup

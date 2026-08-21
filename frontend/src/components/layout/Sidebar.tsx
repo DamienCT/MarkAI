@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -131,10 +131,14 @@ export function Sidebar() {
     (session?.user as Record<string, unknown> | undefined)?.role as string | undefined;
   const userLevel = ROLE_LEVELS[userRole ?? "viewer"] ?? 0;
 
-  // Close mobile drawer on route change
-  useEffect(() => {
+  // Close mobile drawer on route change — guarded state adjustment during
+  // render (react.dev "Storing information from previous renders") instead
+  // of a state-sync effect, so no extra commit+render cascade.
+  const [prevPathname, setPrevPathname] = useState(pathname);
+  if (prevPathname !== pathname) {
+    setPrevPathname(pathname);
     setMobileOpen(false);
-  }, [pathname]);
+  }
 
   return (
     <>

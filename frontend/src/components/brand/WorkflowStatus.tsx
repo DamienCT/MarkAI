@@ -39,25 +39,29 @@ export function WorkflowStatus({ brandId, filterType, autoPolling = true }: Work
         ? data.filter((r) => r.agent_type === filterType)
         : data;
       setRuns(filtered);
+      // Stop polling once fresh data shows no running jobs. Deciding here,
+      // from the fetch result, replaces the old runs->polling state-sync
+      // effect (which set state synchronously in an effect body).
+      const hasRunning = filtered.some((r) => r.status === "running" || r.status === "pending");
+      if (!hasRunning && filtered.length > 0) {
+        setPolling(false);
+      }
     } catch {
       // Silently fail
     }
   }, [brandId, filterType]);
 
   useEffect(() => {
-    fetchRuns();
-    if (!polling) return;
+    // Defer the initial fetch to a macrotask so no setState fires
+    // synchronously inside the effect body (avoids cascading renders).
+    const initial = setTimeout(fetchRuns, 0);
+    if (!polling) return () => clearTimeout(initial);
     const interval = setInterval(fetchRuns, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(interval);
+    };
   }, [fetchRuns, polling]);
-
-  // Stop polling if no running jobs
-  useEffect(() => {
-    const hasRunning = runs.some((r) => r.status === "running" || r.status === "pending");
-    if (!hasRunning && polling && runs.length > 0) {
-      setPolling(false);
-    }
-  }, [runs, polling]);
 
   if (runs.length === 0) return null;
 

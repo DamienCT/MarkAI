@@ -258,23 +258,27 @@ export function LogoEditor({
   const placementRef = useRef<LogoPlacement>({
     logo_xy: logoXy, logo_scale: logoScale, text_xy: textXy, text_scale: textScale,
   });
-  placementRef.current = {
-    logo_xy: logoXy, logo_scale: logoScale, text_xy: textXy,
-    text_scale: textScale, logo_variant: variant || undefined,
-    text_style: textStyle,
-    font_family: isNone ? undefined : fontFamily,
-    headline_colors: isHeadline ? headlineColors : undefined,
-    text_width: isHeadline ? textWidth : undefined,
-    ...(productLogoUrl
-      ? {
-          product_logo_xy: productLogoXy,
-          product_logo_scale: productLogoScale,
-          product_logo_enabled: productLogoEnabled,
-          // Only pin a variant when both exist (else leave auto-pick on).
-          product_logo_variant: plHasBoth ? productLogoVariant : undefined,
-        }
-      : {}),
-  };
+  // Sync after every render (refs must not be written during render); Save
+  // fires from an event handler, which always runs after effects have synced.
+  useEffect(() => {
+    placementRef.current = {
+      logo_xy: logoXy, logo_scale: logoScale, text_xy: textXy,
+      text_scale: textScale, logo_variant: variant || undefined,
+      text_style: textStyle,
+      font_family: isNone ? undefined : fontFamily,
+      headline_colors: isHeadline ? headlineColors : undefined,
+      text_width: isHeadline ? textWidth : undefined,
+      ...(productLogoUrl
+        ? {
+            product_logo_xy: productLogoXy,
+            product_logo_scale: productLogoScale,
+            product_logo_enabled: productLogoEnabled,
+            // Only pin a variant when both exist (else leave auto-pick on).
+            product_logo_variant: plHasBoth ? productLogoVariant : undefined,
+          }
+        : {}),
+    };
+  });
 
   // Track the rendered photo size for normalized↔pixel math + font sizing.
   useEffect(() => {

@@ -64,7 +64,7 @@ export function BrandOnboarding({ brand, onComplete, onNavigateTab, initialHasPr
 
   // Check if competitors exist
   useEffect(() => {
-    api.get<any[]>(`/api/v1/brands/${brand.id}/competitors`)
+    api.get<unknown[]>(`/api/v1/brands/${brand.id}/competitors`)
       .then(data => setCompetitorCount(Array.isArray(data) ? data.length : 0))
       .catch(() => setCompetitorCount(0));
   }, [brand.id]);

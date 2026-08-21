@@ -4,9 +4,30 @@ import type { JWT } from "next-auth/jwt";
 
 const REFRESH_BUFFER_SECONDS = 5 * 60;
 
-// Validate required auth environment variables
-if (!process.env.AZURE_AD_TENANT_ID || !process.env.AZURE_AD_CLIENT_ID || !process.env.AZURE_AD_CLIENT_SECRET) {
-  console.error("FATAL: Missing required Azure AD environment variables (AZURE_AD_TENANT_ID, AZURE_AD_CLIENT_ID, AZURE_AD_CLIENT_SECRET)");
+// Validate required auth environment variables (P0-12 / N-19).
+const REQUIRED_AUTH_ENV = ["AZURE_AD_TENANT_ID", "AZURE_AD_CLIENT_ID", "AZURE_AD_CLIENT_SECRET"] as const;
+const missingAuthEnv = REQUIRED_AUTH_ENV.filter((name) => !process.env[name]);
+const authEnvProblems: string[] = [];
+if (missingAuthEnv.length > 0) {
+  authEnvProblems.push(`missing required Azure AD env vars: ${missingAuthEnv.join(", ")}`);
+}
+if (!process.env.NEXTAUTH_SECRET) {
+  authEnvProblems.push("NEXTAUTH_SECRET is not set");
+} else if (process.env.NEXTAUTH_SECRET.length < 32) {
+  authEnvProblems.push("NEXTAUTH_SECRET is shorter than 32 characters");
+}
+if (authEnvProblems.length > 0) {
+  const message =
+    `FATAL: ${authEnvProblems.join("; ")} — NextAuth cannot operate safely. ` +
+    "Generate secrets with: openssl rand -hex 32";
+  // `next build` imports this module while collecting page data, and image
+  // builds legitimately run without runtime secrets (they are injected at
+  // container start) — next.config.ts decides whether the BUILD fails.
+  // At production runtime the config is unrecoverable: fail closed.
+  if (process.env.NODE_ENV === "production" && process.env.NEXT_PHASE !== "phase-production-build") {
+    throw new Error(message);
+  }
+  console.error(message);
 }
 
 const TOKEN_ENDPOINT = `https://login.microsoftonline.com/${process.env.AZURE_AD_TENANT_ID}/oauth2/v2.0/token`;

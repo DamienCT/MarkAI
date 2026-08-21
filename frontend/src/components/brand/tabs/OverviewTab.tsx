@@ -77,6 +77,17 @@ export function OverviewTab({
   onFetchIntelligence,
   research,
 }: OverviewTabProps) {
+  // 7-day window label (matches the backend NOW()→NOW()+7d count). Captured
+  // once at mount via a lazy initializer — reading the clock during render
+  // is impure (react-hooks/purity), and the label doesn't need to tick live.
+  const [weekWindow] = React.useState(() => {
+    const fmtDay = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const now = new Date();
+    return {
+      start: fmtDay(now),
+      end: fmtDay(new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)),
+    };
+  });
   return (
     <div className="space-y-6 mt-6">
       {/* Onboarding Progress Card — only render once async data is loaded to prevent flicker */}
@@ -341,10 +352,7 @@ export function OverviewTab({
             const contentRunning = (contentStats.working ?? 0) > 0;
             const contentFailed = contentStats.failed;
             const contentTotal = contentStats.total;
-            // 7-day window dates (matches the backend NOW()→NOW()+7d count)
-            const _fmtDay = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-            const weekStart = _fmtDay(new Date());
-            const weekEnd = _fmtDay(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
+            // 7-day window dates: weekWindow, captured at mount (see above)
             const allReportsDone = REPORT_STAGES.every(s => {
               const r = latestByType[s.key] || (("altKey" in s && s.altKey) ? latestByType[s.altKey] : undefined);
               return r?.status === "completed";
@@ -492,7 +500,7 @@ export function OverviewTab({
                             <p className="text-sm">
                               <span className="font-medium">{contentCompleted}</span>
                               <span className="text-muted-foreground">
-                                {contentTotal > 0 ? ` of ${contentTotal}` : ""} post{contentCompleted !== 1 ? "s" : ""} generated this week ({weekStart} – {weekEnd})
+                                {contentTotal > 0 ? ` of ${contentTotal}` : ""} post{contentCompleted !== 1 ? "s" : ""} generated this week ({weekWindow.start} – {weekWindow.end})
                               </span>
                               {contentFailed > 0 && (
                                 <span className="text-red-500 ml-1">({contentFailed} failed)</span>
