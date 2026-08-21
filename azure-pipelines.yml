@@ -84,3 +84,8 @@ stages:
               cd frontend
               npm run build
             displayName: "Build"
+            env:
+              # CI builds run without runtime secrets (Azure AD / NEXTAUTH_SECRET);
+              # next.config.ts fails closed without this image/CI-build-only escape
+              # hatch. Runtime containers still refuse to start without the real env.
+              NEXT_BUILD_ALLOW_MISSING_RUNTIME_ENV: "1"

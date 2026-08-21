@@ -33,7 +33,12 @@
 
 ## Quick Deploy (Standard)
 
-SSH into the server and run the deploy script:
+The sanctioned deploy path is the GitHub **"Deploy" workflow** (Actions →
+Deploy → Run workflow), which runs `scripts/vps-redeploy.sh` on the VPS
+pinned to the exact commit CI checked out — see the CI/CD section below.
+
+Break-glass alternative (script broken in CI, GitHub down): SSH in as root
+and run the same script directly:
 
 ```bash
 ssh root@srv1191974.hstgr.cloud
@@ -43,7 +48,9 @@ bash scripts/vps-redeploy.sh
 
 The script does everything automatically:
 1. Pulls latest `main` (from `ado`, falling back to `origin`)
-2. Generates any missing env vars (random passwords for new services)
+2. Generates any missing env vars (random passwords for new services —
+   generated credentials are written to root-only files such as
+   `/root/markai-traefik-dashboard.credentials`, never printed to the log)
 3. Backs up PostgreSQL before any changes
 4. Rebuilds changed Docker images (backend, frontend, agents, browser-worker, notifications) — the old stack keeps running if a build fails
 5. Recreates only changed containers via `up -d` (postgres/nats/minio keep running)
@@ -85,31 +92,47 @@ curl -sf https://api.markai.srv1191974.hstgr.cloud/health
 
 ## Database Schema Changes
 
-If a deployment includes changes to `db/init.sql`, you need to apply them manually
-since Alembic migrations aren't in use yet:
+**Never hand-run `ALTER TABLE` against the production database.** Alembic IS
+in use: the backend container's entrypoint (`backend/docker-entrypoint.sh`)
+runs `alembic upgrade head` automatically on every start, so schema changes
+land as part of the normal deploy — no manual SQL step exists. Hand-run DDL
+is exactly the drift that migration `0002` had to be written to repair.
+
+How schema changes ship:
+
+1. `db/init.sql` is the **fresh-install authority** — a new empty database is
+   built from it, not from the migration chain.
+2. Every change to `init.sql` is mirrored by a **hand-written convergence
+   migration** in `backend/alembic/versions/` (idempotent `IF NOT EXISTS` /
+   guarded `DO $$` blocks, in the style of `0002`–`0004`) so an existing
+   prod DB converges to the same shape on the next deploy.
+3. Never use `alembic revision --autogenerate`: `env.py`'s metadata is
+   incomplete (e.g. `brand_model_profiles` has no ORM model) and autogenerate
+   would emit `DROP TABLE` for everything it can't see.
+
+To verify a migration applied after a deploy:
 
 ```bash
-# Example: add a new column
-docker exec markai-postgres psql -U markai -d markai -c "
-  ALTER TABLE calendar_items ADD COLUMN IF NOT EXISTS generation_metadata JSONB DEFAULT '{}';
-"
+docker exec markai-postgres psql -U markai -d markai -c "SELECT version_num FROM alembic_version;"
+docker logs markai-backend 2>&1 | grep -i alembic | tail -5
 ```
-
-Check the git diff of `db/init.sql` for what changed between deploys.
 
 ---
 
 ## Full Wipe Deploy (Nuclear Option)
 
 **WARNING: Destroys all data (brands, content, products, users).**
-Only use for a fresh start:
+Only use for a fresh start. The script accepts no flags (anything starting
+with `-` is rejected so the sudoers deploy path can never forward destructive
+options) — the wipe is an environment toggle, usable only from a root shell:
 
 ```bash
-bash scripts/vps-redeploy.sh --force-wipe
+FORCE_WIPE=true bash scripts/vps-redeploy.sh
 ```
 
-This wipes the PostgreSQL and Qdrant volumes. The backup is created first at
-`/var/www/markai/backups/`.
+This wipes the PostgreSQL and Qdrant volumes. A verified backup is created
+first at `/var/www/markai/backups/` — the script hard-refuses the wipe
+without one (`SKIP_BACKUP=true` does not override that refusal).
 
 ---
 
@@ -265,4 +288,9 @@ GitHub Actions runs on push to `main`:
 - Agents tests (pytest)
 - Frontend build check
 
-Deployment is manual (SSH + script). No auto-deploy from CI.
+Deployment runs through the "Deploy" workflow (`.github/workflows/deploy.yml`):
+manual `Run workflow` dispatch always works; push-to-main auto-deploy is
+gated behind the `AUTO_DEPLOY` repo variable. The workflow SSHes in as the
+unprivileged `deploy` user and runs the sudoers-whitelisted
+`/usr/local/bin/markai-deploy <sha>`, which reaches `scripts/vps-redeploy.sh`.
+Remember: a deploy recreates `markai-agents` and kills any running video render.

@@ -2,17 +2,22 @@ name: Deploy
 
 # The ONE sanctioned deploy path (audit STRUCTURAL item 21). This workflow
 # SSHes to the VPS as the unprivileged "deploy" user and runs the
-# sudoers-whitelisted /usr/local/bin/markai-deploy — a WRAPPER script (not a
-# symlink) that accepts exactly one argument, validates it as a hex git SHA,
-# discards everything else, and execs scripts/vps-redeploy.sh with
-# EXPECTED_SHA set. Manual root deploys are break-glass only: see
-# VPS_CONNECTION_GUIDE.md.
+# sudoers-whitelisted /usr/local/bin/markai-deploy with exactly one argument:
+# the hex git SHA to pin the deploy to. That entry point is provisioned
+# server-side by the orchestrator; the repo CANNOT verify whether it is a
+# sanitizing wrapper or a plain symlink to scripts/vps-redeploy.sh (audit
+# N-20). The guarantee therefore lives in the repo-controlled script itself:
+# vps-redeploy.sh accepts at most one positional hex-SHA argument, rejects
+# anything starting with "-", and keeps its destructive toggles env-only
+# (which sudo's env_reset strips on this path) — so either provisioning
+# shape is inert to hostile flags. Manual root deploys are break-glass only:
+# see VPS_CONNECTION_GUIDE.md.
 #
-# Why a wrapper and an ARGUMENT rather than env_keep: a bare command path in
-# sudoers permits ANY arguments (sudoers(5)), so the entry point itself must
-# be inert to hostile flags — the wrapper never forwards its argv. And sudo's
-# env_reset strips EXPECTED_SHA silently when the env_keep line is missing or
-# typo'd, turning the SHA pin into a no-op; an argument cannot be stripped.
+# Why an ARGUMENT rather than env_keep: a bare command path in sudoers
+# permits ANY arguments (sudoers(5)), so the entry point must validate its
+# argv either way. And sudo's env_reset strips EXPECTED_SHA silently when
+# the env_keep line is missing or typo'd, turning the SHA pin into a no-op;
+# an argument cannot be stripped.
 #
 # Push-triggered deploys SHIP DISABLED. They run only after the repo variable
 # AUTO_DEPLOY is set to 'true' (Settings → Secrets and variables → Actions →
@@ -25,8 +30,14 @@ name: Deploy
 #   VPS_HOST        VPS hostname or IP
 #   VPS_DEPLOY_KEY  private SSH key for the "deploy" user
 #
+# The same no-echo rule binds the remote side: everything vps-redeploy.sh
+# prints streams into this job's log. Credentials the script generates
+# (e.g. the Traefik dashboard password) are written to root-only files on
+# the VPS and only the file path is printed here (audit N-13).
+#
 # Server-side prerequisites (orchestrator): the "deploy" user + authorized
-# key, the /usr/local/bin/markai-deploy wrapper, and:
+# key, the /usr/local/bin/markai-deploy entry point (wrapper or symlink —
+# see the header note; the script defends itself either way), and:
 #   deploy ALL=(root) NOPASSWD: /usr/local/bin/markai-deploy
 
 on:

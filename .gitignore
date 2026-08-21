@@ -38,8 +38,13 @@ SocialMedia_Credentials.xlsx
 
 # Data
 *.log
+frontend.log
 *.sqlite3
 
-# Generated
+# Production-like diagnostics (P0-13 — classify/govern before ever tracking;
+# explicit paths kept alongside the bare names so these stay ignored even if
+# the broad patterns above are ever narrowed)
 BC-COLUMNS.txt
 FABRIC-TABLES.txt
+docs/build-files/BC-COLUMNS.txt
+docs/build-files/FABRIC-TABLES.txt

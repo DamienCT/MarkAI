@@ -3,14 +3,23 @@ set -euo pipefail
 
 # ── MARKAI VPS Redeploy Script ──────────────────────────────────────
 # Sanctioned invocation: the GitHub "Deploy" workflow, which SSHes in as
-# the "deploy" user and runs the sudoers-whitelisted wrapper
-# /usr/local/bin/markai-deploy (a symlink to this file). Manual root runs
-# are break-glass only — see VPS_CONNECTION_GUIDE.md for the exact form.
-# Flags:
-#   --force-wipe          wipe DB volumes (requires a fresh verified backup)
-#   --skip-backup         skip the pre-deploy pg_dump (NOT recommended)
-#   --expected-sha=<sha>  abort unless HEAD equals <sha> after the pull
-#                         (also readable from the EXPECTED_SHA env var — CI uses that)
+# the "deploy" user and runs the sudoers-whitelisted entry point
+# /usr/local/bin/markai-deploy. That entry point is provisioned server-side;
+# whether it is a sanitizing wrapper or a plain symlink to this file is NOT
+# verifiable from this repo (N-20) — so THIS script validates its own argv
+# and stays safe under either shape. Manual root runs are break-glass only —
+# see VPS_CONNECTION_GUIDE.md for the exact form.
+#
+# Arguments (no flags accepted — anything starting with "-" is rejected):
+#   <sha>  optional, at most one: a hex git SHA (7-40 chars). Abort unless
+#          HEAD equals it after the pull. CI passes the commit it checked
+#          out. Also readable from the EXPECTED_SHA env var.
+#
+# Environment toggles (break-glass ROOT SHELLS ONLY — sudo's env_reset strips
+# these on the sanctioned sudoers path, which is exactly the point: the
+# destructive options are unreachable through CI or the deploy user):
+#   FORCE_WIPE=true       wipe DB volumes (requires a fresh verified backup)
+#   SKIP_BACKUP=true      skip the pre-deploy pg_dump (NOT recommended)
 #
 # Concurrency: an exclusive NON-BLOCKING flock on /var/tmp/markai-deploy.lock.
 # A second deploy while one runs fails immediately and loudly — it must never
@@ -27,20 +36,37 @@ set -euo pipefail
 
 main() {
 
-cd /var/www/markai
-
-FORCE_WIPE=false
-SKIP_BACKUP=false
-# Empty means "no pin": manual break-glass runs deploy whatever main is at.
+# Argv contract (closes N-20): at most ONE positional argument, and it must be
+# a hex git SHA. Anything starting with "-" is rejected outright, so even if
+# /usr/local/bin/markai-deploy is a bare symlink that forwards argv verbatim,
+# the sudoers rule cannot smuggle destructive flags through. Destructive
+# toggles are env-only (FORCE_WIPE / SKIP_BACKUP, see header) and sudo's
+# env_reset strips them on the sanctioned path.
+# Empty EXPECTED_SHA means "no pin": break-glass runs deploy whatever main is at.
 EXPECTED_SHA="${EXPECTED_SHA:-}"
-for arg in "$@"; do
-  case "$arg" in
-    --force-wipe)  FORCE_WIPE=true ;;
-    --skip-backup) SKIP_BACKUP=true ;;
-    --expected-sha=*) EXPECTED_SHA="${arg#--expected-sha=}" ;;
-    *) echo "Unknown flag: ${arg} (supported: --force-wipe, --skip-backup, --expected-sha=<sha>)"; exit 1 ;;
+if [[ "$#" -gt 1 ]]; then
+  echo "ERROR: at most one argument is accepted (a git SHA); got $#."
+  exit 1
+fi
+if [[ "$#" -eq 1 ]]; then
+  case "$1" in
+    -*)
+      echo "ERROR: flags are not accepted (got: $1)."
+      echo "Pass a git SHA, or use the FORCE_WIPE/SKIP_BACKUP env vars from a root shell."
+      exit 1
+      ;;
   esac
-done
+  if [[ ! "$1" =~ ^[0-9a-f]{7,40}$ ]]; then
+    echo "ERROR: argument must be a lowercase hex git SHA (7-40 chars); got: $1"
+    exit 1
+  fi
+  EXPECTED_SHA="$1"
+fi
+# Env toggles must be exactly "true" to activate; anything else means off.
+[[ "${FORCE_WIPE:-}" == true ]] && FORCE_WIPE=true || FORCE_WIPE=false
+[[ "${SKIP_BACKUP:-}" == true ]] && SKIP_BACKUP=true || SKIP_BACKUP=false
+
+cd /var/www/markai
 
 echo "=== Step 1: Pull latest code ==="
 SHA_BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -110,7 +136,16 @@ if ! grep -q "^TRAEFIK_DASHBOARD_AUTH=" "$ENV_FILE" 2>/dev/null; then
   # Double all $ signs so Docker Compose doesn't interpolate them as variables
   HTPASSWD_ESCAPED="${HTPASSWD//\$/\$\$}"
   echo "TRAEFIK_DASHBOARD_AUTH=${HTPASSWD_ESCAPED}" >> "$ENV_FILE"
-  echo "  Added TRAEFIK_DASHBOARD_AUTH (password: ${TRAEFIK_PASS} — save this!)"
+  # N-13: NEVER echo the password — this stdout lands verbatim in the CI
+  # deploy log. Write it to a root-only file and print only the path.
+  TRAEFIK_CRED_FILE="/root/markai-traefik-dashboard.credentials"
+  ( umask 077; {
+      echo "# Traefik dashboard credentials — generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by vps-redeploy.sh"
+      echo "user: admin"
+      echo "password: ${TRAEFIK_PASS}"
+    } > "$TRAEFIK_CRED_FILE" )
+  chmod 600 "$TRAEFIK_CRED_FILE"
+  echo "  Added TRAEFIK_DASHBOARD_AUTH (password NOT echoed — stored root-only at ${TRAEFIK_CRED_FILE})"
 else
   echo "  TRAEFIK_DASHBOARD_AUTH already set"
 fi
@@ -137,12 +172,12 @@ verify_backup() {
 }
 
 if [[ "$SKIP_BACKUP" == true ]]; then
-  echo "  --skip-backup flag detected: skipping database backup (NOT recommended)."
+  echo "  SKIP_BACKUP=true detected: skipping database backup (NOT recommended)."
 elif ! docker volume inspect markai_pgdata &>/dev/null; then
   echo "  No existing pgdata volume — nothing to back up (first deploy)."
 elif ! docker ps --format '{{.Names}}' | grep '^markai-postgres$' >/dev/null; then
   echo "  ERROR: markai-postgres is not running — cannot take a live backup."
-  echo "  Start the stack first, or pass --skip-backup to deploy without one."
+  echo "  Start the stack first, or set SKIP_BACKUP=true to deploy without one."
   exit 1
 else
   echo "  Backing up PostgreSQL to ${BACKUP_FILE}..."
@@ -157,14 +192,14 @@ else
   else
     rm -f "$BACKUP_FILE"
     echo "  ERROR: backup failed verification — aborting deploy (nothing was stopped or wiped)."
-    echo "  Pass --skip-backup to deploy without a backup (NOT recommended)."
+    echo "  Set SKIP_BACKUP=true to deploy without a backup (NOT recommended)."
     exit 1
   fi
 fi
 
-# --force-wipe is destructive: hard-refuse unless this run produced a verified backup
+# FORCE_WIPE is destructive: hard-refuse unless this run produced a verified backup
 if [[ "$FORCE_WIPE" == true ]] && docker volume inspect markai_pgdata &>/dev/null && [[ "$BACKUP_OK" != true ]]; then
-  echo "  ERROR: --force-wipe refused — no verified backup from this run."
+  echo "  ERROR: FORCE_WIPE refused — no verified backup from this run."
   echo "  Wiping volumes without a fresh verified backup would lose data permanently."
   exit 1
 fi
@@ -177,11 +212,11 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend fro
 
 echo "=== Step 5: Optional volume wipe ==="
 if [[ "$FORCE_WIPE" == true ]]; then
-  echo "  --force-wipe flag detected: stopping stack and wiping DB volumes..."
+  echo "  FORCE_WIPE=true detected: stopping stack and wiping DB volumes..."
   docker compose -f docker-compose.yml -f docker-compose.vps.yml down
   docker volume rm markai_pgdata markai_qdrant_data 2>/dev/null || true
 else
-  echo "  Using migrations/restart (pass --force-wipe to wipe volumes)."
+  echo "  Using migrations/restart (set FORCE_WIPE=true from a root shell to wipe volumes)."
 fi
 
 echo "=== Step 6: Start/recreate changed containers ==="

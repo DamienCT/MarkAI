@@ -1,5 +1,14 @@
 # MARKAI — What's Left for You to Set Up
 
+> **SENSITIVE — environment identifiers (P0-13).** This build-files document
+> contains real environment details: hostnames, a Fabric SQL endpoint,
+> tenant/application identifiers, and a named account. Do not paste it into
+> external tools, support tickets, AI/support bundles, or screen shares, and
+> exclude this directory from any export. The neighbouring `BC-COLUMNS.txt` /
+> `FABRIC-TABLES.txt` files are git-ignored raw production diagnostics —
+> governance decisions for them are tracked in
+> `docs/SECURITY_CONTAINMENT_2026-08-21.md`.
+
 **Generated:** March 24, 2026
 **Status:** Application is 95% code-complete. Below is everything you need to configure/do before going live.
 
@@ -167,7 +176,15 @@ curl -X POST https://api.markai.srv1191974.hstgr.cloud/api/v1/providers/discover
 ## 8. Post-Launch Tasks (Can Do Later)
 
 ### Short Term
-- [ ] **Generate Alembic migration**: `cd backend && alembic revision --autogenerate -m "initial"` — needed for future schema changes
+- [ ] ~~Generate Alembic migration with `--autogenerate`~~ — **NEVER run
+  `alembic revision --autogenerate`** (N-16): `env.py`'s metadata is
+  incomplete (`brand_model_profiles` has no ORM model, partial indexes are
+  hand-written), so autogenerate would emit `DROP TABLE brand_model_profiles`
+  and drop those indexes. Schema changes are made by editing `db/init.sql`
+  (fresh-install authority) **and** adding a hand-written convergence
+  migration under `backend/alembic/versions/` in the `0002`–`0004` style
+  (idempotent `IF NOT EXISTS` / guarded `DO $$` blocks). `alembic upgrade
+  head` runs automatically in the backend entrypoint on every deploy.
 - [ ] **Set up Grafana dashboards**: Pre-provisioned datasources are ready, create dashboards for content pipeline metrics
 - [ ] **Configure LangSmith**: Set `LANGCHAIN_API_KEY` for agent workflow tracing/debugging
 - [ ] **Test n8n workflows**: Publish test content to each platform, verify callback works

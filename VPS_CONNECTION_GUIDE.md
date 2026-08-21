@@ -111,7 +111,7 @@ After this, `ssh markai` works without a password.
 ├── backups/                  ← Auto-generated pg_dumps
 └── ...
 
-/usr/local/bin/markai-deploy  ← Sudoers-whitelisted symlink to the deploy script
+/usr/local/bin/markai-deploy  ← Sudoers-whitelisted deploy entry point (shape unverified — see Deploying)
 
 /docker/n8n/                  ← External n8n + Traefik stack (shared VPS service)
 └── docker-compose.yml        ← Don't modify unless fixing Traefik
@@ -152,9 +152,15 @@ deploys double-triggered GPU renders. The sanctioned path:
 
 **GitHub → Actions → "Deploy" → Run workflow** (or ask the orchestrator to
 trigger it). The workflow SSHes in as the unprivileged `deploy` user and runs
-the sudoers-whitelisted `/usr/local/bin/markai-deploy` (a symlink to
-`scripts/vps-redeploy.sh`) with `EXPECTED_SHA` pinned to the exact commit CI
-checked out — the deploy aborts, stack untouched, if `main` moved in between.
+the sudoers-whitelisted entry point `/usr/local/bin/markai-deploy`. That entry
+point is provisioned server-side; whether it is a sanitizing wrapper or a
+plain symlink to `scripts/vps-redeploy.sh` is NOT verifiable from this repo
+(audit N-20) — the script validates its own argv and stays safe under either
+shape. TODO(operator): confirm the actual shape on the VPS
+(`ls -l /usr/local/bin/markai-deploy` / `file` / `cat` if a wrapper) and
+record the ground truth here. The workflow passes `EXPECTED_SHA` pinned to
+the exact commit CI checked out — the deploy aborts, stack untouched, if
+`main` moved in between.
 A push-to-main auto-deploy also exists in the workflow but **ships disabled**;
 it only activates once the `AUTO_DEPLOY` repo variable is set to `true`.
 
@@ -365,7 +371,7 @@ On the VPS at `/var/www/markai/`:
 - **Do not delete `/var/tmp/markai-deploy.lock`** — a "lock held" error means a deploy is genuinely running; the lock self-releases when it exits
 - **Do not commit `.env`** — it has production secrets (Azure AD, OpenAI, Gemini, DB passwords)
 - **Do not commit `SSH_PW`** — user adds it temporarily for agent access; remove before commit
-- **Do not run `--force-wipe`** on the redeploy script unless explicitly asked (wipes DB)
+- **Do not set `FORCE_WIPE=true`** on the redeploy script unless explicitly asked (wipes DB volumes; env toggle only — the script rejects all flags, including the removed `--force-wipe`). Root shells only: sudo's `env_reset` strips it on the sanctioned CI path, and the script refuses without a fresh verified backup from the same run
 - **Do not modify `/docker/n8n/`** unless fixing Traefik — it's an external shared service
 - **Do not expose ports** in `docker-compose.vps.yml` — Traefik handles all public routing
 - **Do not push to `main`** without testing locally first — there's no staging environment
