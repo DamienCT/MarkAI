@@ -17,11 +17,12 @@ import io
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
 from app.config import settings
 from app.services import minio_service
+from app.utils.media_sign import media_response_headers, require_media_access
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +211,8 @@ async def _serve_video(request: Request, bucket: str, object_name: str, media_ty
 
     common_headers = {
         "Accept-Ranges": "bytes",
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": "private, max-age=3600",
+        **media_response_headers(media_type),
     }
 
     range_header = request.headers.get("range")
@@ -251,12 +253,15 @@ async def serve_file(
     w: Optional[int] = Query(None, ge=16, le=2048, description="Resize width"),
     q: Optional[int] = Query(None, ge=10, le=100, description="JPEG quality"),
     fmt: Optional[str] = Query(None, description="Force output format, e.g. 'jpg'"),
+    _media_auth: None = Depends(require_media_access),
 ):
     """Proxy a file from MinIO to the browser.
 
-    Public endpoint — files are behind unguessable UUID paths.
-    Content images, brand assets, and mockups need to load in <img> tags
-    which cannot send Authorization headers.
+    Requires media auth (Entra bearer, X-Media-Token, or a signed mt/exp
+    query pair — see app.utils.media_sign). Browser <img>/<video> tags load
+    these through the frontend's same-origin /api/media proxy, which injects
+    the token after a NextAuth session check; publish flows (Meta/n8n) use
+    signed URLs.
 
     Optional query params for preview thumbnails:
       ?w=400    — resize to 400px wide (maintains aspect ratio)
@@ -316,7 +321,10 @@ async def serve_file(
             return Response(
                 content=cached,
                 media_type=out_ct,
-                headers={"Cache-Control": "public, max-age=3600"},
+                headers={
+                    "Cache-Control": "private, max-age=3600",
+                    **media_response_headers(out_ct),
+                },
             )
 
     try:
@@ -336,5 +344,8 @@ async def serve_file(
     return Response(
         content=data,
         media_type=ct,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            **media_response_headers(ct),
+        },
     )

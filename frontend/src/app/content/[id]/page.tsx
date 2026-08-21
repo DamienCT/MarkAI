@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, CalendarClock, MessageSquare, Upload, Film } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Eye, Edit3, Clock, CheckCircle, XCircle, Loader2, Trash2, CalendarClock, MessageSquare, Upload, Film } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -15,7 +15,7 @@ import { ApprovalHistory } from "@/components/approval/ApprovalHistory";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { api, API_BASE_URL, fileUrl, generateVideo, isAuthError } from "@/lib/api";
+import { api, fileUrl, generateVideo, isAuthError } from "@/lib/api";
 import { useOpenedContent } from "@/lib/opened-content";
 import { toApiDatetime } from "@/lib/utils";
 import type { Content, Approval, CalendarItem, Brand } from "@/types";
@@ -56,6 +56,9 @@ export default function ContentDetailPage() {
   const [scheduling, setScheduling] = useState(false);
   const [passingToReview, setPassingToReview] = useState(false);
   const [retryingPublish, setRetryingPublish] = useState(false);
+  // Degraded-outcome flags from the latest video render job (audio_finish,
+  // label_guard live only on video_jobs, not on content.generation_metadata).
+  const [videoJobFlags, setVideoJobFlags] = useState<Record<string, unknown> | null>(null);
   const { markOpened } = useOpenedContent();
 
   // The URL param is the calendar item id — flag it as seen so the "New"
@@ -289,6 +292,32 @@ export default function ContentDetailPage() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendarItem?.status, calendarItem?.id, calendarItem?.item_type, content?.content_type]);
+
+  // Pull the latest render job's quality flags so review can SEE the
+  // degraded outcomes the pipeline recorded (record-don't-block contract:
+  // audio_finish / label_guard are measured but live only on video_jobs).
+  useEffect(() => {
+    // Legacy items carry item_type "video" instead of "reel" — their render
+    // jobs record the same quality flags, so fetch for both.
+    const hasVideoJobs =
+      calendarItem?.item_type === "reel" ||
+      calendarItem?.item_type === "video" ||
+      content?.content_type === "reel" ||
+      content?.content_type === "video";
+    if (!content?.id || !hasVideoJobs) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const jobs = await api.get<{ status: string; quality_flags?: Record<string, unknown> }[]>(
+          `/api/v1/content/${content.id}/video-jobs`
+        );
+        if (cancelled || !Array.isArray(jobs)) return;
+        const latest = jobs.find((j) => j.status === "succeeded") || jobs[0];
+        setVideoJobFlags(latest?.quality_flags || null);
+      } catch { /* advisory only — never block the page on this */ }
+    })();
+    return () => { cancelled = true; };
+  }, [content?.id, calendarItem?.item_type, content?.content_type]);
 
   const handleUploadImage = useCallback(async (file: File) => {
     if (!content) return;
@@ -593,7 +622,7 @@ export default function ContentDetailPage() {
   // reload (F5) instead of serving the 1h browser-cached old version.
   const imageVersion = imageCacheBust || (content.updated_at ? `v=${encodeURIComponent(content.updated_at)}` : "");
   const contentImageUrl = imagePath
-    ? (imagePath.startsWith("http") ? imagePath : `${API_BASE_URL}/api/v1/files/${imagePath}`) + (imageVersion ? `?${imageVersion}` : "")
+    ? fileUrl(imagePath) + (imageVersion ? `?${imageVersion}` : "")
     : undefined;
   // Thumbnail for faster preview loading (600px wide, quality 75)
   const contentThumbUrl = contentImageUrl
@@ -616,7 +645,7 @@ export default function ContentDetailPage() {
   // Editor backdrop is the CLEAN image (no logo/text); fall back to raw.
   const composedPath = (gm.composed_image || gm.raw_image) as string | undefined;
   const cleanImageUrl = composedPath
-    ? (composedPath.startsWith("http") ? composedPath : `${API_BASE_URL}/api/v1/files/${composedPath}`) + (imageCacheBust ? `?${imageCacheBust}` : "")
+    ? fileUrl(composedPath) + (imageCacheBust ? `?${imageCacheBust}` : "")
     : undefined;
   // All brand logo variants (label → absolute url) for the reverse button.
   const availableLogos = (() => {
@@ -710,6 +739,41 @@ export default function ContentDetailPage() {
     };
   })();
 
+  // ── Degraded-outcome quality flags (audit §6 "last mile") ──────────
+  // The pipeline measures and persists every degraded outcome but nothing
+  // downstream read them, so review looked "normal". Collect the ones that
+  // indicate real degradation from content.generation_metadata + the latest
+  // video job and surface them as a warning banner.
+  const qualityIssues = (() => {
+    const issues: { key: string; detail: string }[] = [];
+    const overlayBurn = (gm.overlay_burn ?? videoJobFlags?.overlay_burn) as string | undefined;
+    if (typeof overlayBurn === "string" && overlayBurn.startsWith("failed")) {
+      issues.push({ key: "overlay_burn", detail: overlayBurn });
+    }
+    const multishotFallback = gm.multishot_fallback ?? videoJobFlags?.multishot_fallback;
+    if (multishotFallback) {
+      issues.push({ key: "multishot_fallback", detail: String(multishotFallback) });
+    }
+    const audioFinish = videoJobFlags?.audio_finish;
+    if (typeof audioFinish === "string" && (audioFinish.startsWith("failed") || audioFinish.startsWith("silent"))) {
+      issues.push({ key: "audio_finish", detail: audioFinish });
+    }
+    const labelGuard = videoJobFlags?.label_guard as Record<string, unknown> | undefined;
+    if (labelGuard && typeof labelGuard === "object" && labelGuard.flagged) {
+      const flags = Array.isArray(labelGuard.flags) ? (labelGuard.flags as unknown[]).map(String).join(", ") : "flagged frames";
+      issues.push({ key: "label_guard", detail: flags });
+    }
+    const brandingReview = gm.branding_review as Record<string, unknown> | undefined;
+    if (brandingReview && typeof brandingReview === "object") {
+      if (brandingReview.ok === false) {
+        issues.push({ key: "branding_review", detail: String(brandingReview.reason ?? "review failed") });
+      } else if (brandingReview.copy_contract_ok === false) {
+        issues.push({ key: "branding_review", detail: "copy contract breach detected" });
+      }
+    }
+    return issues;
+  })();
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -742,6 +806,37 @@ export default function ContentDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Pipeline quality warnings — visible on every tab so a reviewer
+          can't approve without seeing what the render degraded. */}
+      {qualityIssues.length > 0 && (
+        <Card className="border-amber-500/50 bg-amber-500/10">
+          <CardContent className="py-3">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <div className="space-y-1.5">
+                <p className="text-sm font-medium">
+                  Pipeline reported degraded outcomes: {qualityIssues.map((i) => i.key).join(", ")}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {qualityIssues.map((i) => (
+                    <Badge
+                      key={i.key}
+                      variant="outline"
+                      className="border-amber-500/60 text-amber-700 dark:text-amber-400 text-xs font-normal"
+                    >
+                      {i.key}: {i.detail}
+                    </Badge>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  The render finished, but with recorded quality degradations — review the media carefully before approving.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs defaultValue="preview">
         <TabsList>

@@ -92,8 +92,10 @@ export function sanitizeImageUrl(url: string): string {
   ) {
     return url;
   }
-  // Allow data:image/* URLs (safe image data URIs)
-  if (trimmed.startsWith("data:image/")) {
+  // Allow raster-only data: URIs. data:image/svg+xml is ACTIVE content
+  // (scripts run when navigated/embedded) and is deliberately excluded —
+  // only base64 raster payloads pass.
+  if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,/.test(trimmed)) {
     return url;
   }
   return "";

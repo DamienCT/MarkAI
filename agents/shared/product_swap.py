@@ -474,7 +474,7 @@ async def resolve_product_image_bytes(url: str) -> bytes | None:
     try:
         import httpx
 
-        from shared.config import settings
+        from shared.config import media_auth_headers, settings
 
         if ref.startswith(("http://", "https://")):
             async with httpx.AsyncClient(timeout=30) as client:
@@ -484,7 +484,9 @@ async def resolve_product_image_bytes(url: str) -> bytes | None:
         backend = getattr(settings, "BACKEND_URL", "") or "http://backend:8000"
         if ref.startswith("/"):
             async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(f"{backend}{ref}")
+                resp = await client.get(
+                    f"{backend}{ref}", headers=media_auth_headers()
+                )
                 resp.raise_for_status()
                 return resp.content
         # MinIO object path, e.g. "products/<brand>/<file>.png". These live in
@@ -496,7 +498,10 @@ async def resolve_product_image_bytes(url: str) -> bytes | None:
             return await async_download_file(bucket, ref)
         except Exception:
             async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(f"{backend}/api/v1/files/{ref}")
+                resp = await client.get(
+                    f"{backend}/api/v1/files/{ref}",
+                    headers=media_auth_headers(),
+                )
                 resp.raise_for_status()
                 return resp.content
     except Exception as exc:

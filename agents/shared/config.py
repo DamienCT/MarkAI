@@ -14,6 +14,12 @@ class Settings(BaseSettings):
 
     # ── Backend API (for model resolution) ────────────────────────────
     BACKEND_URL: str = "http://backend:8000"
+    # GET-only credential for the backend's media endpoints (/api/v1/files/*,
+    # brand logos). Blank in local dev (backend accepts anonymous media GETs
+    # until the token is enforced); in production the shared .env carries the
+    # same value the backend requires, and every backend media GET sends it
+    # as X-Media-Token via media_auth_headers().
+    MEDIA_PROXY_TOKEN: str = ""
 
     # ── NATS ─────────────────────────────────────────────────────────────
     NATS_URL: str = "nats://nats:4222"
@@ -122,6 +128,19 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def media_auth_headers() -> dict[str, str]:
+    """Headers authenticating a GET against the backend's media endpoints.
+
+    Empty when MEDIA_PROXY_TOKEN is unset (local dev); callers pass the
+    result straight to httpx. Only send this to the backend — never to
+    external hosts.
+    """
+    if settings.MEDIA_PROXY_TOKEN:
+        return {"X-Media-Token": settings.MEDIA_PROXY_TOKEN}
+    return {}
+
 
 # ── Video render budget ────────────────────────────────────────────────
 # A reel is rendered shot by shot (see workflows.video.nodes): one provider
@@ -232,4 +251,18 @@ if settings.MARKAI_ENV == "production":
         raise RuntimeError(
             f"Refusing to start agents in production without service URLs: "
             f"{', '.join(_missing_urls)}. Set these in .env."
+        )
+    # Forge auth is all-or-nothing: a configured forge URL with a blank API
+    # key passes the unauthenticated /health probe, 401s on submit, and
+    # silently fails every reel over to paid cloud at ~$0.06/s (N-11).
+    # Operators disabling the forge must blank VIDEO_FORGE_URL explicitly.
+    if settings.VIDEO_FORGE_URL and not settings.VIDEO_FORGE_API_KEY:
+        _startup_logger.critical(
+            "SECURITY: VIDEO_FORGE_URL is set but VIDEO_FORGE_API_KEY is "
+            "blank. Set the forge API key in .env (or blank VIDEO_FORGE_URL "
+            "to disable the forge) before deploying to production."
+        )
+        raise RuntimeError(
+            "Refusing to start agents in production: VIDEO_FORGE_URL is set "
+            "but VIDEO_FORGE_API_KEY is blank."
         )

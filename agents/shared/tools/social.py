@@ -72,6 +72,15 @@ _LI_BASE = "https://api.linkedin.com/v2"
 # ── Instagram ────────────────────────────────────────────────────────────
 
 
+def _meta_auth_headers() -> dict[str, str]:
+    """Send the Meta token via Authorization header, never in the URL.
+
+    Query-string tokens end up verbatim in log lines and in
+    str(HTTPStatusError) on every failed call (audit N-01).
+    """
+    return {"Authorization": f"Bearer {settings.META_ACCESS_TOKEN}"}
+
+
 async def ig_get_profile(ig_user_id: str) -> dict[str, Any]:
     """Fetch Instagram business profile info."""
     resp = await _rate_limited_request(
@@ -79,8 +88,8 @@ async def ig_get_profile(ig_user_id: str) -> dict[str, Any]:
         f"{_IG_BASE}/{ig_user_id}",
         params={
             "fields": "id,username,name,biography,followers_count,follows_count,media_count,profile_picture_url,website",
-            "access_token": settings.META_ACCESS_TOKEN,
         },
+        headers=_meta_auth_headers(),
     )
     return resp.json()
 
@@ -93,8 +102,8 @@ async def ig_get_recent_posts(ig_user_id: str, limit: int = 25) -> list[dict[str
         params={
             "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count",
             "limit": limit,
-            "access_token": settings.META_ACCESS_TOKEN,
         },
+        headers=_meta_auth_headers(),
     )
     data = resp.json()
     return data.get("data", [])
@@ -107,8 +116,8 @@ async def ig_get_post_insights(media_id: str) -> dict[str, Any]:
         f"{_IG_BASE}/{media_id}/insights",
         params={
             "metric": "impressions,reach,engagement,saved",
-            "access_token": settings.META_ACCESS_TOKEN,
         },
+        headers=_meta_auth_headers(),
     )
     data = resp.json()
     return {item["name"]: item["values"][0]["value"] for item in data.get("data", [])}
@@ -124,8 +133,8 @@ async def fb_get_page(page_id: str) -> dict[str, Any]:
         f"{_FB_BASE}/{page_id}",
         params={
             "fields": "id,name,about,fan_count,followers_count,category,website,link",
-            "access_token": settings.META_ACCESS_TOKEN,
         },
+        headers=_meta_auth_headers(),
     )
     return resp.json()
 
@@ -139,8 +148,8 @@ async def fb_get_recent_posts(page_id: str, limit: int = 25) -> list[dict[str, A
             "fields": "id,message,created_time,permalink_url,shares,full_picture,"
             "reactions.summary(true),comments.summary(true)",
             "limit": limit,
-            "access_token": settings.META_ACCESS_TOKEN,
         },
+        headers=_meta_auth_headers(),
     )
     data = resp.json()
     return data.get("data", [])

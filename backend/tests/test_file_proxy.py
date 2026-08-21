@@ -1,4 +1,9 @@
-"""Tests for the file proxy endpoint — bucket routing, path traversal, thumbnails."""
+"""Tests for the file proxy endpoint — bucket routing, path traversal, thumbnails.
+
+These run unauthenticated via the non-production blank-token escape
+(MARKAI_ENV=test, MEDIA_PROXY_TOKEN unset). The media auth gate itself is
+covered in test_media_auth_hardening.py.
+"""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch

@@ -12,10 +12,10 @@ from __future__ import annotations
 import logging
 import urllib.parse
 
-import httpx
 from playwright.async_api import Browser
 
 from app.config import settings
+from app.url_guard import safe_fetch
 
 logger = logging.getLogger("browser-worker.product_image")
 
@@ -52,6 +52,7 @@ async def _search_bing_images(
     )
 
     context = await browser.new_context(
+        service_workers="block",
         user_agent=_BROWSER_UA,
         viewport={"width": 1366, "height": 768},
         locale="en-US",
@@ -97,11 +98,15 @@ async def _validate_image_url(url: str) -> bool:
     candidate without aborting the whole search.
     """
     try:
-        async with httpx.AsyncClient(
-            timeout=15, follow_redirects=True, headers=_DOWNLOAD_HEADERS
-        ) as client:
-            resp = await client.get(url)
-        if resp.status_code != 200:
+        # safe_fetch enforces the SSRF guard (scheme/port/private-range DNS
+        # checks) on the URL and on every redirect hop, and caps the body.
+        resp = await safe_fetch(
+            url,
+            max_bytes=_MAX_IMAGE_BYTES,
+            timeout=15,
+            headers=_DOWNLOAD_HEADERS,
+        )
+        if resp is None or resp.status_code != 200:
             return False
         ct = resp.headers.get("content-type", "").lower()
         if not any(t in ct for t in ("image/jpeg", "image/png", "image/webp")):

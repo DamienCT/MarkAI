@@ -210,10 +210,29 @@ class ApiClient {
 
 export const api = new ApiClient(API_BASE_URL);
 
-/** Resolve a relative API path (e.g. /api/v1/brands/.../logos/primary) to a full URL */
+/** Media paths served by the backend now require auth, which <img>/<video>
+ *  tags cannot send — route them through the same-origin Next.js proxy
+ *  (/api/media/[...path]/route.ts), which session-checks and injects the
+ *  media token. Returns null for non-media API paths.
+ */
+function mediaProxyUrl(apiPath: string): string | null {
+  if (apiPath.startsWith("/api/v1/files/")) {
+    return `/api/media/v1/files/${apiPath.slice("/api/v1/files/".length)}`;
+  }
+  if (/^\/api\/v1\/brands\/[^/]+\/logos\//.test(apiPath)) {
+    return `/api/media${apiPath.slice("/api".length)}`;
+  }
+  return null;
+}
+
+/** Resolve a relative API path (e.g. /api/v1/brands/.../logos/primary) to a full URL.
+ *  Media paths (files proxy, brand logos) are rewritten to the same-origin
+ *  /api/media proxy so they load in <img> tags behind auth. */
 export function apiUrl(path: string): string {
   if (!path) return "";
   if (path.startsWith("http")) return path;
+  const proxied = mediaProxyUrl(path);
+  if (proxied) return proxied;
   return `${API_BASE_URL}${path}`;
 }
 
@@ -225,19 +244,26 @@ export function generateVideo(contentId: string): Promise<{ status?: string }> {
   return api.post<{ status?: string }>(`/api/v1/content/${contentId}/generate-video`, {});
 }
 
-/** Resolve a MinIO object path to a proxied file URL via the backend.
- *  e.g. "products/abc/image.png" → "https://api.../api/v1/files/products/abc/image.png"
- *  Also rewrites legacy presigned URLs (http://minio:9000/bucket/path) to use the proxy.
+/** Resolve a MinIO object path to a proxied media URL.
+ *  e.g. "products/abc/image.png" → "/api/media/v1/files/products/abc/image.png"
+ *  Media loads through the same-origin Next.js proxy (session-checked; it
+ *  forwards to the backend with the media token) because the backend media
+ *  endpoints require auth and <img> tags cannot send headers.
+ *  Also rewrites legacy presigned URLs (http://minio:9000/bucket/path).
  */
 export function fileUrl(path: string): string {
   if (!path) return "";
-  // Rewrite legacy MinIO presigned URLs to proxy through backend
+  // Rewrite legacy MinIO presigned URLs to proxy through the media route
   if (path.includes("minio:9000") || path.includes("minio%3A9000")) {
     // Extract the object path from: http://minio:9000/bucket-name/object/path?signature...
     const match = path.match(/minio:9000\/[^/]+\/(.+?)(\?|$)/);
-    if (match) return `${API_BASE_URL}/api/v1/files/${match[1]}`;
+    if (match) return `/api/media/v1/files/${match[1]}`;
   }
   if (path.startsWith("http")) return path;
-  if (path.startsWith("/")) return `${API_BASE_URL}${path}`;
-  return `${API_BASE_URL}/api/v1/files/${path}`;
+  if (path.startsWith("/")) {
+    const proxied = mediaProxyUrl(path);
+    if (proxied) return proxied;
+    return `${API_BASE_URL}${path}`;
+  }
+  return `/api/media/v1/files/${path}`;
 }

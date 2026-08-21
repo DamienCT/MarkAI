@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hmac
 import logging
+import urllib.parse
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -10,6 +12,7 @@ from pydantic import BaseModel, HttpUrl
 
 from app.capture import extract_page, take_screenshot
 from app.config import settings
+from app.url_guard import URLGuardError, host_matches, validate_url
 from app.product_image import (
     search_supplier_website,
     web_search_logo,
@@ -24,14 +27,36 @@ from app.social_scraper import (
 logger = logging.getLogger("browser-worker")
 
 
-async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")) -> str:
-    """Validate the API key from the X-API-Key header."""
+def _anon_allowed() -> bool:
+    """The dev escape hatch never applies in production (fail closed)."""
+    return settings.BROWSER_WORKER_ALLOW_ANON and settings.MARKAI_ENV != "production"
+
+
+async def verify_api_key(x_api_key: str = Header("", alias="X-API-Key")) -> str:
+    """Validate the API key from the X-API-Key header (fail closed on blank)."""
     if not settings.BROWSER_WORKER_API_KEY:
-        # No key configured — allow (dev mode)
-        return x_api_key
-    if x_api_key != settings.BROWSER_WORKER_API_KEY:
+        if _anon_allowed():
+            return x_api_key
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "BROWSER_WORKER_API_KEY is not configured; refusing all requests. "
+                "Set the key, or BROWSER_WORKER_ALLOW_ANON=true for local dev only."
+            ),
+        )
+    if not hmac.compare_digest(
+        x_api_key.encode("utf-8"), settings.BROWSER_WORKER_API_KEY.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
+
+
+async def _guard_target_url(url: str) -> None:
+    """Reject SSRF targets (private/metadata/odd-port/etc.) with a 400."""
+    try:
+        await validate_url(url)
+    except URLGuardError as exc:
+        raise HTTPException(status_code=400, detail=f"URL refused: {exc}") from exc
 
 # Shared browser instance, set during lifespan
 _browser: Browser | None = None
@@ -47,6 +72,18 @@ def get_browser() -> Browser:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _browser, _playwright_ctx
+    if not settings.BROWSER_WORKER_API_KEY:
+        if _anon_allowed():
+            logger.critical(
+                "BROWSER_WORKER_API_KEY is blank and BROWSER_WORKER_ALLOW_ANON=true — "
+                "running UNAUTHENTICATED. Local development only; never in production."
+            )
+        else:
+            logger.critical(
+                "BROWSER_WORKER_API_KEY is not set — all /capture requests will be "
+                "refused (503) until a key is configured "
+                "(the ALLOW_ANON escape hatch is inert in production)."
+            )
     logger.info("Launching Playwright Chromium...")
     _playwright_ctx = await async_playwright().start()
     _browser = await _playwright_ctx.chromium.launch(headless=True)
@@ -124,6 +161,7 @@ class SocialPageResponse(BaseModel):
 
 @app.post("/capture/screenshot", response_model=ScreenshotResponse, dependencies=[Depends(verify_api_key)])
 async def capture_screenshot(req: ScreenshotRequest):
+    await _guard_target_url(str(req.url))
     try:
         result = await take_screenshot(get_browser(), str(req.url))
         return result
@@ -134,6 +172,7 @@ async def capture_screenshot(req: ScreenshotRequest):
 
 @app.post("/capture/extract", response_model=ExtractResponse, dependencies=[Depends(verify_api_key)])
 async def capture_extract(req: ExtractRequest):
+    await _guard_target_url(str(req.url))
     try:
         result = await extract_page(get_browser(), str(req.url))
         return result
@@ -184,14 +223,18 @@ async def capture_logo(req: LogoRequest):
 @app.post("/capture/social-page", response_model=SocialPageResponse, dependencies=[Depends(verify_api_key)])
 async def capture_social_page(req: SocialPageRequest):
     url_str = str(req.url)
+    await _guard_target_url(url_str)
+    # Exact-host / dot-suffix matching — substring matching let e.g.
+    # "evil.example/?x=instagram.com" pick a scraper for an arbitrary URL.
+    host = urllib.parse.urlsplit(url_str).hostname
     try:
-        if "instagram.com" in url_str:
+        if host_matches(host, "instagram.com"):
             data = await scrape_instagram_profile(get_browser(), url_str)
             return SocialPageResponse(platform="instagram", data=data)
-        elif "facebook.com" in url_str:
+        elif host_matches(host, "facebook.com") or host_matches(host, "fb.com"):
             data = await scrape_facebook_page(get_browser(), url_str)
             return SocialPageResponse(platform="facebook", data=data)
-        elif "linkedin.com" in url_str:
+        elif host_matches(host, "linkedin.com"):
             data = await scrape_linkedin_company(get_browser(), url_str)
             return SocialPageResponse(platform="linkedin", data=data)
         else:

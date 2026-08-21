@@ -236,6 +236,29 @@ async def generate_video(
     return {"status": "queued", "message": "Video render queued"}
 
 
+def _video_job_quality_flags(job: VideoJob) -> dict:
+    """Degraded-outcome flags the render pipeline measured (audit §6).
+
+    The pipeline records every degraded outcome (overlay_burn, audio_finish,
+    multishot_fallback in params; label_guard in the generation ledger) but
+    nothing downstream ever read them — review saw "normal". Surface them so
+    the review UI can mark the item.
+    """
+    params = job.params if isinstance(job.params, dict) else {}
+    flags: dict = {}
+    # label_guard lives in params for the chained/single-call lanes and in
+    # the generation ledger for the native lane — read both (ledger wins).
+    for key in ("overlay_burn", "audio_finish", "multishot_fallback", "label_guard"):
+        value = params.get(key)
+        if value is not None:
+            flags[key] = value
+    ledger = job.generation_ledger if isinstance(job.generation_ledger, list) else []
+    for entry in ledger:
+        if isinstance(entry, dict) and entry.get("label_guard") is not None:
+            flags["label_guard"] = entry["label_guard"]
+    return flags
+
+
 @router.get("/{content_id}/video-jobs")
 async def list_video_jobs(
     content_id: uuid.UUID,
@@ -271,6 +294,7 @@ async def list_video_jobs(
             "duration_s": float(job.duration_s) if job.duration_s is not None else None,
             "error_message": job.error_message,
             "cost_usd": float(job.cost_usd) if job.cost_usd is not None else None,
+            "quality_flags": _video_job_quality_flags(job),
             "created_at": job.created_at,
             "started_at": job.started_at,
             "completed_at": job.completed_at,

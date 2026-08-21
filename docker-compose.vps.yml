@@ -67,6 +67,16 @@ services:
   # This is what makes the forge reachable from ANY server as
   # https://forge.${MARKAI_DOMAIN} + VIDEO_FORGE_API_KEY — not just from
   # this VPS's tunnel endpoint.
+  #
+  # SECURITY (audit §9): the relay deliberately does NOT sit on the shared
+  # external n8n_default network — there, every other tenant's container
+  # could hit markai-forge-proxy:9100 directly, bypassing Traefik and its
+  # rate limit. It lives alone on the dedicated markai-forge-edge network;
+  # only Traefik joins it. ONE-TIME OPERATOR STEP after first deploy of
+  # this change (compose creates the network, then):
+  #     docker network connect markai-forge-edge <vps-traefik-container>
+  # Until Traefik is connected, forge.${MARKAI_DOMAIN} returns 502/404
+  # (fail closed) while everything else keeps working.
   forge-proxy:
     image: alpine/socat
     container_name: markai-forge-proxy
@@ -74,7 +84,7 @@ services:
     command: TCP-LISTEN:9100,fork,reuseaddr TCP:172.17.0.1:9100
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=n8n_default"
+      - "traefik.docker.network=markai-forge-edge"
       - "traefik.http.routers.markai-forge.rule=Host(`forge.${MARKAI_DOMAIN}`)"
       - "traefik.http.routers.markai-forge.entrypoints=websecure"
       - "traefik.http.routers.markai-forge.tls.certresolver=mytlschallenge"
@@ -83,7 +93,7 @@ services:
       - "traefik.http.middlewares.markai-forge-ratelimit.ratelimit.burst=60"
       - "traefik.http.routers.markai-forge.middlewares=markai-forge-ratelimit"
     networks:
-      - n8n_default
+      - forge-edge
 
   agents:
     environment:
@@ -103,3 +113,8 @@ services:
 networks:
   n8n_default:
     external: true
+  # Dedicated edge network for the forge relay (see forge-proxy above).
+  # Pinned name so the traefik.docker.network label and the operator's
+  # `docker network connect` command are project-name independent.
+  forge-edge:
+    name: markai-forge-edge

@@ -26,6 +26,7 @@ from app.schemas.competitor import (
     CompetitorUpdate,
 )
 from app.services import audit_service, brand_service, fabric_service, minio_service
+from app.utils.media_sign import media_response_headers, require_media_access
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -53,8 +54,28 @@ _SENSITIVE_GUIDELINE_KEYS = {
     "signing_key",
 }
 
+# Substring rule (N-02): legacy credential shapes use prefixed names
+# (meta_access_token, linkedin_access_token, ...) that dodge the exact-name
+# set above. Any key at any depth whose lowercase name CONTAINS one of these
+# is stripped — including inside guidelines['social_credentials'].
+_SENSITIVE_KEY_SUBSTRINGS = (
+    "token",
+    "secret",
+    "password",
+    "api_key",
+    "apikey",
+    "client_secret",
+)
+
 # Regex for safe logo labels — alphanumeric, hyphens, underscores, max 50 chars
 _SAFE_LABEL_RE = re.compile(r"^[a-zA-Z0-9_-]{1,50}$")
+
+
+def _is_sensitive_key(key: object) -> bool:
+    k = str(key).lower()
+    if k in _SENSITIVE_GUIDELINE_KEYS:
+        return True
+    return any(s in k for s in _SENSITIVE_KEY_SUBSTRINGS)
 
 
 def _strip_sensitive_recursive(obj: object) -> object:
@@ -63,7 +84,7 @@ def _strip_sensitive_recursive(obj: object) -> object:
         return {
             k: _strip_sensitive_recursive(v)
             for k, v in obj.items()
-            if k not in _SENSITIVE_GUIDELINE_KEYS
+            if not _is_sensitive_key(k)
         }
     if isinstance(obj, list):
         return [_strip_sensitive_recursive(item) for item in obj]
@@ -1087,8 +1108,14 @@ async def get_brand_logo(
     brand_id: uuid.UUID,
     label: str,
     db: AsyncSession = Depends(get_db),
+    _media_auth: None = Depends(require_media_access),
 ):
-    """Serve a brand logo by label (public — used by img tags)."""
+    """Serve a brand logo by label.
+
+    Requires media auth (Entra bearer, X-Media-Token, or signed mt/exp) —
+    browser <img> tags load this through the frontend's same-origin
+    /api/media proxy, which injects the token after a session check.
+    """
     if not _SAFE_LABEL_RE.match(label):
         raise HTTPException(status_code=400, detail="Invalid label")
 
@@ -1109,10 +1136,14 @@ async def get_brand_logo(
 
     from fastapi.responses import Response
 
+    media_type = logo_info.get("content_type", "image/png")
     return Response(
         content=data,
-        media_type=logo_info.get("content_type", "image/png"),
-        headers={"Cache-Control": "public, max-age=86400"},
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, max-age=86400",
+            **media_response_headers(media_type),
+        },
     )
 
 
@@ -1204,9 +1235,16 @@ def _ext_for_content_type(ct: str) -> str:
         return "png"
     if "webp" in ct:
         return "webp"
-    if "svg" in ct:
-        return "svg"
     return "jpg"
+
+
+def _looks_like_svg(data: bytes) -> bool:
+    """Sniff markup (SVG/XML/HTML) regardless of the declared content type.
+
+    No real raster format starts with '<' after leading whitespace, so this
+    never false-positives on a genuine image.
+    """
+    return data[:512].lstrip().startswith(b"<")
 
 
 def _clean_logo_bytes(data: bytes, content_type: str) -> tuple[bytes, str]:
@@ -1215,10 +1253,16 @@ def _clean_logo_bytes(data: bytes, content_type: str) -> tuple[bytes, str]:
     often opaque JPEG/PNG on a white card) and crop to the tight bounding box,
     returning a transparent PNG. This mirrors what the PIL renderer does at
     draw time — doing it once at storage keeps the editor's raw <img> and the
-    render identical. SVGs and undecodable images are returned untouched.
+    render identical. Undecodable (non-SVG) images are returned untouched.
+
+    SVG is REJECTED outright (415): it is active content, the upload
+    endpoints already ban it, and letting the fetch path store it created a
+    stored-XSS route through the /files proxy (audit P0-08 / addendum §2.4).
     """
-    if "svg" in (content_type or "").lower():
-        return data, content_type
+    if "svg" in (content_type or "").lower() or _looks_like_svg(data):
+        raise HTTPException(
+            status_code=415, detail="SVG logos are not supported"
+        )
     try:
         from io import BytesIO
 
@@ -1431,9 +1475,13 @@ async def fetch_vendor_logo(
             dl = await client.get(logo_url, headers={"User-Agent": _UA})
         if dl.status_code != 200 or not dl.content:
             raise HTTPException(status_code=404, detail="Logo could not be downloaded")
-        ct = dl.headers.get("content-type", "image/png").split(";")[0]
-        if "image" not in ct and "svg" not in ct:
-            raise HTTPException(status_code=415, detail="Result was not an image")
+        ct = dl.headers.get("content-type", "image/png").split(";")[0].strip().lower()
+        # SVG is active content — the fetch path must match the upload
+        # paths' ban (stored XSS served back through the /files proxy).
+        if not ct.startswith("image/") or "svg" in ct:
+            raise HTTPException(
+                status_code=415, detail="Result was not a supported image"
+            )
     except HTTPException:
         raise
     except Exception as exc:
@@ -1658,9 +1706,13 @@ async def fetch_category_logo(
             dl = await client.get(logo_url, headers={"User-Agent": _UA})
         if dl.status_code != 200 or not dl.content:
             raise HTTPException(status_code=404, detail="Logo could not be downloaded")
-        ct = dl.headers.get("content-type", "image/png").split(";")[0]
-        if "image" not in ct and "svg" not in ct:
-            raise HTTPException(status_code=415, detail="Result was not an image")
+        ct = dl.headers.get("content-type", "image/png").split(";")[0].strip().lower()
+        # SVG is active content — the fetch path must match the upload
+        # paths' ban (stored XSS served back through the /files proxy).
+        if not ct.startswith("image/") or "svg" in ct:
+            raise HTTPException(
+                status_code=415, detail="Result was not a supported image"
+            )
     except HTTPException:
         raise
     except Exception as exc:

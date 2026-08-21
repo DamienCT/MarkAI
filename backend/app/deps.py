@@ -44,6 +44,9 @@ async def get_current_user(
       as manager with is_active=True
     - Otherwise, check DB is_active flag; new users without any security
       group are provisioned as viewer with is_active=False (pending approval)
+    - Activation-by-group applies ONLY at first provisioning: group
+      membership never flips is_active back to True on an existing row, so
+      a manual deactivation sticks (N-03)
     """
     token = credentials.credentials
     try:
@@ -124,26 +127,19 @@ async def get_current_user(
         await db.commit()
         await db.refresh(user)
     else:
-        # Existing user: keep their group-derived access in sync.
-        # Admin group always upgrades to admin. Marketing group only ensures
-        # active access — it never downgrades a higher role (admin/manager).
-        if in_admin_group and (not user.is_active or user.role != "admin"):
-            user.is_active = True
+        # Existing user: keep the group-derived ROLE in sync, but never touch
+        # is_active — group membership must not silently reactivate a user an
+        # admin deactivated (N-03). Activation-by-group only applies at first
+        # provisioning above; a deactivated user still fails the gate below.
+        if in_admin_group and user.role != "admin":
             user.role = "admin"
             await db.commit()
             await db.refresh(user)
-        elif in_marketing_group:
-            # Activate and upgrade lower roles to manager. Never downgrade admin.
-            needs_update = False
-            if not user.is_active:
-                user.is_active = True
-                needs_update = True
-            if user.role in ("viewer", "editor"):
-                user.role = "manager"
-                needs_update = True
-            if needs_update:
-                await db.commit()
-                await db.refresh(user)
+        elif in_marketing_group and user.role in ("viewer", "editor"):
+            # Upgrade lower roles to manager. Never downgrade admin.
+            user.role = "manager"
+            await db.commit()
+            await db.refresh(user)
 
     if not user.is_active:
         raise HTTPException(

@@ -14,8 +14,20 @@ from minio import Minio
 from playwright.async_api import Browser
 
 from app.config import settings
+from app.url_guard import EXTRACT_MAX_BYTES, install_page_guard
 
 logger = logging.getLogger("browser-worker.capture")
+
+# Server-side caps on what an extraction can hand back to callers — the
+# in-page JS truncates too, but the page controls that script's inputs.
+_MAX_META_CHARS = 10_000
+_MAX_TEXT_CHARS = 50_000
+
+
+def _cap(value: str | None, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value[:limit]
 
 
 def _minio_client() -> Minio:
@@ -37,8 +49,14 @@ async def take_screenshot(browser: Browser, url: str) -> dict:
 
     Returns dict with screenshot_url, width, height.
     """
-    page = await browser.new_page()
+    # Dedicated context with service workers blocked: SW-initiated requests
+    # bypass Playwright route interception, so a hostile page could register
+    # one for blind SSRF past the URL guard (default-context new_page() can't
+    # set this).
+    context = await browser.new_context(service_workers="block")
+    page = await context.new_page()
     try:
+        await install_page_guard(page)
         await page.goto(url, wait_until="networkidle", timeout=settings.PAGE_TIMEOUT_MS)
 
         viewport = page.viewport_size or {"width": 1280, "height": 720}
@@ -67,13 +85,16 @@ async def take_screenshot(browser: Browser, url: str) -> dict:
             "height": viewport["height"],
         }
     finally:
-        await page.close()
+        await context.close()
 
 
 async def extract_page(browser: Browser, url: str) -> dict:
     """Navigate to *url* and extract structured metadata + text content."""
-    page = await browser.new_page()
+    # Service workers blocked — same blind-SSRF rationale as take_screenshot.
+    context = await browser.new_context(service_workers="block")
+    page = await context.new_page()
     try:
+        await install_page_guard(page)
         await page.goto(url, wait_until="networkidle", timeout=settings.PAGE_TIMEOUT_MS)
 
         title = await page.title()
@@ -119,14 +140,21 @@ async def extract_page(browser: Browser, url: str) -> dict:
             }"""
         )
 
+        text = (text_content or "").strip()[:_MAX_TEXT_CHARS]
+        # Belt-and-braces: the whole readable payload stays under the guard's
+        # 2 MB extract cap even if every field is at its limit.
+        if len(text.encode("utf-8", errors="ignore")) > EXTRACT_MAX_BYTES:
+            text = text.encode("utf-8", errors="ignore")[:EXTRACT_MAX_BYTES].decode(
+                "utf-8", errors="ignore"
+            )
         return {
             "url": url,
-            "title": title,
-            "description": description,
-            "og_image": og_image,
-            "og_title": og_title,
-            "og_description": og_description,
-            "text_content": text_content.strip() if text_content else "",
+            "title": _cap(title, _MAX_META_CHARS),
+            "description": _cap(description, _MAX_META_CHARS),
+            "og_image": _cap(og_image, _MAX_META_CHARS),
+            "og_title": _cap(og_title, _MAX_META_CHARS),
+            "og_description": _cap(og_description, _MAX_META_CHARS),
+            "text_content": text,
         }
     finally:
-        await page.close()
+        await context.close()

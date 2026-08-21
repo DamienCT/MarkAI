@@ -15,8 +15,16 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = "markai-assets"
     MINIO_SECURE: bool = False
 
+    # --- General ---
+    # Compose injects the shared .env, so the deployment environment is known
+    # here too; the anon escape hatch below is inert in production.
+    MARKAI_ENV: str = "development"
+
     # --- API Key ---
+    # Blank key = every request is refused (fail closed). Local dev without a
+    # key requires the explicit BROWSER_WORKER_ALLOW_ANON=true escape hatch.
     BROWSER_WORKER_API_KEY: str = ""
+    BROWSER_WORKER_ALLOW_ANON: bool = False
 
     # --- Browser ---
     BROWSER_HEADLESS: bool = True

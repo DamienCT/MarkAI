@@ -29,8 +29,16 @@ class Settings(BaseSettings):
     VALKEY_PORT: int = 6379
     VALKEY_PASSWORD: str = ""
 
+    # --- General ---
+    # Compose injects the shared .env, so the deployment environment is known
+    # here too; the anon escape hatch below is inert in production.
+    MARKAI_ENV: str = "development"
+
     # --- Notifications Auth ---
+    # Blank token = every request is refused (fail closed). Local dev without
+    # a token requires the explicit NOTIFICATIONS_ALLOW_ANON=true escape hatch.
     NOTIFICATIONS_AUTH_TOKEN: str = ""
+    NOTIFICATIONS_ALLOW_ANON: bool = False
 
     # --- Microsoft Teams ---
     TEAMS_WEBHOOK_URL: str = ""

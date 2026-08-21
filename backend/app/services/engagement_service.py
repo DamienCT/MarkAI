@@ -4,6 +4,7 @@ from typing import Any
 import httpx
 
 from app.models.content import Content
+from app.utils.redact import redact
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +40,19 @@ async def pull_instagram_insights(
     async with httpx.AsyncClient(timeout=30) as client:
         # 1) Engagement counts live on the media object, not on /insights.
         try:
+            # Token goes in the Authorization header, never the URL — query
+            # strings end up in logs and exception messages (N-01).
             resp = await client.get(
                 f"https://graph.facebook.com/{_GRAPH_VERSION}/{post_id}",
-                params={"fields": "like_count,comments_count", "access_token": access_token},
+                params={"fields": "like_count,comments_count"},
+                headers={"Authorization": f"Bearer {access_token}"},
             )
             resp.raise_for_status()
             d = resp.json()
             result["likes"] = d.get("like_count", 0) or 0
             result["comments"] = d.get("comments_count", 0) or 0
         except Exception as exc:
-            logger.warning("IG media fields failed for %s: %s", post_id, exc)
+            logger.warning("IG media fields failed for %s: %s", post_id, redact(exc))
 
         # 2) Insights. Try the richest valid set, then degrade so one
         #    unsupported metric doesn't fail the whole request.
@@ -61,13 +65,17 @@ async def pull_instagram_insights(
             try:
                 resp = await client.get(
                     f"https://graph.facebook.com/{_GRAPH_VERSION}/{post_id}/insights",
-                    params={"metric": metric, "access_token": access_token},
+                    params={"metric": metric},
+                    headers={"Authorization": f"Bearer {access_token}"},
                 )
                 resp.raise_for_status()
                 data = resp.json().get("data", [])
             except Exception as exc:
                 logger.warning(
-                    "IG insights metric=%s failed for %s: %s", metric, post_id, exc
+                    "IG insights metric=%s failed for %s: %s",
+                    metric,
+                    post_id,
+                    redact(exc),
                 )
                 continue
             m = {
@@ -105,8 +113,8 @@ async def pull_facebook_insights(content: Content, access_token: str) -> dict[st
                 f"https://graph.facebook.com/{_GRAPH_VERSION}/{post_id}",
                 params={
                     "fields": "likes.summary(true).limit(0),comments.summary(true).limit(0),shares",
-                    "access_token": access_token,
                 },
+                headers={"Authorization": f"Bearer {access_token}"},
             )
             resp.raise_for_status()
             d = resp.json()
@@ -114,7 +122,7 @@ async def pull_facebook_insights(content: Content, access_token: str) -> dict[st
             result["comments"] = ((d.get("comments") or {}).get("summary") or {}).get("total_count", 0) or 0
             result["shares"] = (d.get("shares") or {}).get("count", 0) or 0
         except Exception as exc:
-            logger.warning("FB fields failed for %s: %s", post_id, exc)
+            logger.warning("FB fields failed for %s: %s", post_id, redact(exc))
 
         # Reach / impressions / clicks via insights. Meta's "new Pages
         # experience" deprecated several post metrics (e.g. post_impressions),
@@ -135,7 +143,8 @@ async def pull_facebook_insights(content: Content, access_token: str) -> dict[st
             try:
                 resp = await client.get(
                     f"https://graph.facebook.com/{_GRAPH_VERSION}/{post_id}/insights",
-                    params={"metric": metric, "access_token": access_token},
+                    params={"metric": metric},
+                    headers={"Authorization": f"Bearer {access_token}"},
                 )
                 resp.raise_for_status()
                 data = resp.json().get("data", [])

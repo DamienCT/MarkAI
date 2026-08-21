@@ -33,6 +33,12 @@ def _setup_json_logging() -> None:
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.INFO)
 
+    # httpx/httpcore log every request line — full URL, query string included —
+    # at INFO, which is how credential-bearing URLs reached stdout (N-01).
+    # Keep them at WARNING so request URLs never enter the logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 _setup_json_logging()
 

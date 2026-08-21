@@ -11,6 +11,7 @@ import logging
 from playwright.async_api import Browser
 
 from app.config import settings
+from app.url_guard import install_page_guard
 
 logger = logging.getLogger("browser-worker.social_scraper")
 
@@ -21,14 +22,19 @@ async def scrape_instagram_profile(browser: Browser, url: str) -> dict:
     Returns dict with bio, follower_count, following_count, post_count,
     and recent_thumbnails.
     """
-    page = await browser.new_page(
+    # Dedicated context with service workers blocked — SW-initiated requests
+    # bypass route interception (same blind-SSRF rationale as capture.py).
+    context = await browser.new_context(
+        service_workers="block",
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
-        )
+        ),
     )
+    page = await context.new_page()
     try:
+        await install_page_guard(page)
         await page.goto(url, wait_until="networkidle", timeout=settings.PAGE_TIMEOUT_MS)
 
         # Wait for profile header to render
@@ -52,11 +58,11 @@ async def scrape_instagram_profile(browser: Browser, url: str) -> dict:
                 if (descMeta) {
                     const desc = descMeta.getAttribute('content') || '';
                     // Instagram description format: "X Followers, Y Following, Z Posts - ..."
-                    const parts = desc.match(/([\d,.KMkm]+)\\s*Followers/i);
+                    const parts = desc.match(/([\\d,.KMkm]+)\\s*Followers/i);
                     if (parts) result.follower_count = parts[1];
-                    const fol = desc.match(/([\d,.KMkm]+)\\s*Following/i);
+                    const fol = desc.match(/([\\d,.KMkm]+)\\s*Following/i);
                     if (fol) result.following_count = fol[1];
-                    const posts = desc.match(/([\d,.KMkm]+)\\s*Posts/i);
+                    const posts = desc.match(/([\\d,.KMkm]+)\\s*Posts/i);
                     if (posts) result.post_count = posts[1];
                 }
 
@@ -99,7 +105,7 @@ async def scrape_instagram_profile(browser: Browser, url: str) -> dict:
         logger.exception("Instagram scrape failed for %s", url)
         raise
     finally:
-        await page.close()
+        await context.close()
 
 
 async def scrape_facebook_page(browser: Browser, url: str) -> dict:
@@ -108,14 +114,19 @@ async def scrape_facebook_page(browser: Browser, url: str) -> dict:
     Returns dict with page_name, category, about, likes, followers,
     and recent_posts.
     """
-    page = await browser.new_page(
+    # Dedicated context with service workers blocked — SW-initiated requests
+    # bypass route interception (same blind-SSRF rationale as capture.py).
+    context = await browser.new_context(
+        service_workers="block",
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
-        )
+        ),
     )
+    page = await context.new_page()
     try:
+        await install_page_guard(page)
         await page.goto(url, wait_until="networkidle", timeout=settings.PAGE_TIMEOUT_MS)
 
         # Wait for main content
@@ -178,7 +189,7 @@ async def scrape_facebook_page(browser: Browser, url: str) -> dict:
         logger.exception("Facebook scrape failed for %s", url)
         raise
     finally:
-        await page.close()
+        await context.close()
 
 
 async def scrape_linkedin_company(browser: Browser, url: str) -> dict:
@@ -187,14 +198,19 @@ async def scrape_linkedin_company(browser: Browser, url: str) -> dict:
     Returns dict with company_name, industry, description, employee_count,
     website, and specialties.
     """
-    page = await browser.new_page(
+    # Dedicated context with service workers blocked — SW-initiated requests
+    # bypass route interception (same blind-SSRF rationale as capture.py).
+    context = await browser.new_context(
+        service_workers="block",
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
-        )
+        ),
     )
+    page = await context.new_page()
     try:
+        await install_page_guard(page)
         await page.goto(url, wait_until="networkidle", timeout=settings.PAGE_TIMEOUT_MS)
 
         # Wait for page content to render
@@ -257,4 +273,4 @@ async def scrape_linkedin_company(browser: Browser, url: str) -> dict:
         logger.exception("LinkedIn scrape failed for %s", url)
         raise
     finally:
-        await page.close()
+        await context.close()

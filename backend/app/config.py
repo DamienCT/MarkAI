@@ -69,11 +69,19 @@ class Settings(BaseSettings):
     # --- Frontend ---
     FRONTEND_URL: str = ""
     PUBLIC_API_URL: str = ""  # external URL for the backend API (e.g. https://api.markai...)
+    # Shared secret for the frontend's same-origin media route: requests with
+    # header X-Media-Token equal to this value get GET-only access to media
+    # endpoints (/api/v1/files/*, brand logos) without an Entra bearer token.
+    MEDIA_PROXY_TOKEN: str = ""
 
     # --- n8n ---
     N8N_BASE_URL: str = "http://n8n:5678"
     N8N_WEBHOOK_BASE: str = "https://n8n.example.com/webhook"
     N8N_WEBHOOK_SECRET: str = ""
+    # Optional until the n8n workflow is re-imported with the HMAC node: when
+    # set, inbound n8n callbacks must carry a valid timestamped HMAC signature
+    # and outbound dispatches are signed with it.
+    N8N_WEBHOOK_HMAC_SECRET: str = ""
 
     # --- Browser Worker ---
     BROWSER_WORKER_URL: str = "http://browser-worker:8001"
@@ -81,6 +89,9 @@ class Settings(BaseSettings):
 
     # --- Notifications (Microsoft Teams) ---
     TEAMS_WEBHOOK_URL: str = ""
+
+    # --- Notifications service (X-Auth-Token for /notify + stream-token minting) ---
+    NOTIFICATIONS_AUTH_TOKEN: str = ""
 
     # --- Social Platform API Keys ---
     # Meta (Instagram + Facebook)
@@ -186,7 +197,13 @@ if settings.MARKAI_ENV == "production":
             f"{', '.join(_missing_auth)}. Set these in .env."
         )
     # Validate additional required production settings
-    _REQUIRED_PROD = ["N8N_WEBHOOK_SECRET", "FRONTEND_URL"]
+    _REQUIRED_PROD = [
+        "N8N_WEBHOOK_SECRET",
+        "FRONTEND_URL",
+        "MEDIA_PROXY_TOKEN",
+        "BROWSER_WORKER_API_KEY",
+        "NOTIFICATIONS_AUTH_TOKEN",
+    ]
     _missing_prod = [f for f in _REQUIRED_PROD if not getattr(settings, f, "")]
     if _missing_prod:
         raise RuntimeError(

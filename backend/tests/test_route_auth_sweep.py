@@ -15,16 +15,27 @@ from app.main import app
 
 # Routes that intentionally serve without a bearer token, keyed by the exact
 # registered path template. Keep the reason next to each entry.
+#
+# NOTE: /api/v1/files/* and /api/v1/brands/{id}/logos/{label} are no longer
+# public — they require media auth (X-Media-Token / signed URL / bearer, see
+# app.utils.media_sign) and are swept like every other route. The
+# _enforce_media_auth fixture below configures a token so the gate enforces
+# in the test env (blank token falls open outside production by design).
 PUBLIC_ROUTES = {
-    # Public media proxy — Meta/IG fetch these URLs to pull post media.
-    "/api/v1/files/{file_path:path}": "public file proxy for publishers",
     # n8n callback — authenticated via X-Webhook-Secret header, not a JWT.
     "/api/v1/webhooks/publish-result": "webhook-secret auth",
-    # Served into <img> tags, which cannot send an Authorization header.
-    "/api/v1/brands/{brand_id}/logos/{label}": "public brand logo for img tags",
     # Read internally by the agents service; exposes model IDs only.
     "/api/v1/providers/active": "agents-service model lookup",
 }
+
+
+@pytest.fixture(autouse=True)
+def _enforce_media_auth(monkeypatch):
+    """Media endpoints only fail open when MEDIA_PROXY_TOKEN is blank outside
+    production — configure one so the sweep verifies the media auth gate."""
+    monkeypatch.setattr(
+        "app.utils.media_sign._media_token", lambda: "sweep-media-token"
+    )
 
 # A UUID-shaped dummy satisfies str, uuid, and :path converters alike; auth
 # rejects the request before path-param validation ever runs.

@@ -15,8 +15,12 @@ Function → browser-worker route map:
                              direct HTML fetch of the start page)
 
 Every worker call sends the required ``X-API-Key`` header, sourced from
-``settings.BROWSER_WORKER_API_KEY`` ("internal" when unset — mirrors how the
-backend calls the worker)."""
+``settings.BROWSER_WORKER_API_KEY``. A blank key is a deployment
+misconfiguration: it is logged as an ERROR (once) and the worker will refuse
+the request. A 401/403 from the worker NEVER falls back to direct unguarded
+HTTP — that would silently bypass the worker's SSRF guards — it raises
+``BrowserWorkerAuthError`` instead. Genuine unavailability (connect error,
+timeout, 5xx) keeps the direct-fetch fallback."""
 
 from __future__ import annotations
 
@@ -48,9 +52,48 @@ def _get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+class BrowserWorkerAuthError(RuntimeError):
+    """The browser-worker rejected our credentials (401/403).
+
+    Configuration problem, not availability: falling back to direct HTTP here
+    would silently bypass the worker's SSRF/auth guards, so callers get this
+    raised at them instead."""
+
+
+_blank_key_logged = False
+
+
 def _worker_headers() -> dict[str, str]:
     """Auth header for the browser-worker (required on every /capture route)."""
-    return {"X-API-Key": settings.BROWSER_WORKER_API_KEY or "internal"}
+    global _blank_key_logged
+    key = settings.BROWSER_WORKER_API_KEY
+    if not key and not _blank_key_logged:
+        _blank_key_logged = True
+        logger.error(
+            "BROWSER_WORKER_API_KEY is blank — the browser-worker refuses "
+            "unauthenticated requests. Set BROWSER_WORKER_API_KEY in .env "
+            "(same value the browser-worker container is started with)."
+        )
+    return {"X-API-Key": key}
+
+
+def _raise_on_auth_error(exc: Exception, url: str) -> None:
+    """Convert a worker 401/403 into a loud, non-fallback failure."""
+    if (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response.status_code in (401, 403)
+    ):
+        logger.error(
+            "browser-worker rejected credentials (%s) for %s — "
+            "BROWSER_WORKER_API_KEY is misconfigured; refusing to fall back "
+            "to direct unguarded HTTP.",
+            exc.response.status_code,
+            url,
+        )
+        raise BrowserWorkerAuthError(
+            f"browser-worker auth misconfigured "
+            f"({exc.response.status_code}): check BROWSER_WORKER_API_KEY"
+        ) from exc
 
 
 async def _worker_extract(url: str) -> dict[str, Any]:
@@ -188,7 +231,11 @@ async def take_screenshot(url: str, full_page: bool = True) -> bytes:
         headers=_worker_headers(),
         timeout=60,
     )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        _raise_on_auth_error(exc, url)
+        raise
     screenshot_url = (resp.json() or {}).get("screenshot_url")
     if not screenshot_url:
         raise RuntimeError(f"browser-worker returned no screenshot_url for {url}")
@@ -214,6 +261,7 @@ async def extract_page(url: str) -> dict[str, Any]:
     try:
         return await _worker_extract(url)
     except Exception as exc:
+        _raise_on_auth_error(exc, url)
         logger.warning(
             "Browser-worker extract failed for %s (%s); falling back to direct HTTP",
             url,
@@ -239,6 +287,7 @@ async def scrape_product_images(url: str) -> list[str]:
         if og_image:
             return [og_image]
     except Exception as exc:
+        _raise_on_auth_error(exc, url)
         logger.warning(
             "Browser-worker extract failed for %s (%s); falling back to direct HTTP for images",
             url,
@@ -264,6 +313,7 @@ async def crawl_site(url: str, max_pages: int = 20) -> list[dict[str, Any]]:
     try:
         pages: list[dict[str, Any]] = [await _worker_extract(url)]
     except Exception as exc:
+        _raise_on_auth_error(exc, url)
         logger.warning(
             "Browser-worker unavailable for crawl of %s (%s); fetching directly",
             url,
