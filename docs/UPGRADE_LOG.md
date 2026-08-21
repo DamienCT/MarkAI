@@ -961,3 +961,48 @@ namespace where the service actually answers.
 
 Suites: agents 1246 (21 new drain/shutdown tests), bash -n clean,
 deploys.log recording outcomes.
+
+---
+
+## Cycle 13.1 — 2026-08-21: two failed reels taught the pipeline more than a clean one would have
+
+**v8 proved the planner and convicted the plumbing.** The first reel off
+the 4-5 long-beat planner told ONE story and rendered its faithful
+beats at the hand-written-script grade — but ~40% of the runtime came
+back as still-lifes of four and five empty bottles nobody planned. The
+cause was the packaging block: appended to every native segment, five
+120-word copies of "Every bottle or jar near the camera is bare,
+unprinted glass" outweighed the ~60-word story beats, and the model
+painted what the prompt talked about most. Same repetition-bias defect
+class as the identity tags. The block now rides segment 1 once; later
+segments carry a one-sentence reminder; the joined prompt halved.
+
+**v9 was v8 wearing a new run id.** The fix shipped, the plan LLM
+reproduced the identical plan, and the idempotency key — a digest of
+(scene, prose, duration) only — matched v8's, so the forge answered
+the "new" render from cache. The GPU never saw the fixed prompts. One
+layer down, store_video then died on the video_jobs unique index (v8's
+row already held the key) AFTER the content row and reel were stored —
+marking a delivered item 'failed'. Two fixes: the digest now folds in
+the BUILT segment prompts (applied pre-delabel, so the delabel LLM's
+variance cannot break redelivery dedup), and the video_jobs insert
+upserts — a dedup-hit is a legitimate outcome, not a crash.
+
+**v10 is the reel the A/B promised.** Fresh key, real render, and the
+label guard earned its keep mid-flight: attempt 1 grew a "plastic
+packaging label on the bread", the hard-flag tier bought the
+seed-bumped retry, attempt 2 came back clean. The delivered reel:
+bread torn onto a plate, the toast built, ONE pour, oil glossing the
+tomato under "Every item is truly certified", a basil finish, a real
+bite by the window and the smile after it — one location, one light,
+zero readable lettering, no product name, no supplier. The pipeline
+now produces on its own what the hand-written v7 script had to prove
+was possible.
+
+Also: the CI deploy went green end-to-end on its second run (the first
+executed the pre-fix script still on disk — redeploy-script changes
+take effect one deploy late, now a documented gotcha), and deploys.log
+recorded its first outcome=ok under user=deploy.
+
+Suites: agents 1250. Deploys: 8a8bc5c (packaging fix), a2beab5
+(idempotency + upsert), both via workflow_dispatch.
