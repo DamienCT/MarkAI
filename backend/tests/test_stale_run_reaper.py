@@ -95,6 +95,35 @@ async def test_reaper_binds_per_type_cutoffs(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_reaper_uses_heartbeat_expiry_with_age_backstop(monkeypatch):
+    """Lease model: heartbeat-bearing rows reap on HEARTBEAT_STALE_MINUTES of
+    silence regardless of age; NULL-heartbeat legacy rows keep the age rule."""
+    session = _FakeSession([_FakeResult([])])
+    monkeypatch.setattr(
+        stale_run_reaper, "async_session_factory", lambda: session
+    )
+
+    before = datetime.now(timezone.utc)
+    await reap_stale_agent_runs()
+    after = datetime.now(timezone.utc)
+
+    stmt, params = session.executed[0]
+    sql = str(stmt)
+    # Heartbeat arm applies only to rows that HAVE a heartbeat…
+    assert "heartbeat_at IS NOT NULL" in sql
+    assert "heartbeat_at < :heartbeat_cutoff" in sql
+    # …and the age-only backstop only to legacy NULL-heartbeat rows.
+    assert "heartbeat_at IS NULL" in sql
+    assert "COALESCE(started_at, created_at)" in sql
+
+    expected_hb = timedelta(minutes=stale_run_reaper.HEARTBEAT_STALE_MINUTES)
+    assert before - expected_hb <= params["heartbeat_cutoff"] <= after - expected_hb
+    # A fresh heartbeat must outlive every age cutoff by construction:
+    # the heartbeat cutoff is minutes ago, the age cutoffs hours ago.
+    assert params["heartbeat_cutoff"] > params["cutoff_default"]
+
+
+@pytest.mark.anyio
 async def test_reaper_returns_reaped_count_and_commits(monkeypatch):
     rows = [
         (uuid.uuid4(), "content", uuid.uuid4()),

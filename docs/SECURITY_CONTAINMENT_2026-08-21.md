@@ -273,7 +273,7 @@ not mistaken for oversights:
 | Secret vault migration (references-in-DB, values in vault) | R-003 / P0-03 | Requires vault infrastructure + write-only credential APIs. Mitigation: rotation (§3), strip-at-read, redacted logging. |
 | Transactional outbox for dispatch/callback | R-007 | Requires schema + dispatcher rework. Mitigation: claim-before-dispatch, monotonic transitions, replay table, stuck-publishing sweep. |
 | Campaign aggregate / consistency boundary | R-023 | Domain remodel. No interim change. |
-| Full durable HITL resume (`Command(resume)` rebuild) | AG-cluster | Interrupted runs are now safely parked as `paused_for_review` (no chaining, no artifact storage) instead of silently completing; true resume comes with the LangGraph checkpoint rework. |
+| ~~Full durable HITL resume (`Command(resume)` rebuild)~~ **DONE 2026-08-22** | AG-cluster | Shipped: AsyncPostgresSaver durable checkpoints, `agent.resume.run` authenticated resume (approve/reject + feedback, revision loops capped at 2), worker leases/heartbeats, "Pending agent reviews" UI on the approvals page. |
 | Full Alembic baseline regeneration | P0-09 | The repo keeps its documented split: `db/init.sql` is the fresh-install authority; hand-written convergence migrations (`0002`+) move existing DBs. `--autogenerate` is banned (N-16); `env.py` now guards against drops of unmodeled objects. |
 
 Re-review trigger: any of these deferrals should be revisited before adding a
@@ -298,36 +298,55 @@ second worker process, a second tenant, or external users.
 
 ### One-off data remediation: mislabeled `completed` strategy runs
 
-The OLD worker recorded interrupted strategy runs as `completed`, and those
-rows still satisfy `get_latest_strategy` (it filters on `status='completed'`)
-— downstream stages can pick up an interrupt payload as if it were a
-finished strategy. Identify affected rows by **interrupt-shaped output**:
-raw graph state with a top-level `pillars` key, and no strategy artifact
-stored for the run (genuine `store_strategy` artifact rows carry
-`content_pillars` instead). Inspect, then re-status:
+The OLD worker (pre-2026-08-21) recorded interrupted strategy runs as
+`completed`, and those rows still satisfy `get_latest_strategy` (it filters
+on `status='completed'`) — downstream stages can pick up an interrupt
+payload as if it were a finished strategy. Affected rows carry
+**interrupt-shaped output**: the raw graph state with a top-level
+`__interrupt__` marker and no `human_approved` key. (Genuine completions
+never carry `__interrupt__` and always carry `human_review`'s
+`human_approved` — a `pillars` key alone does NOT discriminate; every
+legitimate completion has one too.)
+
+This remediation is now scripted — `backend/scripts/remediate_interrupted_runs.py`
+(shipped inside the backend image at `/app/scripts/` since 2026-08-22).
+Dry-run by default; `--apply` re-statuses the candidates to `failed` with an
+explanatory `error_message` while preserving `output_payload` for forensics;
+restrict it to eyeballed rows with repeatable `--id <run-id>` flags.
+It is idempotent (remediated rows no longer match), and it is a data-only
+`UPDATE` — §9's "schema changes ride alembic" rule is untouched.
 
 ```bash
-# Inspect candidates first (output_payload ? 'pillars' is the interrupt-shape
-# marker; eyeball each hit before touching it):
-ssh markai "docker exec markai-postgres psql -U markai -d markai -c \
-  \"SELECT id, brand_id, created_at, left(output_payload::text, 200) \
-    FROM agent_runs \
-    WHERE agent_type='strategy' AND status='completed' \
-      AND output_payload ? 'pillars' \
-    ORDER BY created_at DESC;\""
+ssh markai
+
+# 1. Dry run — prints every candidate row; eyeball each one:
+docker exec markai-backend python /app/scripts/remediate_interrupted_runs.py
+
+# 2. Apply — restrict to the rows you confirmed:
+docker exec markai-backend python /app/scripts/remediate_interrupted_runs.py \
+  --apply --id <run-id> [--id <run-id> ...]
 ```
 
-For each confirmed interrupt-shaped row, either `UPDATE agent_runs SET
-status='failed' WHERE id='<run-id>';` or re-run strategy for the affected
-brand (a fresh `completed` run supersedes it — but still re-status the
-mislabeled row so it can never become "latest" again).
+The script uses the container's own `DATABASE_URL`; from anywhere else pass
+`--dsn postgresql://...`. After applying, re-run strategy for the affected
+brand(s) — a fresh approved run becomes "latest" the normal way.
 
-### Monitoring: `paused_for_review` runs need a human
+### Monitoring: `paused_for_review` runs need a human decision
 
-Interrupted runs are now parked as `status='paused_for_review'`. These
-**really occur**, and **nothing auto-resumes them** — the durable-resume
-rebuild is deferred (§8); the approval notification is the only signal.
-Add this to routine checks:
+Interrupted runs are parked as `status='paused_for_review'` — and since the
+2026-08-22 HITL round they are **resumable**: paused runs surface in the
+frontend's "Pending agent reviews" panel, where a manager/admin can
+**Approve** or **Reject** (reject requires feedback). The decision is
+audit-logged, published over NATS (`agent.resume.run`), and the worker
+resumes the graph from its durable checkpoint — approved runs finalize and
+chain as normal, rejected runs regenerate with the feedback in context and
+re-pause for another review (bounded: the run fails after repeated
+rejections). The old "nothing can resume them" caveat no longer applies.
+
+The psql check stays useful as a **backstop** for runs sitting paused longer
+than expected (nobody has decided yet, or a resume request was lost in
+transit — either way the run simply stays `paused_for_review`, and clicking
+Approve/Reject again re-publishes the request):
 
 ```bash
 ssh markai "docker exec markai-postgres psql -U markai -d markai -c \
@@ -335,6 +354,5 @@ ssh markai "docker exec markai-postgres psql -U markai -d markai -c \
     WHERE status='paused_for_review' ORDER BY created_at;\""
 ```
 
-A parked run needs a human decision: act on the approval and re-trigger the
-workflow, or mark the run `failed`. Until the resume rebuild lands there is
-no third option.
+A run listed here for more than a working day needs a decision in the UI —
+or, if the run is obsolete, mark it `failed` by hand.

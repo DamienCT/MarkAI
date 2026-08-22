@@ -276,9 +276,13 @@ class TestDrainScopedRelease:
         assert len(releases) == 2
         for sql, params in releases:
             # Scoped, never global: another worker's live runs must survive.
+            # Doubly scoped since the lease model: registered id AND this
+            # worker's claimed_by.
             assert "WHERE id = :id" in sql
             assert "status = 'running'" in sql
+            assert "claimed_by = :wid" in sql
             assert "ANY(" not in sql
+            assert params["wid"] == worker.WORKER_ID
         assert sorted(p["id"] for _, p in releases) == ["run-a", "run-b"]
 
     def test_abandoned_preforge_video_release_is_scoped(
@@ -299,8 +303,10 @@ class TestDrainScopedRelease:
         assert len(releases) == 1
         sql, params = releases[0]
         assert "WHERE id = :id" in sql
+        assert "claimed_by = :wid" in sql
         assert "ANY(" not in sql
         assert params["id"] == "run-v"
+        assert params["wid"] == worker.WORKER_ID
 
     def test_no_registered_ids_means_no_release_update(
         self, monkeypatch, _clean_drain_state

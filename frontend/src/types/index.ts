@@ -326,7 +326,7 @@ export interface AgentRun {
   agent_type: string;
   brand_id?: string;
   trigger?: string;
-  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  status: "pending" | "running" | "paused_for_review" | "completed" | "failed" | "cancelled";
   input_payload?: Record<string, unknown>;
   output_payload?: Record<string, unknown>;
   error_message?: string;

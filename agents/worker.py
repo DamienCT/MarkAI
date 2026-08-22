@@ -24,13 +24,18 @@ from typing import Any, Callable
 import nats.aio.msg
 
 from langgraph.errors import GraphInterrupt
+from langgraph.types import Command
 from sqlalchemy.exc import IntegrityError
 
 # Maximum time (seconds) a single workflow invocation may run before being cancelled
 WORKFLOW_TIMEOUT = int(
     os.environ.get("WORKFLOW_TIMEOUT_SECONDS", "5400")
 )  # 90 min default (full-year calendar = 200+ LLM calls)
-from shared.config import video_workflow_timeout_s as _video_timeout  # noqa: E402
+from shared.checkpointer import setup_checkpointer  # noqa: E402
+from shared.config import (  # noqa: E402
+    WORKER_ID,
+    video_workflow_timeout_s as _video_timeout,
+)
 from shared.nats_consumer import (  # noqa: E402
     VIDEO_ACK_WAIT_SECONDS,
     NATSConsumer,
@@ -133,6 +138,9 @@ SUBSCRIPTIONS = [
     ("product.>", "product-worker", STREAM_NAME, None),
     ("planning.>", "planning-worker", STREAM_NAME, None),
     ("adaptation.>", "adaptation-worker", STREAM_NAME, None),
+    # HITL resume requests (paused_for_review → running). Published by the
+    # backend's review endpoint; the worker is the transition's single writer.
+    ("agent.resume.run", "agent-resume-worker", STREAM_NAME, None),
     ("video.render", "video-worker", VIDEO_STREAM_NAME, VIDEO_ACK_WAIT_SECONDS),
 ]
 
@@ -232,6 +240,55 @@ def _register_run_id(run_id: str) -> None:
         if entry.get("task") is task:
             entry["run_id"] = run_id
             return
+
+
+# ── Run leases (AG-11/BE-34) ────────────────────────────────────────────
+# Every run this worker owns (created OR resumed) carries
+# claimed_by=WORKER_ID; this task renews heartbeat_at every 30s for as long
+# as the run is registered in the in-flight registry. A worker that dies
+# stops heartbeating, and the stale-run reaper fails its rows on heartbeat
+# expiry (minutes) instead of the old multi-hour age rule.
+HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+async def _heartbeat_once() -> None:
+    """Renew this worker's lease on every registered in-flight run.
+
+    One UPDATE per run id, per-id try/except — same reasoning as the drain's
+    release loop: list-binding through the raw text() helper is unproven with
+    asyncpg uuid arrays, N is a handful, and one bad row must not stop the
+    others' leases from renewing. Scoped to claimed_by so a row this worker
+    no longer owns is never renewed from here.
+    """
+    for entry in list(_in_flight.values()):
+        run_id = entry.get("run_id")
+        if not run_id:
+            continue
+        try:
+            await execute_update(
+                "UPDATE agent_runs SET heartbeat_at = NOW() "
+                "WHERE id = :id AND status = 'running' AND claimed_by = :wid",
+                {"id": run_id, "wid": WORKER_ID},
+            )
+        except Exception as hb_exc:
+            logger.warning(
+                "lease heartbeat failed for run %s: %s — if this persists "
+                "past the reaper's expiry the run will be failed as a lost "
+                "lease",
+                run_id,
+                hb_exc,
+            )
+
+
+async def _heartbeat_loop() -> None:
+    """Background task: heartbeat all in-flight runs every 30s.
+
+    Keeps running through a drain on purpose — workflows still finishing
+    inside the drain budget must not lose their lease mid-flight.
+    """
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        await _heartbeat_once()
 
 
 def _extract_interrupts(result: Any) -> list[dict[str, Any]]:
@@ -1865,6 +1922,200 @@ def _strip_images(obj: Any) -> Any:
     return obj
 
 
+_RESUME_DECISIONS = ("approved", "rejected")
+
+
+async def _handle_resume(msg: nats.aio.msg.Msg) -> None:
+    """agent.resume.run: apply a human decision to a paused_for_review run.
+
+    Pinned payload: {"run_id", "workflow_type", "decision":
+    "approved"|"rejected", "feedback": str|null, "actor", "requested_at"}.
+    The WORKER is the single writer of the paused_for_review→running
+    transition — the backend only publishes this message — so the CAS below
+    either wins exactly once or acks a no-op; a lost message just leaves the
+    run paused and the operator clicks again.
+    """
+    try:
+        payload = json.loads(msg.data.decode())
+        if not isinstance(payload, dict):
+            raise ValueError("payload is not an object")
+    except Exception:
+        logger.error("Invalid JSON payload on %s", msg.subject)
+        await msg.ack()  # a malformed resume never becomes valid — no retry
+        return
+
+    run_id = str(payload.get("run_id") or "")
+    workflow_type = str(payload.get("workflow_type") or "")
+    decision = payload.get("decision")
+    feedback = payload.get("feedback")
+    actor = str(payload.get("actor") or "unknown")
+    graph = WORKFLOW_MAP.get(workflow_type)
+
+    if not run_id or graph is None or decision not in _RESUME_DECISIONS:
+        logger.error(
+            "Dropping invalid agent.resume.run (run_id=%r, workflow_type=%r, "
+            "decision=%r)",
+            run_id,
+            workflow_type,
+            decision,
+        )
+        await msg.ack()
+        return
+
+    try:
+        rows = await execute_query(
+            "SELECT brand_id, agent_type, status, input_payload "
+            "FROM agent_runs WHERE id = :id",
+            {"id": run_id},
+        )
+    except Exception as load_exc:
+        logger.error(
+            "resume: could not load run %s: %s — retrying", run_id, load_exc
+        )
+        await msg.nak(delay=60)  # transient: the run stays safely paused
+        return
+    if not rows:
+        logger.error("resume: run %s not found — dropping", run_id)
+        await msg.ack()
+        return
+    run = rows[0]
+    if str(run.get("agent_type") or "") != workflow_type:
+        # Fail closed: resuming through the WRONG graph would feed another
+        # workflow's checkpoint this run's Command.
+        logger.error(
+            "resume: run %s is agent_type=%s but the message says %s — dropping",
+            run_id,
+            run.get("agent_type"),
+            workflow_type,
+        )
+        await msg.ack()
+        return
+    if run.get("status") != "paused_for_review":
+        logger.info(
+            "resume: run %s is '%s', not paused_for_review — duplicate or "
+            "late resume, acking",
+            run_id,
+            run.get("status"),
+        )
+        await msg.ack()
+        return
+
+    # ── CAS: paused_for_review → running, stamping this worker's lease ──
+    # The single-winner gate: two workers (or a redelivered message) racing
+    # the same resume can both pass the SELECT above, but only one UPDATE
+    # matches the paused row. The loser sees rowcount 0 and acks.
+    try:
+        claimed = await execute_update(
+            "UPDATE agent_runs SET status = 'running', claimed_by = :wid, "
+            "heartbeat_at = NOW(), completed_at = NULL "
+            "WHERE id = :id AND status = 'paused_for_review'",
+            {"id": run_id, "wid": WORKER_ID},
+        )
+    except IntegrityError as ie:
+        # idx_agent_runs_running: another run of this (brand, agent_type) is
+        # live right now, so the paused run cannot re-enter 'running' yet.
+        # Transient — retry after that run finishes; if every attempt loses,
+        # the run simply stays paused and the operator's next click
+        # publishes a fresh resume.
+        logger.info(
+            "resume: run %s blocked by a live %s run (%s) — retrying later",
+            run_id,
+            workflow_type,
+            str(ie)[:200],
+        )
+        await msg.nak(delay=300)
+        return
+    except Exception as cas_exc:
+        logger.error(
+            "resume: claim failed for run %s: %s — retrying", run_id, cas_exc
+        )
+        await msg.nak(delay=60)
+        return
+    if not claimed:
+        logger.info(
+            "resume: run %s was already claimed by another worker — acking "
+            "the duplicate",
+            run_id,
+        )
+        await msg.ack()
+        return
+
+    brand_id = str(run.get("brand_id") or "")
+    # Lease + drain scoping: this run is now ours — heartbeats renew it and
+    # a drain releases it if this worker dies mid-resume.
+    _register_run_id(run_id)
+
+    # The run's ORIGINAL dispatch payload: the post-invoke path (chaining,
+    # activation, batch continuation) keys off it.
+    orig_payload = run.get("input_payload") or {}
+    if isinstance(orig_payload, str):
+        try:
+            orig_payload = json.loads(orig_payload)
+        except (json.JSONDecodeError, TypeError):
+            orig_payload = {}
+    if not isinstance(orig_payload, dict):
+        orig_payload = {}
+
+    # ── Run-invariant: no checkpoint → fail cleanly, never re-run ──────
+    # A worker restarted on the MemorySaver fallback has no checkpoint for
+    # this thread — and langgraph 1.1.3 does NOT raise on that: it silently
+    # re-runs the graph from the entry point (verified), which would spend
+    # the full LLM budget to arrive at a brand-new pause. Probe first and
+    # fail the run with an operator-actionable message instead.
+    try:
+        checkpointer = getattr(graph, "checkpointer", None)
+        ckpt = None
+        if checkpointer is not None:
+            ckpt = await checkpointer.aget_tuple(
+                {"configurable": {"thread_id": run_id}}
+            )
+    except Exception as probe_exc:
+        logger.error(
+            "resume: checkpoint probe failed for run %s: %s — treating the "
+            "checkpoint as lost",
+            run_id,
+            probe_exc,
+        )
+        ckpt = None
+    if ckpt is None:
+        reason = (
+            "checkpoint lost — re-run the workflow (the worker restarted "
+            "without a durable checkpoint for this run)"
+        )
+        logger.error("resume: run %s has no checkpoint: %s", run_id, reason)
+        try:
+            await complete_agent_run(run_id, status="failed", error_message=reason)
+        except Exception as fail_exc:
+            # The run is 'running' with our lease and no live heartbeat once
+            # this handler returns — the reaper's heartbeat expiry owns it.
+            logger.error(
+                "resume: could not fail run %s: %s — the lease reaper owns it",
+                run_id,
+                fail_exc,
+            )
+        await _notify_workflow_failure(workflow_type, brand_id, run_id, reason)
+        await msg.ack()
+        return
+
+    logger.info(
+        "Resuming %s run %s (brand %s) with decision=%s by %s",
+        workflow_type,
+        run_id,
+        brand_id,
+        decision,
+        actor,
+    )
+    await _invoke_and_settle(
+        msg,
+        graph,
+        workflow_type,
+        brand_id,
+        run_id,
+        orig_payload,
+        Command(resume={"decision": decision, "feedback": feedback}),
+    )
+
+
 async def _handle_message(msg: nats.aio.msg.Msg) -> None:
     """Process an incoming NATS message by dispatching to the correct graph."""
     subject = msg.subject
@@ -1908,6 +2159,11 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         except Exception as exc:
             logger.exception("Competitor discovery failed: %s", exc)
         await msg.ack()
+        return
+
+    # ── Special handler: resume a paused_for_review run (HITL decision) ──
+    if subject == "agent.resume.run":
+        await _handle_resume(msg)
         return
 
     graph = _resolve_graph(subject)
@@ -2390,6 +2646,31 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
         run_id,
     )
 
+    await _invoke_and_settle(
+        msg, graph, agent_type, brand_id, run_id, payload, initial_state
+    )
+
+
+async def _invoke_and_settle(
+    msg: nats.aio.msg.Msg,
+    graph: Any,
+    agent_type: str,
+    brand_id: str,
+    run_id: str,
+    payload: dict[str, Any],
+    invoke_input: Any,
+) -> None:
+    """Invoke *graph* and settle the message + run row from the outcome.
+
+    Shared VERBATIM by fresh dispatches (invoke_input = the initial state
+    dict) and agent.resume.run resumes (invoke_input = Command(resume=...)),
+    so the post-invoke contract can never drift between the two: interrupt
+    (again) → paused_for_review; completed → artifacts + chaining; internal
+    failure/timeout/exception → failed. *payload* is the run's ORIGINAL
+    dispatch payload — chaining, activation and batch continuation key off
+    it, and a resumed run must settle exactly like its original message
+    would have.
+    """
     # Video gets the provider-cascade budget; everything else the default.
     timeout_s = VIDEO_WORKFLOW_TIMEOUT if agent_type == "video" else WORKFLOW_TIMEOUT
 
@@ -2399,7 +2680,7 @@ async def _handle_message(msg: nats.aio.msg.Msg) -> None:
             config["configurable"] = {"thread_id": run_id or brand_id}
 
         result = await asyncio.wait_for(
-            graph.ainvoke(initial_state, config=config if config else None),
+            graph.ainvoke(invoke_input, config=config if config else None),
             timeout=timeout_s,
         )
 
@@ -3047,14 +3328,17 @@ async def _drain_and_shutdown(consumer: NATSConsumer) -> None:
     # unproven in this repo (text() bindings have bitten before), and a
     # drain releases a handful of rows at most — the loop is the provably
     # correct shape. Per-id try/except: one bad row must not strand the rest.
+    # claimed_by narrows each release to rows whose lease THIS worker holds
+    # — belt and braces on top of the registered-id scoping, and the same
+    # two-worker safety contract the heartbeat task follows.
     for _rel_id in released_run_ids:
         try:
             await execute_update(
                 "UPDATE agent_runs SET status = 'failed', "
                 "error_message = 'abandoned by draining worker (redeploy)', "
                 "completed_at = NOW() "
-                "WHERE id = :id AND status = 'running'",
-                {"id": _rel_id},
+                "WHERE id = :id AND status = 'running' AND claimed_by = :wid",
+                {"id": _rel_id, "wid": WORKER_ID},
             )
         except Exception as rel_exc:
             logger.warning(
@@ -3144,6 +3428,10 @@ REQUIRED_SUBJECTS = [
     "product.>",
     "planning.>",
     "adaptation.>",
+    # HITL resume requests (agent.resume.run) — the backend's nats_service
+    # carries the same prefix in its stream config; both sides converge by
+    # union-merge so neither startup can strip the other's subjects.
+    "agent.>",
 ]
 
 
@@ -3161,9 +3449,13 @@ async def _ensure_stream(consumer: NATSConsumer) -> None:
                 logger.warning(
                     "Stream %s missing subjects: %s — updating", STREAM_NAME, missing
                 )
+                # Union-merge, never replace: the backend's nats_service owns
+                # subjects of its own on this stream (agent.> among them), and
+                # a wholesale subjects=REQUIRED_SUBJECTS write from here would
+                # strip whatever it added (mirrors its converge behaviour).
                 await consumer.js.update_stream(
                     name=STREAM_NAME,
-                    subjects=REQUIRED_SUBJECTS,
+                    subjects=sorted(existing_subjects | set(REQUIRED_SUBJECTS)),
                 )
         except Exception as e:
             logger.warning("Could not verify stream subjects: %s", e)
@@ -3202,6 +3494,16 @@ async def main() -> None:
     # ── Graceful shutdown: SIGTERM starts the drain, not an instant close ──
     _install_signal_handlers(loop, lambda: _request_drain(consumer))
 
+    # ── Durable HITL checkpointer ────────────────────────────────────────
+    # The graphs compiled at import time with the process-wide MemorySaver
+    # (AsyncPostgresSaver cannot be constructed before the loop runs) — swap
+    # in the durable saver BEFORE any subscription can deliver work. On
+    # failure setup falls back to that same MemorySaver with one loud error.
+    saver = await setup_checkpointer()
+    for _graph in WORKFLOW_MAP.values():
+        if getattr(_graph, "checkpointer", None) is not None:
+            _graph.checkpointer = saver
+
     # ── Connect and subscribe ────────────────────────────────────────────
     await consumer.connect()
     await _ensure_stream(consumer)
@@ -3215,8 +3517,12 @@ async def main() -> None:
             ack_wait=ack_wait,
         )
 
+    # ── Lease heartbeats (AG-11/BE-34) ──────────────────────────────────
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+
     logger.info("Worker started — listening on %d subjects", len(SUBSCRIPTIONS))
     await consumer.wait_for_shutdown()
+    heartbeat_task.cancel()
     logger.info("Worker stopped.")
 
 

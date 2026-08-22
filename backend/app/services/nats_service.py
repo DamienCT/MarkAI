@@ -28,6 +28,9 @@ STREAMS = {
             "publish.>",
             "engagement.>",
             "brand.>",
+            # HITL resume requests (agent.resume.run): the review endpoint
+            # publishes here; the worker's resume consumer picks them up.
+            "agent.>",
         ]
     },
     # Dedicated stream for video render jobs: long-running work with its own

@@ -19,3 +19,10 @@ class AdaptationState(TypedDict, total=False):
     applied_changes: list[dict[str, Any]]
     tier2_proposals: list[dict[str, Any]]
     tier3_proposals: list[dict[str, Any]]
+
+    # Human review loop (agent.resume.run contract). Each review stage keeps
+    # its own revision counter, capped by nodes.MAX_REVISIONS; the reviewer's
+    # rejection feedback is carried into the next review round's payload.
+    tier2_revisions: int
+    tier3_revisions: int
+    revision_feedback: str

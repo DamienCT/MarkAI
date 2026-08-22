@@ -1,15 +1,26 @@
+import logging
 import uuid
+from datetime import datetime, timezone
+from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.auth.models import User
+from app.auth.permissions import role_has_access
 from app.deps import get_current_user, get_db
 from app.models.agent_run import AgentRun
+from app.services import audit_service, nats_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# The status the worker records when a graph interrupt()s for human review.
+_PAUSED_STATUS = "paused_for_review"
 
 # Image fields the content workflow stored as base64 in output_payload. The
 # images live in MinIO; legacy rows still carry the base64 copy, which bloats a
@@ -152,6 +163,139 @@ async def list_active_agent_runs(
         }
         for run in runs
     ]
+
+
+def _interrupt_summary(output_payload) -> dict:
+    """Human-facing summary of a paused run's interrupt payload.
+
+    The worker stores ONLY {"paused_for_review": True, "interrupts": [...]}
+    on pause — each interrupt being {"value": <payload>, "interrupt_id": ...}
+    with value keys like type/message (see agents/worker._record_paused_run).
+    Odd or legacy shapes degrade to empty fields, never a 500.
+    """
+    interrupts = (output_payload or {}).get("interrupts")
+    if not isinstance(interrupts, list):
+        interrupts = []
+    first = interrupts[0] if interrupts else None
+    value = first.get("value") if isinstance(first, dict) else None
+    if not isinstance(value, dict):
+        value = {"message": str(value)} if value is not None else {}
+    return {
+        "type": value.get("type"),
+        "message": value.get("message"),
+        "interrupt_id": first.get("interrupt_id") if isinstance(first, dict) else None,
+        "count": len(interrupts),
+    }
+
+
+@router.get("/runs/paused")
+async def list_paused_agent_runs(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Runs waiting on a human decision (status paused_for_review).
+
+    Any authenticated role may view; the decision itself goes through
+    POST /runs/{run_id}/review (manager/admin only).
+    """
+    stmt = (
+        select(AgentRun)
+        .options(selectinload(AgentRun.brand))
+        .where(AgentRun.status == _PAUSED_STATUS)
+        .order_by(AgentRun.created_at.desc())
+        .limit(100)
+    )
+    result = await db.execute(stmt)
+    runs = result.scalars().all()
+
+    return [
+        {
+            "id": str(run.id),
+            "workflow_type": run.agent_type,
+            "brand_id": str(run.brand_id) if run.brand_id else None,
+            "brand_name": run.brand.name if run.brand else None,
+            "trigger": run.trigger,
+            "created_at": run.created_at.isoformat(),
+            "paused_at": run.completed_at.isoformat() if run.completed_at else None,
+            "interrupt": _interrupt_summary(run.output_payload),
+        }
+        for run in runs
+    ]
+
+
+class AgentRunReview(BaseModel):
+    action: Literal["approve", "reject"]
+    # Bounded: this string rides the NATS resume payload, the audit record
+    # and a revision LLM prompt verbatim — no reason to allow megabytes.
+    feedback: str | None = Field(default=None, max_length=4000)
+
+
+@router.post("/runs/{run_id}/review", status_code=status.HTTP_202_ACCEPTED)
+async def review_agent_run(
+    run_id: uuid.UUID,
+    payload: AgentRunReview,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Approve/reject a paused run and ask the worker to resume it.
+
+    Manager/admin only. The backend NEVER touches agent_runs.status — the
+    worker owns the paused_for_review→running CAS transition (single writer).
+    This endpoint only validates, audits, and publishes the resume request;
+    a lost message leaves the run paused and the operator simply clicks again.
+    """
+    if not role_has_access(current_user.role, "manager"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    result = await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    if run.status != _PAUSED_STATUS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run is not awaiting review (status '{run.status}')",
+        )
+
+    decision = "approved" if payload.action == "approve" else "rejected"
+    # Pinned resume contract — the worker's agent.resume.run handler
+    # depends on these exact keys.
+    resume_payload = {
+        "run_id": str(run.id),
+        "workflow_type": run.agent_type,
+        "decision": decision,
+        "feedback": payload.feedback,
+        "actor": current_user.email,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await nats_service.publish("agent.resume.run", resume_payload)
+    except Exception as exc:
+        # Fail closed: no 202 without a dispatched resume. The run stays
+        # paused_for_review, so a retry is always safe.
+        logger.error("Resume dispatch failed for run %s: %s", run_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not dispatch the resume request; the run stays paused — try again",
+        )
+
+    await audit_service.record_audit(
+        action=payload.action,
+        entity_type="agent_run",
+        user_id=current_user.id,
+        entity_id=run_id,
+        old_values={"status": _PAUSED_STATUS},
+        new_values={"decision": decision, "feedback": payload.feedback},
+        request=request,
+    )
+    logger.info(
+        "Agent run %s %s by %s — resume requested",
+        run_id,
+        decision,
+        current_user.email,
+    )
+    return {"status": "resume_requested"}
 
 
 @router.get("/runs")

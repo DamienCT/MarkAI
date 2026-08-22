@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from shared.brand_context import DEFAULT_BRAND_TIMEZONE
-from shared.config import settings
+from shared.config import WORKER_ID, settings
 
 logger = logging.getLogger(__name__)
 
@@ -84,13 +84,23 @@ async def create_agent_run(
     trigger: str = "manual",  # valid: manual, scheduled, event, webhook
     input_payload: dict | None = None,
 ) -> str:
-    """Create a new agent_run record and return its ID."""
+    """Create a new agent_run record and return its ID.
+
+    The row carries this worker's lease from birth (claimed_by=WORKER_ID,
+    heartbeat_at=now): the worker's 30s heartbeat task renews it, the
+    shutdown drain releases only rows it owns, and the stale-run reaper
+    fails any 'running' row whose heartbeat expired — so a dead worker frees
+    its dedup locks in minutes, not hours.
+    """
     run_id = str(uuid4())
+    now = datetime.now(timezone.utc)
     async with async_session_factory() as session:
         await session.execute(
             text(
-                "INSERT INTO agent_runs (id, brand_id, agent_type, trigger, status, input_payload, started_at) "
-                "VALUES (:id, :brand_id, :agent_type, :trigger, 'running', :input_payload, :started_at)"
+                "INSERT INTO agent_runs (id, brand_id, agent_type, trigger, status, "
+                "input_payload, started_at, claimed_by, heartbeat_at) "
+                "VALUES (:id, :brand_id, :agent_type, :trigger, 'running', "
+                ":input_payload, :started_at, :claimed_by, :heartbeat_at)"
             ),
             {
                 "id": run_id,
@@ -98,7 +108,9 @@ async def create_agent_run(
                 "agent_type": agent_type,
                 "trigger": trigger,
                 "input_payload": json.dumps(input_payload or {}, default=str),
-                "started_at": datetime.now(timezone.utc),
+                "started_at": now,
+                "claimed_by": WORKER_ID,
+                "heartbeat_at": now,
             },
         )
         await session.commit()

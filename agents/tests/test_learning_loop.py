@@ -243,9 +243,12 @@ def test_apply_tier1_never_touches_the_database(monkeypatch):
     assert result["applied_changes"] == []
 
 
-def test_propose_tier2_reviews_tiers_1_and_2_with_explicit_decisions_only(
+def test_propose_tier2_reviews_tiers_1_and_2_on_a_blanket_approval(
     monkeypatch,
 ):
+    # The pinned agent.resume.run contract carries ONE decision for the whole
+    # pause: approving applies every recommendation the pause presented (the
+    # explicit human decision P0-06 demands); tier 3 is not part of this gate.
     calls = []
 
     async def fake_update(aid, status):
@@ -255,7 +258,7 @@ def test_propose_tier2_reviews_tiers_1_and_2_with_explicit_decisions_only(
 
     def fake_interrupt(payload):
         payloads.append(payload)
-        return {"decisions": {"a1": True, "a2": False}}
+        return {"decision": "approved", "feedback": None}
 
     monkeypatch.setattr(adaptation_nodes, "update_adaptation_status", fake_update)
     monkeypatch.setattr(adaptation_nodes, "interrupt", fake_interrupt)
@@ -265,30 +268,56 @@ def test_propose_tier2_reviews_tiers_1_and_2_with_explicit_decisions_only(
         "adaptations": [
             {"id": "a1", "tier": 1, "description": "low"},
             {"id": "a2", "tier": 2, "description": "medium"},
-            {"id": "a3", "tier": 2, "description": "undecided"},
+            {"id": "a3", "tier": 2, "description": "also medium"},
             {"id": "a4", "tier": 3, "description": "major"},
         ],
     }
     result = asyncio.run(adaptation_nodes.propose_tier2(state))
 
-    # tier 1 now goes through the same human gate as tier 2; tier 3 does not
+    # tier 1 goes through the same human gate as tier 2; tier 3 does not
     reviewed = {a["id"] for a in payloads[0]["adaptations"]}
     assert reviewed == {"a1", "a2", "a3"}
-    assert ("a1", "applied") in calls
-    assert ("a2", "rejected") in calls
-    # no explicit decision → stays proposed, no write
-    assert all(aid != "a3" for aid, _ in calls)
-    assert [c["id"] for c in result["applied_changes"]] == ["a1"]
+    assert calls == [("a1", "applied"), ("a2", "applied"), ("a3", "applied")]
+    assert [c["id"] for c in result["applied_changes"]] == ["a1", "a2", "a3"]
 
 
-def test_propose_tier3_writes_only_explicit_decisions(monkeypatch):
+def test_propose_tier2_rejection_writes_nothing_and_asks_for_revision(
+    monkeypatch,
+):
     calls = []
 
     async def fake_update(aid, status):
         calls.append((aid, status))
 
     def fake_interrupt(payload):
-        return {"decisions": {"a4": False}}
+        return {"decision": "rejected", "feedback": "bad timing"}
+
+    monkeypatch.setattr(adaptation_nodes, "update_adaptation_status", fake_update)
+    monkeypatch.setattr(adaptation_nodes, "interrupt", fake_interrupt)
+
+    state = {
+        "brand_id": "b-1",
+        "adaptations": [{"id": "a1", "tier": 2, "description": "medium"}],
+    }
+    result = asyncio.run(adaptation_nodes.propose_tier2(state))
+
+    # A rejection decides nothing in the DB — rows stay 'proposed' and the
+    # graph loops through the revision node instead.
+    assert calls == []
+    assert result["status"] == "needs_revision"
+    assert result["revision_feedback"] == "bad timing"
+
+
+def test_propose_tier3_ambiguous_resume_is_not_an_approval(monkeypatch):
+    # Fail closed: anything but decision == "approved" (a legacy per-id
+    # payload included) writes nothing and routes to revision.
+    calls = []
+
+    async def fake_update(aid, status):
+        calls.append((aid, status))
+
+    def fake_interrupt(payload):
+        return {"decisions": {"a4": True}}  # legacy shape, no blanket decision
 
     monkeypatch.setattr(adaptation_nodes, "update_adaptation_status", fake_update)
     monkeypatch.setattr(adaptation_nodes, "interrupt", fake_interrupt)
@@ -297,14 +326,13 @@ def test_propose_tier3_writes_only_explicit_decisions(monkeypatch):
         "brand_id": "b-1",
         "adaptations": [
             {"id": "a4", "tier": 3, "description": "major"},
-            {"id": "a5", "tier": 3, "description": "undecided"},
+            {"id": "a5", "tier": 3, "description": "another"},
         ],
     }
     result = asyncio.run(adaptation_nodes.propose_tier3(state))
 
-    assert calls == [("a4", "rejected")]
-    assert result["applied_changes"] == []
-    assert result["status"] == "completed"
+    assert calls == []
+    assert result["status"] == "needs_revision"
 
 
 # ── N-18: store_content survives null bytes ──────────────────────────

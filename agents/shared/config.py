@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import socket
+
 from pydantic_settings import BaseSettings
 
 
@@ -121,6 +124,24 @@ class Settings(BaseSettings):
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
+    @property
+    def postgres_dsn_psycopg(self) -> str:
+        """The same database in psycopg3 URL form (no SQLAlchemy driver tag).
+
+        The durable HITL checkpointer (shared.checkpointer) speaks psycopg3
+        directly — the ``postgresql+asyncpg://`` scheme above is a SQLAlchemy
+        dialect string, not a conninfo psycopg accepts. User/password are
+        URL-escaped so credentials containing ``@ : / #`` don't break the
+        conninfo.
+        """
+        from urllib.parse import quote
+
+        return (
+            f"postgresql://{quote(self.POSTGRES_USER, safe='')}:"
+            f"{quote(self.POSTGRES_PASSWORD, safe='')}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
+
     # ── Runtime environment ───────────────────────────────────────────────
     MARKAI_ENV: str = "development"
 
@@ -128,6 +149,16 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ── Worker identity (run leases) ───────────────────────────────────────────
+# Every agent_runs row this process creates or resumes is stamped
+# claimed_by=WORKER_ID; the worker's 30s heartbeat and its shutdown drain only
+# ever touch rows carrying this id, so two workers can share the stack without
+# releasing each other's live runs (AG-11/BE-34). Env override for operators
+# pinning an identity across restarts; the default is unique per container
+# process.
+WORKER_ID = os.environ.get("WORKER_ID") or f"{socket.gethostname()}:{os.getpid()}"
 
 
 def media_auth_headers() -> dict[str, str]:

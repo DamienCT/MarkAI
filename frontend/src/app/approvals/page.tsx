@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from "react";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,7 +12,7 @@ import { ChannelPreview } from "@/components/content/ChannelPreview";
 import { ApprovalActions } from "@/components/approval/ApprovalActions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import { format } from "date-fns";
 import { api, fileUrl, isAuthError } from "@/lib/api";
 import { getStoredBrandValue } from "@/lib/brand-selection";
@@ -28,16 +29,46 @@ interface ApprovalWithExtra extends Approval {
   };
 }
 
+// Agent runs paused mid-workflow for a human decision — the shape returned
+// by GET /api/v1/agents/runs/paused.
+interface PausedAgentRun {
+  id: string;
+  workflow_type: string;
+  brand_id: string | null;
+  brand_name: string | null;
+  trigger?: string | null;
+  created_at: string;
+  paused_at: string | null;
+  interrupt: {
+    type: string | null;
+    message: string | null;
+    interrupt_id: string | null;
+    count: number;
+  };
+}
+
 export default function ApprovalsPage() {
   const { hasAccess, loading: roleLoading } = useRequireRole("editor");
+  const { data: session } = useSession();
   const [approvals, setApprovals] = useState<ApprovalWithExtra[]>([]);
   const [loading, setLoading] = useState(true);
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("");
   const [brandFilter, setBrandFilter] = useState<string>("all");
+  const [pausedRuns, setPausedRuns] = useState<PausedAgentRun[]>([]);
+  const [reviewingRunId, setReviewingRunId] = useState<string | null>(null);
+  const [rejectingRunId, setRejectingRunId] = useState<string | null>(null);
+  const [rejectFeedback, setRejectFeedback] = useState("");
+
+  // Run reviews are manager/admin only server-side — hide the buttons below
+  // that (same gate as the learning page's decision buttons).
+  const userRole =
+    (session?.user as Record<string, unknown> | undefined)?.role as string | undefined;
+  const canDecide = userRole === "manager" || userRole === "admin";
 
   useEffect(() => {
     fetchApprovals();
+    fetchPausedRuns();
   }, []);
 
   // Follow the global sidebar brand selection: hydrate from localStorage after
@@ -64,6 +95,48 @@ export default function ApprovalsPage() {
       setLoading(false);
     }
   }
+
+  async function fetchPausedRuns() {
+    try {
+      const data = await api.get<PausedAgentRun[]>("/api/v1/agents/runs/paused");
+      setPausedRuns(data);
+    } catch (err) {
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load pending agent reviews");
+    }
+  }
+
+  const handleRunReview = async (runId: string, action: "approve" | "reject") => {
+    const feedback = action === "reject" ? rejectFeedback.trim() : "";
+    if (action === "reject" && !feedback) {
+      toast.error("Rejection feedback is required");
+      return;
+    }
+    setReviewingRunId(runId);
+    try {
+      await api.post<{ status: string }>(`/api/v1/agents/runs/${runId}/review`, {
+        action,
+        ...(feedback ? { feedback } : {}),
+      });
+      // 202 accepted: the worker picks the resume up asynchronously — the row
+      // stays paused_for_review in the DB until it does, so drop it locally
+      // instead of refetching it straight back. If the resume message is ever
+      // lost, the run reappears on the next refresh and a second click is safe.
+      setPausedRuns((prev) => prev.filter((r) => r.id !== runId));
+      setRejectingRunId(null);
+      setRejectFeedback("");
+      toast.success(
+        action === "approve"
+          ? "Run approved — resuming"
+          : "Run rejected — the agent will revise"
+      );
+    } catch (err: unknown) {
+      const detail = (err as { detail?: string })?.detail || `Failed to ${action} the run`;
+      toast.error(detail);
+    } finally {
+      setReviewingRunId(null);
+    }
+  };
 
   const handleAction = async (approvalId: string, action: "approved" | "rejected", comments: string) => {
     try {
@@ -142,6 +215,106 @@ export default function ApprovalsPage() {
           </Select>
         </div>
       </div>
+
+      {/* Pending agent reviews — workflows paused mid-run for a human decision */}
+      {pausedRuns.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle>Pending Agent Reviews</CardTitle>
+                <CardDescription>
+                  Workflows paused mid-run, waiting for a human decision
+                </CardDescription>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0"
+                onClick={fetchPausedRuns}
+                aria-label="Refresh pending agent reviews"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {pausedRuns.map((run) => (
+              <div key={run.id} className="rounded-md border p-3 space-y-2">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium capitalize">
+                      {run.workflow_type} workflow
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {run.brand_name || "No brand"}
+                      {" · paused "}
+                      {formatRelativeTime(run.paused_at || run.created_at)}
+                    </p>
+                  </div>
+                  <Badge className={statusColor("in_review")} variant="outline">
+                    needs review
+                  </Badge>
+                </div>
+                {run.interrupt.message && (
+                  <p className="text-xs text-muted-foreground">{run.interrupt.message}</p>
+                )}
+                {canDecide &&
+                  (rejectingRunId === run.id ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Input
+                        value={rejectFeedback}
+                        onChange={(e) => setRejectFeedback(e.target.value)}
+                        placeholder="Why is this rejected? The agent revises with this feedback."
+                        className="h-8 text-xs flex-1 min-w-[220px]"
+                        aria-label="Rejection feedback"
+                      />
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={reviewingRunId === run.id || !rejectFeedback.trim()}
+                        onClick={() => handleRunReview(run.id, "reject")}
+                      >
+                        Confirm Reject
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setRejectingRunId(null);
+                          setRejectFeedback("");
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={reviewingRunId === run.id}
+                        onClick={() => {
+                          setRejectingRunId(run.id);
+                          setRejectFeedback("");
+                        }}
+                      >
+                        Reject
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={reviewingRunId === run.id}
+                        onClick={() => handleRunReview(run.id, "approve")}
+                      >
+                        Approve
+                      </Button>
+                    </div>
+                  ))}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {loading ? (
         <div className="space-y-4">

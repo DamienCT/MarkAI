@@ -48,6 +48,9 @@ RUN adduser --system --uid 1001 appuser
 COPY alembic.ini .
 COPY alembic/ alembic/
 COPY app/ app/
+# Operational one-off scripts (runbook §10) so docker exec can run them
+# without a docker cp pre-step.
+COPY scripts/ scripts/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && chown -R appuser /app

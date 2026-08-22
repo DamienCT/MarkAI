@@ -30,6 +30,9 @@ class StrategyState(TypedDict, total=False):
     # Human review
     human_approved: bool
     human_feedback: str
+    # Completed revision loops (rejected → revise → re-review). Capped by
+    # nodes.MAX_REVISIONS, after which another rejection fails the run.
+    revision_count: int
 
     # Plain-English summary for non-marketing readers
     executive_summary_plain: str

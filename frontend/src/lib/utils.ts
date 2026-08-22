@@ -67,6 +67,7 @@ export function statusColor(status: string): string {
     revision_requested: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300",
     draft: "bg-slate-100 text-slate-800 dark:bg-slate-900 dark:text-slate-300",
     paused: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300",
+    paused_for_review: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300",
     archived: "bg-zinc-100 text-zinc-800 dark:bg-zinc-900 dark:text-zinc-300",
   };
   if (!status) return "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300";

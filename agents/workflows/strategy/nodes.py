@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 # into every system prompt that produces user-facing text here: positioning,
 # pillars, audiences, cadence, themes.
 
+# Rejected reviews loop through revise_strategy and back to human_review at
+# most this many times; the next rejection fails the run instead of burning
+# another full-strategy LLM pass.
+MAX_REVISIONS = 2
+
 
 def _brand_ctx(state: StrategyState) -> str:
     """Render the shared brand grounding block from the loaded brand config."""
@@ -336,8 +341,12 @@ async def generate_themes(state: StrategyState) -> dict[str, Any]:
 async def human_review(state: StrategyState) -> dict[str, Any]:
     """Pause execution for human review of the complete strategy.
 
-    Uses LangGraph interrupt() to halt the graph until a human approves or
-    provides feedback.
+    Uses LangGraph interrupt() to halt the graph until a human decides. The
+    resume payload is the pinned agent.resume.run contract:
+    {"decision": "approved"|"rejected", "feedback": str|None}. Approved →
+    store as before; rejected → status needs_revision routes to
+    revise_strategy (max MAX_REVISIONS loops, then the run fails). Anything
+    that is not an explicit approval is treated as a rejection — fail closed.
 
     When auto_approve=True or trigger="event" (automated pipeline), skip
     the interrupt and auto-approve the strategy to allow unattended e2e runs.
@@ -380,19 +389,22 @@ async def human_review(state: StrategyState) -> dict[str, Any]:
             "executive_summary_plain": summary_plain,
         }
 
+    revisions = int(state.get("revision_count") or 0)
     review = interrupt(
         {
             "type": "strategy_review",
             "brand_id": state["brand_id"],
             "strategy": strategy_summary,
+            "revision_count": revisions,
             "message": "Please review and approve the generated strategy, or provide feedback for revision.",
         }
     )
 
-    approved = review.get("approved", False)
-    feedback = review.get("feedback", "")
+    review = review if isinstance(review, dict) else {}
+    decision = review.get("decision")
+    feedback = str(review.get("feedback") or "")
 
-    if approved:
+    if decision == "approved":
         # Store the approved strategy
         await store_strategy(state["brand_id"], strategy_summary)
         return {
@@ -400,9 +412,99 @@ async def human_review(state: StrategyState) -> dict[str, Any]:
             "status": "approved",
             "executive_summary_plain": summary_plain,
         }
-    else:
+    if revisions >= MAX_REVISIONS:
+        # Two full revision passes already happened — a third rejection is a
+        # terminal outcome, not another LLM loop.
         return {
             "human_approved": False,
             "human_feedback": feedback,
-            "status": "needs_revision",
+            "status": "failed",
+            "errors": [
+                *(state.get("errors") or []),
+                f"strategy rejected after {revisions} revisions",
+            ],
+        }
+    return {
+        "human_approved": False,
+        "human_feedback": feedback,
+        "status": "needs_revision",
+    }
+
+
+async def revise_strategy(state: StrategyState) -> dict[str, Any]:
+    """Regenerate the strategy from the reviewer's rejection feedback.
+
+    One LLM pass over the CURRENT strategy summary plus the feedback, asked to
+    return the same five components. Only components the revision actually
+    returns replace their originals — a partial answer must not erase the
+    parts the reviewer did not complain about. Loops back to human_review.
+    """
+    try:
+        revisions = int(state.get("revision_count") or 0) + 1
+        feedback = state.get("human_feedback") or ""
+        current = {
+            "positioning": state.get("positioning"),
+            "content_pillars": state.get("pillars"),
+            "target_audiences": state.get("audiences"),
+            "posting_cadence": state.get("cadence"),
+            "monthly_themes": state.get("themes"),
+        }
+        prompt = [
+            {
+                "role": "system",
+                "content": f"{_ENGLISH_ONLY_RULE}\n\n"
+                "You are a brand strategist revising a marketing strategy that a "
+                "human reviewer rejected. Apply the reviewer's feedback while "
+                "keeping everything they did not object to. Return a JSON object "
+                "with the SAME five keys and the SAME internal structure as the "
+                "current strategy: positioning, content_pillars, "
+                "target_audiences, posting_cadence, monthly_themes. Every part "
+                "must comply with the brand NEVER-guardrails in the brand block.",
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{_brand_ctx(state)}\n\n"
+                    f"Reviewer feedback (revision {revisions} of {MAX_REVISIONS}):\n"
+                    f"{feedback or '(no written feedback — improve overall quality)'}\n\n"
+                    f"Current strategy:\n{sanitize_json_for_prompt(current, max_length=20000)}"
+                ),
+            },
+        ]
+        result = await chat_completion(
+            prompt,
+            temperature=0.5,
+            max_tokens=16384,
+            response_format={"type": "json_object"},
+        )
+        revised = parse_llm_json(result, fallback={})
+        if not isinstance(revised, dict) or not revised:
+            raise ValueError("revision returned no usable JSON")
+        updates: dict[str, Any] = {"revision_count": revisions, "status": "running"}
+        component_keys = {
+            "positioning": ("positioning",),
+            "pillars": ("content_pillars", "pillars"),
+            "audiences": ("target_audiences", "audiences"),
+            "cadence": ("posting_cadence", "cadence"),
+            "themes": ("monthly_themes", "themes"),
+        }
+        for state_key, aliases in component_keys.items():
+            for alias in aliases:
+                value = revised.get(alias)
+                if value:
+                    updates[state_key] = value
+                    break
+        logger.info(
+            "Revised strategy for brand %s (revision %d/%d, feedback: %.120s)",
+            state["brand_id"],
+            revisions,
+            MAX_REVISIONS,
+            feedback,
+        )
+        return updates
+    except Exception as exc:
+        logger.error("revise_strategy failed: %s", exc)
+        return {
+            "status": "failed",
+            "errors": [*(state.get("errors") or []), f"revise_strategy failed: {exc}"],
         }

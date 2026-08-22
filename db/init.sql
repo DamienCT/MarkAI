@@ -265,6 +265,8 @@ CREATE TABLE agent_runs (
     prompt_version_id UUID REFERENCES prompt_versions(id) ON DELETE SET NULL,
     brand_id        UUID NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
     initiated_by    UUID REFERENCES users(id) ON DELETE SET NULL,
+    claimed_by      TEXT,
+    heartbeat_at    TIMESTAMPTZ,
     started_at      TIMESTAMPTZ,
     completed_at    TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -277,6 +279,7 @@ CREATE INDEX idx_agent_runs_initiated_by ON agent_runs (initiated_by);
 CREATE INDEX idx_agent_runs_created_at ON agent_runs (created_at DESC);
 CREATE UNIQUE INDEX idx_agent_runs_running ON agent_runs (brand_id, agent_type) WHERE status = 'running';
 CREATE INDEX idx_agent_runs_brand_type_created ON agent_runs (brand_id, agent_type, created_at DESC);
+CREATE INDEX idx_agent_runs_heartbeat ON agent_runs (status, heartbeat_at);
 
 -- ── Engagement Metrics ──────────────────────────────────────────
 CREATE TABLE engagement_metrics (
