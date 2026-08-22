@@ -3550,10 +3550,14 @@ async def _ensure_stream(consumer: NATSConsumer) -> None:
                 # subjects of its own on this stream (agent.> among them), and
                 # a wholesale subjects=REQUIRED_SUBJECTS write from here would
                 # strip whatever it added (mirrors its converge behaviour).
-                await consumer.js.update_stream(
-                    name=STREAM_NAME,
-                    subjects=sorted(existing_subjects | set(REQUIRED_SUBJECTS)),
+                # Mutate the FETCHED config rather than passing kwargs —
+                # kwargs build a fresh StreamConfig whose retention defaults
+                # to 'limits', and the server refuses workqueue→limits
+                # (observed live 2026-08-22, err_code 10052).
+                stream_info.config.subjects = sorted(
+                    existing_subjects | set(REQUIRED_SUBJECTS)
                 )
+                await consumer.js.update_stream(config=stream_info.config)
         except Exception as e:
             logger.warning("Could not verify stream subjects: %s", e)
     except Exception:

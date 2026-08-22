@@ -43,6 +43,7 @@ import sys
 from datetime import date
 
 import asyncpg
+from urllib.parse import quote
 
 # Interrupt-shape predicate — keep in sync with runbook §10. The `?` here is
 # the JSONB key-exists operator, not a placeholder (asyncpg uses $n).
@@ -67,12 +68,22 @@ REMEDIATION_NOTE = (
 
 
 def resolve_dsn(cli_dsn: str | None) -> str:
-    """--dsn wins; otherwise the backend's DATABASE_URL env. Fail closed."""
+    """--dsn wins; then DATABASE_URL; then the POSTGRES_* component vars the
+    markai-backend container actually carries (its DSN is assembled in
+    app.config, not exported as one env var). Fail closed."""
     dsn = cli_dsn or os.environ.get("DATABASE_URL", "")
     if not dsn:
+        host = os.environ.get("POSTGRES_HOST", "")
+        user = os.environ.get("POSTGRES_USER", "")
+        if host and user:
+            password = quote(os.environ.get("POSTGRES_PASSWORD", ""), safe="")
+            port = os.environ.get("POSTGRES_PORT", "5432")
+            db = os.environ.get("POSTGRES_DB", user)
+            dsn = f"postgresql://{quote(user, safe='')}:{password}@{host}:{port}/{db}"
+    if not dsn:
         print(
-            "ERROR: no DSN — pass --dsn or set DATABASE_URL "
-            "(inside markai-backend it is already set).",
+            "ERROR: no DSN — pass --dsn, set DATABASE_URL, or run inside "
+            "markai-backend where the POSTGRES_* component vars are set.",
             file=sys.stderr,
         )
         sys.exit(2)
