@@ -8,8 +8,7 @@
 #   2. No host port bindings anywhere – zero port conflicts
 #   3. Connects frontend and backend to the VPS's live external Traefik network
 #   4. Adds Docker labels so the VPS Traefik auto-discovers and routes to MARKAI
-#   5. Uses the existing VPS n8n instead of deploying a MARKAI-owned n8n container
-#   6. Disables observability stack (Grafana/Prometheus/Loki/OTel) – optional, enable with --profile observability
+#   5. Disables observability stack (Grafana/Prometheus/Loki/OTel) – optional, enable with --profile observability
 #
 # Prerequisites:
 #   The VPS Traefik container must already be attached to the external network declared below.
@@ -52,9 +51,6 @@ services:
     networks:
       - markai-net
       - n8n_default
-
-  n8n:
-    profiles: ["disabled"]
 
   # ── Public route to the local GPU forge ─────────────────────────────────
   # The forge itself lives on the operator's 4090 box behind a reverse SSH
@@ -111,6 +107,9 @@ services:
     profiles: ["observability"]
 
 networks:
+  # Shared VPS Traefik edge network (lives in the legacy n8n stack) — NOT an
+  # n8n dependency; MarkAI no longer uses n8n. The VPS Traefik container is
+  # attached to this network, so frontend/backend must join it to be routed.
   n8n_default:
     external: true
   # Dedicated edge network for the forge relay (see forge-proxy above).

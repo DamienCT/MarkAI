@@ -80,8 +80,8 @@ def test_registry_resolves_real_publishers_for_all_mapped_combos():
     """Every mapped (channel, media_kind) pair must resolve against the REAL
     publisher modules on disk — no sys.modules stubbing — to an instance
     exposing the ``publish`` seam ``publish_direct`` calls. This is exactly
-    where a wrong module/class name in ``_PUBLISHERS`` silently degrades a
-    channel to the image-only n8n fallback."""
+    where a wrong module/class name in ``_PUBLISHERS`` silently breaks a
+    channel (there is no fallback path anymore)."""
     for channel, media_kind in registry._PUBLISHERS:
         publisher = get_publisher(channel, media_kind)
         assert publisher is not None, (
@@ -102,13 +102,11 @@ def test_registry_maps_supported_channel_media_pairs():
 
 
 def test_registry_returns_none_for_unsupported_combinations():
-    # Channels/media without a direct publisher fall back to n8n dispatch.
+    # None now means "unsupported channel/media combination" — there is no
+    # fallback; publish_direct records an actionable failure instead.
     assert get_publisher("youtube", "image") is None
-    assert get_publisher("linkedin", "image") is None
-    assert get_publisher("x", "image") is None
-    assert get_publisher("tiktok", "video") is None
-    assert get_publisher("teams", "image") is None
-    assert get_publisher("website_blog", "image") is None
+    assert get_publisher("no_such_channel", "image") is None
+    assert get_publisher("no_such_channel", "video") is None
 
 
 def test_registry_falls_back_to_none_when_module_missing(monkeypatch):
@@ -278,7 +276,7 @@ async def test_publish_direct_failure_marks_failed_with_error(monkeypatch):
 async def test_publish_direct_without_publisher_fails_item(monkeypatch):
     _enable_publishing(monkeypatch)
     brand = _make_brand()
-    calendar_item = _make_calendar_item("tiktok", "post", "publishing")
+    calendar_item = _make_calendar_item("no_such_channel", "post", "publishing")
     content = _make_content(calendar_item)
     monkeypatch.setattr(
         "app.services.publish_service.get_publisher", lambda ch, kind: None
@@ -289,7 +287,37 @@ async def test_publish_direct_without_publisher_fails_item(monkeypatch):
 
     assert outcome.status == "failed"
     assert calendar_item.status == "failed"
-    assert "No direct publisher" in content.generation_metadata["publish_error"]
+    # The error names the exact channel/media combination so an operator can act.
+    assert (
+        "no publisher supports channel 'no_such_channel' with media kind 'image'"
+        in content.generation_metadata["publish_error"]
+    )
+
+
+@pytest.mark.anyio
+async def test_publish_direct_youtube_image_gets_actionable_error(monkeypatch):
+    """youtube+image has no publisher by design — the failure must say WHY
+    (YouTube only takes video) instead of a generic no-publisher message."""
+    _enable_publishing(monkeypatch)
+    brand = _make_brand()
+    calendar_item = _make_calendar_item("youtube", "post", "publishing")
+    content = _make_content(
+        calendar_item,
+        generation_metadata={"branded_image": "images/brand/item.png"},
+    )
+    monkeypatch.setattr(
+        "app.services.publish_service.get_publisher", lambda ch, kind: None
+    )
+    db = _fake_db()
+
+    outcome = await publish_direct(db, content, calendar_item, brand)
+
+    assert outcome.status == "failed"
+    assert "YouTube requires video content" in outcome.error
+    assert (
+        "YouTube requires video content"
+        in content.generation_metadata["publish_error"]
+    )
 
 
 # ── Publish checker ─────────────────────────────────────────────────────
@@ -374,11 +402,8 @@ async def test_checker_direct_path_marks_publishing_and_spawns_task(monkeypatch)
         ]
     )
     monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
-    monkeypatch.setattr(publish_checker, "get_publisher", lambda ch, kind: object())
     spawn = MagicMock()
     monkeypatch.setattr(publish_checker, "_spawn_direct_publish", spawn)
-    n8n = AsyncMock()
-    monkeypatch.setattr(publish_checker, "dispatch_to_n8n", n8n)
 
     await publish_checker.check_due_content()
 
@@ -387,5 +412,42 @@ async def test_checker_direct_path_marks_publishing_and_spawns_task(monkeypatch)
     assert "publishing" in claim_params.values()
     assert "scheduled" in claim_params.values()
     spawn.assert_called_once_with(calendar_item.id, content.id)
-    n8n.assert_not_awaited()
     session.commit.assert_awaited()
+
+
+@pytest.mark.anyio
+async def test_checker_spawns_direct_publish_for_every_channel(monkeypatch):
+    """Single-path regression: channels that used to fall back to the n8n
+    dispatch (x, tiktok, teams, website_blog, …) now go through the exact
+    same claim + background direct publish as everything else — the checker
+    no longer consults the registry before claiming."""
+    from app.scheduler import publish_checker
+
+    brand = _make_brand()
+    calendar_item = _make_calendar_item("x", "post", "scheduled")
+    content = _make_content(
+        calendar_item,
+        generation_metadata={"branded_image": "images/brand/item.png"},
+    )
+    content.brand = brand
+
+    session = _FakeSession(
+        [
+            _FakeResult([]),  # kill-switch read at sweep start
+            _FakeResult([]),  # stuck-'publishing' sweep
+            _FakeResult([calendar_item]),  # due items
+            _FakeResult([]),  # per-item kill-switch read
+            _FakeResult([content]),  # current content for the item
+            _FakeResult([calendar_item.id]),  # CAS claim scheduled→publishing
+        ]
+    )
+    monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
+    spawn = MagicMock()
+    monkeypatch.setattr(publish_checker, "_spawn_direct_publish", spawn)
+
+    await publish_checker.check_due_content()
+
+    claim_params = session.executed[5].compile().params
+    assert "publishing" in claim_params.values()
+    assert "scheduled" in claim_params.values()
+    spawn.assert_called_once_with(calendar_item.id, content.id)

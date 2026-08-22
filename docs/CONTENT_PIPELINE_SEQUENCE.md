@@ -149,9 +149,9 @@ Only items within this window get content generated.
 | Step | What happens |
 |------|-------------|
 | 1 | Find `approved` items where `scheduled_at <= now` |
-| 2 | Call `publish_service.publish_to_n8n()` for each |
-| 3 | n8n workflow publishes to social platform (Instagram, Facebook, etc.) |
-| 4 | n8n calls back `POST /api/v1/webhooks/publish-result` with result |
+| 2 | Claim each item (scheduled → publishing) and call `publish_service.publish_direct()` |
+| 3 | The channel's native publisher (`app/services/publishers/`) posts to the platform API |
+| 4 | `record_publish_result` writes the outcome (published/failed) straight back |
 | 5 | Calendar item status → `published` with `platform_post_id` |
 
 ---
@@ -188,4 +188,4 @@ Calendar Item:  queued → working → in_review → approved → scheduled → 
 | Frontend content detail | `frontend/src/app/content/[id]/page.tsx` |
 | Frontend brand overview | `frontend/src/components/brand/tabs/OverviewTab.tsx` |
 | Scheduling | `backend/app/scheduler/publish_checker.py` |
-| Publishing | `backend/app/services/publish_service.py` → n8n |
+| Publishing | `backend/app/services/publish_service.py` → `publishers/` registry (native) |

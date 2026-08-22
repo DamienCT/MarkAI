@@ -1,8 +1,9 @@
 """Tests for the file proxy endpoint — bucket routing, path traversal, thumbnails.
 
-These run unauthenticated via the non-production blank-token escape
-(MARKAI_ENV=test, MEDIA_PROXY_TOKEN unset). The media auth gate itself is
-covered in test_media_auth_hardening.py.
+These run unauthenticated via the non-production blank-token escape,
+forced by the autouse fixture below so the developer's local .env (which
+may legitimately set MEDIA_PROXY_TOKEN) can't flip these into 401s. The
+media auth gate itself is covered in test_media_auth_hardening.py.
 """
 
 import pytest
@@ -11,7 +12,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import ASGITransport, AsyncClient
 
 from app.api.v1.files import parse_range_header
+from app.config import settings
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _open_media_access(monkeypatch):
+    monkeypatch.setattr(settings, "MEDIA_PROXY_TOKEN", "")
+    monkeypatch.setattr(settings, "MARKAI_ENV", "test")
 
 
 # Fake 1x1 red PNG (67 bytes) for image tests

@@ -238,9 +238,10 @@ echo "=== Step 9: Drift check (markai-* containers vs expected set) ==="
 # changed across compose v2 releases; container_name is pinned for every
 # service, so names are stable. EXPECTED must all be running; TOLERATED are
 # the long-running optional containers this deployment actually carries
-# (n8n serves the publish webhook, traefik + the observability stack have
-# been up for weeks) — present or absent, neither is drift. The first live
-# run of this check failed the deploy over exactly these seven.
+# (traefik + the observability stack have been up for weeks; markai-n8n is
+# retired — publishing is native — but a not-yet-removed container isn't
+# drift) — present or absent, neither is drift. The first live run of this
+# check failed the deploy over exactly these seven.
 EXPECTED_CONTAINERS="markai-backend markai-frontend markai-agents markai-browser-worker markai-notifications markai-postgres markai-qdrant markai-minio markai-valkey markai-nats markai-litellm markai-forge-proxy"
 TOLERATED_CONTAINERS="markai-n8n markai-traefik markai-promtail markai-loki markai-grafana markai-prometheus markai-otel-collector"
 RUNNING_CONTAINERS=$(docker ps --filter 'name=^markai-' --format '{{.Names}}')

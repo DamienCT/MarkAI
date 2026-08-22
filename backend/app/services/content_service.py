@@ -110,7 +110,7 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
     "working": ["in_review", "failed"],
     "in_review": ["scheduled", "reworking"],  # Approve → auto-schedule (no "approved" step)
     "reworking": ["in_review"],
-    "scheduled": ["published", "failed"],  # Publish checker dispatches to n8n directly
+    "scheduled": ["published", "failed"],  # Publish checker posts via the native publishers
     "published": [],
     "failed": ["scheduled"],
 }

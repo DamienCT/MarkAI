@@ -208,8 +208,8 @@ async def set_publishing_kill_switch(
 ):
     """Engage/release the global publishing kill switch. Admin only.
 
-    ``enabled=false`` blocks every external dispatch (scheduler sweep, n8n
-    fallback AND direct publishers) until re-enabled. The change is
+    ``enabled=false`` blocks every external dispatch (the scheduler sweep AND
+    the direct channel publishers) until re-enabled. The change is
     audit-logged with the acting user.
     """
     if not role_has_access(current_user.role, "admin"):

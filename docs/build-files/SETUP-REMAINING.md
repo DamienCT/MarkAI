@@ -33,8 +33,7 @@ Copy `.env.example` to `.env` and fill in these values. Items marked with a chec
 - [ ] `POSTGRES_PASSWORD` — Change from `change-me` to a strong password
 - [ ] `MINIO_SECRET_KEY` — Change from `change-me` to a strong password
 - [ ] `LITELLM_MASTER_KEY` — Change from default to a random key (e.g. `sk-markai-<random>`)
-- [ ] `N8N_WEBHOOK_BASE` — Your n8n instance's webhook URL (e.g. `https://n8n.srv1191974.hstgr.cloud/webhook`)
-- [ ] `N8N_WEBHOOK_SECRET` — Random string shared between FastAPI and n8n for callback auth
+- [x] ~~`N8N_WEBHOOK_BASE` / `N8N_WEBHOOK_SECRET`~~ — obsolete: n8n was removed 2026-08-22; publishing runs natively in the backend and no `N8N_*` variable is read
 - [ ] `FRONTEND_URL` — `https://markai.srv1191974.hstgr.cloud` (for CORS restriction)
 - [ ] `TEAMS_WEBHOOK_URL` — Create an incoming webhook in your Microsoft Teams channel
 - [ ] `META_ACCESS_TOKEN` — Long-lived Facebook/Instagram page token
@@ -70,39 +69,17 @@ Copy `.env.example` to `.env` and fill in these values. Items marked with a chec
 
 ---
 
-## 4. n8n Social Publishing Workflows
+## 4. Social Publishing (native — n8n removed 2026-08-22)
 
-You need 3 webhook workflows in your n8n instance at `https://n8n.srv1191974.hstgr.cloud`:
+No n8n workflows are needed. Every channel publishes natively from the
+backend (`backend/app/services/publishers/`). Setup is per-brand in the UI:
+enter each channel's credentials under **Brand → Channels** — field-by-field
+requirements and where to obtain each credential are in
+`docs/CHANNEL_CREDENTIALS.md`. Channels without credentials fail closed with
+an actionable error (never a silent queue or fake success).
 
-### Workflow 1: Instagram Publish
-- **Trigger**: Webhook at `/markai/publish/instagram`
-- **Action**: Receive payload → Upload image to Instagram via Graph API → POST result back to `https://api.markai.srv1191974.hstgr.cloud/api/v1/webhooks/publish-result`
-- **Callback payload**: `{ content_id, platform: "instagram", status: "published"|"failed", platform_post_id, published_at, error }`
-- **Include header**: `X-Webhook-Secret: <your N8N_WEBHOOK_SECRET value>`
-
-### Workflow 2: Facebook Publish
-- **Trigger**: Webhook at `/markai/publish/facebook`
-- **Action**: Same pattern, Facebook Graph API page post
-- **Callback**: Same endpoint with `platform: "facebook"`
-
-### Workflow 3: LinkedIn Publish
-- **Trigger**: Webhook at `/markai/publish/linkedin`
-- **Action**: Same pattern, LinkedIn API UGC post
-- **Callback**: Same endpoint with `platform: "linkedin"`
-
-### Inbound payload from MARKAI:
-```json
-{
-  "content_id": "uuid",
-  "caption": "Post text...",
-  "image_url": "https://minio-url/image.jpg",
-  "hashtags": ["tag1", "tag2"],
-  "access_token": "platform-token",
-  "page_id": "...",
-  "instagram_account_id": "...",
-  "org_id": "..."
-}
-```
+The shared VPS n8n instance at `https://n8n.srv1191974.hstgr.cloud` belongs
+to other tenants — do not modify it.
 
 ---
 
@@ -130,7 +107,7 @@ You need 3 webhook workflows in your n8n instance at `https://n8n.srv1191974.hst
 Point these to your server IP:
 - `markai.srv1191974.hstgr.cloud` → Frontend
 - `api.markai.srv1191974.hstgr.cloud` → Backend API
-- `n8n.srv1191974.hstgr.cloud` → n8n (already set up)
+- `n8n.srv1191974.hstgr.cloud` → shared VPS n8n (other tenants' service — not used by MARKAI)
 - `grafana.markai.srv1191974.hstgr.cloud` → Grafana dashboards (optional)
 
 ### Traefik TLS
@@ -187,7 +164,7 @@ curl -X POST https://api.markai.srv1191974.hstgr.cloud/api/v1/providers/discover
   head` runs automatically in the backend entrypoint on every deploy.
 - [ ] **Set up Grafana dashboards**: Pre-provisioned datasources are ready, create dashboards for content pipeline metrics
 - [ ] **Configure LangSmith**: Set `LANGCHAIN_API_KEY` for agent workflow tracing/debugging
-- [ ] **Test n8n workflows**: Publish test content to each platform, verify callback works
+- [ ] **Test native publishing**: Publish test content to each configured channel from Content Studio, verify the post lands and the item is recorded `published`
 
 ### Medium Term
 - [ ] **MinIO migration planning**: MinIO was archived in February 2026. Plan migration to RustFS or Garage (S3-compatible). Current MinIO works fine but won't get security patches
@@ -210,7 +187,6 @@ curl -X POST https://api.markai.srv1191974.hstgr.cloud/api/v1/providers/discover
 | Valkey | valkey:6379 | localhost:6381 | 6379 |
 | NATS | nats:4222 | localhost:4222 | 4222 |
 | LiteLLM | litellm:4000 | localhost:4000 | 4000 |
-| n8n | n8n:5678 | https://n8n.srv1191974.hstgr.cloud | 5678 |
 | Browser Worker | browser-worker:8001 | (internal only) | 8001 |
 | Notifications | notifications:8002 | (internal only) | 8002 |
 | Grafana | grafana:3000 | https://grafana.markai.srv1191974.hstgr.cloud | 3001 |

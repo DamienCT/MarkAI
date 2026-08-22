@@ -1,21 +1,21 @@
 """Regression tests for the publishing-ops hardening (audit cluster D).
 
-Covers:
-- replayed/late 'failed' callback cannot regress a 'published' item (P0-05, addendum 2.3)
-- late 'published' never overwrites an operator-pulled item (monotonic guard)
-- X-Webhook-Event-Id replay no-ops (P0-05)
-- inbound HMAC verification when the HMAC secret is set
-- outbound dispatch refuses to run without the shared secret (N-15)
-- outbound dispatch always sends secret + event id (and HMAC when configured)
+Covers, in the single-path world (native publishers only — the n8n hop and
+its callback endpoint are gone):
+- record_publish_result is the only result writer: published sets
+  status/published_at and MERGES platform_metadata; failed stores the error
+  without clobbering other generation metadata
+- a background publish task refuses to run when the item's status changed
+  underneath it (stuck sweep / operator action) — results stay monotonic
 - dispatch claim is compare-and-set scheduled→publishing (P0-04, N-14)
-- publishing kill switch blocks every dispatch path + freezes the sweep (P0-11)
+- publishing kill switch blocks the direct path + freezes the sweep (P0-11),
+  and an in-flight task releases its claim when the switch engages mid-tick
+- media URLs handed to platforms are HMAC-signed; credentials never appear
+  in request URLs or log lines (N-01)
+- stuck-'publishing' sweep marks failed-unreconciled (reconcile-before-retry)
 - kill-switch PUT endpoint is admin-only and audit-logged
 """
 
-import hashlib
-import hmac
-import json
-import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,8 +25,6 @@ from fastapi import HTTPException
 import app.auth.models  # noqa: F401 — registers the User mapper
 import app.models  # noqa: F401 — registers all model mappers
 from app.api.v1 import system as system_api
-from app.api.v1 import webhooks
-from app.api.v1.webhooks import PublishResultPayload, publish_result
 from app.config import settings
 from app.models.brand import Brand
 from app.models.calendar_item import CalendarItem
@@ -34,13 +32,12 @@ from app.models.content import Content
 from app.services import publish_service
 from app.services.publish_service import (
     PublishingDisabledError,
-    PublishPreflightError,
-    dispatch_to_n8n,
     publish_direct,
+    record_publish_result,
 )
+from app.services.publishers.base import PublishOutcome
 
 BRAND_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
-CB_SECRET = "cb-static-secret"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -72,39 +69,11 @@ def _make_content(calendar_item: CalendarItem, **kwargs) -> Content:
     )
 
 
-class _FakeRequest:
-    def __init__(self, headers=None, body: bytes = b"{}"):
-        self.headers = headers or {}
-        self._body = body
-
-    async def body(self) -> bytes:
-        return self._body
-
-
-class _WebhookDb:
-    """Serves the webhook endpoint's queries: the optional webhook_events
-    insert (dispatched by SQL text), then the CalendarItem select."""
-
-    def __init__(self, cal_item=None, event_insert_rowcount=1):
-        self.cal_item = cal_item
-        self.event_insert_rowcount = event_insert_rowcount
-        self.commits = 0
-        self.event_inserts = []
-
-    async def execute(self, stmt, params=None):
-        result = MagicMock()
-        if "webhook_events" in str(stmt):
-            self.event_inserts.append(params)
-            result.rowcount = self.event_insert_rowcount
-        else:
-            result.scalar_one_or_none = MagicMock(return_value=self.cal_item)
-        return result
-
-    async def commit(self):
-        self.commits += 1
-
-    async def refresh(self, obj):
-        pass
+def _fake_db():
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.add = MagicMock()
+    return db
 
 
 class _Rows:
@@ -146,343 +115,140 @@ class _Session:
         return False
 
 
-def _legacy_auth(monkeypatch):
-    """Static-secret-only inbound auth (HMAC secret unset)."""
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_SECRET", CB_SECRET)
-    monkeypatch.setattr(webhooks, "_hmac_secret", lambda: "")
-
-
-def _patch_content(monkeypatch, content):
-    getter = AsyncMock(return_value=content)
-    monkeypatch.setattr(webhooks.content_service, "get_content", getter)
-    return getter
-
-
-# ── Monotonic transition guard (P0-05 / addendum 2.3) ───────────────────
+# ── record_publish_result (the only result writer) ──────────────────────
 
 
 @pytest.mark.anyio
-async def test_replayed_failed_callback_cannot_regress_published(monkeypatch):
-    _legacy_auth(monkeypatch)
-    cal_item = _make_item("instagram", "published")
-    content = _make_content(cal_item)
-    _patch_content(monkeypatch, content)
-    db = _WebhookDb(cal_item=cal_item)
-
-    resp = await publish_result(
-        _FakeRequest({"X-Webhook-Secret": CB_SECRET}),
-        PublishResultPayload(
-            content_id=str(content.id), status="failed", error_message="replayed"
-        ),
-        db,
-    )
-
-    assert resp["status"] == "ignored"
-    assert cal_item.status == "published"
-    assert not (content.generation_metadata or {}).get("publish_error")
-
-
-@pytest.mark.anyio
-async def test_late_published_never_overwrites_operator_pullback(monkeypatch):
-    """An operator moved the item out of the queue (any non-scheduled/
-    publishing status) — a late 'published' callback must not resurrect it."""
-    _legacy_auth(monkeypatch)
-    cal_item = _make_item("instagram", "in_review")
-    content = _make_content(cal_item)
-    _patch_content(monkeypatch, content)
-    db = _WebhookDb(cal_item=cal_item)
-
-    resp = await publish_result(
-        _FakeRequest({"X-Webhook-Secret": CB_SECRET}),
-        PublishResultPayload(
-            content_id=str(content.id), status="published", platform_post_id="p1"
-        ),
-        db,
-    )
-
-    assert resp["status"] == "ignored"
-    assert cal_item.status == "in_review"
-    assert content.platform_post_id is None
-
-
-@pytest.mark.anyio
-async def test_publishing_to_published_transition_is_allowed(monkeypatch):
-    _legacy_auth(monkeypatch)
+async def test_record_publish_result_published_merges_platform_metadata():
     cal_item = _make_item("instagram", "publishing")
-    content = _make_content(cal_item)
-    _patch_content(monkeypatch, content)
-    db = _WebhookDb(cal_item=cal_item)
+    content = _make_content(
+        cal_item, platform_metadata={"instagram": {"caption": "Adapted caption"}}
+    )
+    db = _fake_db()
 
-    resp = await publish_result(
-        _FakeRequest({"X-Webhook-Secret": CB_SECRET}),
-        PublishResultPayload(
-            content_id=str(content.id), status="published", platform_post_id="p42"
-        ),
+    await record_publish_result(
         db,
+        content,
+        cal_item,
+        "instagram",
+        PublishOutcome(platform_post_id="p42", status="published"),
     )
 
-    assert resp["status"] == "published"
     assert cal_item.status == "published"
     assert cal_item.published_at is not None
     assert content.platform_post_id == "p42"
-    assert db.commits >= 1
-
-
-# ── Event-id replay dedup ───────────────────────────────────────────────
-
-
-@pytest.mark.anyio
-async def test_event_id_replay_noops(monkeypatch):
-    _legacy_auth(monkeypatch)
-    getter = _patch_content(monkeypatch, None)
-    db = _WebhookDb(event_insert_rowcount=0)  # conflict: already consumed
-
-    resp = await publish_result(
-        _FakeRequest(
-            {"X-Webhook-Secret": CB_SECRET, "X-Webhook-Event-Id": "evt-1"}
-        ),
-        PublishResultPayload(
-            content_id=str(uuid.uuid4()), status="failed", error_message="x"
-        ),
-        db,
-    )
-
-    assert resp["status"] == "duplicate"
-    getter.assert_not_awaited()  # replay short-circuits before any state read
+    channel_meta = content.platform_metadata["instagram"]
+    assert channel_meta["post_id"] == "p42"
+    assert channel_meta["published_at"]
+    # Merge, not replace: pre-existing per-channel adaptation data survives.
+    assert channel_meta["caption"] == "Adapted caption"
+    db.commit.assert_awaited()
 
 
 @pytest.mark.anyio
-async def test_first_event_id_delivery_is_processed(monkeypatch):
-    _legacy_auth(monkeypatch)
+async def test_record_publish_result_failed_preserves_other_metadata():
     cal_item = _make_item("instagram", "publishing")
-    content = _make_content(cal_item)
-    _patch_content(monkeypatch, content)
-    db = _WebhookDb(cal_item=cal_item, event_insert_rowcount=1)
+    content = _make_content(
+        cal_item, generation_metadata={"branded_image": "images/b/i.png"}
+    )
+    db = _fake_db()
 
-    resp = await publish_result(
-        _FakeRequest(
-            {"X-Webhook-Secret": CB_SECRET, "X-Webhook-Event-Id": "evt-2"}
-        ),
-        PublishResultPayload(
-            content_id=str(content.id), status="published", platform_post_id="p7"
-        ),
+    await record_publish_result(
         db,
+        content,
+        cal_item,
+        "instagram",
+        PublishOutcome(platform_post_id=None, status="failed", error="token expired"),
     )
 
-    assert resp["status"] == "published"
-    assert db.event_inserts[0]["event_id"] == "evt-2"
-    assert cal_item.status == "published"
+    assert cal_item.status == "failed"
+    assert cal_item.published_at is None
+    assert content.generation_metadata["publish_error"] == "token expired"
+    assert content.generation_metadata["branded_image"] == "images/b/i.png"
+    db.commit.assert_awaited()
 
 
-# ── Inbound HMAC verification ───────────────────────────────────────────
-
-
-def _signed_headers(secret: str, body: bytes, ts: str | None = None):
-    ts = ts or str(int(time.time()))
-    sig = hmac.new(
-        secret.encode(), ts.encode() + b"." + body, hashlib.sha256
-    ).hexdigest()
-    return {
-        "X-Webhook-Secret": CB_SECRET,
-        "X-Webhook-Timestamp": ts,
-        "X-Webhook-Signature": f"sha256={sig}",
-    }
+# ── Background task status guard (monotonic results) ────────────────────
 
 
 @pytest.mark.anyio
-async def test_hmac_valid_signature_accepted(monkeypatch):
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_SECRET", CB_SECRET)
-    monkeypatch.setattr(webhooks, "_hmac_secret", lambda: "hmac-secret")
+async def test_run_direct_publish_skips_when_status_changed(monkeypatch):
+    """The stuck sweep (or an operator) changed the item's status while the
+    task waited on the semaphore — publishing anyway would clobber that
+    state and could duplicate a rescheduled post."""
+    from app.scheduler import publish_checker
+
+    cal_item = _make_item("instagram", "failed")  # swept while queued
+    content = _make_content(cal_item)
+    session = _Session([_Rows(scalar=cal_item), _Rows(scalar=content)])
+    monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
+    direct = AsyncMock()
+    monkeypatch.setattr(publish_checker, "publish_direct", direct)
+
+    await publish_checker._run_direct_publish(cal_item.id, content.id)
+
+    direct.assert_not_awaited()
+    assert cal_item.status == "failed"
+
+
+@pytest.mark.anyio
+async def test_run_direct_publish_success_writes_job_log(monkeypatch):
+    from app.scheduler import publish_checker
+
+    brand = _make_brand()
     cal_item = _make_item("instagram", "publishing")
+    cal_item.brand = brand
     content = _make_content(cal_item)
-    _patch_content(monkeypatch, content)
-    db = _WebhookDb(cal_item=cal_item)
-
-    payload = {
-        "content_id": str(content.id),
-        "status": "published",
-        "platform_post_id": "p9",
-    }
-    body = json.dumps(payload).encode()
-    resp = await publish_result(
-        _FakeRequest(_signed_headers("hmac-secret", body), body=body),
-        PublishResultPayload(**payload),
-        db,
+    session = _Session([_Rows(scalar=cal_item), _Rows(scalar=content)])
+    monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
+    direct = AsyncMock(
+        return_value=PublishOutcome(platform_post_id="p7", status="published")
     )
-    assert resp["status"] == "published"
-    assert cal_item.status == "published"
+    monkeypatch.setattr(publish_checker, "publish_direct", direct)
+    notify = AsyncMock()
+    monkeypatch.setattr(publish_checker, "notify_failure", notify)
+
+    await publish_checker._run_direct_publish(cal_item.id, content.id)
+
+    direct.assert_awaited_once_with(session, content, cal_item, brand)
+    log = session.add.call_args.args[0]
+    assert log.job_name == "publish_direct"
+    assert log.status == "completed"
+    assert log.details["platform_post_id"] == "p7"
+    session.commit.assert_awaited()
+    notify.assert_not_awaited()
 
 
 @pytest.mark.anyio
-async def test_hmac_invalid_signature_rejected(monkeypatch):
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_SECRET", CB_SECRET)
-    monkeypatch.setattr(webhooks, "_hmac_secret", lambda: "hmac-secret")
-    payload = {"content_id": str(uuid.uuid4()), "status": "published"}
-    body = json.dumps(payload).encode()
-    headers = _signed_headers("WRONG-secret", body)
+async def test_run_direct_publish_failure_notifies(monkeypatch):
+    from app.scheduler import publish_checker
 
-    with pytest.raises(HTTPException) as exc:
-        await publish_result(
-            _FakeRequest(headers, body=body), PublishResultPayload(**payload), _WebhookDb()
-        )
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.anyio
-async def test_hmac_missing_timestamp_rejected(monkeypatch):
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_SECRET", CB_SECRET)
-    monkeypatch.setattr(webhooks, "_hmac_secret", lambda: "hmac-secret")
-
-    with pytest.raises(HTTPException) as exc:
-        await publish_result(
-            _FakeRequest({"X-Webhook-Secret": CB_SECRET}),
-            PublishResultPayload(content_id=str(uuid.uuid4()), status="published"),
-            _WebhookDb(),
-        )
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.anyio
-async def test_hmac_stale_timestamp_rejected(monkeypatch):
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_SECRET", CB_SECRET)
-    monkeypatch.setattr(webhooks, "_hmac_secret", lambda: "hmac-secret")
-    payload = {"content_id": str(uuid.uuid4()), "status": "published"}
-    body = json.dumps(payload).encode()
-    stale = str(int(time.time()) - 4000)
-    headers = _signed_headers("hmac-secret", body, ts=stale)
-
-    with pytest.raises(HTTPException) as exc:
-        await publish_result(
-            _FakeRequest(headers, body=body), PublishResultPayload(**payload), _WebhookDb()
-        )
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.anyio
-async def test_legacy_mode_accepts_but_logs_deprecation(monkeypatch, caplog):
-    _legacy_auth(monkeypatch)
-    cal_item = _make_item("instagram", "scheduled")
-    content = _make_content(cal_item)
-    _patch_content(monkeypatch, content)
-    db = _WebhookDb(cal_item=cal_item)
-
-    with caplog.at_level("WARNING", logger="app.api.v1.webhooks"):
-        resp = await publish_result(
-            _FakeRequest({"X-Webhook-Secret": CB_SECRET}),
-            PublishResultPayload(
-                content_id=str(content.id), status="published", platform_post_id="p1"
-            ),
-            db,
-        )
-    assert resp["status"] == "published"
-    assert any("static secret only" in r.message for r in caplog.records)
-
-
-@pytest.mark.anyio
-async def test_inbound_503_when_static_secret_unset(monkeypatch):
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_SECRET", "")
-    with pytest.raises(HTTPException) as exc:
-        await publish_result(
-            _FakeRequest({}),
-            PublishResultPayload(content_id=str(uuid.uuid4()), status="published"),
-            _WebhookDb(),
-        )
-    assert exc.value.status_code == 503
-
-
-# ── Outbound dispatch (N-15 + signing) ──────────────────────────────────
-
-
-@pytest.mark.anyio
-async def test_outbound_refuses_to_dispatch_without_secret(monkeypatch):
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_BASE", "https://n8n.test/webhook")
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_SECRET", "")
-    monkeypatch.setattr(
-        publish_service, "is_publishing_enabled", AsyncMock(return_value=True)
-    )
     brand = _make_brand()
     cal_item = _make_item("x", "publishing")
+    cal_item.brand = brand
     content = _make_content(cal_item)
-
-    with pytest.raises(PublishPreflightError, match="N8N_WEBHOOK_SECRET"):
-        await dispatch_to_n8n(content, cal_item, brand)
-
-
-class _CaptureClient:
-    captured: dict = {}
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def post(self, url, content=None, headers=None, **kwargs):
-        _CaptureClient.captured = {"url": url, "content": content, "headers": headers}
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.json = MagicMock(return_value={"status": "accepted"})
-        return resp
-
-
-@pytest.mark.anyio
-async def test_outbound_sends_secret_and_event_id(monkeypatch):
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_BASE", "https://n8n.test/webhook")
-    monkeypatch.setattr(settings, "N8N_WEBHOOK_SECRET", "out-secret")
-    monkeypatch.setattr(
-        publish_service, "is_publishing_enabled", AsyncMock(return_value=True)
+    session = _Session([_Rows(scalar=cal_item), _Rows(scalar=content)])
+    monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
+    direct = AsyncMock(
+        return_value=PublishOutcome(
+            platform_post_id=None,
+            status="failed",
+            error="no publisher supports channel 'x' with media kind 'image'",
+        )
     )
-    monkeypatch.setattr(publish_service.httpx, "AsyncClient", _CaptureClient)
-    # The HMAC config field lands with the concurrent config change set; a
-    # pydantic model rejects assignment to undeclared fields, so probe it.
-    original_hmac = getattr(settings, "N8N_WEBHOOK_HMAC_SECRET", None)
-    try:
-        settings.N8N_WEBHOOK_HMAC_SECRET = "out-hmac"
-        hmac_configurable = True
-    except Exception:
-        hmac_configurable = False
+    monkeypatch.setattr(publish_checker, "publish_direct", direct)
+    notify = AsyncMock()
+    monkeypatch.setattr(publish_checker, "notify_failure", notify)
 
-    try:
-        brand = _make_brand()
-        cal_item = _make_item("x", "publishing")
-        content = _make_content(cal_item)
+    await publish_checker._run_direct_publish(cal_item.id, content.id)
 
-        result = await dispatch_to_n8n(content, cal_item, brand)
-        assert result == {"status": "accepted"}
-
-        headers = _CaptureClient.captured["headers"]
-        body = _CaptureClient.captured["content"]
-        assert headers["X-Webhook-Secret"] == "out-secret"
-        assert headers["X-Webhook-Event-Id"]
-        assert json.loads(body)["channel"] == "x"
-        if hmac_configurable:
-            ts = headers["X-Webhook-Timestamp"]
-            expected = hmac.new(
-                b"out-hmac", ts.encode() + b"." + body, hashlib.sha256
-            ).hexdigest()
-            assert headers["X-Webhook-Signature"] == f"sha256={expected}"
-    finally:
-        if hmac_configurable and original_hmac is not None:
-            settings.N8N_WEBHOOK_HMAC_SECRET = original_hmac
+    log = session.add.call_args.args[0]
+    assert log.status == "failed"
+    assert "no publisher supports" in log.details["error"]
+    notify.assert_awaited_once()
 
 
 # ── Kill switch ─────────────────────────────────────────────────────────
-
-
-@pytest.mark.anyio
-async def test_killswitch_blocks_n8n_dispatch(monkeypatch):
-    monkeypatch.setattr(
-        publish_service, "is_publishing_enabled", AsyncMock(return_value=False)
-    )
-    with pytest.raises(PublishingDisabledError):
-        await dispatch_to_n8n(
-            _make_content(_make_item("x", "publishing")),
-            _make_item("x", "publishing"),
-            _make_brand(),
-        )
 
 
 @pytest.mark.anyio
@@ -505,14 +271,42 @@ async def test_killswitch_freezes_scheduler_sweep(monkeypatch):
     monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
     spawn = MagicMock()
     monkeypatch.setattr(publish_checker, "_spawn_direct_publish", spawn)
-    n8n = AsyncMock()
-    monkeypatch.setattr(publish_checker, "dispatch_to_n8n", n8n)
 
     await publish_checker.check_due_content()
 
     assert len(session.executed) == 1  # only the kill-switch read ran
     spawn.assert_not_called()
-    n8n.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_killswitch_engaged_midflight_releases_claim(monkeypatch):
+    """The switch flipped between the tick's claim and the background task's
+    run: nothing left the backend, so the claim rolls back to 'scheduled'
+    and the item publishes once the switch re-enables."""
+    from app.scheduler import publish_checker
+
+    brand = _make_brand()
+    cal_item = _make_item("instagram", "publishing")
+    cal_item.brand = brand
+    content = _make_content(cal_item)
+    session = _Session(
+        [
+            _Rows(scalar=cal_item),  # item re-load
+            _Rows(scalar=content),  # content re-load
+            _Rows(),  # _release_claim UPDATE
+        ]
+    )
+    monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
+    direct = AsyncMock(side_effect=PublishingDisabledError("switch engaged"))
+    monkeypatch.setattr(publish_checker, "publish_direct", direct)
+
+    await publish_checker._run_direct_publish(cal_item.id, content.id)
+
+    release_params = session.executed[2].compile().params
+    assert "scheduled" in release_params.values()
+    assert "publishing" in release_params.values()
+    session.commit.assert_awaited()
+    session.add.assert_not_called()  # no job log — nothing was dispatched
 
 
 @pytest.mark.anyio
@@ -570,19 +364,15 @@ async def test_checker_skips_item_claimed_elsewhere(monkeypatch):
         ]
     )
     monkeypatch.setattr(publish_checker, "async_session_factory", lambda: session)
-    monkeypatch.setattr(publish_checker, "get_publisher", lambda ch, kind: object())
     spawn = MagicMock()
     monkeypatch.setattr(publish_checker, "_spawn_direct_publish", spawn)
-    n8n = AsyncMock()
-    monkeypatch.setattr(publish_checker, "dispatch_to_n8n", n8n)
 
     await publish_checker.check_due_content()
 
     spawn.assert_not_called()
-    n8n.assert_not_awaited()
 
 
-# ── Signed media URLs for third-party fetchers ──────────────────────────
+# ── Signed media URLs + credentials never in URLs/logs (N-01) ───────────
 
 
 def test_media_urls_for_third_parties_are_signed(monkeypatch):
@@ -604,6 +394,70 @@ def test_media_urls_for_third_parties_are_signed(monkeypatch):
     assert verify_media_sig("images/b/i.png", query["mt"][0], query["exp"][0])
     # Transform params stay outside the signature.
     assert query["fmt"] == ["jpg"]
+
+
+class _TokenCaptureClient:
+    """Captures the FB page-token exchange request; never talks to Meta."""
+
+    captured: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, params=None, headers=None, **kwargs):
+        _TokenCaptureClient.captured = {
+            "url": url,
+            "params": params,
+            "headers": headers,
+        }
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value={"access_token": "PAGE-TOKEN"})
+        return resp
+
+
+@pytest.mark.anyio
+async def test_fb_page_token_exchange_keeps_token_out_of_url(monkeypatch):
+    """The stored token must ride in the Authorization header, never the URL
+    or query params — httpx logs request URLs and str(HTTPStatusError)
+    embeds them (N-01)."""
+    monkeypatch.setattr(publish_service.httpx, "AsyncClient", _TokenCaptureClient)
+
+    token = await publish_service._derive_facebook_page_token(
+        "SECRET-USER-TOKEN", "page-1"
+    )
+
+    assert token == "PAGE-TOKEN"
+    captured = _TokenCaptureClient.captured
+    assert "SECRET-USER-TOKEN" not in captured["url"]
+    assert "SECRET-USER-TOKEN" not in str(captured["params"])
+    assert captured["headers"]["Authorization"] == "Bearer SECRET-USER-TOKEN"
+
+
+@pytest.mark.anyio
+async def test_fb_page_token_error_logs_are_redacted(monkeypatch, caplog):
+    class _ExplodingClient(_TokenCaptureClient):
+        async def get(self, url, params=None, headers=None, **kwargs):
+            raise RuntimeError(
+                "boom for url https://graph.facebook.com/"
+                "?access_token=SECRET-USER-TOKEN"
+            )
+
+    monkeypatch.setattr(publish_service.httpx, "AsyncClient", _ExplodingClient)
+
+    with caplog.at_level("WARNING", logger="app.services.publish_service"):
+        token = await publish_service._derive_facebook_page_token(
+            "SECRET-USER-TOKEN", "page-1"
+        )
+
+    assert token is None  # fails soft — caller falls back to the stored token
+    assert "SECRET-USER-TOKEN" not in caplog.text
 
 
 # ── Stuck-publishing sweep (reconcile-before-retry) ─────────────────────

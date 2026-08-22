@@ -7,8 +7,8 @@ of three credentials:
 1. ``X-Media-Token: <MEDIA_PROXY_TOKEN>`` header (constant-time compare) —
    used by the Next.js same-origin media proxy and internal services.
 2. Signed query params ``mt=<hex>&exp=<unix>`` produced by
-   :func:`sign_media_path` — used by publish flows (n8n, Meta fetching media
-   by URL) where no header can be sent.
+   :func:`sign_media_path` — used by publish flows (Meta / LinkedIn / Teams
+   cards fetching media by URL) where no header can be sent.
 3. A valid Entra ID bearer token (``Authorization: Bearer ...``).
 
 Signing contract (publish_service et al. call this):

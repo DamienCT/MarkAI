@@ -24,6 +24,63 @@ export const CHANNEL_DISPLAY_NAMES: Record<Channel, string> = {
   teams: "Teams",
 };
 
+export interface ChannelConfigField {
+  key: string;
+  label: string;
+  placeholder: string;
+  optional?: boolean;
+}
+
+// Canonical per-channel config form fields — single source of truth.
+// Keys match the backend credential contract exactly
+// (brand_guidelines.channels.<channel>.<field>) — the publishers read these
+// keys verbatim, so never rename one here without the backend moving too.
+// See docs/CHANNEL_CREDENTIALS.md for where each value comes from.
+export const CHANNEL_CONFIG_FIELDS: Record<Channel, ChannelConfigField[]> = {
+  instagram: [
+    { key: "handle", label: "Handle", placeholder: "@yourbrand" },
+    { key: "account_id", label: "Business Account ID", placeholder: "ex: 17841405822304914" },
+    { key: "access_token", label: "Access Token", placeholder: "Meta access token" },
+  ],
+  facebook: [
+    { key: "page_id", label: "Page ID", placeholder: "Facebook Page ID" },
+    { key: "access_token", label: "Access Token", placeholder: "Meta access token" },
+  ],
+  linkedin: [
+    { key: "org_id", label: "Organization ID", placeholder: "LinkedIn Org ID" },
+    { key: "access_token", label: "Access Token", placeholder: "LinkedIn access token" },
+    { key: "client_id", label: "Client ID", placeholder: "LinkedIn app Client ID" },
+    { key: "client_secret", label: "Client Secret", placeholder: "LinkedIn app Client Secret" },
+  ],
+  youtube: [
+    { key: "channel_id", label: "Channel ID", placeholder: "YouTube Channel ID" },
+    { key: "api_key", label: "API Key", placeholder: "YouTube API key" },
+  ],
+  tiktok: [
+    { key: "handle", label: "Handle (optional)", placeholder: "@yourbrand", optional: true },
+    { key: "client_key", label: "Client Key", placeholder: "TikTok app client key" },
+    { key: "client_secret", label: "Client Secret", placeholder: "TikTok app client secret" },
+    { key: "access_token", label: "Access Token", placeholder: "TikTok access token (24h lifetime)" },
+    { key: "refresh_token", label: "Refresh Token (optional)", placeholder: "Enables automatic token refresh", optional: true },
+  ],
+  x: [
+    { key: "handle", label: "Handle (optional)", placeholder: "@yourbrand", optional: true },
+    { key: "consumer_key", label: "Consumer Key (API Key)", placeholder: "X app consumer key" },
+    { key: "consumer_secret", label: "Consumer Secret", placeholder: "X app consumer secret" },
+    { key: "access_token", label: "Access Token", placeholder: "X user access token" },
+    { key: "access_token_secret", label: "Access Token Secret", placeholder: "X user access token secret" },
+  ],
+  website_blog: [
+    { key: "platform", label: "Platform (optional)", placeholder: "wordpress (default)", optional: true },
+    { key: "base_url", label: "Site URL", placeholder: "https://blog.example.com" },
+    { key: "username", label: "Username", placeholder: "WordPress username" },
+    { key: "app_password", label: "Application Password", placeholder: "WordPress application password" },
+  ],
+  teams: [
+    { key: "webhook_url", label: "Teams Webhook URL", placeholder: "https://outlook.office.com/webhook/..." },
+  ],
+};
+
 export interface ChannelConfig {
   enabled: boolean;
   configured: boolean;

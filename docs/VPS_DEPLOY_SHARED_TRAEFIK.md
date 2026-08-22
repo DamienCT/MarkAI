@@ -27,7 +27,7 @@ MARKAI Internal Network (markai-net) — no ports exposed to host
    └── agents (no port — NATS consumer)
 ```
 
-**Key design:** MARKAI does NOT bind any host ports. Everything communicates over the internal `markai-net` Docker network. Only frontend and backend are connected to the external `n8n_default` network so the VPS Traefik can route to them. MARKAI uses the existing VPS n8n instance via public URL/env configuration.
+**Key design:** MARKAI does NOT bind any host ports. Everything communicates over the internal `markai-net` Docker network. Only frontend and backend are connected to the external `n8n_default` network so the VPS Traefik can route to them. (`n8n_default` is simply the shared VPS Traefik edge network — it lives in the legacy n8n stack, but MARKAI no longer uses n8n; publishing is native since 2026-08-22.)
 
 ## Prerequisites
 
@@ -65,7 +65,6 @@ Edit `.env` and fill in ALL values. Pay special attention to:
 | `POSTGRES_PASSWORD` | `openssl rand -hex 24` |
 | `MINIO_SECRET_KEY` | `openssl rand -hex 24` |
 | `LITELLM_MASTER_KEY` | `openssl rand -hex 24` |
-| `N8N_WEBHOOK_SECRET` | `openssl rand -hex 32` |
 | `AZURE_AD_*` | From your Azure portal app registration |
 | `OPENAI_API_KEY` | From OpenAI dashboard |
 | `GEMINI_API_KEY` | From Google AI Studio |
@@ -77,7 +76,6 @@ echo "NEXTAUTH_SECRET=$(openssl rand -hex 32)"
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
 echo "MINIO_SECRET_KEY=$(openssl rand -hex 24)"
 echo "LITELLM_MASTER_KEY=$(openssl rand -hex 24)"
-echo "N8N_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 ## Step 3: Build and deploy
@@ -123,7 +121,7 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml logs frontend --t
 | PostgreSQL | 5432, 5433 | **None** (internal only) |
 | Redis/Valkey | 6379, 6381 | **None** (internal only) |
 | MinIO | 9000, 9001 | **None** (internal only) |
-| n8n | existing VPS service | **Reused** (MARKAI integrates with existing VPS n8n) |
+| n8n | existing VPS service | **Not used** (MARKAI publishing is native; the shared instance belongs to other tenants — never modify it) |
 | Backend | 8000 | **None** (internal only, Traefik routes) |
 | Frontend | 3000 | **None** (internal only, Traefik routes) |
 | All other services | * | **None** (internal only) |

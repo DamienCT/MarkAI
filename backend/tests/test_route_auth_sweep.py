@@ -22,8 +22,6 @@ from app.main import app
 # _enforce_media_auth fixture below configures a token so the gate enforces
 # in the test env (blank token falls open outside production by design).
 PUBLIC_ROUTES = {
-    # n8n callback — authenticated via X-Webhook-Secret header, not a JWT.
-    "/api/v1/webhooks/publish-result": "webhook-secret auth",
     # Read internally by the agents service; exposes model IDs only.
     "/api/v1/providers/active": "agents-service model lookup",
 }

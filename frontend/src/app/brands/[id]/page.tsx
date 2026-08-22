@@ -16,6 +16,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { BrandOnboarding } from "@/components/brand/BrandOnboarding";
 import { api, apiUrl } from "@/lib/api";
 import type { Brand, Content, EngagementMetrics, Channel, Product, AgentRun } from "@/types";
+import { CHANNEL_CONFIG_FIELDS } from "@/types";
 import { CHANNEL_DISPLAY_NAMES } from "@/lib/constants";
 
 import {
@@ -42,42 +43,6 @@ const CHANNEL_ICON_STYLED: Record<string, { icon: React.ReactNode; color: string
   x: { icon: <Twitter className="h-4 w-4" />, color: "bg-black text-white dark:bg-white dark:text-black" },
   website_blog: { icon: <Globe className="h-4 w-4" />, color: "bg-emerald-600 text-white" },
   teams: { icon: <MessageSquare className="h-4 w-4" />, color: "bg-[#6264A7] text-white" },
-};
-
-const CHANNEL_CONFIG_FIELDS: Record<Channel, { key: string; label: string; placeholder: string; optional?: boolean }[]> = {
-  instagram: [
-    { key: "handle", label: "Handle", placeholder: "@yourbrand" },
-    { key: "account_id", label: "Business Account ID", placeholder: "ex: 17841405822304914" },
-    { key: "access_token", label: "Access Token", placeholder: "Meta access token" },
-  ],
-  facebook: [
-    { key: "page_id", label: "Page ID", placeholder: "Facebook Page ID" },
-    { key: "access_token", label: "Access Token", placeholder: "Meta access token" },
-  ],
-  linkedin: [
-    { key: "org_id", label: "Organization ID", placeholder: "LinkedIn Org ID" },
-    { key: "access_token", label: "Access Token", placeholder: "LinkedIn access token" },
-    { key: "client_id", label: "Client ID", placeholder: "LinkedIn app Client ID" },
-    { key: "client_secret", label: "Client Secret", placeholder: "LinkedIn app Client Secret" },
-  ],
-  youtube: [
-    { key: "channel_id", label: "Channel ID", placeholder: "YouTube Channel ID" },
-    { key: "api_key", label: "API Key", placeholder: "YouTube API key" },
-  ],
-  tiktok: [
-    { key: "handle", label: "Handle", placeholder: "@yourbrand" },
-    { key: "access_token", label: "Access Token", placeholder: "TikTok access token" },
-  ],
-  x: [
-    { key: "handle", label: "Handle", placeholder: "@yourbrand" },
-    { key: "api_key", label: "API Key", placeholder: "X API key" },
-  ],
-  website_blog: [
-    { key: "url", label: "Blog URL (optional)", placeholder: "https://blog.example.com" },
-  ],
-  teams: [
-    { key: "webhook_url", label: "Teams Webhook URL", placeholder: "https://outlook.office.com/webhook/..." },
-  ],
 };
 
 interface ChannelConfig {
@@ -952,7 +917,6 @@ export default function BrandDetailPage() {
             allChannels={ALL_CHANNELS}
             channelIconStyled={CHANNEL_ICON_STYLED}
             channelDisplayNames={CHANNEL_DISPLAY_NAMES}
-            channelConfigFields={CHANNEL_CONFIG_FIELDS}
             onToggleChannelEnabled={toggleChannelEnabled}
             onUpdateChannelField={updateChannelField}
             onSetExpandedChannel={setExpandedChannel}

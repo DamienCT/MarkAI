@@ -99,7 +99,7 @@ async def send_teams_message(title: str, text: str, color: str = "0076D7") -> No
 async def notify_failure(job_name: str, entity: Any, error: Exception) -> None:
     """
     Send failure alerts to Teams and create in-app notifications for admins.
-    Replaces n8n error handler workflow.
+    The backend's own error-alerting path — no external workflow engine.
     """
     error_text = f"**Job:** {job_name}\n\n**Error:** {str(error)}"
 

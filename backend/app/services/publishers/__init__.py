@@ -1,1 +1,1 @@
-"""Direct-to-platform channel publishers (n8n-free publishing path)."""
+"""Direct-to-platform channel publishers — every channel publishes natively from the backend."""

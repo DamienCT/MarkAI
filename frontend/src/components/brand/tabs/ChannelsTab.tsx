@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   CheckCircle2, AlertTriangle, Settings2, Save, Eye, EyeOff,
 } from "lucide-react";
@@ -10,24 +10,40 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { Channel } from "@/types";
+import { CHANNEL_CONFIG_FIELDS } from "@/types";
+import type { Channel, ChannelConfigField } from "@/types";
 
+// Secret-like keys are WRITE-ONLY: the API strips any key containing
+// token/secret/password/api_key from reads, so the form never shows a stored
+// value — only a replacement typed this session (set/replace, never display).
 const SENSITIVE_FIELD_KEYS = new Set([
   "access_token",
+  "access_token_secret",
   "api_key",
+  "app_password",
+  "client_key",
+  "client_secret",
+  "consumer_key",
+  "consumer_secret",
   "refresh_token",
   "webhook_url",
-  "client_secret",
 ]);
 
 interface ChannelFieldInputProps {
-  field: { key: string; label: string; placeholder: string };
+  field: ChannelConfigField;
   value: string | undefined;
+  configured: boolean;
   onChange: (value: string) => void;
 }
 
-function ChannelFieldInput({ field, value, onChange }: ChannelFieldInputProps) {
+function ChannelFieldInput({ field, value, configured, onChange }: ChannelFieldInputProps) {
   const [revealed, setRevealed] = useState(false);
+  // Write-only secrets: display only what was typed this session, never the
+  // stored value (which the API strips on read anyway). Clearing the input
+  // restores whatever the form state held at mount, so an accidental clear
+  // followed by Save cannot wipe a saved credential.
+  const [draft, setDraft] = useState("");
+  const mountValueRef = useRef(value);
   const isSensitive = SENSITIVE_FIELD_KEYS.has(field.key);
 
   if (!isSensitive) {
@@ -51,9 +67,13 @@ function ChannelFieldInput({ field, value, onChange }: ChannelFieldInputProps) {
         <Input
           type={revealed ? "text" : "password"}
           className="h-8 text-sm pr-9"
-          placeholder={field.placeholder}
-          value={value || ""}
-          onChange={(e) => onChange(e.target.value)}
+          placeholder={configured ? "configured — enter new value to replace" : field.placeholder}
+          value={draft}
+          onChange={(e) => {
+            const next = e.target.value;
+            setDraft(next);
+            onChange(next === "" ? mountValueRef.current || "" : next);
+          }}
         />
         <button
           type="button"
@@ -152,7 +172,8 @@ export interface ChannelsTabProps {
   allChannels: Channel[];
   channelIconStyled: Record<string, { icon: React.ReactNode; color: string }>;
   channelDisplayNames: Record<Channel, string>;
-  channelConfigFields: Record<Channel, { key: string; label: string; placeholder: string; optional?: boolean }[]>;
+  /** @deprecated Ignored — field definitions come from CHANNEL_CONFIG_FIELDS in "@/types". */
+  channelConfigFields?: Record<Channel, ChannelConfigField[]>;
   onToggleChannelEnabled: (ch: string, enabled: boolean) => void;
   onUpdateChannelField: (ch: string, key: string, value: string) => void;
   onSetExpandedChannel: (ch: string | null) => void;
@@ -167,7 +188,6 @@ export function ChannelsTab({
   allChannels,
   channelIconStyled,
   channelDisplayNames,
-  channelConfigFields,
   onToggleChannelEnabled,
   onUpdateChannelField,
   onSetExpandedChannel,
@@ -189,7 +209,7 @@ export function ChannelsTab({
               const isEnabled = cfg.enabled;
               const isConfigured = cfg.configured;
               const isExpanded = expandedChannel === ch;
-              const fields = channelConfigFields[ch];
+              const fields = CHANNEL_CONFIG_FIELDS[ch];
 
               return (
                 <div key={ch} className="rounded-lg border p-3 space-y-2">
@@ -233,6 +253,7 @@ export function ChannelsTab({
                           key={field.key}
                           field={field}
                           value={(cfg as Record<string, unknown>)[field.key] as string}
+                          configured={isConfigured}
                           onChange={(value) => onUpdateChannelField(ch, field.key, value)}
                         />
                       ))}

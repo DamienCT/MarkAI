@@ -260,8 +260,8 @@ async def serve_file(
     Requires media auth (Entra bearer, X-Media-Token, or a signed mt/exp
     query pair — see app.utils.media_sign). Browser <img>/<video> tags load
     these through the frontend's same-origin /api/media proxy, which injects
-    the token after a NextAuth session check; publish flows (Meta/n8n) use
-    signed URLs.
+    the token after a NextAuth session check; publish flows (platforms that
+    fetch media by URL, e.g. Meta/LinkedIn) use signed URLs.
 
     Optional query params for preview thumbnails:
       ?w=400    — resize to 400px wide (maintains aspect ratio)

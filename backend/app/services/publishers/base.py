@@ -1,10 +1,10 @@
 """Shared building blocks for in-backend channel publishers.
 
-Publishers post content directly to social platforms from the backend
-(replacing the n8n webhook hop for supported channels/media). Each channel
-gets a ``ChannelPublisher`` subclass; the dispatcher hands it the content
-row, calendar item, brand, resolved credentials and a ``MediaBundle``
-describing the asset to publish.
+Publishers post content directly to social platforms from the backend —
+every channel publishes natively, there is no external dispatch hop. Each
+channel gets a ``ChannelPublisher`` subclass; the dispatcher hands it the
+content row, calendar item, brand, resolved credentials and a
+``MediaBundle`` describing the asset to publish.
 """
 
 import asyncio
@@ -67,10 +67,10 @@ class MediaBundle:
 def resolve_caption_and_hashtags(content: Any, channel: str) -> tuple[str, list[str]]:
     """Resolve the channel-specific caption and hashtags for a content row.
 
-    Mirrors the resolution in ``publish_service.dispatch_to_n8n`` (and is the
-    shared helper both paths should use): per-channel adaptations from
-    ``generation_metadata.platform_adaptations`` win, then legacy
-    ``platform_metadata``, then the primary caption / body_text.
+    The shared resolution every publisher (and ``publish_direct``) uses:
+    per-channel adaptations from ``generation_metadata.platform_adaptations``
+    win, then legacy ``platform_metadata``, then the primary caption /
+    body_text.
     """
     gen_adaptations = (content.generation_metadata or {}).get("platform_adaptations") or {}
     platform_meta = content.platform_metadata or {}

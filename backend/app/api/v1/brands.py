@@ -1,7 +1,7 @@
 import logging
 import re
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
@@ -1003,7 +1003,22 @@ async def update_brand_channels(
         raise HTTPException(status_code=404, detail="Brand not found")
 
     guidelines = dict(brand.brand_guidelines or {})
-    guidelines["channels"] = data.channels
+
+    # Merge, don't replace: an empty/absent secret-like value in the incoming
+    # payload keeps the stored one. The read side strips credential values, so
+    # a client that saves what it fetched would otherwise silently wipe every
+    # stored token/secret/password on each Save.
+    stored_channels = guidelines.get("channels") or {}
+    merged_channels: dict[str, Any] = {}
+    for ch, incoming_cfg in (data.channels or {}).items():
+        incoming_cfg = dict(incoming_cfg) if isinstance(incoming_cfg, dict) else {}
+        stored_cfg = stored_channels.get(ch)
+        stored_cfg = dict(stored_cfg) if isinstance(stored_cfg, dict) else {}
+        for key, stored_val in stored_cfg.items():
+            if incoming_cfg.get(key) in ("", None) and stored_val not in ("", None):
+                incoming_cfg[key] = stored_val
+        merged_channels[ch] = incoming_cfg
+    guidelines["channels"] = merged_channels
 
     # Direct update with flag_modified to ensure JSONB persistence
     from sqlalchemy.orm.attributes import flag_modified

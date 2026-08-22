@@ -48,3 +48,6 @@ BC-COLUMNS.txt
 FABRIC-TABLES.txt
 docs/build-files/BC-COLUMNS.txt
 docs/build-files/FABRIC-TABLES.txt
+
+# Sample reels are working artifacts, not source
+samples/*.mp4

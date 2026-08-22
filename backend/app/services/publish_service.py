@@ -1,9 +1,5 @@
-import hashlib
-import hmac
 import json
 import logging
-import time
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,19 +14,15 @@ from app.models.brand import Brand
 from app.models.calendar_item import CalendarItem
 from app.models.content import Content
 from app.services import minio_service
-from app.services.publishers.base import (
-    MediaBundle,
-    PublishOutcome,
-    resolve_caption_and_hashtags,
-)
+from app.services.publishers.base import MediaBundle, PublishOutcome
 from app.services.publishers.registry import get_publisher
 from app.utils.media_sign import sign_media_path
 from app.utils.redact import redact
 
 logger = logging.getLogger(__name__)
 
-# TTL for signed media URLs handed to third parties (n8n payloads, Meta /
-# LinkedIn fetch-by-URL). Long enough to cover slow container polls + retries.
+# TTL for signed media URLs handed to platforms that fetch media by URL
+# (Meta / LinkedIn). Long enough to cover slow container polls + retries.
 MEDIA_URL_SIGN_TTL = 2 * 60 * 60
 
 # system_flags key for the global publishing kill switch.
@@ -116,60 +108,35 @@ def get_platform_credentials(brand: Brand, channel: str) -> dict[str, Any]:
         }
     elif channel == "tiktok":
         return {
+            "client_key": ch_cfg.get("client_key", ""),
+            "client_secret": ch_cfg.get("client_secret", ""),
             "access_token": ch_cfg.get("access_token", ""),
+            "refresh_token": ch_cfg.get("refresh_token", ""),
             "handle": ch_cfg.get("handle", ""),
         }
     elif channel == "x":
+        # OAuth 1.0a user context — all four keys required to sign requests.
         return {
-            "api_key": ch_cfg.get("api_key", ""),
+            "consumer_key": ch_cfg.get("consumer_key", ""),
+            "consumer_secret": ch_cfg.get("consumer_secret", ""),
+            "access_token": ch_cfg.get("access_token", ""),
+            "access_token_secret": ch_cfg.get("access_token_secret", ""),
             "handle": ch_cfg.get("handle", ""),
+        }
+    elif channel == "website_blog":
+        return {
+            "platform": ch_cfg.get("platform") or "wordpress",
+            "base_url": ch_cfg.get("base_url", ""),
+            "username": ch_cfg.get("username", ""),
+            "app_password": ch_cfg.get("app_password", ""),
         }
     elif channel == "teams":
         return {
             "webhook_url": ch_cfg.get("webhook_url", ""),
         }
     else:
-        # website_blog and any unknown channels — no credentials needed
+        # Unknown channels — no credentials to resolve.
         return {}
-
-
-class PublishPreflightError(Exception):
-    """Raised when pre-flight checks fail before dispatching to n8n."""
-
-    pass
-
-
-def _preflight_checks(
-    content: Content,
-    calendar_item: CalendarItem,
-    brand: Brand,
-) -> None:
-    """Verify required data is present before dispatching to n8n."""
-    channel = calendar_item.channel
-
-    # Check n8n webhook URL is configured
-    if not settings.N8N_WEBHOOK_BASE or "example.com" in settings.N8N_WEBHOOK_BASE:
-        raise PublishPreflightError(
-            "N8N_WEBHOOK_BASE not configured. Set it in .env to enable publishing."
-        )
-
-    # Refuse to dispatch without the shared webhook secret: the inbound
-    # /publish-result callback 503s when the secret is unset, so a dispatch
-    # without it records a successful platform post as 'failed' and invites a
-    # duplicate retry (config asymmetry, N-15).
-    if not settings.N8N_WEBHOOK_SECRET:
-        raise PublishPreflightError(
-            "N8N_WEBHOOK_SECRET not configured — refusing to dispatch to n8n "
-            "(the inbound callback would be rejected and the post recorded "
-            "as failed)."
-        )
-
-    # Check content has required fields
-    caption = content.caption or content.body_text or ""
-    if not caption:
-        raise PublishPreflightError(
-            f"Content '{content.id}' has no caption or body_text for channel '{channel}'"
-        )
 
 
 async def _derive_facebook_page_token(token: str, page_id: str) -> str | None:
@@ -211,21 +178,11 @@ async def _derive_facebook_page_token(token: str, page_id: str) -> str | None:
         return None
 
 
-def resolve_channel_copy(content: Content, channel: str) -> tuple[str, list[str]]:
-    """Resolve the caption and hashtags to publish for one channel.
-
-    Per-channel adaptations from ``generation_metadata.platform_adaptations``
-    win, then legacy ``platform_metadata``, then the primary caption /
-    body_text. Delegates to the publishers' shared helper so the direct and
-    n8n paths can never drift apart.
-    """
-    return resolve_caption_and_hashtags(content, channel)
-
-
 def _signed_file_url(path: str, *, as_jpg: bool = False) -> str | None:
     """Externally reachable ``/files`` URL for a MinIO path, carrying a signed
-    access token (``mt=<hmac>&exp=<unix>``) so third-party fetchers (n8n,
-    Meta, LinkedIn) can read it now that the media endpoints require auth."""
+    access token (``mt=<hmac>&exp=<unix>``) so third-party fetchers (Meta,
+    LinkedIn, Teams cards) can read it now that the media endpoints require
+    auth."""
     api_base = settings.PUBLIC_API_URL or settings.FRONTEND_URL
     if not api_base or not path:
         return None
@@ -252,9 +209,7 @@ def _signed_file_url(path: str, *, as_jpg: bool = False) -> str | None:
     return url
 
 
-def resolve_media(
-    content: Content, calendar_item: CalendarItem, *, image_only: bool = False
-) -> MediaBundle:
+def resolve_media(content: Content, calendar_item: CalendarItem) -> MediaBundle:
     """Pick the media asset to publish for a calendar item.
 
     Video items (item_type ``reel``/``video`` with a rendered master at
@@ -262,12 +217,8 @@ def resolve_media(
     branded image from ``generation_metadata`` (branded → raw → legacy key).
     ``public_url`` is the externally reachable file-proxy URL; ``bytes_loader``
     streams the raw object out of MinIO for platforms we push bytes to.
-
-    ``image_only=True`` skips the video branch and always resolves the image
-    — the n8n webhook payload is image-only, so its dispatch keeps sending
-    the branded image even for video items.
     """
-    if not image_only and content.video_url and calendar_item.item_type in ("reel", "video"):
+    if content.video_url and calendar_item.item_type in ("reel", "video"):
         video_path = content.video_url
         return MediaBundle(
             kind="video",
@@ -301,161 +252,6 @@ def resolve_media(
     )
 
 
-async def dispatch_to_n8n(
-    content: Content,
-    calendar_item: CalendarItem,
-    brand: Brand,
-) -> dict[str, Any]:
-    """
-    Channel-aware publishing dispatch.
-
-    - instagram, facebook, linkedin: dispatch to n8n webhooks (existing)
-    - youtube, tiktok, x: dispatch to n8n (new workflow endpoints)
-    - website_blog: NO dispatch — mark as ready_to_publish with markdown stored in content
-    - teams: dispatch directly via Teams incoming webhook (not n8n)
-    """
-    channel = calendar_item.channel
-
-    # Global kill switch — checked immediately before any external effect.
-    if not await is_publishing_enabled():
-        raise PublishingDisabledError(
-            "Publishing kill switch is engaged — n8n/teams dispatch blocked"
-        )
-
-    # ── website_blog: no external dispatch ──────────────────────────
-    if channel == "website_blog":
-        logger.info(
-            "website_blog channel — content %s marked ready_to_publish (manual copy/paste)",
-            content.id,
-        )
-        return {
-            "status": "ready_to_publish",
-            "message": "Blog content is ready. Copy the markdown from Content Studio and publish manually.",
-            "content_id": str(content.id),
-        }
-
-    # ── teams: dispatch via Teams incoming webhook directly ─────────
-    if channel == "teams":
-        creds = get_platform_credentials(brand, channel)
-        webhook_url = creds.get("webhook_url", "")
-        if not webhook_url:
-            raise PublishPreflightError(
-                "Teams webhook URL not configured for this brand. "
-                "Set it in Brand > Channels > Teams."
-            )
-        caption = content.caption or content.body_text or ""
-        teams_payload = {
-            "@type": "MessageCard",
-            "summary": content.headline or "New content published",
-            "sections": [
-                {
-                    "activityTitle": content.headline or "New Content",
-                    "text": caption,
-                }
-            ],
-        }
-        # Teams webhook URLs embed a credential in the PATH — never let the
-        # URL-bearing httpx exception text escape into logs / job-log rows.
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(webhook_url, json=teams_payload)
-                resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise PublishPreflightError(
-                f"Teams webhook returned HTTP {exc.response.status_code}"
-            ) from None
-        except httpx.HTTPError as exc:
-            raise PublishPreflightError(
-                f"Teams webhook request failed: {type(exc).__name__}"
-            ) from None
-        return {"status": "published", "channel": "teams"}
-
-    # ── All other channels: dispatch to n8n ─────────────────────────
-    _preflight_checks(content, calendar_item, brand)
-
-    # Caption/hashtags from the pipeline's per-channel adaptations. Media:
-    # the n8n webhook is image-only, so resolve the branded image even for
-    # video items (the pre-direct-publish behavior), falling back to the raw
-    # video_url only when no image/API base is available.
-    caption, adapted_hashtags = resolve_channel_copy(content, channel)
-    media = resolve_media(content, calendar_item, image_only=True)
-    image_url = media.public_url or content.video_url or None
-
-    payload = {
-        "content_id": str(content.id),
-        "channel": channel,
-        "caption": caption,
-        "headline": content.headline,
-        "image_url": image_url,
-        "hashtags": adapted_hashtags,
-        "cta_text": content.cta_text,
-        "cta_url": content.cta_url,
-        "brand_name": brand.name,
-        "calendar_item_id": str(calendar_item.id),
-        **get_platform_credentials(brand, channel),
-    }
-
-    # Facebook Page publishing needs a PAGE token, not the stored user/system-
-    # user token. Derive it on the fly so the brand can keep storing its
-    # (non-expiring) system-user token; falls back to the stored token if the
-    # exchange fails.
-    if channel == "facebook" and payload.get("meta_access_token") and payload.get("page_id"):
-        page_token = await _derive_facebook_page_token(
-            payload["meta_access_token"], payload["page_id"]
-        )
-        if page_token:
-            payload["meta_access_token"] = page_token
-
-    # Single unified webhook — n8n routes internally by channel field
-    n8n_webhook = f"{settings.N8N_WEBHOOK_BASE}/markai/publish"
-
-    # Outbound auth: the n8n webhook is internet-reachable and this payload
-    # carries live platform tokens, so n8n must be able to reject calls that
-    # are not ours. Same shared secret as the inbound callback verification
-    # (webhooks.py) — the n8n instance already holds it as
-    # $env.N8N_WEBHOOK_SECRET for signing its callbacks, so no new
-    # provisioning is needed. _preflight_checks refuses to dispatch when the
-    # secret is unset (the inbound callback would 503 and mark a live post
-    # failed).
-    #
-    # n8n side (runtime change, not in this repo): the FIRST node after the
-    # Webhook trigger in docs/n8n-workflows/markai-publish.json must compare
-    # $json.headers['x-webhook-secret'] to $env.N8N_WEBHOOK_SECRET and stop
-    # the workflow on mismatch — until that node exists, this header is sent
-    # but not enforced.
-    #
-    # The platform tokens stay IN the payload: the n8n workflow reads them
-    # straight from $json.body (it has no vault/credential-store lookup), so
-    # dropping them here would break every n8n-dispatched channel. Removing
-    # them requires the n8n-side vault migration first; n8n execution logs
-    # retain webhook payloads until then.
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "X-Webhook-Secret": settings.N8N_WEBHOOK_SECRET,
-    }
-
-    # Serialize once so the HMAC signature (when enabled) covers the exact
-    # bytes on the wire. The event id is echoed back by the n8n callback
-    # (X-Webhook-Event-Id) so replayed callbacks dedup against
-    # webhook_events.
-    body = json.dumps(payload)
-    headers["X-Webhook-Event-Id"] = str(uuid.uuid4())
-    # Optional until the operator provisions the HMAC secret on both sides.
-    hmac_secret = settings.N8N_WEBHOOK_HMAC_SECRET
-    if hmac_secret:
-        ts = str(int(time.time()))
-        signature = hmac.new(
-            hmac_secret.encode(), f"{ts}.{body}".encode(), hashlib.sha256
-        ).hexdigest()
-        headers["X-Webhook-Timestamp"] = ts
-        headers["X-Webhook-Signature"] = f"sha256={signature}"
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(n8n_webhook, content=body.encode(), headers=headers)
-        resp.raise_for_status()
-        return resp.json()
-
-
 async def record_publish_result(
     db: AsyncSession,
     content: Content,
@@ -465,11 +261,10 @@ async def record_publish_result(
 ) -> None:
     """Write a publish result back to the calendar item and content row.
 
-    Mirrors what the n8n callback (``/api/v1/webhooks/publish-result``) does:
     published → calendar item ``published`` + ``published_at`` and the
     platform post id on the content; failed → calendar item ``failed`` with
-    the error stored in ``generation_metadata.publish_error``. The direct
-    path additionally records ``platform_metadata[channel]`` so multi-channel
+    the error stored in ``generation_metadata.publish_error``. Also records
+    ``platform_metadata[channel]`` (merge, not replace) so multi-channel
     post ids don't overwrite each other.
     """
     now = datetime.now(timezone.utc)
@@ -521,13 +316,13 @@ async def publish_direct(
     calendar_item: CalendarItem,
     brand: Brand,
 ) -> PublishOutcome:
-    """Publish a calendar item straight to its platform (no n8n hop).
+    """Publish a calendar item straight to its platform — the ONLY dispatch path.
 
     Picks the publisher from the registry (media-kind aware), resolves the
     brand's channel credentials, runs the platform flow and writes the result
-    back to the calendar item / content row. Callers route to
-    ``dispatch_to_n8n`` instead when ``get_publisher`` returns None for the
-    channel/media combination.
+    back to the calendar item / content row. When ``get_publisher`` returns
+    None the channel/media combination is unsupported (no fallback exists)
+    and the item is failed with an actionable error.
     """
     # Global kill switch — checked immediately before any external effect.
     # Raises (instead of recording a failed outcome) so callers can release
@@ -542,13 +337,21 @@ async def publish_direct(
     publisher = get_publisher(channel, media.kind)
 
     if publisher is None:
+        if channel == "youtube" and media.kind == "image":
+            error = (
+                "YouTube requires video content — this item resolved to an "
+                "image; schedule it as a reel/video with a rendered master "
+                "or pick another channel"
+            )
+        else:
+            error = (
+                f"no publisher supports channel '{channel}' with media kind "
+                f"'{media.kind}'"
+            )
         outcome = PublishOutcome(
             platform_post_id=None,
             status="failed",
-            error=(
-                f"No direct publisher for channel '{channel}' "
-                f"with media kind '{media.kind}'"
-            ),
+            error=error,
         )
     else:
         creds = get_platform_credentials(brand, channel)
@@ -566,7 +369,7 @@ async def publish_direct(
                 "Direct publish of content %s to %s crashed", content.id, channel
             )
             outcome = PublishOutcome(
-                platform_post_id=None, status="failed", error=str(exc)
+                platform_post_id=None, status="failed", error=redact(str(exc))
             )
 
     await record_publish_result(db, content, calendar_item, channel, outcome)

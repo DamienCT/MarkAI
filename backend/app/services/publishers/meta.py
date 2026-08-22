@@ -254,7 +254,7 @@ class FacebookPublisher(ChannelPublisher):
             )
 
         # Page publishing needs the Page's OWN token; fall back to the stored
-        # token if derivation fails (same behavior as the n8n dispatch path).
+        # token if derivation fails.
         page_token = await _derive_facebook_page_token(token, page_id) or token
 
         caption_text, hashtags = resolve_caption_and_hashtags(content, self.channel)

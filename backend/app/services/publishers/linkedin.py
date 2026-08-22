@@ -168,7 +168,13 @@ class LinkedInPublisher:
                     "Content-Type": "application/octet-stream",
                 },
             )
-            upload_resp.raise_for_status()
+            # The pre-signed uploadUrl is a short-lived credential — map the
+            # error locally so raise_for_status's URL-bearing message never
+            # reaches base.publish's generic httpx handler (outcome.error).
+            if upload_resp.status_code >= 400:
+                raise LinkedInPublishError(
+                    f"LinkedIn image upload returned HTTP {upload_resp.status_code}"
+                )
 
             post_id = await self._create_post(
                 client, commentary=caption, media_urn=image_urn
@@ -207,7 +213,12 @@ class LinkedInPublisher:
                     "Content-Type": "application/octet-stream",
                 },
             )
-            resp.raise_for_status()
+            # Pre-signed uploadUrl = credential; keep it out of error text.
+            if resp.status_code >= 400:
+                raise LinkedInPublishError(
+                    f"LinkedIn video part upload returned HTTP {resp.status_code} "
+                    f"(bytes {instruction['firstByte']}-{instruction['lastByte']})"
+                )
             etag = resp.headers.get("ETag")
             if not etag:
                 raise LinkedInPublishError(
@@ -319,9 +330,11 @@ class LinkedInChannelPublisher(ChannelPublisher):
     Translates the dispatcher's credential keys (``linkedin_access_token`` /
     ``linkedin_org_id``, see ``get_platform_credentials``) into the
     publisher's config keys so brand-level credentials are honored (empty
-    values fall back to the global ``settings.LINKEDIN_*``), loads the video
+    values fall back to the global ``settings.LINKEDIN_*``), loads the media
     bytes from MinIO and maps ``LinkedInPublishError`` onto the uniform
-    ``PublishError`` contract.
+    ``PublishError`` contract. Videos use the chunked Videos API, images the
+    one-shot Images API; an image item without rendered bytes publishes the
+    caption as a text-only post.
     """
 
     channel = "linkedin"
@@ -334,13 +347,8 @@ class LinkedInChannelPublisher(ChannelPublisher):
         creds: dict[str, Any],
         media: MediaBundle,
     ) -> PublishOutcome:
-        if media.kind != "video":
-            raise PublishError("LinkedIn direct publishing supports video only")
-
         caption, hashtags = resolve_caption_and_hashtags(content, self.channel)
         commentary = format_caption(caption, hashtags)
-        title = resolve_title(content, caption, default="Video")
-        video_bytes = await media.get_bytes()
 
         publisher = LinkedInPublisher(
             {
@@ -349,9 +357,20 @@ class LinkedInChannelPublisher(ChannelPublisher):
             }
         )
         try:
-            result = await publisher.publish_video(
-                video_bytes, caption=commentary, title=title
-            )
+            if media.kind == "video":
+                title = resolve_title(content, caption, default="Video")
+                video_bytes = await media.get_bytes()
+                result = await publisher.publish_video(
+                    video_bytes, caption=commentary, title=title
+                )
+            elif media.bytes_loader is not None:
+                image_bytes = await media.get_bytes()
+                result = await publisher.publish_image(
+                    image_bytes, caption=commentary
+                )
+            else:
+                # No rendered image — publish the caption as a text-only post.
+                result = await publisher.publish_text(caption=commentary)
         except LinkedInPublishError as exc:
             raise PublishError(str(exc)) from exc
 

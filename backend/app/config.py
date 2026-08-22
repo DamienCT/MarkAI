@@ -74,15 +74,6 @@ class Settings(BaseSettings):
     # endpoints (/api/v1/files/*, brand logos) without an Entra bearer token.
     MEDIA_PROXY_TOKEN: str = ""
 
-    # --- n8n ---
-    N8N_BASE_URL: str = "http://n8n:5678"
-    N8N_WEBHOOK_BASE: str = "https://n8n.example.com/webhook"
-    N8N_WEBHOOK_SECRET: str = ""
-    # Optional until the n8n workflow is re-imported with the HMAC node: when
-    # set, inbound n8n callbacks must carry a valid timestamped HMAC signature
-    # and outbound dispatches are signed with it.
-    N8N_WEBHOOK_HMAC_SECRET: str = ""
-
     # --- Browser Worker ---
     BROWSER_WORKER_URL: str = "http://browser-worker:8001"
     BROWSER_WORKER_API_KEY: str = ""
@@ -198,7 +189,6 @@ if settings.MARKAI_ENV == "production":
         )
     # Validate additional required production settings
     _REQUIRED_PROD = [
-        "N8N_WEBHOOK_SECRET",
         "FRONTEND_URL",
         "MEDIA_PROXY_TOKEN",
         "BROWSER_WORKER_API_KEY",

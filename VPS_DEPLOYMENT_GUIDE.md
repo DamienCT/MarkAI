@@ -142,7 +142,7 @@ without one (`SKIP_BACKUP=true` does not override that refusal).
 Internet
   |
   v
-Traefik (VPS-level, shared with n8n)
+Traefik (VPS-level, shared edge — lives in the legacy n8n stack)
   |
   +-- markai.srv1191974.hstgr.cloud --> frontend:3000  (Next.js)
   +-- api.markai.srv1191974.hstgr.cloud --> backend:8000  (FastAPI)
@@ -161,7 +161,7 @@ Traefik (VPS-level, shared with n8n)
     qdrant:6333      Vector database
 ```
 
-**11 services** total. Traefik and n8n are external (shared VPS services, not managed by this stack).
+**11 services** total. Traefik is external (a shared VPS service from the legacy n8n stack, not managed by MarkAI — MarkAI no longer uses n8n itself; publishing runs natively in the backend).
 
 ---
 
@@ -177,8 +177,12 @@ Key env vars:
 - OpenAI + Gemini API keys (for content generation)
 - Microsoft Fabric credentials (for Business Central product sync)
 - Database, MinIO, NATS, Valkey passwords
-- n8n webhook secret (for social publishing callbacks)
 - Inter-service auth tokens (NATS, browser-worker, notifications)
+
+Social-channel credentials are NOT in `.env` — they live per-brand in the UI
+(Brand → Channels; see `docs/CHANNEL_CREDENTIALS.md`). Legacy `N8N_*` lines
+in the VPS `.env` are ignored since the 2026-08-22 n8n removal — leave them
+in place (append-only rule).
 
 If you need to add a new env var:
 ```bash

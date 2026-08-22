@@ -1,14 +1,17 @@
-"""Tests for the direct YouTube and LinkedIn publishers (no n8n hop)."""
+"""Tests for the direct YouTube and LinkedIn publishers."""
 
 import json
+from types import SimpleNamespace
 from urllib.parse import parse_qsl
 
 import httpx
 import pytest
 
 from app.config import settings
+from app.services.publishers.base import MediaBundle
 from app.services.publishers.linkedin import (
     LINKEDIN_VERSION,
+    LinkedInChannelPublisher,
     LinkedInPublisher,
     LinkedInPublishError,
 )
@@ -375,3 +378,112 @@ async def test_linkedin_missing_credentials_raises(monkeypatch):
 
     with pytest.raises(LinkedInPublishError, match="credentials missing"):
         await LinkedInPublisher({}).publish_text(caption="hi")
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn channel publisher (registry seam): image + text routing
+# ---------------------------------------------------------------------------
+
+_LI_CHANNEL_CREDS = {"linkedin_access_token": "li-token", "linkedin_org_id": "555"}
+_LI_IMAGE_URN = "urn:li:image:C5F10AQdef"
+
+
+def _li_content():
+    return SimpleNamespace(
+        generation_metadata={
+            "platform_adaptations": {
+                "linkedin": {"caption": "Adapted caption", "hashtags": ["#li"]}
+            }
+        },
+        platform_metadata=None,
+        caption="Primary caption",
+        body_text="Body text",
+        hashtags=["#fallback"],
+        headline="A headline",
+    )
+
+
+def _li_image_media(with_bytes: bool = True) -> MediaBundle:
+    async def loader():
+        return b"png-bytes"
+
+    return MediaBundle(
+        kind="image",
+        public_url="https://api.example.com/api/v1/files/images/i.png",
+        bytes_loader=loader if with_bytes else None,
+        mime="image/png",
+    )
+
+
+def _li_image_handler(calls: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if request.method == "POST" and request.url.path == "/rest/images":
+            assert request.url.params.get("action") == "initializeUpload"
+            return httpx.Response(
+                200,
+                json={
+                    "value": {
+                        "uploadUrl": "https://upload.example.com/img2",
+                        "image": _LI_IMAGE_URN,
+                    }
+                },
+            )
+        if request.method == "PUT" and url == "https://upload.example.com/img2":
+            calls["upload_body"] = request.content
+            return httpx.Response(201)
+        if request.method == "POST" and request.url.path == "/rest/posts":
+            calls["post_body"] = json.loads(request.content)
+            return httpx.Response(201, headers={"x-restli-id": "urn:li:share:88"})
+        raise AssertionError(f"Unexpected request: {request.method} {url}")
+
+    return handler
+
+
+@pytest.mark.anyio
+async def test_linkedin_channel_publisher_routes_image(monkeypatch):
+    calls: dict = {}
+    _mock_async_client(monkeypatch, _li_image_handler(calls))
+
+    outcome = await LinkedInChannelPublisher().publish(
+        _li_content(),
+        SimpleNamespace(channel="linkedin"),
+        SimpleNamespace(name="Acme"),
+        _LI_CHANNEL_CREDS,
+        _li_image_media(),
+    )
+
+    assert outcome.status == "published"
+    assert outcome.platform_post_id == "urn:li:share:88"
+    assert outcome.extra["media_urn"] == _LI_IMAGE_URN
+    assert calls["upload_body"] == b"png-bytes"
+    # The adapted caption + hashtags became the commentary.
+    assert calls["post_body"]["commentary"].startswith("Adapted caption")
+    assert "#li" in calls["post_body"]["commentary"]
+    assert calls["post_body"]["content"] == {"media": {"id": _LI_IMAGE_URN}}
+
+
+@pytest.mark.anyio
+async def test_linkedin_channel_publisher_text_only_without_media_bytes(monkeypatch):
+    calls: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/rest/posts"
+        calls["post_body"] = json.loads(request.content)
+        return httpx.Response(201, headers={"x-restli-id": "urn:li:share:99"})
+
+    _mock_async_client(monkeypatch, handler)
+
+    outcome = await LinkedInChannelPublisher().publish(
+        _li_content(),
+        SimpleNamespace(channel="linkedin"),
+        SimpleNamespace(name="Acme"),
+        _LI_CHANNEL_CREDS,
+        _li_image_media(with_bytes=False),
+    )
+
+    assert outcome.status == "published"
+    assert outcome.platform_post_id == "urn:li:share:99"
+    assert outcome.extra["media_urn"] is None
+    assert "content" not in calls["post_body"]  # no bytes → text-only post

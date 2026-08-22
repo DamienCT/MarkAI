@@ -63,7 +63,7 @@ async def upsert_engagement(
 async def pull_all_engagement() -> None:
     """
     Pull engagement metrics directly from social platform APIs.
-    No n8n needed -- just HTTP calls using brand credentials.
+    Plain HTTP calls using brand credentials.
     """
     logger.info("Starting engagement pull for all published content")
 

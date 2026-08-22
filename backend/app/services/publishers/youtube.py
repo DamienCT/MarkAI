@@ -1,8 +1,7 @@
 """YouTube publisher — direct video uploads via the YouTube Data API v3.
 
-Replaces the n8n webhook hop for the youtube channel: the backend refreshes
-the brand's OAuth access token, opens a resumable upload session and PUTs the
-video bytes directly. Credentials come from the brand's per-channel config
+The backend refreshes the brand's OAuth access token, opens a resumable
+upload session and PUTs the video bytes directly. Credentials come from the brand's per-channel config
 (``client_id`` / ``client_secret`` / ``refresh_token`` / ``channel_id``) with
 the global ``settings.YOUTUBE_*`` values as fallback.
 """

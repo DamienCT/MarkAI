@@ -43,11 +43,11 @@ for the two aux services — **never set them on the VPS**.
 |---|---|
 | `VIDEO_FORGE_API_KEY` | Must be non-blank whenever `VIDEO_FORGE_URL` is set; agents production validation fails otherwise. A forge auth error (401/403) now raises a config error instead of silently failing over to paid cloud rendering (N-11). |
 
-### Optional — enables the stronger webhook contract
+### Removed — n8n webhook contract (2026-08-22)
 
-| Variable | Rule |
-|---|---|
-| `N8N_WEBHOOK_HMAC_SECRET` | When set (backend **and** n8n side), inbound `/api/v1/webhooks/publish-result` callbacks must carry a timestamped HMAC signature and outbound dispatches are signed. Until set, the backend accepts the legacy static-secret-only contract but logs a deprecation warning. Requires the n8n workflow re-import in §4 **before** being set — otherwise callbacks will be rejected and posts recorded `failed`. |
+`N8N_WEBHOOK_HMAC_SECRET` — and every other `N8N_*` variable — is no longer
+read: n8n was removed and every channel publishes natively from the backend.
+See §4 for the remaining operator notes.
 
 ### Frontend build contract
 
@@ -132,8 +132,9 @@ compromised and rotate even though no misuse is confirmed.
       line from `.env` (the one sanctioned exception to append-only — it is
       script-managed) and running a deploy; the script regenerates it into
       `/root/markai-traefik-dashboard.credentials`, root-only, unlogged.
-- [ ] **`N8N_WEBHOOK_SECRET`**: rotate opportunistically when doing the n8n
-      re-import in §4 (both sides must change together).
+- [x] **`N8N_WEBHOOK_SECRET`**: obsolete — n8n was removed 2026-08-22 (§4);
+      the backend no longer reads any `N8N_*` variable, so there is nothing
+      to rotate.
 - [ ] **`LITELLM_MASTER_KEY`**: lower priority (it was sprayed as a Bearer
       header to an endpoint that needs no auth) — rotate with the next
       routine pass.
@@ -148,39 +149,27 @@ compromised and rotate even though no misuse is confirmed.
 
 ---
 
-## 4. n8n workflow re-import (HMAC + replay protection)
+## 4. n8n removed (2026-08-22)
 
-`docs/n8n-workflows/markai-publish.json` has been updated so the callback
-node echoes `X-Webhook-Event-Id` and computes the timestamped HMAC signature.
-n8n does **not** pick this up from git — the workflow must be re-imported:
+The HMAC re-import procedure that used to live in this section is obsolete:
+n8n has been removed from MarkAI entirely. Every channel publishes natively
+from the backend (`backend/app/services/publishers/`); the n8n dispatch, its
+`/api/v1/webhooks/publish-result` callback, and `docs/n8n-workflows/` are
+gone. Remaining operator notes:
 
-1. In n8n (`https://n8n.srv1191974.hstgr.cloud`), export/back up the current
-   `markai-publish` workflow.
-2. Set `NODE_FUNCTION_ALLOW_BUILTIN=crypto` in the n8n environment and
-   restart n8n **before** activating the re-imported workflow. Its Code
-   nodes `require('crypto')` unconditionally — without the allowlist every
-   callback crashes inside n8n (the post can still go out but is then
-   recorded `failed`).
-3. Import the updated `docs/n8n-workflows/markai-publish.json`, re-bind the
-   credentials, and activate it (deactivate the old copy).
-4. Set the shared secret on the n8n side (env or credential, as the workflow
-   expects), then append `N8N_WEBHOOK_HMAC_SECRET=<same value>` to the
-   backend `.env` and redeploy.
-5. Order matters: **re-import first, set the backend secret second.** The
-   backend accepts legacy-format callbacks until the secret is set.
-6. **One-callback smoke test (mandatory):** trigger one test publish and
-   confirm the backend logs a signed, non-403 `/publish-result` callback for
-   it. The exact raw-body shape the HTTP node (n8n typeVersion 4.4) sends
-   cannot be proven from the repo — only a live callback proves the HMAC is
-   computed over the same bytes the backend verifies. If the callback 403s,
-   the HMAC input differs: fix the workflow before trusting any scheduled
-   publish.
-7. While in n8n: disable execution-data persistence for the publish workflow
-   (P0-03 mitigation — execution history retains payloads).
+- The shared VPS n8n instance at `https://n8n.srv1191974.hstgr.cloud` belongs
+  to **other tenants** — MarkAI must never modify, restart, or reconfigure
+  it (its Traefik still serves as the shared TLS edge for every tenant).
+- You may delete the 'MARKAI - Unified Publisher' workflow from that
+  instance at leisure; nothing calls it anymore.
+- The `N8N_*` lines in the VPS `.env` are now ignored. Do **not** remove
+  them — the `.env` is append-only (§2); leave the lines in place.
+- Per-brand channel credentials are entered in the UI (Brand → Channels);
+  see `docs/CHANNEL_CREDENTIALS.md`.
 
-Regardless of HMAC, the backend now enforces monotonic status transitions
-(a late `failed` never overwrites `published`; nothing overwrites an operator
-cancellation) and replays of the same event id are no-ops.
+Regardless of the dispatch path, the backend still enforces monotonic status
+transitions (a late `failed` never overwrites `published`; nothing overwrites
+an operator cancellation).
 
 ---
 
@@ -227,7 +216,8 @@ requirement) but must be hardened, not removed:
       key — verify after restart that unauthenticated requests to anything
       but `/health` get 401.
 - [ ] **Network isolation**: `markai-forge-proxy` must not sit on the shared
-      external `n8n_default` network (other tenants' containers can reach
+      external `n8n_default` network — the legacy n8n stack's Traefik edge
+      network, not an n8n dependency (other tenants' containers can reach
       `markai-forge-proxy:9100` directly, bypassing Traefik's rate limit).
       If the compose files in this change set define the dedicated internal
       network, a redeploy applies it; verify with:

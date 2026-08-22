@@ -140,7 +140,7 @@ a{color:var(--blue);text-decoration:none}
     <div class="legend-item"><div class="legend-color" style="background:var(--blue)"></div>Backend / API</div>
     <div class="legend-item"><div class="legend-color" style="background:var(--green)"></div>AI Agents</div>
     <div class="legend-item"><div class="legend-color" style="background:var(--orange)"></div>Frontend</div>
-    <div class="legend-item"><div class="legend-color" style="background:var(--purple)"></div>External (NATS / MinIO / n8n)</div>
+    <div class="legend-item"><div class="legend-color" style="background:var(--purple)"></div>External (NATS / MinIO / platform APIs)</div>
     <div class="legend-item"><div class="legend-color" style="background:var(--cyan)"></div>Trigger / Scheduler</div>
     <div class="legend-item"><div class="legend-color" style="background:var(--pink)"></div>Status / State</div>
   </div>
@@ -359,24 +359,24 @@ const DATA = [
     id:"publishing", num:"08", title:"Publishing", badge:"SCHEDULER", badgeColor:"var(--cyan)",
     dot:"var(--cyan)",
     html:`
-      <p class="desc">A scheduler runs <strong>every 5 minutes</strong>, finds content items due for publishing, dispatches them to <strong>n8n</strong> via a unified webhook, which routes to the appropriate platform API. A callback updates the content status.</p>
+      <p class="desc">A scheduler runs <strong>every 5 minutes</strong>, finds content items due for publishing, claims each (scheduled → publishing) and posts via the channel's <strong>native publisher</strong> directly to the platform API. The outcome is written straight back to the content status.</p>
       <div class="flow">
         <div class="flow-node trigger">Scheduler<small>Every 5 min</small></div>
         <div class="flow-arrow">&rarr;</div>
         <div class="flow-node backend">publish_checker<small>Find due items</small></div>
         <div class="flow-arrow">&rarr;</div>
-        <div class="flow-node external">dispatch_to_n8n<small>/markai/publish</small></div>
+        <div class="flow-node">publish_direct<small>publishers registry</small></div>
         <div class="flow-arrow">&rarr;</div>
-        <div class="flow-node external">n8n Router<small>Route by channel</small></div>
+        <div class="flow-node">Channel publisher<small>meta / youtube / linkedin / x / tiktok / teams / blog</small></div>
       </div>
-      <p class="sub-title">Platform APIs (via n8n)</p>
+      <p class="sub-title">Platform APIs (native)</p>
       <div class="flow">
         <div class="flow-node external">Instagram<small>Graph API v25</small></div>
         <div class="flow-node external">Facebook<small>Graph API v25</small></div>
         <div class="flow-node external">LinkedIn<small>REST Posts API</small></div>
       </div>
       <div class="flow" style="margin-top:10px">
-        <div class="flow-node external">n8n Callback<small>/webhooks/publish-result</small></div>
+        <div class="flow-node">record_publish_result<small>outcome write-back</small></div>
         <div class="flow-arrow">&rarr;</div>
         <div class="flow-node backend">Update Status<small>published or failed</small></div>
       </div>
@@ -558,8 +558,8 @@ const STATUS_SECTION = {
       <li><strong>working &rarr; in_review</strong> &mdash; content generation completes successfully</li>
       <li><strong>in_review &rarr; approved</strong> &mdash; human approves in Content Studio</li>
       <li><strong>approved &rarr; scheduled</strong> &mdash; human sets publish date/time</li>
-      <li><strong>scheduled &rarr; published</strong> &mdash; n8n callback confirms success</li>
-      <li><strong>scheduled &rarr; failed</strong> &mdash; n8n callback reports error; can be retried</li>
+      <li><strong>scheduled &rarr; publishing &rarr; published</strong> &mdash; native publisher confirms success</li>
+      <li><strong>publishing &rarr; failed</strong> &mdash; publisher reports an error; verify before re-scheduling</li>
     </ul>
   `
 };

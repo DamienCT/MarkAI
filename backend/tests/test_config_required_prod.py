@@ -26,7 +26,6 @@ _FULL_PROD_ENV = {
     "AZURE_AD_TENANT_ID": "tenant",
     "AZURE_AD_CLIENT_ID": "client",
     "AZURE_AD_CLIENT_SECRET": "secret",
-    "N8N_WEBHOOK_SECRET": "webhook-secret",
     "FRONTEND_URL": "https://markai.example.com",
     "MEDIA_PROXY_TOKEN": "media-proxy-token",
     "BROWSER_WORKER_API_KEY": "browser-worker-key",
@@ -52,7 +51,13 @@ _PASSTHROUGH = (
 )
 
 
-def _import_config(tmp_path: Path, *, drop: tuple[str, ...] = (), overrides: dict | None = None):
+def _import_config(
+    tmp_path: Path,
+    *,
+    drop: tuple[str, ...] = (),
+    overrides: dict | None = None,
+    code: str = "import app.config",
+):
     env = {k: v for k, v in _FULL_PROD_ENV.items() if k not in drop}
     env.update(overrides or {})
     for key in _PASSTHROUGH:
@@ -60,7 +65,7 @@ def _import_config(tmp_path: Path, *, drop: tuple[str, ...] = (), overrides: dic
             env[key] = os.environ[key]
     env["PYTHONPATH"] = str(BACKEND_DIR)
     return subprocess.run(
-        [sys.executable, "-c", "import app.config"],
+        [sys.executable, "-c", code],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -87,6 +92,23 @@ def test_production_refuses_without_each_single_secret(tmp_path):
         result = _import_config(tmp_path, drop=(name,))
         assert result.returncode != 0, f"started without {name}"
         assert name in result.stderr
+
+
+def test_n8n_settings_are_gone(tmp_path):
+    """n8n was removed 2026-08-22 — the Settings model must not declare any
+    N8N_* field and _REQUIRED_PROD must not demand one (production boots
+    without any n8n config; leftover N8N_* env vars are silently ignored
+    via extra='ignore')."""
+    result = _import_config(
+        tmp_path,
+        overrides={"N8N_WEBHOOK_SECRET": "leftover-ignored"},
+        code=(
+            "import app.config as c; "
+            "bad = [f for f in c.Settings.model_fields if f.startswith('N8N_')]; "
+            "assert not bad, f'N8N settings resurrected: {bad}'"
+        ),
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_development_has_safe_defaults(tmp_path):

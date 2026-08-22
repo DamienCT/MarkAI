@@ -113,8 +113,9 @@ After this, `ssh markai` works without a password.
 
 /usr/local/bin/markai-deploy  ← Sudoers-whitelisted deploy entry point (shape unverified — see Deploying)
 
-/docker/n8n/                  ← External n8n + Traefik stack (shared VPS service)
-└── docker-compose.yml        ← Don't modify unless fixing Traefik
+/docker/n8n/                  ← External n8n + Traefik stack (other tenants' —
+└── docker-compose.yml           MarkAI no longer uses n8n; only its Traefik
+                                 is shared. Don't modify unless fixing Traefik)
 ```
 
 ---
@@ -126,7 +127,7 @@ After this, `ssh markai` works without a password.
 | MarkAI Frontend | https://markai.srv1191974.hstgr.cloud | Azure AD SSO |
 | MarkAI API | https://api.markai.srv1191974.hstgr.cloud | JWT (Entra ID) |
 | Health check | https://api.markai.srv1191974.hstgr.cloud/health | Public |
-| n8n | https://n8n.srv1191974.hstgr.cloud | Basic auth |
+| n8n (other tenants — NOT used by MarkAI) | https://n8n.srv1191974.hstgr.cloud | Basic auth |
 
 ---
 
@@ -372,6 +373,6 @@ On the VPS at `/var/www/markai/`:
 - **Do not commit `.env`** — it has production secrets (Azure AD, OpenAI, Gemini, DB passwords)
 - **Do not commit `SSH_PW`** — user adds it temporarily for agent access; remove before commit
 - **Do not set `FORCE_WIPE=true`** on the redeploy script unless explicitly asked (wipes DB volumes; env toggle only — the script rejects all flags, including the removed `--force-wipe`). Root shells only: sudo's `env_reset` strips it on the sanctioned CI path, and the script refuses without a fresh verified backup from the same run
-- **Do not modify `/docker/n8n/`** unless fixing Traefik — it's an external shared service
+- **Do not modify `/docker/n8n/`** unless fixing Traefik — it's an external shared service belonging to other tenants (MarkAI no longer uses n8n; only the Traefik edge in that stack is shared)
 - **Do not expose ports** in `docker-compose.vps.yml` — Traefik handles all public routing
 - **Do not push to `main`** without testing locally first — there's no staging environment
