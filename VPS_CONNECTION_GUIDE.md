@@ -111,7 +111,7 @@ After this, `ssh markai` works without a password.
 ├── backups/                  ← Auto-generated pg_dumps
 └── ...
 
-/usr/local/bin/markai-deploy  ← Sudoers-whitelisted deploy entry point (shape unverified — see Deploying)
+/usr/local/bin/markai-deploy  ← Sudoers-whitelisted deploy entry point (verified sanitizing wrapper — see Deploying)
 
 /docker/n8n/                  ← External n8n + Traefik stack (other tenants' —
 └── docker-compose.yml           MarkAI no longer uses n8n; only its Traefik
@@ -153,15 +153,23 @@ deploys double-triggered GPU renders. The sanctioned path:
 
 **GitHub → Actions → "Deploy" → Run workflow** (or ask the orchestrator to
 trigger it). The workflow SSHes in as the unprivileged `deploy` user and runs
-the sudoers-whitelisted entry point `/usr/local/bin/markai-deploy`. That entry
-point is provisioned server-side; whether it is a sanitizing wrapper or a
-plain symlink to `scripts/vps-redeploy.sh` is NOT verifiable from this repo
-(audit N-20) — the script validates its own argv and stays safe under either
-shape. TODO(operator): confirm the actual shape on the VPS
-(`ls -l /usr/local/bin/markai-deploy` / `file` / `cat` if a wrapper) and
-record the ground truth here. The workflow passes `EXPECTED_SHA` pinned to
-the exact commit CI checked out — the deploy aborts, stack untouched, if
-`main` moved in between.
+the sudoers-whitelisted entry point `/usr/local/bin/markai-deploy`. Ground
+truth (verified on the VPS 2026-08-22, closing audit N-20): it is a small
+sanitizing **wrapper**, not a symlink. It accepts at most one argument, keeps
+it only if it is pure lowercase hex (anything else — flags included — is
+blanked), exports it as `EXPECTED_SHA`, and `exec`s the on-disk
+`scripts/vps-redeploy.sh` with **no argv at all**:
+
+```bash
+sha="${1:-}"
+case "$sha" in *[!0-9a-f]*|"") sha="" ;; esac
+exec env EXPECTED_SHA="$sha" bash /var/www/markai/scripts/vps-redeploy.sh
+```
+
+So destructive flags can never reach the script through the sudoers path, and
+the script's own argv validation is a second, redundant layer. The workflow
+passes the SHA pinned to the exact commit CI checked out — the deploy aborts,
+stack untouched, if `main` moved in between.
 A push-to-main auto-deploy also exists in the workflow but **ships disabled**;
 it only activates once the `AUTO_DEPLOY` repo variable is set to `true`.
 

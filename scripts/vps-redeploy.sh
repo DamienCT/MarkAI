@@ -4,11 +4,11 @@ set -euo pipefail
 # ── MARKAI VPS Redeploy Script ──────────────────────────────────────
 # Sanctioned invocation: the GitHub "Deploy" workflow, which SSHes in as
 # the "deploy" user and runs the sudoers-whitelisted entry point
-# /usr/local/bin/markai-deploy. That entry point is provisioned server-side;
-# whether it is a sanitizing wrapper or a plain symlink to this file is NOT
-# verifiable from this repo (N-20) — so THIS script validates its own argv
-# and stays safe under either shape. Manual root runs are break-glass only —
-# see VPS_CONNECTION_GUIDE.md for the exact form.
+# /usr/local/bin/markai-deploy. Verified on the VPS 2026-08-22 (closes N-20):
+# that entry point is a sanitizing wrapper — it hex-validates its single
+# optional argument, exports it as EXPECTED_SHA, and execs this script with
+# NO argv. THIS script still validates its own argv as a redundant layer.
+# Manual root runs are break-glass only — see VPS_CONNECTION_GUIDE.md.
 #
 # Arguments (no flags accepted — anything starting with "-" is rejected):
 #   <sha>  optional, at most one: a hex git SHA (7-40 chars). Abort unless
