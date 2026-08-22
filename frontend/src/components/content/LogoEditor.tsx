@@ -15,7 +15,7 @@
  *  - the Save (✓) / Cancel (✕) buttons commit or discard
  *  - Escape also cancels
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Move, RefreshCw, Layers, Grid3x3, Type, Check, X, Tag } from "lucide-react";
 
 export interface LogoPlacement {
@@ -61,10 +61,9 @@ interface LogoEditorProps {
   onCancel: () => void;
 }
 
-// Server text-card font sizes are 3.0% / 1.9% of image width — mirror them
-// so the editor preview matches the final PIL render proportionally.
+// Server text-card font size is 3.0% of image width — mirror it so the
+// editor preview matches the final PIL render proportionally.
 const FONT_LARGE_FRAC = 0.03;
-const FONT_SMALL_FRAC = 0.019;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -105,7 +104,6 @@ export function LogoEditor({
   productLogoUrl,
   productLogoUrls,
   textLine1,
-  textLine2,
   initial,
   logos,
   initialVariant,
@@ -235,12 +233,15 @@ export function LogoEditor({
 
   // Logo variant (dark = white logo, light = dark logo, …). The reverse button
   // cycles only through these, in this order — watermark/secondary excluded.
-  const VARIANT_ORDER = ["primary", "dark", "light", "icon"];
-  const variantKeys = logos
-    ? (VARIANT_ORDER
-        .map((want) => Object.keys(logos).find((k) => k.toLowerCase() === want))
-        .filter(Boolean) as string[])
-    : [];
+  // Memoized so cycleVariant's useCallback deps stay stable across renders.
+  const variantKeys = useMemo(() => {
+    const VARIANT_ORDER = ["primary", "dark", "light", "icon"];
+    return logos
+      ? (VARIANT_ORDER
+          .map((want) => Object.keys(logos).find((k) => k.toLowerCase() === want))
+          .filter(Boolean) as string[])
+      : [];
+  }, [logos]);
   const [variant, setVariant] = useState<string>(
     initialVariant && variantKeys.includes(initialVariant)
       ? initialVariant
@@ -372,7 +373,6 @@ export function LogoEditor({
 
   const logoWpx = dims.w * logoScale;
   const fontLargePx = Math.max(8, dims.w * FONT_LARGE_FRAC * textScale);
-  const fontSmallPx = Math.max(7, dims.w * FONT_SMALL_FRAC * textScale);
 
   const handleStyle: React.CSSProperties = {
     position: "absolute",

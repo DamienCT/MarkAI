@@ -10,8 +10,6 @@ caption appears" — the seams coincided with the old per-shot captions.
 import asyncio
 import subprocess
 
-import pytest
-
 import workflows.video.nodes as nodes
 from workflows.video.nodes import (
     _MAX_SHOT_MATCH_DB,

@@ -48,7 +48,7 @@ interface PausedAgentRun {
 }
 
 export default function ApprovalsPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("editor");
+  useRequireRole("editor"); // redirects unauthorized users as a side effect
   const { data: session } = useSession();
   const [approvals, setApprovals] = useState<ApprovalWithExtra[]>([]);
   const [loading, setLoading] = useState(true);

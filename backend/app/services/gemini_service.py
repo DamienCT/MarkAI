@@ -7,7 +7,6 @@ Product images themselves are sourced from the WEB (real photos, never AI-genera
 """
 
 import logging
-import re
 from io import BytesIO
 from typing import Any
 

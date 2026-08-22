@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, apiUrl, isAuthError } from "@/lib/api";
-import { formatDate, formatDateTime, statusColor } from "@/lib/utils";
+import { formatDate, statusColor } from "@/lib/utils";
 import {
   Card,
   CardContent,
@@ -24,7 +24,6 @@ import { ReportCharts } from "@/components/intelligence/ReportCharts";
 import {
   ArrowLeft,
   Clock,
-  Zap,
   AlertTriangle,
   Users,
   Target,
@@ -50,7 +49,6 @@ import {
   ChevronDown,
   ChevronUp,
   StickyNote,
-  Loader2,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -388,9 +386,6 @@ export default function ReportPage() {
 
   const displayName = formatAgentType(report.agent_type);
   const needsReportSuffix = report.agent_type === "research";
-  const reportTitle = `${displayName}${needsReportSuffix ? " Report" : ""}${
-    report.brand_name ? ` \u2014 ${report.brand_name}` : ""
-  }`;
 
   const isResearch = agentType === "research";
   const isStrategy = agentType === "strategy";

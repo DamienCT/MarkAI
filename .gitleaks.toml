@@ -1,0 +1,36 @@
+# Gitleaks config for the CI secrets gate (.github/workflows/ci.yml,
+# "secrets-scan" job). Extends the FULL default ruleset — nothing here weakens
+# detection of real credentials.
+#
+# Every allowlist entry below is a false positive that was verified by hand
+# (2026-08-22) and says why it is safe. Rules for adding entries:
+#   - NEVER allowlist real env paths (.env, .env.production, deploy configs).
+#   - Scope new entries to the exact fake value or the single example/test
+#     file that carries it — no directory globs.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Verified false positives: published test vectors, deliberate fakes in redaction tests, docs prose"
+paths = [
+    # X's OAuth 1.0a "Creating a signature" worked example (docs.x.com) —
+    # publicly documented values the signature test asserts byte-for-byte.
+    '''backend/tests/test_publisher_x\.py''',
+    # Deliberately fake tokens that exist so tests can prove the log/URL
+    # redactor strips them.
+    '''backend/tests/test_redact_secrets\.py''',
+]
+# These regexes match the detected SECRET value (regexTarget defaults to
+# "secret"), so each entry suppresses exactly one known-fake string.
+regexes = [
+    # Placeholder bearer value in the legacy n8n build doc's example curl
+    # (docs/build-files/MARKAI-n8n-Workflows-v2.md).
+    '''your-header-auth-value''',
+    # Model name in docs/AI_SERVER_PROGRAM.md prose that follows the word
+    # "token" and trips generic-api-key.
+    '''FLUX\.2-klein-4B''',
+    # Audit-report wording ("… placeholder/default state …") in
+    # MARKAI_COMPREHENSIVE_AUDIT_AND_ROADMAP_2026-08-21.md.
+    '''placeholder/default''',
+]

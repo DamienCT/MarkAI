@@ -14,41 +14,30 @@ import { useRequireRole } from "@/lib/hooks";
 import { statusColor, formatRelativeTime } from "@/lib/utils";
 import type { Adaptation } from "@/types";
 
-// The backend lifts the JSON-encoded adaptation_notes envelope (tier,
-// confidence, data) into top-level response keys — tier is numeric 1..3.
-type LearningAdaptation = Omit<Adaptation, "tier" | "confidence_score"> & {
-  tier?: number | string;
-  confidence?: number;
-  confidence_score?: number;
-  data?: Record<string, unknown> | null;
-};
-
 const TIER_LABELS: Record<number, "post" | "campaign" | "strategy"> = {
   1: "post", // low risk: timing, hashtags, minor caption tweaks
   2: "campaign", // medium risk: tone shifts, targeting, format changes
   3: "strategy", // major: pillar restructuring, platform strategy
 };
 
-function tierName(a: LearningAdaptation): "post" | "campaign" | "strategy" {
-  if (typeof a.tier === "number") return TIER_LABELS[a.tier] ?? "campaign";
-  if (a.tier === "post" || a.tier === "campaign" || a.tier === "strategy") return a.tier;
-  return "campaign";
+function tierName(a: Adaptation): "post" | "campaign" | "strategy" {
+  return (typeof a.tier === "number" ? TIER_LABELS[a.tier] : undefined) ?? "campaign";
 }
 
-function confidenceOf(a: LearningAdaptation): number {
-  const c = a.confidence ?? a.confidence_score;
+function confidenceOf(a: Adaptation): number {
+  const c = a.confidence;
   return typeof c === "number" && !Number.isNaN(c) ? c : 0.5;
 }
 
 // Rows still awaiting a human decision (mirrors the backend's CAS guard).
-function isDecidable(a: LearningAdaptation): boolean {
+function isDecidable(a: Adaptation): boolean {
   return a.status === "proposed" || a.status === "auto_applied";
 }
 
 export default function LearningPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("editor");
+  useRequireRole("editor"); // redirects unauthorized users as a side effect
   const { data: session } = useSession();
-  const [adaptations, setAdaptations] = useState<LearningAdaptation[]>([]);
+  const [adaptations, setAdaptations] = useState<Adaptation[]>([]);
   const [loading, setLoading] = useState(true);
   const [bulkApplying, setBulkApplying] = useState(false);
 
@@ -63,7 +52,7 @@ export default function LearningPage() {
 
     async function fetchAdaptations() {
       try {
-        const data = await api.get<LearningAdaptation[]>("/api/v1/learning/adaptations", { limit: 50 }, { signal });
+        const data = await api.get<Adaptation[]>("/api/v1/learning/adaptations", { limit: 50 }, { signal });
         setAdaptations(data);
       } catch (err) {
         // Session expiry: the sign-in redirect is already underway — don't
@@ -255,9 +244,9 @@ export default function LearningPage() {
                       <div className="flex items-center justify-between">
                         <div>
                           <CardTitle className="text-base">
-                            {adaptation.category || `Tier ${typeof adaptation.tier === "number" ? adaptation.tier : 2} recommendation`}
+                            {`Tier ${typeof adaptation.tier === "number" ? adaptation.tier : 2} recommendation`}
                           </CardTitle>
-                          <CardDescription>{adaptation.description || adaptation.adapted_text}</CardDescription>
+                          <CardDescription>{adaptation.adapted_text}</CardDescription>
                         </div>
                         <div className="flex items-center gap-2">
                           <Badge variant="outline">{Math.round(confidenceOf(adaptation) * 100)}% confidence</Badge>
@@ -299,16 +288,6 @@ export default function LearningPage() {
                         </div>
                       )}
 
-                      {adaptation.evidence && adaptation.evidence.length > 0 && (
-                        <div className="mb-4">
-                          <p className="text-xs font-medium text-muted-foreground mb-1">Evidence:</p>
-                          <ul className="text-xs text-muted-foreground space-y-1">
-                            {adaptation.evidence.map((e, i) => (
-                              <li key={i}>- {e}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-muted-foreground">{formatRelativeTime(adaptation.created_at)}</span>
                         {canDecide && isDecidable(adaptation) && (

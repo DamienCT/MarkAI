@@ -22,7 +22,6 @@ Two independent bugs produced that, and neither was visible in a log line:
 
 import inspect
 
-import pytest
 from PIL import Image
 
 from shared.product_swap import (

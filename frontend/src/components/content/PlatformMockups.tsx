@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { Monitor, Smartphone } from "lucide-react";
+import React from "react";
+import { Smartphone } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";

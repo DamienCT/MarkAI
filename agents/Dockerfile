@@ -15,11 +15,15 @@ RUN apt-get update && \
     && apt-get update && ACCEPT_EULA=Y apt-get install -y msodbcsql17 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
+# P0-12: install the locked dependency set first (uv-generated universal
+# lock, see requirements.lock), then the package itself without re-resolving.
+COPY pyproject.toml requirements.lock ./
+RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
+
 COPY shared/ shared/
 COPY workflows/ workflows/
 COPY worker.py .
-RUN pip install --no-cache-dir --prefix=/install .
+RUN pip install --no-cache-dir --prefix=/install --no-deps .
 
 # Stage 2: Runtime (slim — no build-essential)
 FROM python:3.13-slim

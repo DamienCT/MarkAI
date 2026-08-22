@@ -302,7 +302,6 @@ class TestEveryAnchorGetsTheSwap:
         seen = {"swaps": []}
 
         async def fake_generate(prompt, **kw):
-            n = len(seen["swaps"])  # unused, keeps signature honest
             return "data:image/png;base64,aGk="
 
         async def fake_swap(state, data):

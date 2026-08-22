@@ -15,8 +15,6 @@ Everything measured here came off a rendered card:
     under a wordmark that already carries one.
 """
 
-import pytest
-
 from workflows.video import nodes
 
 PALETTE = {

@@ -41,7 +41,7 @@ const FALLBACK_CHANNELS: { id: string; label: string }[] = [
 ];
 
 export default function ProvidersPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("admin");
+  useRequireRole("admin"); // redirects unauthorized users as a side effect
   const [categories, setCategories] = useState<AIModelCategory[]>([]);
   const [modelsByCategory, setModelsByCategory] = useState<Record<string, AIModel[]>>({});
   const [loading, setLoading] = useState(true);

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { toast } from "sonner";
 import { Bell, LogOut, Moon, Sun, User, Check } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -91,14 +92,18 @@ export function Header({ title, breadcrumbs }: HeaderProps) {
   }, [fetchNotifications]);
 
   const handleMarkAllRead = async () => {
+    // Optimistic clear with rollback (UX-18): if the API call fails, restore
+    // the list instead of leaving the badge lying about the server state.
+    const previousNotifications = notifications;
+    const previousUnreadCount = unreadCount;
+    setNotifications([]);
+    setUnreadCount(0);
     try {
       await api.post("/api/v1/notifications/mark-read");
-      setNotifications([]);
-      setUnreadCount(0);
     } catch {
-      // Silently fail — clear local state anyway so the UI feels responsive
-      setNotifications([]);
-      setUnreadCount(0);
+      setNotifications(previousNotifications);
+      setUnreadCount(previousUnreadCount);
+      toast.error("Failed to mark notifications as read");
     }
   };
 

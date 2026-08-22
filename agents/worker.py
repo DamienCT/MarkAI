@@ -291,6 +291,108 @@ async def _heartbeat_loop() -> None:
         await _heartbeat_once()
 
 
+# ── Checkpoint retention ─────────────────────────────────────────────────
+# The durable HITL checkpointer (shared.checkpointer, AsyncPostgresSaver)
+# writes checkpoint rows for every checkpointed strategy/adaptation run and
+# langgraph never prunes them, so the tables grow without bound. This sweep
+# deletes the rows of runs that reached a terminal status long enough ago
+# that no resume can ever need them (thread_id = agent run id).
+CHECKPOINT_RETENTION_DAYS = 14
+CHECKPOINT_SWEEP_INTERVAL_SECONDS = 24 * 60 * 60
+#: Delay before the first sweep. Push-to-main auto-deploys make worker
+#: restarts frequent — a loop that slept a full day before its first pass
+#: could starve forever, so the first sweep runs shortly after startup.
+CHECKPOINT_SWEEP_STARTUP_DELAY_SECONDS = 120
+_CHECKPOINT_SWEEP_BATCH = 200  # thread_ids per SELECT
+_CHECKPOINT_SWEEP_MAX_BATCHES = 25  # bound one sweep's work; the rest waits a day
+
+#: The three data tables langgraph-checkpoint-postgres 3.1.2 creates
+#: (verified against the installed package's MIGRATIONS in
+#: langgraph/checkpoint/postgres/base.py). ``checkpoints`` is deleted LAST:
+#: it drives the sweep's SELECT, so a thread whose delete dies partway is
+#: re-selected and finished on the next pass. ``checkpoint_migrations`` is
+#: the saver's own bookkeeping and is never touched.
+_CHECKPOINT_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
+
+
+async def _prune_checkpoints_once() -> int:
+    """Delete checkpoint rows for long-terminal runs; return threads pruned.
+
+    A thread is prunable when its ``agent_runs`` row is terminal
+    (completed/failed/cancelled) and finished more than
+    ``CHECKPOINT_RETENTION_DAYS`` ago. Per-thread try/except — one bad row
+    must not stop the rest — and per-batch pagination so a large backlog is
+    chewed in bounded bites. A pass that prunes nothing stops the sweep
+    (every remaining candidate just failed; hammering them again the same
+    day only repeats the errors).
+    """
+    total = 0
+    for _ in range(_CHECKPOINT_SWEEP_MAX_BATCHES):
+        rows = await execute_query(
+            "SELECT DISTINCT c.thread_id FROM checkpoints c "
+            "JOIN agent_runs r ON CAST(r.id AS text) = c.thread_id "
+            "WHERE r.status IN ('completed', 'failed', 'cancelled') "
+            "AND r.completed_at IS NOT NULL "
+            f"AND r.completed_at < NOW() - INTERVAL '{CHECKPOINT_RETENTION_DAYS} days' "
+            "LIMIT :batch",
+            {"batch": _CHECKPOINT_SWEEP_BATCH},
+        )
+        thread_ids = [str(r["thread_id"]) for r in rows]
+        if not thread_ids:
+            break
+        pruned_this_pass = 0
+        for tid in thread_ids:
+            try:
+                for table in _CHECKPOINT_TABLES:
+                    # table names come from the module constant above, never
+                    # from data — the only interpolation into this statement
+                    await execute_update(
+                        f"DELETE FROM {table} WHERE thread_id = :tid",
+                        {"tid": tid},
+                    )
+                pruned_this_pass += 1
+            except Exception as exc:
+                logger.warning(
+                    "checkpoint retention: prune failed for thread %s: %s — "
+                    "the next sweep retries it",
+                    tid,
+                    exc,
+                )
+        total += pruned_this_pass
+        if pruned_this_pass == 0 or len(thread_ids) < _CHECKPOINT_SWEEP_BATCH:
+            break
+    return total
+
+
+async def _checkpoint_retention_loop() -> None:
+    """Background task: prune expired checkpoint rows once a day.
+
+    Failure to prune must never affect run processing: every sweep error is
+    swallowed and logged, and the loop just waits for the next day. When the
+    checkpointer fell back to MemorySaver (tables may not even exist) the
+    first SELECT fails and lands here too — same story, no harm.
+    """
+    delay = CHECKPOINT_SWEEP_STARTUP_DELAY_SECONDS
+    while True:
+        await asyncio.sleep(delay)
+        delay = CHECKPOINT_SWEEP_INTERVAL_SECONDS
+        try:
+            pruned = await _prune_checkpoints_once()
+            if pruned:
+                logger.info(
+                    "checkpoint retention: pruned %d thread(s) past the "
+                    "%d-day window",
+                    pruned,
+                    CHECKPOINT_RETENTION_DAYS,
+                )
+        except Exception as exc:
+            logger.warning(
+                "checkpoint retention sweep failed: %s — retrying on the "
+                "next daily sweep",
+                exc,
+            )
+
+
 def _extract_interrupts(result: Any) -> list[dict[str, Any]]:
     """JSON-safe interrupt payloads from a graph invoke result ([] = none).
 
@@ -801,10 +903,6 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
         # product placeholder and Gemini swaps the real product back in.
         product_image_url: str | None = None
         product_name = ""
-        # The swap's guard allow-lists the vendor's own wordmark, so a
-        # faithful pack is not reported as invented copy. Regen resolved the
-        # vendor for the logo overlay but never passed it to the swap.
-        product_vendor = ""
         cal_channel = ""
         # Resolve the vendor (manufacturer) logo from the product's vendor_name
         # so posts generated BEFORE the vendor-logo feature pick it up on regen,
@@ -836,7 +934,6 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
                 if not product_name:
                     product_name = product.get("name", "")
                 _vendor = (product.get("vendor_name") or "").strip()
-                product_vendor = _vendor
                 if _vendor:
                     _vlogos = brand_guidelines.get("vendor_logos", {})
                     _ventry = _vlogos.get(_vendor) if isinstance(_vlogos, dict) else None
@@ -1059,7 +1156,7 @@ async def _handle_image_regeneration(payload: dict[str, Any]) -> None:
 
                 # Download and convert logo
                 logo_png = None
-                for try_label in [chosen_label] + [l for l in available_logos if l != chosen_label]:
+                for try_label in [chosen_label] + [lbl for lbl in available_logos if lbl != chosen_label]:
                     try:
                         from shared.config import media_auth_headers as _mah
 
@@ -1647,7 +1744,7 @@ async def _handle_logo_rebrand(payload: dict[str, Any]) -> None:
                     chosen_label = list(available_logos.keys())[0]
 
             logo_png = None
-            for try_label in [chosen_label] + [l for l in available_logos if l != chosen_label]:
+            for try_label in [chosen_label] + [lbl for lbl in available_logos if lbl != chosen_label]:
                 try:
                     from shared.config import media_auth_headers as _mah
 
@@ -3520,9 +3617,13 @@ async def main() -> None:
     # ── Lease heartbeats (AG-11/BE-34) ──────────────────────────────────
     heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
+    # ── Daily checkpoint retention sweep ────────────────────────────────
+    retention_task = asyncio.create_task(_checkpoint_retention_loop())
+
     logger.info("Worker started — listening on %d subjects", len(SUBSCRIPTIONS))
     await consumer.wait_for_shutdown()
     heartbeat_task.cancel()
+    retention_task.cancel()
     logger.info("Worker stopped.")
 
 

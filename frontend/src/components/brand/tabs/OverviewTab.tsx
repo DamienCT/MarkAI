@@ -19,17 +19,6 @@ interface ChannelConfig {
   [key: string]: unknown;
 }
 
-const CHANNEL_ICON_STYLED: Record<string, { icon: React.ReactNode; color: string }> = {
-  instagram: { icon: <span className="h-4 w-4 inline-block" />, color: "bg-linear-to-br from-purple-500 via-pink-500 to-orange-400 text-white" },
-  facebook: { icon: <span className="h-4 w-4 inline-block" />, color: "bg-[#1877F2] text-white" },
-  linkedin: { icon: <span className="h-4 w-4 inline-block" />, color: "bg-[#0A66C2] text-white" },
-  youtube: { icon: <span className="h-4 w-4 inline-block" />, color: "bg-[#FF0000] text-white" },
-  tiktok: { icon: <span className="h-4 w-4 inline-block" />, color: "bg-black text-white dark:bg-white dark:text-black" },
-  x: { icon: <span className="h-4 w-4 inline-block" />, color: "bg-black text-white dark:bg-white dark:text-black" },
-  website_blog: { icon: <span className="h-4 w-4 inline-block" />, color: "bg-emerald-600 text-white" },
-  teams: { icon: <span className="h-4 w-4 inline-block" />, color: "bg-[#6264A7] text-white" },
-};
-
 // We accept the styled icons from the parent so we get proper lucide icons
 export interface OverviewTabProps {
   brand: Brand;

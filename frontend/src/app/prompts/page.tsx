@@ -37,7 +37,7 @@ interface AIModelOption {
 }
 
 export default function PromptsPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("manager");
+  useRequireRole("manager"); // redirects unauthorized users as a side effect
   const [prompts, setPrompts] = useState<PromptVersion[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -79,7 +79,17 @@ export default function PromptsPage() {
     }
   };
 
-  const weightDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One debounce timer per prompt id (FE-10): a single shared timer dropped
+  // the first PATCH whenever two different weights changed within 300ms.
+  const weightDebounceRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    const timers = weightDebounceRef.current;
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
+    };
+  }, []);
 
   const handleWeightChange = useCallback(async (id: string, weight: number) => {
     try {
@@ -99,11 +109,17 @@ export default function PromptsPage() {
     setPrompts((prev) =>
       prev.map((p) => (p.id === id ? { ...p, a_b_weight: weight } : p))
     );
-    // Debounce the API call by 300ms
-    if (weightDebounceRef.current) clearTimeout(weightDebounceRef.current);
-    weightDebounceRef.current = setTimeout(() => {
-      handleWeightChange(id, weight);
-    }, 300);
+    // Debounce the API call by 300ms, per record
+    const timers = weightDebounceRef.current;
+    const existing = timers.get(id);
+    if (existing) clearTimeout(existing);
+    timers.set(
+      id,
+      setTimeout(() => {
+        timers.delete(id);
+        handleWeightChange(id, weight);
+      }, 300)
+    );
   }, [handleWeightChange]);
 
   const handleToggleActive = async (id: string, isActive: boolean) => {

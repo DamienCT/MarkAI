@@ -47,6 +47,16 @@ class TestCategorizeModel:
         cats = _categorize_model("gpt-image-1")
         assert "image" in cats
 
+    def test_veo_is_video(self):
+        cats = _categorize_model("veo-3.1-fast-generate-preview")
+        assert "video" in cats
+
+    def test_sora_is_never_a_video_model(self):
+        # Locked decision: never Sora (OpenAI Videos API dies 2026-09-24).
+        # A sora-* id showing up in a provider catalog must not be
+        # classified as a usable video model.
+        assert _categorize_model("sora-2-pro") == []
+
 
 class TestDiscoverModelsResponse:
     """Validate the response schema includes diagnostic fields."""

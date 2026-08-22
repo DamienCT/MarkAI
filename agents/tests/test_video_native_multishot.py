@@ -30,10 +30,6 @@ from shared.video import (
     VideoResult,
 )
 
-# Bound at import time, BEFORE the conftest fixture rebinds the module
-# attribute to the always-False stub — these tests probe the real function.
-_real_forge_probe = shared_video.forge_supports_multishot
-
 from tests.test_video_multishot import _conformant_info, _Harness, _state
 from tests.test_video_providers import FakeClient, FakeResponse
 from workflows.video.nodes import (
@@ -47,6 +43,10 @@ from workflows.video.nodes import (
     _uniform_grade_chain,
     render_video,
 )
+
+# Bound at import time, BEFORE the conftest fixture rebinds the module
+# attribute to the always-False stub — these tests probe the real function.
+_real_forge_probe = shared_video.forge_supports_multishot
 
 
 # ── Prose: the native branch's per-shot prompt field ───────────────────────
@@ -768,7 +768,7 @@ class TestNativeGradeAndCaptions:
     def test_one_measurement_one_uniform_grade_never_per_shot(
         self, monkeypatch
     ):
-        h = _NativeHarness(monkeypatch)
+        _NativeHarness(monkeypatch)
         seen = self._spy_burn(monkeypatch)
         measured = []
 
@@ -801,7 +801,7 @@ class TestNativeGradeAndCaptions:
         # The model renders cross-dissolves, so scdet finding NOTHING is the
         # normal case: planned windows stand, nudged off the dissolve
         # boundaries for caption entry only.
-        h = _NativeHarness(monkeypatch)
+        _NativeHarness(monkeypatch)
         seen = self._spy_burn(monkeypatch)
         monkeypatch.setattr(video_nodes, "_detect_cuts", lambda path: [])
         result = asyncio.run(render_video(_state([4] * 6)))
@@ -817,7 +817,7 @@ class TestNativeGradeAndCaptions:
         assert "detected_cuts" not in meta
 
     def test_a_detected_cut_snaps_its_boundary(self, monkeypatch):
-        h = _NativeHarness(monkeypatch)
+        _NativeHarness(monkeypatch)
         seen = self._spy_burn(monkeypatch)
         monkeypatch.setattr(video_nodes, "_detect_cuts", lambda path: [5.4])
         result = asyncio.run(render_video(_state([4] * 6)))

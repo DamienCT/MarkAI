@@ -1420,39 +1420,9 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     if target_months:
         logger.info("Targeted re-plan for brand %s — months=%s", brand_id, sorted(target_months))
 
-    # Build cadence string from strategy so the LLM respects weekly post counts.
-    # Try structured cadence data first, then fall back to extracting from strategy document.
+    # Structured cadence from strategy — consumed by the per-channel cadence
+    # lookup further down when day slots are scheduled.
     cadence = strategy.get("cadence", {})
-    cadence_lines = []
-    for ch in enabled_channels:
-        ch_cadence = cadence.get(ch, {}) if isinstance(cadence, dict) else {}
-        if isinstance(ch_cadence, dict):
-            posts_per_week = ch_cadence.get("posts_per_week", ch_cadence.get("frequency", ""))
-        elif isinstance(ch_cadence, (int, float)):
-            posts_per_week = ch_cadence
-        else:
-            posts_per_week = str(ch_cadence) if ch_cadence else ""
-        if posts_per_week:
-            cadence_lines.append(f"- {ch}: {posts_per_week} posts per week")
-
-    # If structured cadence is incomplete, extract from strategy document text
-    if len(cadence_lines) < len(enabled_channels) and strategy_document:
-        import re as _re
-        for ch in enabled_channels:
-            if any(ch in line for line in cadence_lines):
-                continue  # Already have this channel
-            # Search for patterns like "Instagram\n5 posts per week" or "instagram: 3 posts/week"
-            pattern = _re.compile(
-                rf"{ch}[:\s\n]*(\d+)\s*posts?\s*(?:per|/)\s*week",
-                _re.IGNORECASE,
-            )
-            match = pattern.search(strategy_document)
-            if match:
-                cadence_lines.append(f"- {ch}: {match.group(1)} posts per week")
-            else:
-                cadence_lines.append(f"- {ch}: 3 posts per week")  # Safe default
-
-    cadence_instruction = "\n".join(cadence_lines) if cadence_lines else "3 posts per week per channel."
 
     # Load real products ONCE per planning run for product-aware planning.
     # Keep the FULL catalog — each batch is shown a deterministic rotating
@@ -1460,8 +1430,6 @@ async def _generate_calendar_inner(state: PlanningState) -> dict[str, Any]:
     # over the horizon instead of repeating only the first few products.
     products = await get_products(brand_id)
     catalog_names = [str(p["name"]).strip() for p in products if p.get("name")]
-
-    channels_str = ", ".join(enabled_channels)
 
     def _extract_month_strategy(month_label: str) -> str:
         """Extract the relevant month/quarter section from the strategy document.

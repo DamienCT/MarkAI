@@ -69,8 +69,10 @@ def _categorize_model(model_id: str) -> list[str]:
     if re.match(r"^whisper-", mid) or "transcribe" in mid:
         categories.append("stt")
 
-    # Video
-    if re.match(r"^(sora-|video-|veo-|ltx-|wan)", mid):
+    # Video. sora- is deliberately absent: the Sora line is discontinued
+    # (OpenAI Videos API shuts down 2026-09-24, and the locked decision is
+    # never-Sora) — a sora-* id must not be classified as a usable video model.
+    if re.match(r"^(video-|veo-|ltx-|wan)", mid):
         categories.append("video")
 
     # Moderation
@@ -361,7 +363,7 @@ async def discover_models() -> dict[str, int]:
     # Count total models in DB after discovery
     async with async_session_factory() as db:
         count_result = await db.execute(
-            select(func.count()).select_from(AIModel).where(AIModel.is_available == True)
+            select(func.count()).select_from(AIModel).where(AIModel.is_available.is_(True))
         )
         total_in_db = count_result.scalar() or 0
 

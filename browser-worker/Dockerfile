@@ -5,8 +5,11 @@ WORKDIR /build
 
 RUN pip install --no-cache-dir --upgrade pip
 
-COPY pyproject.toml .
-RUN pip install --no-cache-dir --prefix=/install .
+# P0-12: install the locked dependency set first (uv-generated universal
+# lock, see requirements.lock), then the package itself without re-resolving.
+COPY pyproject.toml requirements.lock ./
+RUN pip install --no-cache-dir --prefix=/install -r requirements.lock && \
+    pip install --no-cache-dir --prefix=/install --no-deps .
 
 # Stage 2: Runtime
 FROM python:3.13-slim

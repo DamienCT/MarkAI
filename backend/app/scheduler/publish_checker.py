@@ -300,14 +300,29 @@ async def check_due_content() -> None:
                 )
 
         for calendar_item in fresh_items:
-            # Kill switch — re-checked before every dispatch so an operator
-            # flip mid-tick stops the remaining items (they stay scheduled).
-            if not await is_publishing_enabled(db):
+            # Kill switch — re-checked before every dispatch with the item's
+            # brand/channel scopes so an operator flip mid-tick takes effect.
+            # A GLOBAL engage freezes the rest of the tick; a scoped flag
+            # only skips the items it covers (they stay scheduled).
+            if not await is_publishing_enabled(
+                db,
+                brand_id=calendar_item.brand_id,
+                channel=calendar_item.channel,
+            ):
+                if not await is_publishing_enabled(db):
+                    logger.warning(
+                        "Publishing kill switch engaged mid-tick — leaving "
+                        "remaining due items scheduled"
+                    )
+                    break
                 logger.warning(
-                    "Publishing kill switch engaged mid-tick — leaving "
-                    "remaining due items scheduled"
+                    "Publishing disabled for brand %s / channel %s — leaving "
+                    "calendar item %s scheduled",
+                    calendar_item.brand_id,
+                    calendar_item.channel,
+                    calendar_item.id,
                 )
-                break
+                continue
 
             # Get the current content version for this calendar item
             content_result = await db.execute(

@@ -40,6 +40,33 @@ function validateRuntimeEnv(): void {
   );
 }
 
+// Backend origin for the report-only CSP below — same build-time env var the
+// client api uses (src/lib/api.ts).
+function backendOrigin(): string {
+  try {
+    return new URL(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").origin;
+  } catch {
+    return "http://localhost:8000";
+  }
+}
+
+// Report-only CSP baseline (FE-06): browsers log violations to the console
+// without blocking anything. Enforcement (renaming the header to
+// Content-Security-Policy, tightening the unsafe-* script allowances) graduates
+// only after a review period of the violation reports.
+const CSP_REPORT_ONLY = [
+  "default-src 'self'",
+  // Next.js currently requires unsafe-inline/unsafe-eval for its runtime.
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  // Media proxy + logo/render previews use blob:/data: plus the backend origin.
+  `img-src 'self' blob: data: ${backendOrigin()}`,
+  `media-src 'self' blob: data: ${backendOrigin()}`,
+  "font-src 'self' data:",
+  `connect-src 'self' ${backendOrigin()}`,
+  "frame-ancestors 'none'",
+].join("; ");
+
 const nextConfig: NextConfig = {
   output: "standalone",
   images: {
@@ -69,6 +96,7 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          { key: "Content-Security-Policy-Report-Only", value: CSP_REPORT_ONLY },
         ],
       },
     ];

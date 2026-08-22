@@ -28,7 +28,6 @@ pouch dominated four shots of a rendered reel.
 real words. Nothing an allow-list or a depth-of-field instruction can excuse.
 """
 
-import asyncio
 from io import BytesIO
 
 import pytest

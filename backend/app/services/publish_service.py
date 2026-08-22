@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,22 +26,62 @@ logger = logging.getLogger(__name__)
 # (Meta / LinkedIn). Long enough to cover slow container polls + retries.
 MEDIA_URL_SIGN_TTL = 2 * 60 * 60
 
-# system_flags key for the global publishing kill switch.
+# system_flags key for the global publishing kill switch. Scoped variants
+# (see ``kill_switch_key``) suffix it with ``:brand:<uuid>`` / ``:channel:<name>``.
 PUBLISHING_KILL_SWITCH_KEY = "publishing_enabled"
 
 
 class PublishingDisabledError(Exception):
-    """Raised when the global publishing kill switch is engaged."""
+    """Raised when a publishing kill switch (any scope) is engaged."""
 
     pass
 
 
-async def _read_publishing_flag(db: AsyncSession) -> bool:
-    result = await db.execute(
-        text("SELECT value FROM system_flags WHERE key = :key"),
-        {"key": PUBLISHING_KILL_SWITCH_KEY},
-    )
-    value = result.scalar_one_or_none()
+def kill_switch_key(
+    brand_id: uuid.UUID | str | None = None, channel: str | None = None
+) -> str:
+    """The ``system_flags`` key for ONE kill-switch scope.
+
+    ``brand_id`` → ``publishing_enabled:brand:<uuid>``; ``channel`` →
+    ``publishing_enabled:channel:<channel>``; neither → the global key.
+    """
+    if brand_id is not None:
+        return f"{PUBLISHING_KILL_SWITCH_KEY}:brand:{brand_id}"
+    if channel:
+        return f"{PUBLISHING_KILL_SWITCH_KEY}:channel:{channel}"
+    return PUBLISHING_KILL_SWITCH_KEY
+
+
+def kill_switch_scope_keys(
+    brand_id: uuid.UUID | str | None = None, channel: str | None = None
+) -> list[str]:
+    """Every flag key that gates a dispatch for (brand, channel).
+
+    Global first, then the brand and channel scopes when given — ALL of them
+    must be enabled (absent = enabled) for the dispatch to proceed.
+    """
+    keys = [PUBLISHING_KILL_SWITCH_KEY]
+    if brand_id is not None:
+        keys.append(kill_switch_key(brand_id=brand_id))
+    if channel:
+        keys.append(kill_switch_key(channel=channel))
+    return keys
+
+
+def known_channels() -> set[str]:
+    """Channel names with a registered publisher — the valid scope values
+    for per-channel kill-switch flags."""
+    from app.services.publishers.registry import _PUBLISHERS
+
+    return {channel for channel, _kind in _PUBLISHERS}
+
+
+def _flag_value_enabled(value: Any) -> bool:
+    """Decode one ``system_flags`` JSONB value into the enabled bool.
+
+    Absent (None) = enabled. A malformed string raises so the caller fails
+    CLOSED — mirrored by the display decode in ``api.v1.system._flag_enabled``.
+    """
     if value is None:
         return True  # flag absent = publishing enabled
     if isinstance(value, str):
@@ -50,17 +91,38 @@ async def _read_publishing_flag(db: AsyncSession) -> bool:
     return True
 
 
-async def is_publishing_enabled(db: AsyncSession | None = None) -> bool:
-    """Global publishing kill switch (``system_flags`` key ``publishing_enabled``).
+async def _read_publishing_flags(db: AsyncSession, keys: list[str]) -> bool:
+    for key in keys:
+        result = await db.execute(
+            text("SELECT value FROM system_flags WHERE key = :key"),
+            {"key": key},
+        )
+        if not _flag_value_enabled(result.scalar_one_or_none()):
+            return False
+    return True
 
-    Absent flag = enabled. Any read error fails CLOSED (returns False) so a
-    broken/missing flags table can never allow an external post.
+
+async def is_publishing_enabled(
+    db: AsyncSession | None = None,
+    *,
+    brand_id: uuid.UUID | str | None = None,
+    channel: str | None = None,
+) -> bool:
+    """Publishing kill switch across every applicable scope.
+
+    Checks the global ``publishing_enabled`` flag plus, when given, the
+    per-brand (``publishing_enabled:brand:<uuid>``) and per-channel
+    (``publishing_enabled:channel:<channel>``) flags — ALL must be enabled.
+    Absent flags = enabled. Any read/decode error fails CLOSED (returns
+    False) so a broken flags table or malformed flag can never allow an
+    external post.
     """
+    keys = kill_switch_scope_keys(brand_id=brand_id, channel=channel)
     try:
         if db is not None:
-            return await _read_publishing_flag(db)
+            return await _read_publishing_flags(db, keys)
         async with async_session_factory() as session:
-            return await _read_publishing_flag(session)
+            return await _read_publishing_flags(session, keys)
     except Exception:
         logger.exception(
             "Could not read publishing kill switch — failing closed (no dispatch)"
@@ -324,12 +386,16 @@ async def publish_direct(
     None the channel/media combination is unsupported (no fallback exists)
     and the item is failed with an actionable error.
     """
-    # Global kill switch — checked immediately before any external effect.
-    # Raises (instead of recording a failed outcome) so callers can release
-    # the 'publishing' claim without marking the item failed.
-    if not await is_publishing_enabled(db):
+    # Kill switch (global + this item's brand/channel scopes) — checked
+    # immediately before any external effect. Raises (instead of recording a
+    # failed outcome) so callers can release the 'publishing' claim without
+    # marking the item failed.
+    if not await is_publishing_enabled(
+        db, brand_id=calendar_item.brand_id, channel=calendar_item.channel
+    ):
         raise PublishingDisabledError(
-            "Publishing kill switch is engaged — direct publish blocked"
+            "Publishing kill switch is engaged for this scope — "
+            "direct publish blocked"
         )
 
     channel = calendar_item.channel

@@ -5,7 +5,6 @@ import {
   Heart, MessageCircle, Send, Bookmark, Share2,
   ThumbsUp, MoreHorizontal, Globe, Repeat2, X, Youtube,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { sanitizeImageUrl } from "@/lib/utils";
 
 /** Image that opens a full-screen lightbox on click. Used by every channel
@@ -199,7 +198,7 @@ export function InstagramPreview({ brandName, brandHandle, caption, hashtags, im
   );
 }
 
-export function FacebookPreview({ brandName, brandHandle, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
+export function FacebookPreview({ brandName, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}
@@ -253,7 +252,7 @@ export function FacebookPreview({ brandName, brandHandle, caption, hashtags, ima
   );
 }
 
-export function LinkedInPreview({ brandName, brandHandle, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
+export function LinkedInPreview({ brandName, caption, hashtags, imageUrl, videoUrl, avatarUrl, compact, imageOverlay }: PreviewProps) {
   return (
     <div className="bg-white dark:bg-zinc-900 rounded-xl border shadow-sm max-w-[400px] mx-auto overflow-hidden">
       {/* Header */}

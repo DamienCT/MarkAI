@@ -229,7 +229,6 @@ export function WorkingStageTracker({
                 {steps.map((step, i) => {
                   const isCompleted = i < currentStepIndex;
                   const isCurrent = i === currentStepIndex;
-                  const isPending = i > currentStepIndex;
 
                   return (
                     <React.Fragment key={step.key}>

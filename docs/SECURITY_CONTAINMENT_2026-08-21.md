@@ -273,8 +273,16 @@ not mistaken for oversights:
 | Secret vault migration (references-in-DB, values in vault) | R-003 / P0-03 | Requires vault infrastructure + write-only credential APIs. Mitigation: rotation (§3), strip-at-read, redacted logging. |
 | Transactional outbox for dispatch/callback | R-007 | Requires schema + dispatcher rework. Mitigation: claim-before-dispatch, monotonic transitions, replay table, stuck-publishing sweep. |
 | Campaign aggregate / consistency boundary | R-023 | Domain remodel. No interim change. |
-| ~~Full durable HITL resume (`Command(resume)` rebuild)~~ **DONE 2026-08-22** | AG-cluster | Shipped: AsyncPostgresSaver durable checkpoints, `agent.resume.run` authenticated resume (approve/reject + feedback, revision loops capped at 2), worker leases/heartbeats, "Pending agent reviews" UI on the approvals page. |
+| ~~Full durable HITL resume (`Command(resume)` rebuild)~~ **DONE 2026-08-22** | AG-cluster / R-022 | Shipped: AsyncPostgresSaver durable checkpoints, `agent.resume.run` authenticated resume (approve/reject + feedback, revision loops capped at 2), worker leases/fencing (migration `0006_hitl_leases`) + heartbeats, "Pending agent reviews" UI on the approvals page. |
 | Full Alembic baseline regeneration | P0-09 | The repo keeps its documented split: `db/init.sql` is the fresh-install authority; hand-written convergence migrations (`0002`+) move existing DBs. `--autogenerate` is banned (N-16); `env.py` now guards against drops of unmodeled objects. |
+
+**Shipped 2026-08-22** (not deferrals — recorded here so the register reads
+current): Python lockfiles (`requirements.lock` in backend/agents/
+browser-worker/notifications, uv-compiled, lockfile-keyed CI caching);
+ruff at zero across all four Python trees with CI lint jobs per service;
+CI security gates (blocking `pip-audit` per lockfile + blocking gitleaks
+secrets scan with a verified-false-positive-only `.gitleaks.toml`) — the
+in-repo portion of R-047.
 
 Re-review trigger: any of these deferrals should be revisited before adding a
 second worker process, a second tenant, or external users.

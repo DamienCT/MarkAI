@@ -77,6 +77,11 @@ export default function BrandDetailPage() {
   const isFetchingRunsRef = useRef(false);
   const isFetchingActivationRef = useRef(false);
 
+  // Latest brand status for event handlers whose useCallback deps
+  // deliberately exclude `brand` — a plain closure would go stale and
+  // handleToggleContentFactory's "reset stuck activating" branch never fires.
+  const brandStatusRef = useRef<Brand["status"] | null>(null);
+
   const [brand, setBrand] = useState<Brand | null>(null);
   const [content, setContent] = useState<Content[]>([]);
   const [metrics, setMetrics] = useState<EngagementMetrics | null>(null);
@@ -131,6 +136,11 @@ export default function BrandDetailPage() {
   const [togglingFactory, setTogglingFactory] = useState(false);
   const [generatingContent, setGeneratingContent] = useState(false);
   const [contentItemsQueued, setContentItemsQueued] = useState(0);
+
+  // Keep brandStatusRef in sync with the latest brand status
+  useEffect(() => {
+    brandStatusRef.current = brand?.status ?? null;
+  }, [brand?.status]);
 
   // Abort previous requests and create new controller on each fetch cycle
   useEffect(() => {
@@ -313,8 +323,10 @@ export default function BrandDetailPage() {
     setTogglingFactory(true);
     try {
       if (turnOn) {
-        // Before calling activate, reset status if stuck in "activating"
-        if (brand?.status === "activating") {
+        // Before calling activate, reset status if stuck in "activating".
+        // Read via brandStatusRef: `brand` itself is not a dep of this
+        // useCallback, so a direct closure over it would be stale.
+        if (brandStatusRef.current === "activating") {
           await api.put(`/api/v1/brands/${brandId}`, { status: "onboarding" });
         }
         await api.post(`/api/v1/brands/${brandId}/activate`);

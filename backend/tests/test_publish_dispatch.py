@@ -396,7 +396,9 @@ async def test_checker_direct_path_marks_publishing_and_spawns_task(monkeypatch)
             _FakeResult([]),  # kill-switch read at sweep start (absent → enabled)
             _FakeResult([]),  # stuck-'publishing' sweep
             _FakeResult([calendar_item]),  # due items
-            _FakeResult([]),  # per-item kill-switch read
+            _FakeResult([]),  # per-item kill-switch read: global
+            _FakeResult([]),  # per-item kill-switch read: brand scope
+            _FakeResult([]),  # per-item kill-switch read: channel scope
             _FakeResult([content]),  # current content for the item
             _FakeResult([calendar_item.id]),  # CAS claim scheduled→publishing
         ]
@@ -408,7 +410,7 @@ async def test_checker_direct_path_marks_publishing_and_spawns_task(monkeypatch)
     await publish_checker.check_due_content()
 
     # The claim is an atomic compare-and-set: scheduled → publishing.
-    claim_params = session.executed[5].compile().params
+    claim_params = session.executed[7].compile().params
     assert "publishing" in claim_params.values()
     assert "scheduled" in claim_params.values()
     spawn.assert_called_once_with(calendar_item.id, content.id)
@@ -436,7 +438,9 @@ async def test_checker_spawns_direct_publish_for_every_channel(monkeypatch):
             _FakeResult([]),  # kill-switch read at sweep start
             _FakeResult([]),  # stuck-'publishing' sweep
             _FakeResult([calendar_item]),  # due items
-            _FakeResult([]),  # per-item kill-switch read
+            _FakeResult([]),  # per-item kill-switch read: global
+            _FakeResult([]),  # per-item kill-switch read: brand scope
+            _FakeResult([]),  # per-item kill-switch read: channel scope
             _FakeResult([content]),  # current content for the item
             _FakeResult([calendar_item.id]),  # CAS claim scheduled→publishing
         ]
@@ -447,7 +451,7 @@ async def test_checker_spawns_direct_publish_for_every_channel(monkeypatch):
 
     await publish_checker.check_due_content()
 
-    claim_params = session.executed[5].compile().params
+    claim_params = session.executed[7].compile().params
     assert "publishing" in claim_params.values()
     assert "scheduled" in claim_params.values()
     spawn.assert_called_once_with(calendar_item.id, content.id)

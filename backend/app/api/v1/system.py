@@ -16,7 +16,11 @@ from app.config import settings
 from app.deps import get_current_user, get_db
 from app.scheduler import scheduler
 from app.services import audit_service
-from app.services.publish_service import PUBLISHING_KILL_SWITCH_KEY
+from app.services.publish_service import (
+    PUBLISHING_KILL_SWITCH_KEY,
+    kill_switch_key,
+    known_channels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +156,40 @@ async def trigger_job(
 
 class PublishingKillSwitch(BaseModel):
     enabled: bool
+    # Optional scope — at most ONE of these. Neither = the global switch.
+    brand_id: uuid.UUID | None = None
+    channel: str | None = None
+
+
+def _validate_kill_switch_scope(
+    brand_id: uuid.UUID | None, channel: str | None
+) -> str:
+    """Resolve (and validate) a kill-switch scope to its system_flags key.
+
+    A typo'd channel would create a flag that never gates anything — the
+    operator would believe publishing is blocked while it is not — so
+    unknown channels are rejected outright.
+    """
+    if brand_id is not None and channel:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide brand_id or channel, not both",
+        )
+    if channel and channel not in known_channels():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown channel '{channel}' — valid channels: "
+                f"{', '.join(sorted(known_channels()))}"
+            ),
+        )
+    return kill_switch_key(brand_id=brand_id, channel=channel)
 
 
 def _flag_enabled(value) -> bool:
     """Decode a system_flags JSONB value into the enabled bool.
 
-    Must mirror publish_service._read_publishing_flag: on a malformed flag
+    Must mirror publish_service._flag_value_enabled: on a malformed flag
     the enforcement path fails CLOSED (dispatch blocked), so the display
     must report disabled too — never "enabled" while publishing is blocked.
     """
@@ -175,28 +207,63 @@ def _flag_enabled(value) -> bool:
 
 @router.get("/publishing-kill-switch")
 async def get_publishing_kill_switch(
+    brand_id: uuid.UUID | None = None,
+    channel: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Current state of the global publishing kill switch. Admin only."""
+    """Current state of the publishing kill switch. Admin only.
+
+    With ``brand_id`` or ``channel`` (at most one) the response describes
+    that scoped flag; without a scope it describes the global switch plus a
+    ``scoped`` list of every brand/channel flag currently set.
+    """
     if not role_has_access(current_user.role, "admin"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    key = _validate_kill_switch_scope(brand_id, channel)
 
     result = await db.execute(
         text(
             "SELECT value, updated_by, updated_at FROM system_flags "
             "WHERE key = :key"
         ),
-        {"key": PUBLISHING_KILL_SWITCH_KEY},
+        {"key": key},
     )
     row = result.first()
     if row is None:
-        return {"enabled": True, "updated_by": None, "updated_at": None}
-    return {
-        "enabled": _flag_enabled(row.value),
-        "updated_by": row.updated_by,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
+        state = {"enabled": True, "updated_by": None, "updated_at": None}
+    else:
+        state = {
+            "enabled": _flag_enabled(row.value),
+            "updated_by": row.updated_by,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    if key != PUBLISHING_KILL_SWITCH_KEY:
+        state["key"] = key
+        return state
+
+    # Global view also lists any scoped flags currently set.
+    scoped_result = await db.execute(
+        text(
+            "SELECT key, value, updated_by, updated_at FROM system_flags "
+            "WHERE key LIKE :prefix ORDER BY key"
+        ),
+        {"prefix": f"{PUBLISHING_KILL_SWITCH_KEY}:%"},
+    )
+    state["scoped"] = [
+        {
+            "key": scoped.key,
+            "enabled": _flag_enabled(scoped.value),
+            "updated_by": scoped.updated_by,
+            "updated_at": (
+                scoped.updated_at.isoformat() if scoped.updated_at else None
+            ),
+        }
+        for scoped in scoped_result.all()
+    ]
+    return state
 
 
 @router.put("/publishing-kill-switch")
@@ -206,18 +273,21 @@ async def set_publishing_kill_switch(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Engage/release the global publishing kill switch. Admin only.
+    """Engage/release the publishing kill switch. Admin only.
 
-    ``enabled=false`` blocks every external dispatch (the scheduler sweep AND
-    the direct channel publishers) until re-enabled. The change is
+    ``enabled=false`` blocks external dispatch until re-enabled — globally
+    by default, or only for one brand/channel when the payload carries a
+    ``brand_id`` or ``channel`` scope (at most one). The change is
     audit-logged with the acting user.
     """
     if not role_has_access(current_user.role, "admin"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    key = _validate_kill_switch_scope(payload.brand_id, payload.channel)
+
     old_result = await db.execute(
         text("SELECT value FROM system_flags WHERE key = :key"),
-        {"key": PUBLISHING_KILL_SWITCH_KEY},
+        {"key": key},
     )
     old_enabled = _flag_enabled(old_result.scalar_one_or_none())
 
@@ -229,26 +299,33 @@ async def set_publishing_kill_switch(
             "updated_by = EXCLUDED.updated_by, updated_at = NOW()"
         ),
         {
-            "key": PUBLISHING_KILL_SWITCH_KEY,
+            "key": key,
             "value": json.dumps({"enabled": payload.enabled}),
             "updated_by": current_user.email,
         },
     )
     await db.commit()
 
+    old_values = {"publishing_enabled": old_enabled}
+    new_values = {"publishing_enabled": payload.enabled}
+    if key != PUBLISHING_KILL_SWITCH_KEY:
+        old_values["scope"] = new_values["scope"] = key
     await audit_service.record_audit(
         action="update",
         entity_type="system",
         user_id=current_user.id,
-        old_values={"publishing_enabled": old_enabled},
-        new_values={"publishing_enabled": payload.enabled},
+        old_values=old_values,
+        new_values=new_values,
         request=request,
     )
     logger.warning(
-        "Publishing kill switch set to enabled=%s by %s",
+        "Publishing kill switch [%s] set to enabled=%s by %s",
+        key,
         payload.enabled,
         current_user.email,
     )
+    if key != PUBLISHING_KILL_SWITCH_KEY:
+        return {"enabled": payload.enabled, "key": key}
     return {"enabled": payload.enabled}
 
 

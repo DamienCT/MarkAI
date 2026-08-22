@@ -38,7 +38,7 @@ interface BrandChannelConfig {
 }
 
 export default function ContentStudioPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("editor");
+  useRequireRole("editor"); // redirects unauthorized users as a side effect
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"kanban" | "grid">("kanban");

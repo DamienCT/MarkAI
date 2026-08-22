@@ -5,10 +5,14 @@ WORKDIR /build
 
 RUN pip install --no-cache-dir --upgrade pip hatchling
 
-COPY pyproject.toml .
+# P0-12: install the locked dependency set first (uv-generated universal
+# lock, see requirements.lock), then the package itself without re-resolving.
+COPY pyproject.toml requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
+
 COPY app/ app/
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-deps .
 
 # Stage 2: Runtime
 FROM python:3.13-slim

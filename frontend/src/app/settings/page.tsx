@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useCallback, useEffect, useState, useMemo } from "react";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -99,43 +99,52 @@ const DEFAULTS: AppSettings = {
 /* -- Component ---------------------------------------------------- */
 
 export default function SettingsPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("manager");
+  useRequireRole("manager"); // redirects unauthorized users as a side effect
   const [settings, setSettings] = useState<AppSettings>(DEFAULTS);
   const [loading, setLoading] = useState(true);
+  // Fail closed (UX-01): until the authoritative read succeeds at least once,
+  // the form only shows DEFAULTS — saving then would overwrite the real
+  // scheduler config with defaults, so Save stays disabled while this is true.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [tzSearch, setTzSearch] = useState("");
 
   const allTimezones = useMemo(() => getAllTimezones(), []);
   const groupedTimezones = useMemo(() => groupTimezones(allTimezones), [allTimezones]);
 
-  useEffect(() => {
-    async function fetchSettings() {
-      try {
-        const data = await api.get<Record<string, unknown>>("/api/v1/settings");
-        setSettings({
-          scheduler_timezone: (data.scheduler_timezone as string) ?? DEFAULTS.scheduler_timezone,
-          morning_schedule_hour: Number(data.morning_schedule_hour ?? DEFAULTS.morning_schedule_hour),
-          morning_schedule_minute: Number(data.morning_schedule_minute ?? DEFAULTS.morning_schedule_minute),
-          publish_check_interval_minutes: Number(data.publish_check_interval_minutes ?? DEFAULTS.publish_check_interval_minutes),
-          engagement_pull_interval_hours: Number(data.engagement_pull_interval_hours ?? DEFAULTS.engagement_pull_interval_hours),
-          bc_sync_interval_hours: Number(data.bc_sync_interval_hours ?? DEFAULTS.bc_sync_interval_hours),
-          max_daily_posts: Number(data.max_daily_posts ?? DEFAULTS.max_daily_posts),
-          auto_approve_threshold: Number(data.auto_approve_threshold ?? DEFAULTS.auto_approve_threshold),
-          content_generation_days_ahead: Number(data.content_generation_days_ahead ?? DEFAULTS.content_generation_days_ahead),
-          default_channels: (data.default_channels as string[]) ?? DEFAULTS.default_channels,
-          notification_channels: (data.notification_channels as string[]) ?? DEFAULTS.notification_channels,
-        });
-      } catch (err) {
-        // Session expiry: the sign-in redirect is already underway.
-        if (!isAuthError(err)) toast.error("Failed to load settings, using defaults");
-      } finally {
-        setLoading(false);
-      }
+  const fetchSettings = useCallback(async () => {
+    setLoading(true);
+    setLoadFailed(false);
+    try {
+      const data = await api.get<Record<string, unknown>>("/api/v1/settings");
+      setSettings({
+        scheduler_timezone: (data.scheduler_timezone as string) ?? DEFAULTS.scheduler_timezone,
+        morning_schedule_hour: Number(data.morning_schedule_hour ?? DEFAULTS.morning_schedule_hour),
+        morning_schedule_minute: Number(data.morning_schedule_minute ?? DEFAULTS.morning_schedule_minute),
+        publish_check_interval_minutes: Number(data.publish_check_interval_minutes ?? DEFAULTS.publish_check_interval_minutes),
+        engagement_pull_interval_hours: Number(data.engagement_pull_interval_hours ?? DEFAULTS.engagement_pull_interval_hours),
+        bc_sync_interval_hours: Number(data.bc_sync_interval_hours ?? DEFAULTS.bc_sync_interval_hours),
+        max_daily_posts: Number(data.max_daily_posts ?? DEFAULTS.max_daily_posts),
+        auto_approve_threshold: Number(data.auto_approve_threshold ?? DEFAULTS.auto_approve_threshold),
+        content_generation_days_ahead: Number(data.content_generation_days_ahead ?? DEFAULTS.content_generation_days_ahead),
+        default_channels: (data.default_channels as string[]) ?? DEFAULTS.default_channels,
+        notification_channels: (data.notification_channels as string[]) ?? DEFAULTS.notification_channels,
+      });
+    } catch (err) {
+      setLoadFailed(true);
+      // Session expiry: the sign-in redirect is already underway.
+      if (!isAuthError(err)) toast.error("Failed to load settings — showing defaults (read-only)");
+    } finally {
+      setLoading(false);
     }
-    fetchSettings();
   }, []);
 
+  useEffect(() => {
+    fetchSettings();
+  }, [fetchSettings]);
+
   const handleSave = async () => {
+    if (loadFailed) return; // never overwrite real config with defaults
     setSaving(true);
     try {
       await api.put("/api/v1/settings", settings);
@@ -174,10 +183,27 @@ export default function SettingsPage() {
           <h1 className="text-3xl font-bold">Settings</h1>
           <p className="text-muted-foreground">Global application configuration</p>
         </div>
-        <Button onClick={handleSave} disabled={saving} size="default">
+        <Button
+          onClick={handleSave}
+          disabled={saving || loadFailed}
+          size="default"
+          title={loadFailed ? "Saving is disabled while settings could not be loaded" : undefined}
+        >
           {saving ? "Saving..." : "Save Settings"}
         </Button>
       </div>
+
+      {loadFailed && (
+        <div className="flex items-center justify-between flex-wrap gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950">
+          <p className="text-sm text-amber-800 dark:text-amber-200">
+            Showing defaults — the saved settings could not be loaded. Saving is
+            disabled so the real configuration is not overwritten; reload to edit.
+          </p>
+          <Button variant="outline" size="sm" onClick={fetchSettings}>
+            Retry
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 

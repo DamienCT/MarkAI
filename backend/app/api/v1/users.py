@@ -4,9 +4,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status  # noqa: E402
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from app.auth.entra import (  # noqa: E402
@@ -18,6 +18,7 @@ from app.auth.permissions import ROLES, role_has_access  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.deps import get_current_user, get_db  # noqa: E402
 from app.schemas.user import UserCreate, UserResponse, UserUpdate  # noqa: E402
+from app.services import audit_service  # noqa: E402
 
 router = APIRouter()
 
@@ -67,6 +68,55 @@ async def _require_admin_grant_permission(current_user: User) -> None:
         )
 
 
+async def _refuse_admin_lockout(
+    db: AsyncSession,
+    user: User,
+    update_data: dict[str, Any],
+    current_user: User,
+) -> None:
+    """Server-side guards against losing admin access entirely (UX-02).
+
+    Refuses, before anything is applied:
+    - an admin demoting or deactivating THEMSELVES (400 — self-lockout; the
+      change must come from another admin), and
+    - demoting or deactivating the LAST active admin (409 — would leave the
+      app with nobody able to administer it).
+
+    The active-admin count runs on the same session/transaction as the
+    update, so a concurrent demote can't slip past the check.
+    """
+    new_role = update_data.get("role")
+    demotes = user.role == "admin" and new_role is not None and new_role != "admin"
+    deactivates = bool(user.is_active) and update_data.get("is_active") is False
+    if not (demotes or deactivates):
+        return
+
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Admins cannot demote or deactivate themselves — "
+                "ask another admin to make this change"
+            ),
+        )
+
+    if user.role == "admin" and user.is_active:
+        result = await db.execute(
+            select(func.count())
+            .select_from(User)
+            .where(User.role == "admin")
+            .where(User.is_active == True)  # noqa: E712
+        )
+        if (result.scalar_one() or 0) <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot demote or deactivate the last active admin — "
+                    "grant another user the admin role first"
+                ),
+            )
+
+
 # ---------------------------------------------------------------------------
 # Entra ID user search
 # ---------------------------------------------------------------------------
@@ -87,7 +137,7 @@ async def search_entra_users(
         raise HTTPException(
             status_code=502,
             detail="Failed to search Entra ID users",
-        )
+        ) from exc
     return results
 
 
@@ -123,7 +173,7 @@ async def grant_access(
         raise HTTPException(
             status_code=502,
             detail="Failed to fetch user details from Entra ID",
-        )
+        ) from exc
 
     graph_user_map: dict[str, dict[str, Any]] = {u["id"]: u for u in graph_users}
 
@@ -297,6 +347,7 @@ async def create_user(
 async def update_user(
     user_id: uuid.UUID,
     data: UserUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -318,7 +369,11 @@ async def update_user(
         if new_role == "admin":
             await _require_admin_grant_permission(current_user)
 
+    # Self-lockout / last-active-admin guards (UX-02) — before applying.
+    await _refuse_admin_lockout(db, user, update_data, current_user)
+
     old_role = user.role
+    old_is_active = user.is_active
     for key, value in update_data.items():
         setattr(user, key, value)
 
@@ -334,6 +389,19 @@ async def update_user(
 
     await db.commit()
     await db.refresh(user)
+
+    # Real audit rows for role/is_active changes (R-013) — the log lines
+    # above are not queryable; the Audit Log UI reads audit_log rows.
+    if user.role != old_role or user.is_active != old_is_active:
+        await audit_service.record_audit(
+            action="update",
+            entity_type="user",
+            user_id=current_user.id,
+            entity_id=user.id,
+            old_values={"role": old_role, "is_active": old_is_active},
+            new_values={"role": user.role, "is_active": user.is_active},
+            request=request,
+        )
     return user
 
 
@@ -341,6 +409,7 @@ async def update_user(
 async def patch_user(
     user_id: uuid.UUID,
     data: UserUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -363,7 +432,11 @@ async def patch_user(
         if new_role == "admin":
             await _require_admin_grant_permission(current_user)
 
+    # Self-lockout / last-active-admin guards (UX-02) — before applying.
+    await _refuse_admin_lockout(db, user, update_data, current_user)
+
     old_role = user.role
+    old_is_active = user.is_active
     for key, value in update_data.items():
         setattr(user, key, value)
 
@@ -379,4 +452,17 @@ async def patch_user(
 
     await db.commit()
     await db.refresh(user)
+
+    # Real audit rows for role/is_active changes (R-013) — the log lines
+    # above are not queryable; the Audit Log UI reads audit_log rows.
+    if user.role != old_role or user.is_active != old_is_active:
+        await audit_service.record_audit(
+            action="update",
+            entity_type="user",
+            user_id=current_user.id,
+            entity_id=user.id,
+            old_values={"role": old_role, "is_active": old_is_active},
+            new_values={"role": user.role, "is_active": user.is_active},
+            request=request,
+        )
     return user

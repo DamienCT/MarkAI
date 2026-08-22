@@ -8,8 +8,6 @@ source, so the guard has to work on both sides of the model: strip names from
 the context going in, and from the copy coming out.
 """
 
-import pytest
-
 from shared import suppliers
 
 

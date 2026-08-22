@@ -41,7 +41,7 @@ class TestSafeArea:
         # directions, so any added line walks it toward the chrome. The hook
         # is the deliberate exception: \an5 high-centre, far above the chrome.
         for style in ("Overlay", "CTA"):
-            line = next(l for l in doc.splitlines() if l.startswith(f"Style: {style},"))
+            line = next(ln for ln in doc.splitlines() if ln.startswith(f"Style: {style},"))
             assert line.rstrip().split(",")[18] == "1", f"{style} is not \\an1"
         assert "\\an1" in doc
 
@@ -65,7 +65,7 @@ class TestSafeArea:
         )
 
     def test_margins_in_the_style_match_the_safe_constants(self, doc):
-        line = next(l for l in doc.splitlines() if l.startswith("Style: Overlay,"))
+        line = next(ln for ln in doc.splitlines() if ln.startswith("Style: Overlay,"))
         fields = line.split(",")
         assert int(fields[19]) == nodes._SAFE_LEFT
         assert int(fields[20]) == 1080 - nodes._SAFE_RIGHT
@@ -76,8 +76,8 @@ class TestSafeArea:
         # The card's own \move runs from (0,rise) to (0,0), so scan the TEXT
         # dialogues only.
         text_lines = [
-            l for l in doc.splitlines()
-            if l.startswith("Dialogue:") and ",Card,," not in l
+            ln for ln in doc.splitlines()
+            if ln.startswith("Dialogue:") and ",Card,," not in ln
         ]
         move = re.search(r"\\move\((\d+),(\d+),(\d+),(\d+),", text_lines[0])
         assert move, "no settle animation found"
@@ -89,12 +89,12 @@ class TestSafeArea:
 
 class TestCaptionCard:
     def test_every_beat_gets_a_card_under_it(self, doc):
-        dialogues = [l for l in doc.splitlines() if l.startswith("Dialogue:")]
-        cards = [l for l in dialogues if ",Card,," in l]
+        dialogues = [ln for ln in doc.splitlines() if ln.startswith("Dialogue:")]
+        cards = [ln for ln in dialogues if ",Card,," in ln]
         assert len(cards) == len(EVENTS), "one card per beat"
 
     def test_the_card_is_on_the_layer_below_its_text(self, doc):
-        dialogues = [l for l in doc.splitlines() if l.startswith("Dialogue:")]
+        dialogues = [ln for ln in doc.splitlines() if ln.startswith("Dialogue:")]
         for line in dialogues:
             layer = int(line.split(":", 1)[1].split(",", 1)[0])
             assert layer == (0 if ",Card,," in line else 1)

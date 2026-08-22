@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Globe, ExternalLink, Plus, Pencil, Trash2, Sparkles, Loader2, X, Save,
+  ExternalLink, Plus, Pencil, Trash2, Sparkles, Loader2, X, Save,
 } from "lucide-react";
 import { api, isAuthError } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -47,7 +47,6 @@ const emptyForm = {
 
 export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }: CompetitorTrackerProps) {
   const [insights, setInsights] = useState<CompetitorInsight[]>([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...emptyForm });
@@ -85,8 +84,6 @@ export function CompetitorTracker({ brandId, competitors, onCompetitorsChange }:
       } catch (err) {
         // Session expiry: the sign-in redirect is already underway.
         if (!isAuthError(err)) toast.error("Failed to load competitors");
-      } finally {
-        setLoading(false);
       }
     }
     fetchCompetitorData();

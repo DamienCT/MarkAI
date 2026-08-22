@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -13,7 +12,7 @@ from typing import Any
 from shared.brand_context import ENGLISH_ONLY_RULE as _ENGLISH_ONLY_RULE
 from shared.color_names import describe_palette
 from shared.editorial import build_temporal_block, scrub_brief_meta
-from shared.llm import chat_completion, generate_image, get_model_for_category, parse_llm_json
+from shared.llm import chat_completion, generate_image, parse_llm_json
 from shared.product_swap import pack_framing_directive
 from shared.prompt_enhancer import enhance_image_prompt as enhance_image_prompt_fn
 from shared.vision_payload import downscale_for_vision
@@ -51,11 +50,8 @@ from shared.image_processing import (
     scale_for_logo_variant,
     generate_mockup,
     analyze_logo_region_brightness,
-    analyze_brightness_at,
     analyze_brightness_at_xy,
     select_logo_variant,
-    resize_preserve_aspect,
-    aspect_hint_for_size,
     MIN_LOGO_CONTRAST,
     choose_logo_placement,
     compute_text_region,

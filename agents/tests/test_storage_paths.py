@@ -45,7 +45,6 @@ class TestProductImagePaths:
         # The first segment should be 'products', not a bucket name
         assert first_segment == "products"
         # This means the file proxy should use the default bucket, not treat 'products' as a bucket
-        known_buckets = {"content-images", "brand-assets", "markai-assets", "products"}
         default_prefixes = {"products", "brands", "screenshots"}
         assert first_segment in default_prefixes
 

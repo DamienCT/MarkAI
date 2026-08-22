@@ -130,7 +130,7 @@ class ApiClient {
       try {
         const data = await response.json();
         error.detail = data.detail || data.message || JSON.stringify(data);
-      } catch (parseError) {
+      } catch {
         error.detail = response.statusText;
       }
       throw error;

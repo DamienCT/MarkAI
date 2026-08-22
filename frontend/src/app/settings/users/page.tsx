@@ -41,7 +41,7 @@ interface GrantAccessResult {
 }
 
 export default function UsersPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("admin");
+  useRequireRole("admin"); // redirects unauthorized users as a side effect
   const [users, setUsers] = useState<UserFromAPI[]>([]);
   const [loading, setLoading] = useState(true);
   const [securityGroupMembers, setSecurityGroupMembers] = useState<Set<string>>(new Set());

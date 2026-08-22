@@ -7,12 +7,12 @@ name = "markai-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi[standard]>=0.135,<0.137",
-    # Pin Starlette to the 0.x line: Starlette 1.x introduced an _IncludedRouter
-    # routing object that prometheus-fastapi-instrumentator 8.0.0 can't resolve
-    # (route.path AttributeError → 500 on every OPTIONS/CORS preflight). FastAPI
-    # 0.136 only requires starlette>=0.46.0, so it happily pulls 1.x without this.
-    "starlette>=0.46.0,<1.0",
+    "fastapi[standard]>=0.141",
+    # Starlette 0.x had 5 published advisories (PYSEC-2026-161/-248/-249/
+    # -2280/-2281) fixed only on the 1.x line. The old <1.0 guard existed for
+    # prometheus-fastapi-instrumentator 8.0.0's _IncludedRouter crash — fixed
+    # in 8.1.0 (pinned below), verified against the full test suite.
+    "starlette>=1.3.1",
     "uvicorn[standard]",
     "sqlalchemy[asyncio]>=2.0.48",
     "asyncpg>=0.31",
@@ -37,7 +37,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.61b0",
     "opentelemetry-exporter-otlp>=1.40",
     "slowapi>=0.1.9",
-    "prometheus-fastapi-instrumentator>=7.0",
+    "prometheus-fastapi-instrumentator>=8.1",
     "python-json-logger>=3.0",
     "tenacity>=9.0",
     "duckduckgo-search>=7.0",

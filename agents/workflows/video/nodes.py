@@ -43,7 +43,6 @@ from shared.config import (
     VIDEO_NORMALIZE_TIMEOUT_S,
     VIDEO_SILENCE_PEAK_DB,
     VIDEO_TARGET_LUFS,
-    VIDEO_TARGET_TRUE_PEAK_DB,
     settings as _config_settings,
 )
 from shared.editorial import TEMPORAL_RULES_BLOCK, build_temporal_block
@@ -64,7 +63,7 @@ from workflows.content.nodes import (
     _build_voice_block,
     _effective_caption_settings,
     _replace_product_in_generated_image,
-    enrich_user_brief,
+    enrich_user_brief as enrich_user_brief,  # re-exported for workflows.video.graph
     load_context,
     source_product_image_node,
 )

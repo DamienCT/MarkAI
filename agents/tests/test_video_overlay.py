@@ -748,7 +748,7 @@ class TestRenderVideoOverlayWiring:
     def test_legacy_path_burn_failure_never_fails_item(self, monkeypatch):
         from tests.test_video_multishot import _Harness, _state
 
-        h = _Harness(monkeypatch)
+        _Harness(monkeypatch)
         # No ffmpeg → degraded single-call render AND a failed (not fatal)
         # burn pass: the item keeps the unburned clip.
         monkeypatch.setattr(video_nodes, "_ffmpeg_ok", lambda: False)

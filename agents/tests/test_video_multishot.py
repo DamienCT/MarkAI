@@ -644,7 +644,7 @@ class TestRenderVideoMultiShot:
     def test_all_normalized_shots_may_stream_copy(self, monkeypatch):
         # Every clip re-encoded by the same local ffmpeg pass → one encoder
         # → the lossless concat-demuxer copy path is safe again.
-        h = _Harness(monkeypatch, providers={i: "fal" for i in range(1, 6)})
+        _Harness(monkeypatch, providers={i: "fal" for i in range(1, 6)})
         result = asyncio.run(render_video(_state([4, 4, 4, 4, 4])))
 
         assert result.get("status") != "failed"

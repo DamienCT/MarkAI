@@ -405,34 +405,6 @@ export default function ContentDetailPage() {
     }
   }, [approvals, approvalComments, content]);
 
-  const handleSchedule = useCallback(async () => {
-    if (!calendarItem?.id || !scheduleDate) {
-      toast.error("Please select a date");
-      return;
-    }
-    setScheduling(true);
-    try {
-      const scheduledAt = toApiDatetime(`${scheduleDate}T${scheduleTime}:00`);
-      if (!scheduledAt) {
-        toast.error("Invalid date or time");
-        return;
-      }
-      await api.patch(`/api/v1/calendar/${calendarItem.id}`, {
-        status: "scheduled",
-        scheduled_at: scheduledAt,
-      });
-      toast.success("Content scheduled for publishing");
-      // Refresh calendar item
-      const updated = await api.get<CalendarItem>(`/api/v1/calendar/${calendarItem.id}`);
-      setCalendarItem(updated);
-    } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail || "Failed to schedule content";
-      toast.error(detail);
-    } finally {
-      setScheduling(false);
-    }
-  }, [calendarItem, scheduleDate, scheduleTime]);
-
   const handleUpdateSchedule = useCallback(async () => {
     if (!calendarItem?.id || !scheduleDate) {
       toast.error("Please select a date");

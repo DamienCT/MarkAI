@@ -369,6 +369,11 @@ export interface PromptVersion {
   updated_at: string;
 }
 
+// Matches the backend serializer in app/api/v1/learning.py. The adaptations
+// table has no tier/confidence columns — the evaluation workflow packs them
+// into the adaptation_notes JSON envelope and the API lifts them to
+// top-level keys (numeric tier 1..3 and confidence 0..1, defaulting to
+// 2 / 0.5 for malformed or legacy free-text notes).
 export interface Adaptation {
   id: string;
   source_content_id: string;
@@ -380,14 +385,13 @@ export interface Adaptation {
   adaptation_notes?: string | null;
   ai_model?: string | null;
   status: string;
-  tier?: string;
-  category?: string;
-  description?: string;
-  confidence_score: number;
-  evidence?: string[];
-  created_by?: string | null;
+  /** Lifted from the notes envelope: 1 (post) | 2 (campaign) | 3 (strategy). */
+  tier?: number;
+  /** Lifted from the notes envelope: 0..1. */
+  confidence?: number;
+  /** Lifted from the notes envelope: workflow-specific detail payload. */
+  data?: Record<string, unknown> | null;
   created_at: string;
-  updated_at: string;
 }
 
 // Matches the backend serializer in app/api/v1/notifications.py.

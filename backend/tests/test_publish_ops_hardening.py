@@ -358,7 +358,9 @@ async def test_checker_skips_item_claimed_elsewhere(monkeypatch):
             _Rows(scalar=None),  # sweep-start kill-switch read (absent → on)
             _Rows([]),  # stuck sweep
             _Rows([cal_item]),  # due items
-            _Rows(scalar=None),  # per-item kill-switch read
+            _Rows(scalar=None),  # per-item kill-switch read: global
+            _Rows(scalar=None),  # per-item kill-switch read: brand scope
+            _Rows(scalar=None),  # per-item kill-switch read: channel scope
             _Rows([content]),  # current content
             _Rows(scalar=None),  # CAS claim: no row — claimed elsewhere
         ]

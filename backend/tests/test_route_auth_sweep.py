@@ -40,11 +40,39 @@ def _enforce_media_auth(monkeypatch):
 _DUMMY_PARAM = "00000000-0000-0000-0000-000000000000"
 
 
+def _flatten_routes(routes, prefix=""):
+    """Yield (full_path, methods) for every APIRoute, traversing starlette
+    1.x lazy router includes.
+
+    Since starlette 1.x, ``include_router`` registers an ``_IncludedRouter``
+    wrapper instead of copying prefixed APIRoutes onto the app: the wrapped
+    router's APIRoute paths are UNPREFIXED, and the wrapper's
+    ``include_context.prefix`` carries the ALREADY-COMBINED absolute prefix
+    for its whole subtree (verified empirically: a depth-2 include shows
+    '/api/v1/brands', not '/brands').
+    """
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield prefix + route.path, route.methods
+        else:
+            inner = getattr(route, "original_router", None)
+            if inner is not None:
+                ctx = getattr(route, "include_context", None)
+                abs_prefix = getattr(ctx, "prefix", "") or prefix
+                yield from _flatten_routes(inner.routes, abs_prefix)
+
+
+class _SweptRoute:
+    def __init__(self, path, methods):
+        self.path = path
+        self.methods = set(methods or [])
+
+
 def _api_v1_routes():
     return [
-        route
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.path.startswith("/api/v1")
+        _SweptRoute(path, methods)
+        for path, methods in _flatten_routes(app.routes)
+        if path.startswith("/api/v1")
     ]
 
 

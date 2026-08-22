@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, isAuthError } from "@/lib/api";
 import { getStoredBrandId } from "@/lib/brand-selection";
-import { statusColor, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 import type { Product } from "@/types";
 
 export default function ProductsPage() {

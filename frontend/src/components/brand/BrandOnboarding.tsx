@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   CheckCircle2, Circle, ChevronDown, ChevronRight, Sparkles,
-  Building2, Image, Mic2, Radio, ShoppingBag, Users, Rocket,
+  Building2, Image as ImageIcon, Mic2, Radio, ShoppingBag, Users, Rocket,
   Loader2, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,7 @@ interface StepDef {
 const STEPS: StepDef[] = [
   { id: "basic_info", label: "Basic Info", icon: <Building2 className="h-4 w-4" />, description: "Brand name and description" },
   { id: "business_central", label: "Business Central", icon: <Building2 className="h-4 w-4" />, description: "Link to Business Central company" },
-  { id: "logos", label: "Logos", icon: <Image className="h-4 w-4" />, description: "Upload at least one brand logo" },
+  { id: "logos", label: "Logos", icon: <ImageIcon className="h-4 w-4" />, description: "Upload at least one brand logo" },
   { id: "voice_profile", label: "Voice Profile", icon: <Mic2 className="h-4 w-4" />, description: "Define your brand's tone of voice" },
   { id: "channels", label: "Channels", icon: <Radio className="h-4 w-4" />, description: "Enable and configure at least one channel" },
   { id: "products", label: "Products", icon: <ShoppingBag className="h-4 w-4" />, description: "Sync or add products" },

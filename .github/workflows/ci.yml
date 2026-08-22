@@ -20,16 +20,81 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: backend/requirements.lock
 
+      # Locked runtime deps first (P0-12); the editable install then only
+      # adds dev extras on top without upgrading anything already satisfied.
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          pip install -r requirements.lock
+          pip install -e ".[dev]"
 
       - name: Ruff check
         run: ruff check .
 
       - name: Ruff format check
         run: ruff format --check .
+
+  # Ruff-only jobs for the other Python services. No service deps needed —
+  # each tree is ruff-clean under default settings (no per-service
+  # [tool.ruff] config), so a bare ruff install is the whole toolchain and
+  # the lockfile-keyed pip cache would buy nothing here.
+  agents-lint:
+    name: Agents Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agents
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check .
+
+  browser-worker-lint:
+    name: Browser Worker Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browser-worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check .
+
+  notifications-lint:
+    name: Notifications Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: notifications
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check .
 
   frontend-lint:
     name: Frontend Lint & Type Check
@@ -71,10 +136,14 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: backend/requirements.lock
 
+      # Locked runtime deps first (P0-12); the editable install then only
+      # adds dev extras on top without upgrading anything already satisfied.
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          pip install -r requirements.lock
+          pip install -e ".[dev]"
 
       - name: Run tests
         run: pytest tests/ -v --cov=app --cov-report=term-missing
@@ -105,6 +174,28 @@ jobs:
           # hatch. Runtime containers still refuse to start without the real env.
           NEXT_BUILD_ALLOW_MISSING_RUNTIME_ENV: "1"
 
+  frontend-test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # "test" runs vitest; vitest detects CI and runs once (no watch mode).
+      - name: Run tests
+        run: npm test
+
   agents-test:
     name: Agents Tests
     runs-on: ubuntu-latest
@@ -118,13 +209,70 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: agents/pyproject.toml
+          cache-dependency-path: agents/requirements.lock
 
+      # Locked runtime deps first (P0-12); the editable install then only
+      # fills in anything not already satisfied without upgrading pins.
       - name: Install dependencies
-        run: pip install -e ".[dev]" 2>/dev/null || pip install -e .
+        run: |
+          pip install -r requirements.lock
+          pip install -e ".[dev]" 2>/dev/null || pip install -e .
 
       - name: Install test dependencies
         run: pip install pytest
 
       - name: Run tests
         run: pytest tests/ -v
+
+  # R-047: dependency-vulnerability gate. One matrix leg per Python service,
+  # each auditing the exact pins in its requirements.lock. Any known
+  # vulnerability fails the leg (pip-audit exits non-zero) and blocks merge.
+  #
+  # If an advisory has no fixed release yet, ship a TIME-BOXED ignore instead
+  # of unpinning the gate: append `--ignore-vuln <ID>` (GHSA-… or PYSEC-…) to
+  # the audit line below, and record the ID, reason, owner, and a review-by
+  # date in docs/SECURITY_CONTAINMENT_2026-08-21.md §8 so the ignore cannot
+  # silently become permanent.
+  pip-audit:
+    name: pip-audit (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [backend, agents, browser-worker, notifications]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      # --no-deps: the uv-compiled lockfiles already carry the full
+      # transitive pin set, so nothing needs resolving (or installing into an
+      # ephemeral venv) to be audited.
+      - name: Audit locked dependencies
+        run: pip-audit -r requirements.lock --no-deps
+
+  # R-047: blocking secrets gate over the full checked-out tree (not just the
+  # diff). Direct pinned container run — gitleaks-action@v2 needs an org
+  # license key, the container does not. Rules: gitleaks defaults extended by
+  # the repo-root .gitleaks.toml (auto-discovered in the scanned dir), whose
+  # allowlist prunes hand-verified false positives only — read that file
+  # before touching it. --redact keeps any real hit out of public CI logs.
+  secrets-scan:
+    name: Secrets Scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run gitleaks (dir scan, blocking)
+        run: >
+          docker run --rm -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.24.3
+          dir /repo --redact --verbose

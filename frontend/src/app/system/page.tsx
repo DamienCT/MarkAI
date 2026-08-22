@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,7 +13,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ServiceHealth } from "@/components/system/ServiceHealth";
-import { WorkflowMonitor } from "@/components/system/WorkflowMonitor";
 import { QueueDepth } from "@/components/system/QueueDepth";
 import { api } from "@/lib/api";
 import { statusColor } from "@/lib/utils";
@@ -23,7 +22,7 @@ import { formatRelativeTime } from "@/lib/utils";
 import { useRequireRole } from "@/lib/hooks";
 
 export default function SystemPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("admin");
+  useRequireRole("admin"); // redirects unauthorized users as a side effect
   const [services, setServices] = useState<ServiceStatus[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [jobs, setJobs] = useState<SchedulerJob[]>([]);

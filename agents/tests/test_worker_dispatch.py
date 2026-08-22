@@ -319,7 +319,7 @@ class TestTerminalDropsContinueTheBatch:
         assert len(w["notifs"]) == 1
 
     def test_notify_failure_never_breaks_the_ack_path(self, monkeypatch):
-        w = _wire(
+        _wire(
             monkeypatch,
             guard_rows=[{"status": "queued"}],
             graph=_FakeGraph(exc=RuntimeError("boom")),
@@ -366,7 +366,7 @@ class TestDuplicateRun:
         _assert_queueless_resume(cont[0])
 
     def test_queueless_duplicate_still_just_acks(self, monkeypatch):
-        w = _wire(
+        _wire(
             monkeypatch, guard_rows=[{"status": "queued"}], create_run_exc=self._DUP
         )
         msg = _FakeMsg("content.generate", {"brand_id": "b-1", "trigger": "event"})

@@ -12,7 +12,7 @@ import { useRequireRole } from "@/lib/hooks";
 import type { Brand } from "@/types";
 
 export default function NewBrandPage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("editor");
+  useRequireRole("editor"); // redirects unauthorized users as a side effect
   const router = useRouter();
   const [saving, setSaving] = useState(false);
 

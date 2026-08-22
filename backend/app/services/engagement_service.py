@@ -4,6 +4,7 @@ from typing import Any
 import httpx
 
 from app.models.content import Content
+from app.services.publishers.x import oauth1_auth_header
 from app.utils.redact import redact
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,12 @@ logger = logging.getLogger(__name__)
 # by `views`) — older versions + that metric made the whole insights request
 # fail, which is why analytics came back empty.
 _GRAPH_VERSION = "v25.0"
+
+# Tweet lookup endpoint (public_metrics ride on the tweet object).
+_X_TWEETS_URL = "https://api.x.com/2/tweets"
+
+# videos.list endpoint (part=statistics with an API key).
+_YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 
 async def pull_instagram_insights(
@@ -189,3 +196,97 @@ async def pull_linkedin_insights(
         "impressions": data.get("impressionCount", 0),
         "clicks": data.get("clickCount", 0),
     }
+
+
+async def pull_x_public_metrics(
+    content: Content, creds: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Direct call to the X API for tweet public_metrics:
+    ``GET /2/tweets?ids=…&tweet.fields=public_metrics``.
+
+    Signed with the same OAuth 1.0a user-context helper the X publisher uses
+    (query params participate in the RFC 5849 signature); ``creds`` carries
+    the brand's four user-context keys. Retweets + quote tweets both count
+    as "shares"; ``impression_count`` maps to impressions and
+    ``bookmark_count`` to saves.
+    """
+    tweet_id = content.platform_post_id
+    result: dict[str, Any] = {
+        "impressions": 0, "likes": 0, "comments": 0, "shares": 0, "saves": 0,
+    }
+    if not tweet_id:
+        return result
+
+    params = {"ids": tweet_id, "tweet.fields": "public_metrics"}
+    auth_header = oauth1_auth_header(
+        "GET",
+        _X_TWEETS_URL,
+        consumer_key=creds["consumer_key"],
+        consumer_secret=creds["consumer_secret"],
+        access_token=creds["access_token"],
+        access_token_secret=creds["access_token_secret"],
+        request_params=params,
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            _X_TWEETS_URL,
+            params=params,
+            headers={"Authorization": auth_header},
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data") or []
+
+    metrics = (data[0].get("public_metrics") or {}) if data else {}
+    result["likes"] = metrics.get("like_count", 0) or 0
+    result["comments"] = metrics.get("reply_count", 0) or 0
+    result["shares"] = (metrics.get("retweet_count", 0) or 0) + (
+        metrics.get("quote_count", 0) or 0
+    )
+    result["saves"] = metrics.get("bookmark_count", 0) or 0
+    result["impressions"] = metrics.get("impression_count", 0) or 0
+    return result
+
+
+async def pull_youtube_statistics(
+    content: Content, api_key: str
+) -> dict[str, Any]:
+    """
+    Direct call to the YouTube Data API: ``videos.list part=statistics``.
+
+    The API key rides in the ``X-Goog-Api-Key`` header, never the URL —
+    query strings end up in logs and exception messages (N-01). The API
+    returns counts as strings, so they are coerced defensively.
+    ``viewCount`` maps to both ``video_views`` and ``impressions`` (views
+    are YouTube's impression analogue, mirroring the IG `views` mapping) so
+    the shared engagement-rate computation gets a denominator.
+    """
+    video_id = content.platform_post_id
+    result: dict[str, Any] = {
+        "impressions": 0, "likes": 0, "comments": 0, "video_views": 0,
+    }
+    if not video_id:
+        return result
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            _YOUTUBE_VIDEOS_URL,
+            params={"part": "statistics", "id": video_id},
+            headers={"X-Goog-Api-Key": api_key},
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items") or []
+
+    stats = (items[0].get("statistics") or {}) if items else {}
+
+    def _count(name: str) -> int:
+        try:
+            return int(stats.get(name) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    result["likes"] = _count("likeCount")
+    result["comments"] = _count("commentCount")
+    result["video_views"] = _count("viewCount")
+    result["impressions"] = result["video_views"]
+    return result

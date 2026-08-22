@@ -132,7 +132,7 @@ class TestChainCapWithoutAKeyframe:
         from tests.test_video_multishot import _Harness, _state
         from workflows.video.nodes import render_video
 
-        h = _Harness(monkeypatch)
+        _Harness(monkeypatch)
         _stub_delabel(monkeypatch)
         result = asyncio.run(render_video(_state([4] * 6, keyframe=None)))
 
@@ -159,7 +159,7 @@ class TestChainCapWithoutAKeyframe:
         from tests.test_video_multishot import _Harness, _state
         from workflows.video.nodes import render_video
 
-        h = _Harness(monkeypatch)
+        _Harness(monkeypatch)
         _stub_delabel(monkeypatch)
         result = asyncio.run(render_video(_state([4] * 4, keyframe=None)))
         anchors = [e.get("anchor") for e in result["video_meta"]["ledger"]]
@@ -173,7 +173,7 @@ class TestChainCapWithoutAKeyframe:
         from tests.test_video_multishot import _Harness, _state
         from workflows.video.nodes import render_video
 
-        h = _Harness(monkeypatch)
+        _Harness(monkeypatch)
         result = asyncio.run(render_video(_state([4] * 6)))
         anchors = [e.get("anchor") for e in result["video_meta"]["ledger"]]
         assert anchors[0] == "keyframe"
@@ -472,7 +472,7 @@ class TestAKeptKeyframeDoesNotSilenceTheDirective:
         from tests.test_video_multishot import _Harness, _state
         from workflows.video.nodes import render_video
 
-        h = _Harness(monkeypatch)
+        _Harness(monkeypatch)
         seen = {}
 
         async def spy(shots):
@@ -507,7 +507,7 @@ class TestAKeptKeyframeDoesNotSilenceTheDirective:
         from tests.test_video_multishot import _Harness, _state
         from workflows.video.nodes import render_video
 
-        h = _Harness(monkeypatch)
+        _Harness(monkeypatch)
 
         async def boom(shots):
             raise AssertionError("the pack is verified — nothing to delabel")

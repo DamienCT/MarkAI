@@ -35,7 +35,6 @@ import {
   Square,
   Target,
   Trash2,
-  Users,
   TrendingUp,
   Compass,
   LayoutGrid,
@@ -331,7 +330,7 @@ interface BrandOption {
 }
 
 export default function IntelligencePage() {
-  const { hasAccess, loading: roleLoading } = useRequireRole("viewer");
+  useRequireRole("viewer"); // redirects unauthorized users as a side effect
   const router = useRouter();
   const [reports, setReports] = useState<AgentReport[]>([]);
   const [trends, setTrends] = useState<TrendData[]>([]);

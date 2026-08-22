@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { X, ZoomIn } from "lucide-react";
+import React from "react";
+import { ZoomIn } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 interface AssetPreviewProps {

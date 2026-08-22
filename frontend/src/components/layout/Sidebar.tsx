@@ -12,7 +12,6 @@ import {
   CalendarHeart,
   Search,
   BarChart3,
-  Terminal,
   Server,
   Settings,
   ChevronLeft,
