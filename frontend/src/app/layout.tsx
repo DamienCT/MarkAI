@@ -22,6 +22,7 @@ export default function RootLayout({
             the fonts bundled in the agents container (HEADLINE_FONTS). */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        {/* eslint-disable-next-line @next/next/no-page-custom-font -- deliberate: the overlay editor sets font-family by plain family name, which must match the agents container's bundled fonts; next/font's hashed family names would break that (and this pages-router rule doesn't apply to app-router head links anyway) */}
         <link
           href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700&family=Poppins:wght@700&family=Oswald:wght@600&family=Playfair+Display:wght@700&family=Dancing+Script:wght@700&display=swap"
           rel="stylesheet"

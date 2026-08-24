@@ -490,3 +490,42 @@ async def test_get_global_lists_scoped_flags():
     ]
     _stmt, params = db.executed[1]
     assert params["prefix"] == "publishing_enabled:%"
+
+
+# ── /publishing-status: read-only global boolean, any authenticated role ─
+
+
+@pytest.mark.anyio
+async def test_publishing_status_open_to_non_admins():
+    """Editors must see WHY scheduled content is waiting — no role gate."""
+    db = _EndpointDb([_EndpointResult(scalar={"enabled": False})])
+
+    resp = await system_api.get_publishing_status(
+        db=db,
+        current_user=MagicMock(role="viewer", email="v@test", id=uuid.uuid4()),
+    )
+
+    assert resp == {"enabled": False}
+
+
+@pytest.mark.anyio
+async def test_publishing_status_absent_flag_means_enabled():
+    db = _EndpointDb([_EndpointResult(scalar=None)])
+
+    resp = await system_api.get_publishing_status(db=db, current_user=_admin())
+
+    assert resp == {"enabled": True}
+
+
+@pytest.mark.anyio
+async def test_publishing_status_reads_global_key_and_nothing_else():
+    """Only the boolean leaves this endpoint: one query, global key, no
+    scoped listing and no updated_by/updated_at metadata."""
+    db = _EndpointDb([_EndpointResult(scalar={"enabled": True})])
+
+    resp = await system_api.get_publishing_status(db=db, current_user=_admin())
+
+    assert resp == {"enabled": True}
+    assert len(db.executed) == 1
+    _stmt, params = db.executed[0]
+    assert params["key"] == PUBLISHING_KILL_SWITCH_KEY

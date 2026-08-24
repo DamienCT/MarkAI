@@ -5,6 +5,7 @@ import { Upload, X, ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { MediaImage } from "@/components/ui/media-image";
 import { apiUrl } from "@/lib/api";
 
 interface LogoInfo {
@@ -60,7 +61,7 @@ export function LogosTab({
                   </div>
                   {logoInfo ? (
                     <div className="relative group">
-                      <img
+                      <MediaImage
                         src={apiUrl(logoInfo.url)}
                         alt={label}
                         className="h-24 w-full object-contain rounded-md border bg-muted/20"

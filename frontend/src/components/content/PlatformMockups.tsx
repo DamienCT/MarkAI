@@ -5,6 +5,7 @@ import { Smartphone } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
+import { MediaImage } from "@/components/ui/media-image";
 
 interface PlatformMockupsProps {
   mockupUrls: Record<string, string>;
@@ -62,7 +63,7 @@ export function PlatformMockups({ mockupUrls, imageBaseUrl = "" }: PlatformMocku
                 <Dialog>
                   <DialogTrigger asChild>
                     <div className="cursor-pointer mx-auto max-w-[280px] rounded-2xl border-2 border-muted shadow-lg overflow-hidden hover:shadow-xl transition-shadow bg-black">
-                      <img
+                      <MediaImage
                         src={thumbUrl}
                         alt={`${PLATFORM_LABELS[p] || p} preview`}
                         className="w-full h-auto"
@@ -71,7 +72,7 @@ export function PlatformMockups({ mockupUrls, imageBaseUrl = "" }: PlatformMocku
                     </div>
                   </DialogTrigger>
                   <DialogContent className="max-w-md p-2 overflow-hidden bg-black">
-                    <img
+                    <MediaImage
                       src={fullUrl}
                       alt={`${PLATFORM_LABELS[p] || p} preview`}
                       className="w-full h-auto rounded-lg"

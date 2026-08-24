@@ -329,6 +329,25 @@ async def set_publishing_kill_switch(
     return {"enabled": payload.enabled}
 
 
+@router.get("/publishing-status")
+async def get_publishing_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),  # noqa: ARG001 — auth gate
+):
+    """Whether GLOBAL publishing is currently enabled. Any authenticated role.
+
+    Editors scheduling content need to see WHY nothing publishes when the
+    kill switch is engaged, but /publishing-kill-switch is admin-only.
+    This exposes only the global boolean — who/when/scoped flags stay on
+    the admin endpoint.
+    """
+    result = await db.execute(
+        text("SELECT value FROM system_flags WHERE key = :key"),
+        {"key": PUBLISHING_KILL_SWITCH_KEY},
+    )
+    return {"enabled": _flag_enabled(result.scalar_one_or_none())}
+
+
 @router.get("/audit-log")
 async def get_audit_log(
     user_id: uuid.UUID | None = None,

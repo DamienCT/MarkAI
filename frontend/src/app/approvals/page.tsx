@@ -268,6 +268,7 @@ export default function ApprovalsPage() {
                         placeholder="Why is this rejected? The agent revises with this feedback."
                         className="h-8 text-xs flex-1 min-w-[220px]"
                         aria-label="Rejection feedback"
+                        maxLength={4000}
                       />
                       <Button
                         size="sm"

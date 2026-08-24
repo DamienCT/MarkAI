@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { SafeValue, formatKeyValue } from "@/components/ui/safe-render";
+import { MediaImage } from "@/components/ui/media-image";
 import { ContentCalendarStrategy } from "@/components/intelligence/ContentCalendarStrategy";
 import { ReportCharts } from "@/components/intelligence/ReportCharts";
 import {
@@ -424,7 +425,7 @@ export default function ReportPage() {
         <div className="rounded-xl border bg-gradient-to-br from-primary/5 to-transparent p-6 sm:p-8 print-cover">
           <div className="flex items-start gap-4">
             {report.brand_logo_url && (
-              <img
+              <MediaImage
                 src={apiUrl(report.brand_logo_url)}
                 alt={report.brand_name || "Brand"}
                 className="h-16 w-16 rounded-lg object-cover border bg-white shrink-0"

@@ -541,3 +541,21 @@ export interface AuditLogEntry {
   ip_address?: string;
   created_at: string;
 }
+
+/** Scoped publishing kill-switch flag as returned by
+ *  GET /api/v1/system/publishing-kill-switch (admin only). Key shapes:
+ *  "publishing_enabled:brand:<uuid>" | "publishing_enabled:channel:<name>". */
+export interface ScopedKillSwitchFlag {
+  key: string;
+  enabled: boolean;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export interface KillSwitchState {
+  enabled: boolean;
+  updated_by: string | null;
+  updated_at: string | null;
+  /** Present only on the unscoped (global) GET. */
+  scoped?: ScopedKillSwitchFlag[];
+}

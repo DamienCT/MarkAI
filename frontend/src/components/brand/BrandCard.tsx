@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Building2, MapPin, Instagram, Facebook, Linkedin, Youtube, Music2, Twitter, Globe, MessageSquare } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { MediaImage } from "@/components/ui/media-image";
 import { apiUrl } from "@/lib/api";
 import type { Brand } from "@/types";
 
@@ -78,7 +79,7 @@ export function BrandCard({ brand }: BrandCardProps) {
           {/* Header: Avatar + Name + Status */}
           <div className="flex items-start gap-3">
             {brand.logo_url ? (
-              <img
+              <MediaImage
                 src={apiUrl(brand.logo_url)}
                 alt={brand.name}
                 className="h-10 max-w-[120px] rounded-lg object-contain border p-1 shrink-0"

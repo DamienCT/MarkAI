@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -22,17 +22,19 @@ export default function AuditLogPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
 
-  useEffect(() => {
-    fetchEntries();
-  }, [actionFilter, resourceFilter, page]);
+  // The search term is read through a ref so that typing in the search box
+  // does NOT recreate fetchEntries (and thus does not refetch per keystroke):
+  // search only fires via the Search button / Enter key (handleSearch).
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
 
-  async function fetchEntries() {
+  const fetchEntries = useCallback(async () => {
     setLoading(true);
     try {
       const params: Record<string, string | number> = { page, limit: 50 };
       if (actionFilter !== "all") params.action = actionFilter;
       if (resourceFilter !== "all") params.resource_type = resourceFilter;
-      if (searchQuery) params.search = searchQuery;
+      if (searchQueryRef.current) params.search = searchQueryRef.current;
       const data = await api.get<AuditLogEntry[]>("/api/v1/audit", params);
       setEntries(data);
     } catch (err) {
@@ -41,7 +43,11 @@ export default function AuditLogPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [actionFilter, resourceFilter, page]);
+
+  useEffect(() => {
+    fetchEntries();
+  }, [fetchEntries]);
 
   const handleSearch = () => {
     setPage(1);

@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { ServiceHealth } from "@/components/system/ServiceHealth";
 import { QueueDepth } from "@/components/system/QueueDepth";
+import { PublishingControls } from "@/components/system/PublishingControls";
 import { api } from "@/lib/api";
 import { statusColor } from "@/lib/utils";
 import type { ServiceStatus, AgentRun, SchedulerJob, QueueInfo, Brand, DashboardStats } from "@/types";
@@ -120,6 +121,19 @@ export default function SystemPage() {
         <p className="text-muted-foreground">Service status, workflows, and infrastructure</p>
       </div>
 
+      {/* Publishing kill switch — global + scoped pauses */}
+      <Card id="publishing">
+        <CardHeader>
+          <CardTitle>Publishing Controls</CardTitle>
+          <CardDescription>
+            Pause or resume external publishing — globally, per brand, or per channel. Changes are audit-logged.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PublishingControls brands={brands} />
+        </CardContent>
+      </Card>
+
       {/* Active Workflows Summary */}
       <Card>
         <CardHeader>
@@ -211,8 +225,10 @@ export default function SystemPage() {
                   <SelectItem value="all">All Statuses</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
                   <SelectItem value="running">Running</SelectItem>
+                  <SelectItem value="paused_for_review">Paused for review</SelectItem>
                   <SelectItem value="completed">Completed</SelectItem>
                   <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
             </div>

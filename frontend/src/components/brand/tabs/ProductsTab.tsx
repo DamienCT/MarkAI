@@ -18,6 +18,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
+import { MediaImage } from "@/components/ui/media-image";
 import { formatRelativeTime } from "@/lib/utils";
 import { api, fileUrl, isAuthError } from "@/lib/api";
 import type { Brand, Product } from "@/types";
@@ -363,7 +364,7 @@ export function ProductsTab({
                   {busy ? (
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                   ) : url ? (
-                    <img
+                    <MediaImage
                       src={`${fileUrl(url)}?v=${logoVersion}`}
                       alt={`${name} ${label}`}
                       className="h-12 max-w-[80%] object-contain p-0.5"
@@ -805,7 +806,7 @@ export function ProductsTab({
                                 className="inline-flex items-center justify-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
                                 onClick={(e) => { e.stopPropagation(); onOpenGallery(product); }}
                               >
-                                <img src={fileUrl(product.primary_image_url)} alt="" className="h-8 w-8 rounded-sm object-cover ring-1 ring-border" loading="lazy" />
+                                <MediaImage src={fileUrl(product.primary_image_url)} alt="" className="h-8 w-8 rounded-sm object-cover ring-1 ring-border" loading="lazy" />
                                 <span className="text-[10px] text-muted-foreground">
                                   {Array.isArray(product.image_urls) ? product.image_urls.length : 0}
                                 </span>
@@ -1084,7 +1085,7 @@ export function ProductsTab({
             <div className="grid grid-cols-3 gap-3">
               {galleryImages.map((img, i) => (
                 <div key={i} className="relative group aspect-square rounded-lg overflow-hidden border bg-muted">
-                  <img
+                  <MediaImage
                     src={fileUrl(typeof img === "string" ? img : img.url)}
                     alt=""
                     className="w-full h-full object-cover"

@@ -6,6 +6,7 @@ import {
   ThumbsUp, MoreHorizontal, Globe, Repeat2, X, Youtube,
 } from "lucide-react";
 import { sanitizeImageUrl } from "@/lib/utils";
+import { MediaImage } from "@/components/ui/media-image";
 
 /** Image that opens a full-screen lightbox on click. Used by every channel
  *  preview so the user can inspect the actual rendered image (with overlay
@@ -43,7 +44,7 @@ function ClickableImage({
   return (
     <>
       <div className="relative group/img">
-        <img
+        <MediaImage
           src={src}
           alt={alt}
           loading="lazy"
@@ -72,7 +73,7 @@ function ClickableImage({
           >
             <X className="h-5 w-5" />
           </button>
-          <img
+          <MediaImage
             src={src}
             alt={alt}
             className="max-h-[90vh] max-w-[95vw] object-contain rounded-md shadow-2xl cursor-zoom-out"
@@ -119,7 +120,7 @@ function AvatarCircle({ name, size = "h-9 w-9", avatarUrl }: { name: string; siz
   const initial = name.charAt(0).toUpperCase();
   if (avatarUrl) {
     return (
-      <img
+      <MediaImage
         src={avatarUrl}
         alt={name}
         className={`${size} rounded-full object-contain shrink-0 bg-white border p-0.5`}

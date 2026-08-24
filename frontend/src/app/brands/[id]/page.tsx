@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { MediaImage } from "@/components/ui/media-image";
 import { BrandOnboarding } from "@/components/brand/BrandOnboarding";
 import { api, apiUrl } from "@/lib/api";
 import type { Brand, Content, EngagementMetrics, Channel, Product, AgentRun } from "@/types";
@@ -242,9 +243,12 @@ export default function BrandDetailPage() {
     return () => clearInterval(interval);
   }, [research, activeTab, brandId]);
 
-  // Poll brand status + agent runs while brand is "activating"
+  // Poll brand status + agent runs while brand is "activating".
+  // Guard reads only `brand?.status` (never bare `brand`) so the dep list can
+  // stay [brand?.status, brandId]: other brand-field updates don't reset the
+  // interval, and exhaustive-deps is satisfied without depending on the object.
   useEffect(() => {
-    if (!brand || brand.status !== "activating") return;
+    if (brand?.status !== "activating") return;
     const startedAt = Date.now();
     const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -548,9 +552,10 @@ export default function BrandDetailPage() {
     await handleTriggerWorkflow(workflowType);
   }, [brandId, handleTriggerWorkflow]);
 
-  // Auto-open onboarding dialog when brand is in onboarding status
+  // Auto-open onboarding dialog when brand is in onboarding status.
+  // `brand?.status` (not bare `brand`) keeps the dep list a stable primitive.
   useEffect(() => {
-    if (brand && brand.status === 'onboarding') {
+    if (brand?.status === 'onboarding') {
       setOnboardingOpen(true);
     }
   }, [brand?.status]);
@@ -844,7 +849,7 @@ export default function BrandDetailPage() {
           </Button>
           <div className="flex items-center gap-3">
             {brand.logo_url && (
-              <img
+              <MediaImage
                 src={apiUrl(brand.logo_url)}
                 alt={brand.name}
                 className="h-10 max-w-[120px] rounded-lg object-contain border p-1"

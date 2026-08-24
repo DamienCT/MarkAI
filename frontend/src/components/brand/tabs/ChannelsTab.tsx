@@ -29,6 +29,19 @@ const SENSITIVE_FIELD_KEYS = new Set([
   "webhook_url",
 ]);
 
+// One-line "where these come from" hint per channel, shown when expanded.
+// The full walkthroughs live in docs/CHANNEL_CREDENTIALS.md.
+const CHANNEL_SETUP_HINTS: Partial<Record<Channel, string>> = {
+  instagram: "Meta Business Suite — system-user token with instagram_content_publish.",
+  facebook: "Meta Business Suite — Page access token with pages_manage_posts.",
+  linkedin: "LinkedIn developer app with the Community Management API product.",
+  youtube: "Google Cloud OAuth client + refresh token for the channel's account.",
+  tiktok: "TikTok developer app — posts stay private (SELF_ONLY) until TikTok audits the app.",
+  x: "X developer app (paid tier) — OAuth 1.0a consumer + access keys.",
+  website_blog: "WordPress → Users → Application Passwords (not the login password).",
+  teams: "Teams channel → Connectors → Incoming Webhook; the URL itself is the secret.",
+};
+
 interface ChannelFieldInputProps {
   field: ChannelConfigField;
   value: string | undefined;
@@ -46,10 +59,19 @@ function ChannelFieldInput({ field, value, configured, onChange }: ChannelFieldI
   const mountValueRef = useRef(value);
   const isSensitive = SENSITIVE_FIELD_KEYS.has(field.key);
 
+  const label = (
+    <Label className="text-xs">
+      {field.label}
+      {field.optional && (
+        <span className="text-muted-foreground font-normal"> (optional)</span>
+      )}
+    </Label>
+  );
+
   if (!isSensitive) {
     return (
       <div className="space-y-1">
-        <Label className="text-xs">{field.label}</Label>
+        {label}
         <Input
           className="h-8 text-sm"
           placeholder={field.placeholder}
@@ -62,7 +84,7 @@ function ChannelFieldInput({ field, value, configured, onChange }: ChannelFieldI
 
   return (
     <div className="space-y-1">
-      <Label className="text-xs">{field.label}</Label>
+      {label}
       <div className="relative">
         <Input
           type={revealed ? "text" : "password"}
@@ -248,6 +270,11 @@ export function ChannelsTab({
 
                   {isExpanded && (
                     <div className="space-y-2 pt-2 border-t">
+                      {CHANNEL_SETUP_HINTS[ch] && (
+                        <p className="text-[10px] text-muted-foreground">
+                          {CHANNEL_SETUP_HINTS[ch]}
+                        </p>
+                      )}
                       {fields.map((field) => (
                         <ChannelFieldInput
                           key={field.key}
